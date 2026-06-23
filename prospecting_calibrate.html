@@ -1,0 +1,78 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Prospecting grid calibrator</title>
+<style>
+ body{margin:0;background:#111;color:#eee;font:14px system-ui;display:flex}
+ #left{flex:1;overflow:auto;padding:10px}
+ #side{width:340px;background:#1b1b1b;padding:14px;box-sizing:border-box}
+ .wrap{position:relative;display:inline-block}
+ #img{display:block;max-width:none}
+ #cv{position:absolute;left:0;top:0}
+ button{display:block;width:100%;margin:4px 0;padding:8px;border:0;border-radius:6px;
+   background:#2d2d2d;color:#eee;cursor:pointer;text-align:left}
+ button.on{background:#3b6ea5}
+ h3{margin:14px 0 4px}
+ pre{white-space:pre-wrap;background:#000;padding:10px;border-radius:6px;font-size:12px}
+ label{font-size:12px;color:#aaa}
+ .sw{display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:middle}
+</style></head><body>
+<div id="left"><div class="wrap"><img id="img" src="prospecting_screen.png"><canvas id="cv"></canvas></div></div>
+<div id="side">
+ <b>Tool</b>
+ <button data-t="terrain" class="on"><span class="sw" style="background:#39d353"></span>Terrain box (drag)</button>
+ <button data-t="cap"><span class="sw" style="background:#f1c40f"></span>Capacity box (drag)</button>
+ <button data-t="text"><span class="sw" style="background:#e74c3c"></span>Text box (drag)</button>
+ <button data-t="anchor"><span class="sw" style="background:#ffffff"></span>Player anchor (click)</button>
+ <button data-t="line"><span class="sw" style="background:#9b59b6"></span>Dirt/Lava edge (click 2 pts)</button>
+ <h3>Grid</h3>
+ <label>spacing px <input id="gs" type="number" value="50" style="width:70px"></label>
+ <button id="gtoggle">toggle grid</button>
+ <button id="clear">clear all</button>
+ <h3>Output (capture pixels)</h3>
+ <pre id="out"></pre>
+ <button id="copy">copy snippet</button>
+</div>
+<script>
+const img=document.getElementById('img'),cv=document.getElementById('cv'),ctx=cv.getContext('2d');
+const out=document.getElementById('out');
+let tool='terrain',grid=true,boxes={},anchor=null,line=[],drag=null,scale=1;
+const COL={terrain:'#39d353',cap:'#f1c40f',text:'#e74c3c',anchor:'#fff',line:'#9b59b6'};
+function fit(){scale=img.naturalWidth/img.clientWidth;cv.width=img.clientWidth;cv.height=img.clientHeight;draw();}
+img.onload=fit;window.onresize=fit;if(img.complete)fit();
+document.querySelectorAll('button[data-t]').forEach(b=>b.onclick=()=>{
+  tool=b.dataset.t;document.querySelectorAll('button[data-t]').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');});
+document.getElementById('gtoggle').onclick=()=>{grid=!grid;draw();};
+document.getElementById('gs').oninput=draw;
+document.getElementById('clear').onclick=()=>{boxes={};anchor=null;line=[];draw();};
+document.getElementById('copy').onclick=()=>navigator.clipboard.writeText(out.textContent);
+function pos(e){const r=cv.getBoundingClientRect();return{x:(e.clientX-r.left),y:(e.clientY-r.top)};}
+cv.onmousedown=e=>{const p=pos(e);
+  if(tool==='anchor'){anchor=p;draw();emit();return;}
+  if(tool==='line'){if(line.length>=2)line=[];line.push(p);draw();emit();return;}
+  drag={x0:p.x,y0:p.y,x1:p.x,y1:p.y};};
+cv.onmousemove=e=>{if(!drag)return;const p=pos(e);drag.x1=p.x;drag.y1=p.y;draw();};
+cv.onmouseup=e=>{if(!drag)return;const b={left:Math.min(drag.x0,drag.x1),top:Math.min(drag.y0,drag.y1),
+  w:Math.abs(drag.x1-drag.x0),h:Math.abs(drag.y1-drag.y0)};
+  if(b.w>3&&b.h>3)boxes[tool]=b;drag=null;draw();emit();};
+function draw(){ctx.clearRect(0,0,cv.width,cv.height);
+  if(grid){const g=(+document.getElementById('gs').value)/scale;ctx.strokeStyle='rgba(255,255,255,.18)';ctx.lineWidth=1;
+    for(let x=0;x<cv.width;x+=g){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,cv.height);ctx.stroke();}
+    for(let y=0;y<cv.height;y+=g){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(cv.width,y);ctx.stroke();}}
+  for(const k in boxes){const b=boxes[k];ctx.strokeStyle=COL[k];ctx.lineWidth=2;ctx.strokeRect(b.left,b.top,b.w,b.h);
+    ctx.fillStyle=COL[k];ctx.fillText(k,b.left+2,b.top-3);}
+  if(drag){ctx.strokeStyle=COL[tool];ctx.lineWidth=2;
+    ctx.strokeRect(Math.min(drag.x0,drag.x1),Math.min(drag.y0,drag.y1),Math.abs(drag.x1-drag.x0),Math.abs(drag.y1-drag.y0));}
+  if(anchor){ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(anchor.x,anchor.y,5,0,7);ctx.fill();}
+  if(line.length){ctx.strokeStyle=COL.line;ctx.lineWidth=3;ctx.beginPath();
+    ctx.moveTo(line[0].x,line[0].y);for(const p of line)ctx.lineTo(p.x,p.y);ctx.stroke();
+    line.forEach(p=>{ctx.fillStyle=COL.line;ctx.beginPath();ctx.arc(p.x,p.y,4,0,7);ctx.fill();});}}
+function S(v){return Math.round(v*scale);}
+function emit(){let s='';
+  if(boxes.terrain){const b=boxes.terrain;s+=`TERRAIN_REGION = (${S(b.left)}, ${S(b.top)}, ${S(b.w)}, ${S(b.h)})\n`;}
+  if(boxes.cap){const b=boxes.cap;s+=`CAP_REGION     = (${S(b.left)}, ${S(b.top)}, ${S(b.w)}, ${S(b.h)})\n`;}
+  if(boxes.text){const b=boxes.text;s+=`TEXT_REGION    = (${S(b.left)}, ${S(b.top)}, ${S(b.w)}, ${S(b.h)})\n`;}
+  if(anchor)s+=`PLAYER_ANCHOR  = (${S(anchor.x)}, ${S(anchor.y)})\n`;
+  if(line.length===2)s+=`BOUNDARY_LINE  = [(${S(line[0].x)}, ${S(line[0].y)}), (${S(line[1].x)}, ${S(line[1].y)})]\n`;
+  out.textContent=s||'(mark something)';}
+emit();
+</script></body></html>
