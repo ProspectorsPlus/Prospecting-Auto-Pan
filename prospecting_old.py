@@ -177,17 +177,21 @@ MOMENTUM_W_MS     = 95     # (no longer drives forward distance -- W now matches
 # = less forward (if you overshoot PAST the start); POSITIVE = more forward (if
 # you land SHORT, e.g. the shake animation ate movement).
 SHAKE_FWD_COMP_MS = 0
-# Shake is 3 steps: CLICK to start the animation -> let go -> THEN hold to empty.
-SHAKE_PRESS_DELAY_MS = 25   # ms into the forward (W) move before the start-click
-SHAKE_CLICK_MS       = 50   # length of the click that starts the shake animation
-SHAKE_HOLD_DELAY_MS  = 30   # let-go gap after the click, before the empty-hold
-SHAKE_HOLD_MS        = 1500 # max hold to empty (small pan; stops early when empty)
-SHAKE_MOMENTUM_MS    = 120  # brief W held WHILE shaking (in water) -> momentum
-                           # glides you onto land as the pan empties
-SHAKE_INIT_GAP_MS    = 10   # gap between the initiate-click and the hold
-SHAKE_PLAIN_HOLD     = False# False = keep the held press ALIVE with periodic drag
-                           # events (macOS drops a static hold, so the pan never
-                           # drains). True = plain static hold (Windows-style).
+# --- SHAKE: momentum technique with rapid CLICKS (no held press) -------------
+# Your build empties so fast you don't need to HOLD -- just rattle off clicks.
+# And we start holding W the moment the shake begins so momentum carries you
+# back ONTO THE LAND while the pan drains (the "special technique"). We stop
+# walking W when the Collect Deposit cue shows (we're on land) but keep clicking
+# until the CAPACITY reads empty (capacity is the truth; the Shake cue sticks).
+SHAKE_MOMENTUM_W   = True   # hold W during the shake -> glide onto land
+SHAKE_CLICK_MS     = 18     # length of each shake click (short, fast build)
+SHAKE_CLICK_GAP_MS = 14     # gap between shake clicks
+SHAKE_HOLD_MS      = 1500   # overall shake timeout (stops early when empty)
+SHAKE_INIT_GAP_MS    = 10   # (legacy) unused now
+SHAKE_PLAIN_HOLD     = False # (legacy) unused now
+SHAKE_PRESS_DELAY_MS = 25   # (legacy) unused now
+SHAKE_HOLD_DELAY_MS  = 30   # (legacy) unused now
+SHAKE_MOMENTUM_MS    = 120  # (legacy) unused now
 SHAKE_START_MS    = 70    # (unused in timed path; kept for the detect path)
 GAP_MS            = 25    # tiny settle gap between phases
 POST_DIG_MS       = 60    # slight settle after a dig, before walking back
@@ -219,6 +223,9 @@ FWD_BRAKE_MS       = 60   # tap S this long when the land cue fires (kill fwd gl
 SHAKE_POLL_MS      = 30   # poll spacing while holding the shake
 STUCK_TICKS        = 3    # identical (place, pan) reads in a row -> escalate
 RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
+SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
+                          # between water/land) before SAFE STOP -- catches the
+                          # case where the shake silently never works
 RECOVER_BACK_MS    = 160  # corrective nudge BUDGET during recovery (pulsed)
 LIMBO_NUDGE_MS     = 200  # forward (toward land) probe BUDGET when NO cue (pulsed)
 # Pulsed movement: forward/recovery moves are short taps with a cue check after
@@ -535,6 +542,7 @@ class State:
     running = False
     alive = True
     empty_fails = 0          # consecutive cycles the pan wouldn't empty
+    shake_fails = 0          # consecutive shakes that didn't empty the pan
 
 
 def release_all():
@@ -551,6 +559,7 @@ def safe_stop(reason):
     release_all()
     State.running = False
     State.empty_fails = 0
+    State.shake_fails = 0
     print(f"\n*** SAFE STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
     try:
         subprocess.Popen(["afplay", ALERT_SOUND])
@@ -817,39 +826,45 @@ def go_water(det):
 
 
 def do_shake(det):
-    """CLICK to initiate -> short gap -> HOLD until the CAPACITY reads empty (the
-    Shake cue can stick, so capacity is the truth). The hold is kept ALIVE with
-    drag events (SHAKE_PLAIN_HOLD=False) so macOS doesn't drop it. Fails fast if
-    the shake never starts AND we read land+full (we weren't in the water)."""
+    """THE MOMENTUM TECHNIQUE. Start holding W (glide toward land) and rattle off
+    rapid CLICKS to shake -- no held press, because your build empties in a blink.
+    W carries you onto the land WHILE the pan drains; we drop W the instant the
+    Collect Deposit cue shows (so we don't sail past the dig spot) but keep
+    clicking until the CAPACITY reads empty (capacity is the truth; the Shake cue
+    sticks). Bails if a click never registers a shake AND we're on land + full."""
     t0 = time.perf_counter()
-    mouse_tap(SHAKE_CLICK_MS)
-    sleep_ms(SHAKE_INIT_GAP_MS)
-    mouse_down()
-    started = False
-    emptied = False
-    bailed = False
+    w_down = False
+    if SHAKE_MOMENTUM_W:
+        key_down(KEY_W); w_down = True       # momentum toward land
+    started = emptied = bailed = on_land = False
     init_deadline = time.perf_counter() + SHAKE_INIT_MS / 1000.0
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
-        if not SHAKE_PLAIN_HOLD:
-            _post(Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
-                Quartz.kCGMouseButtonLeft))
+        mouse_tap(SHAKE_CLICK_MS)            # one shake click
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
         if det.pan_empty():
             emptied = True
             break
+        if w_down and det.on_deposit():      # reached land -> stop gliding...
+            key_up(KEY_W); w_down = False     # ...but keep clicking to finish
+            on_land = True
         if (not started and time.perf_counter() > init_deadline
                 and det.on_deposit() and det.capacity_full()):
             bailed = True
-            break                        # not in the water -> bail, re-locate
-        sleep_ms(SHAKE_POLL_MS)
-    mouse_up()
+            break                            # clicks aren't shaking -> re-locate
+        sleep_ms(SHAKE_CLICK_GAP_MS)
+    if w_down:
+        key_up(KEY_W)
+    if emptied:
+        State.shake_fails = 0
+    else:
+        State.shake_fails += 1
     dur = (time.perf_counter() - t0) * 1000
     log(f"    shake done: started={started} emptied={emptied} "
-        f"bail={bailed} ({dur:.0f}ms)")
+        f"reached_land={on_land} bail={bailed} fails={State.shake_fails} "
+        f"({dur:.0f}ms)")
 
 
 def go_land(det):
@@ -914,6 +929,7 @@ class Supervisor:
         self.last_sig = None
         self.same = 0
         self.recoveries = 0
+        State.shake_fails = 0
 
     def tick(self, det):
         s = sense_stable(det)
@@ -924,6 +940,11 @@ class Supervisor:
             self.same, self.last_sig, self.recoveries = 0, sig, 0
         cue = f"{'D' if s.dep else '-'}{'P' if s.pan else '-'}{'S' if s.shk else '-'}"
         cap = f"{'F' if s.full else '-'}{'E' if s.empty else '-'}"
+        # oscillation guard: if shakes keep failing even while we move around
+        # (so the per-situation watchdog never trips), stop after a hard cap.
+        if State.shake_fails > SHAKE_FAIL_LIMIT:
+            safe_stop(f"shake not emptying after {State.shake_fails} tries")
+            return
         if self.same < STUCK_TICKS:
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"-> {plan_label(s)}")
