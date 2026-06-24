@@ -639,6 +639,22 @@ def main():
 
 if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    # Variant launchers: `python3 prospecting_macro.py old [monitor|...]` runs the
+    # sibling file prospecting_<variant>.py (forwarding any remaining args). This
+    # is why `old` must be dispatched here -- otherwise it silently fell through
+    # to the launcher's own main() and none of the variant's code ran.
+    VARIANTS = {"old", "other", "new", "friend"}
+    if arg in VARIANTS:
+        import os
+        import subprocess
+        here = os.path.dirname(os.path.abspath(__file__))
+        target = os.path.join(here, f"prospecting_{arg}.py")
+        if not os.path.exists(target):
+            sys.exit(f"Variant file not found: {target}")
+        print(f"[launcher] running {os.path.basename(target)} "
+              f"{' '.join(sys.argv[2:])}".rstrip())
+        raise SystemExit(subprocess.run(
+            [sys.executable, target, *sys.argv[2:]]).returncode)
     if arg == "calibrate":
         calibrate()
     elif arg == "calibrate-text":
