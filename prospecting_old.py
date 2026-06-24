@@ -235,8 +235,12 @@ SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
 # dirt, so the CAPACITY bar tells us if we're on land. Hit -> on land (pan now
 # filling). Miss -> nudge forward and retry.
 LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
-DIG_PROBE_MS        = 220 # wait this long for a probe-dig to register (cap change)
+DIG_PROBE_MS        = 320 # wait this long for a probe-dig to register before
+                          # calling it a MISS (a working dig sometimes fills the
+                          # bar slowly -- too short and we nudge again too soon)
 LAND_PROBE_NUDGE_MS = 90  # forward W nudge between failed probe-digs
+PROBE_GAP_MS        = 80  # settle after a forward nudge, before the next dig
+                          # (stops it clicking W twice in a row too fast)
 POST_SHAKE_SETTLE_MS = 150 # pause after the pan empties (let the shake animation
                           # + momentum settle you onto land) BEFORE the dig-probe.
                           # Without it the first dig often fires mid-glide and
@@ -919,6 +923,7 @@ def return_and_dig(det):
             return True
         log(f"    dig-probe miss try{attempt+1} -> nudge W fwd")
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
+        sleep_ms(PROBE_GAP_MS)           # settle before the next dig attempt
     State.land_fails += 1
     log(f"    dig-probe: no land after {LAND_DIG_TRIES} (land_fails={State.land_fails})")
     if State.land_fails >= STUCK_LIMIT:
