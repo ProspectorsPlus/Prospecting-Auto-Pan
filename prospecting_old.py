@@ -237,6 +237,10 @@ SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
 LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
 DIG_PROBE_MS        = 220 # wait this long for a probe-dig to register (cap change)
 LAND_PROBE_NUDGE_MS = 90  # forward W nudge between failed probe-digs
+POST_SHAKE_SETTLE_MS = 150 # pause after the pan empties (let the shake animation
+                          # + momentum settle you onto land) BEFORE the dig-probe.
+                          # Without it the first dig often fires mid-glide and
+                          # misses, needing an extra forward nudge. Tune up/down.
 RECOVER_BACK_MS    = 160  # corrective nudge BUDGET during recovery (pulsed)
 LIMBO_NUDGE_MS     = 200  # forward (toward land) probe BUDGET when NO cue (pulsed)
 # Pulsed movement: forward/recovery moves are short taps with a cue check after
@@ -872,6 +876,7 @@ def do_shake(det):
         key_up(KEY_W)
     if emptied:
         State.shake_fails = 0
+        sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
     dur = (time.perf_counter() - t0) * 1000
