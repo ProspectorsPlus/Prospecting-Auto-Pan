@@ -194,10 +194,11 @@ SHAKE_FWD_COMP_MS = 0
 SHAKE_MOMENTUM_W   = True   # hold W during the shake -> glide onto land
 SHAKE_CLICK_MS     = 18     # length of each shake click (short, fast build)
 SHAKE_CLICK_GAP_MS = 14     # gap between shake clicks
-SHAKE_LAND_EXTRA_W_MS = 95  # after the pan empties, KEEP holding W this long for
-                           # an extra forward glide -> land a bit FURTHER onto the
-                           # dirt (off the water edge) before digging. Raise to go
-                           # further onto land; 0 = stop the moment it empties.
+SHAKE_GLIDE_MS     = 95     # after the shake is INITIATED (first click) but BEFORE
+                           # we rattle the empties, hold W this long to glide
+                           # FURTHER onto the dirt -- so the pan empties once you're
+                           # properly on land, not at the water edge. Raise to go
+                           # further in; 0 = start emptying immediately.
 SHAKE_HOLD_MS      = 1500   # overall shake timeout (stops early when empty)
 SHAKE_INIT_GAP_MS    = 10   # (legacy) unused now
 SHAKE_PLAIN_HOLD     = False # (legacy) unused now
@@ -875,10 +876,19 @@ def do_shake(det):
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
+    # INITIATE the shake with one click, then GLIDE further onto land (W held, no
+    # more clicks -> not emptying yet) so the pan empties once we're properly on
+    # the dirt, not at the water edge.
+    mouse_tap(SHAKE_CLICK_MS)                 # initiate the shake
+    if det.on_shake():
+        started = True
+        log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
+    if SHAKE_GLIDE_MS > 0 and State.running:
+        sleep_ms(SHAKE_GLIDE_MS)             # glide further onto land BEFORE empty
     init_deadline = time.perf_counter() + SHAKE_INIT_MS / 1000.0
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
-        mouse_tap(SHAKE_CLICK_MS)            # one shake click
+        mouse_tap(SHAKE_CLICK_MS)            # rattle the empties
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
@@ -893,13 +903,6 @@ def do_shake(det):
             bailed = True
             break                            # clicks aren't shaking -> re-locate
         sleep_ms(SHAKE_CLICK_GAP_MS)
-    # EXTRA GLIDE: once the pan is empty, hold W a touch longer to ride FURTHER
-    # onto the dirt (off the water edge) before the dig.
-    if emptied and SHAKE_LAND_EXTRA_W_MS > 0 and State.running:
-        if not w_down:
-            key_down(KEY_W)
-        sleep_ms(SHAKE_LAND_EXTRA_W_MS)
-        key_up(KEY_W); w_down = False
     if w_down:
         key_up(KEY_W)
     if emptied:
