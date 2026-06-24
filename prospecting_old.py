@@ -217,9 +217,12 @@ ALERT_SOUND       = "/System/Library/Sounds/Sosumi.aiff"
 # state and from missed clicks, under/overshoots, stuck cues and drift.
 SENSE_VOTES        = 1    # sensor reads fused per decision (>1 votes out flicker)
 MOVE_CONFIRM_MS    = 140  # after a move, wait this long for the target cue to settle
-DIG_FILL_MS        = 450  # after a dig, wait up to this for the bar to read FULL
+DIG_FILL_MS        = 250  # after a dig, wait up to this for the bar to read FULL
 MAX_DIGS_PER_VISIT = 4    # dig at most this many times to fill before giving up
-FWD_BRAKE_MS       = 60   # tap S this long when the land cue fires (kill fwd glide)
+LAND_SETTLE_MS     = 45   # after the land cue fires, hold W a touch longer to land
+                          # FIRMLY on the dirt (prevents a land<->water flicker).
+                          # Forward over-travel onto land is harmless; braking
+                          # BACK toward the water is what caused the oscillation.
 SHAKE_POLL_MS      = 30   # poll spacing while holding the shake
 STUCK_TICKS        = 3    # identical (place, pan) reads in a row -> escalate
 RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
@@ -780,11 +783,13 @@ def sense_stable(det):
 
 
 def plan_label(s):
-    """The action the supervisor WOULD take for situation s (for logs/monitor)."""
+    """The action the supervisor WOULD take for situation s (for logs/monitor).
+    Gated on FULL: only a FULL pan triggers shaking / going to water; anything
+    not-full (empty OR a transient 'partial') counts as done -> dig / go land."""
     if s.where == LAND:
-        return "DIG" if s.contents == P_EMPTY else "go WATER (S back)"
+        return "go WATER (S back)" if s.full else "DIG"
     if s.where in (WATER, SHAKING):
-        return "go LAND (W fwd)" if s.contents == P_EMPTY else "SHAKE"
+        return "SHAKE" if s.full else "go LAND (W fwd)"
     return "PROBE fwd (no cue)"
 
 
@@ -868,36 +873,33 @@ def do_shake(det):
 
 
 def go_land(det):
-    """TAP W forward (11ms on / 1ms off, re-checking after each tap) until the
-    COLLECT DEPOSIT cue shows, so we stop right at the dig spot without a long
-    blind hold. A tiny S brake kills any residual glide."""
+    """HOLD W forward (smooth) until the COLLECT DEPOSIT cue shows, then hold a
+    touch longer (LAND_SETTLE_MS) to sit FIRMLY on the dirt. No S brake -- braking
+    back toward the water is what made it bounce land<->water instead of digging."""
     t0 = time.perf_counter()
-    reached = pulse_until(KEY_W, det.on_deposit, DEPOSIT_MAX_MS, confirm=1)
-    if reached and FWD_BRAKE_MS > 0:
-        key_down(KEY_S); sleep_ms(FWD_BRAKE_MS); key_up(KEY_S)
-    wait_until(det.on_deposit, MOVE_CONFIRM_MS, confirm=1)
+    key_down(KEY_W)
+    reached = wait_until(det.on_deposit, DEPOSIT_MAX_MS, confirm=1)
+    if reached and LAND_SETTLE_MS > 0:
+        sleep_ms(LAND_SETTLE_MS)         # settle firmly onto land (forward)
+    key_up(KEY_W)
     log(f"    W fwd to land: reached_DEPOSIT={reached} "
         f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
 def act(det, s):
-    """One normal step from the fused situation. Capacity decides contents, the
-    cue decides position; together they pick exactly one correct action."""
+    """One normal step from the fused situation. Position from the cue, contents
+    from the capacity bar. Gated on FULL so a transient 'partial' reading (e.g.
+    the bar mid-drain right after a shake) can't trigger a spurious re-shake."""
     if s.where == LAND:
-        if s.contents == P_EMPTY:
-            do_dig(det)                  # empty on land -> fill the pan
+        if s.full:
+            go_water(det)                # FULL on land -> go to the water
         else:
-            go_water(det)                # full/partial on land -> go shake
-    elif s.where == WATER:
-        if s.contents == P_EMPTY:
-            go_land(det)                 # emptied in water -> return to land
+            do_dig(det)                  # not full -> dig to fill
+    elif s.where in (WATER, SHAKING):
+        if s.full:
+            do_shake(det)                # FULL in water -> shake it out
         else:
-            do_shake(det)                # full/partial in water -> shake it out
-    elif s.where == SHAKING:
-        if s.contents == P_EMPTY:
-            go_land(det)                 # cue stuck on Shake but bar empty -> go
-        else:
-            do_shake(det)                # keep shaking
+            go_land(det)                 # done (empty/partial) -> return to land
     else:  # LIMBO -- no prompt visible; TAP forward (toward land) until a cue
         pulse_until(KEY_W, lambda: det.on_deposit() or det.on_pan(),
                     LIMBO_NUDGE_MS, confirm=1)
@@ -905,16 +907,16 @@ def act(det, s):
 
 def recover(det, s):
     """Stronger corrective when stuck on the SAME situation for STUCK_TICKS.
-    Each branch pushes the one variable that isn't advancing."""
-    if s.where == LAND and s.contents != P_EMPTY:
-        # full on land but not reaching water -> push back harder, then brake
-        key_down(KEY_S); sleep_ms(RECOVER_BACK_MS); key_up(KEY_S)
-        key_down(KEY_W); sleep_ms(WALK_BACK_BRAKE_MS); key_up(KEY_W)
-    elif s.where in (WATER, SHAKING) and s.contents != P_EMPTY:
-        do_shake(det)                    # won't empty -> re-initiate + hold again
-    elif s.where == WATER and s.contents == P_EMPTY:
-        pulse_until(KEY_W, det.on_deposit, RECOVER_BACK_MS)   # tap toward land
-    else:  # LIMBO -- TAP forward toward land / away from lava
+    Recovery moves are JITTERED (short taps) so they can't sail past the target,
+    even though the normal legs hold smoothly."""
+    if s.where == LAND and s.full:
+        # full on land but not reaching water -> jitter S back toward the water
+        pulse_until(KEY_S, det.on_pan, RECOVER_BACK_MS)
+    elif s.where in (WATER, SHAKING) and s.full:
+        do_shake(det)                    # won't empty -> shake again
+    elif s.where in (WATER, SHAKING) and not s.full:
+        pulse_until(KEY_W, det.on_deposit, RECOVER_BACK_MS)   # jitter toward land
+    else:  # LIMBO -- jitter forward toward land / away from lava
         pulse_until(KEY_W, lambda: det.on_deposit() or det.on_pan(),
                     LIMBO_NUDGE_MS)
 
