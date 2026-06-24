@@ -229,6 +229,14 @@ RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
 SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
                           # between water/land) before SAFE STOP -- catches the
                           # case where the shake silently never works
+# Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
+# STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
+# trust the W-momentum carried us toward land and just DIG: a dig only fills on
+# dirt, so the CAPACITY bar tells us if we're on land. Hit -> on land (pan now
+# filling). Miss -> nudge forward and retry.
+LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
+DIG_PROBE_MS        = 220 # wait this long for a probe-dig to register (cap change)
+LAND_PROBE_NUDGE_MS = 90  # forward W nudge between failed probe-digs
 RECOVER_BACK_MS    = 160  # corrective nudge BUDGET during recovery (pulsed)
 LIMBO_NUDGE_MS     = 200  # forward (toward land) probe BUDGET when NO cue (pulsed)
 # Pulsed movement: forward/recovery moves are short taps with a cue check after
@@ -546,6 +554,7 @@ class State:
     alive = True
     empty_fails = 0          # consecutive cycles the pan wouldn't empty
     shake_fails = 0          # consecutive shakes that didn't empty the pan
+    land_fails = 0           # consecutive times the dig-probe couldn't find land
 
 
 def release_all():
@@ -563,6 +572,7 @@ def safe_stop(reason):
     State.running = False
     State.empty_fails = 0
     State.shake_fails = 0
+    State.land_fails = 0
     print(f"\n*** SAFE STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
     try:
         subprocess.Popen(["afplay", ALERT_SOUND])
@@ -784,13 +794,11 @@ def sense_stable(det):
 
 def plan_label(s):
     """The action the supervisor WOULD take for situation s (for logs/monitor).
-    Gated on FULL: only a FULL pan triggers shaking / going to water; anything
-    not-full (empty OR a transient 'partial') counts as done -> dig / go land."""
-    if s.where == LAND:
-        return "go WATER (S back)" if s.full else "DIG"
-    if s.where in (WATER, SHAKING):
-        return "SHAKE" if s.full else "go LAND (W fwd)"
-    return "PROBE fwd (no cue)"
+    Capacity is primary. FULL + in-water(Pan cue) -> shake; FULL elsewhere -> go
+    to the water. NOT full -> DIG-PROBE to find land (we ignore the stuck cue)."""
+    if s.full:
+        return "SHAKE" if s.pan else "go WATER (S back)"
+    return "DIG-probe (find land)"
 
 
 # ---- verified action primitives (each confirms its own result) --------------
@@ -886,39 +894,58 @@ def go_land(det):
         f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
+def return_and_dig(det):
+    """Post-shake landing WITHOUT trusting the cue (it can stick on 'Shake').
+    We trust the W-momentum put us near land and DIG as a probe -- a dig only
+    fills on dirt, so the CAPACITY tells us the truth. Hit = on land, pan filling.
+    Miss = nudge forward, retry. Gives up (SAFE STOP) only after it truly can't
+    find land, so it never digs forever in the water."""
+    for attempt in range(LAND_DIG_TRIES):
+        if not State.running:
+            return False
+        baseline = det.cap_start_rgb()
+        dig_once(det)
+        hit = wait_until(lambda: det.cap_changed(baseline) or det.capacity_full(),
+                         DIG_PROBE_MS, confirm=1)
+        if hit:
+            wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)  # let it top off
+            State.land_fails = 0
+            log(f"    dig-probe HIT try{attempt+1} -> on land, pan filling")
+            return True
+        log(f"    dig-probe miss try{attempt+1} -> nudge W fwd")
+        key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
+    State.land_fails += 1
+    log(f"    dig-probe: no land after {LAND_DIG_TRIES} (land_fails={State.land_fails})")
+    if State.land_fails >= STUCK_LIMIT:
+        safe_stop("dig-probe can't find land after shaking")
+    return False
+
+
 def act(det, s):
-    """One normal step from the fused situation. Position from the cue, contents
-    from the capacity bar. Gated on FULL so a transient 'partial' reading (e.g.
-    the bar mid-drain right after a shake) can't trigger a spurious re-shake."""
-    if s.where == LAND:
-        if s.full:
-            go_water(det)                # FULL on land -> go to the water
+    """Capacity-primary decision. The cue is only trusted for 'am I in the water'
+    (Pan), since the Shake/Deposit cues glitch. FULL + Pan -> shake; FULL else ->
+    go to water; NOT full -> dig-probe to find land + refill."""
+    if s.full:
+        if s.pan:
+            do_shake(det)                # FULL and in the water -> shake it out
         else:
-            do_dig(det)                  # not full -> dig to fill
-    elif s.where in (WATER, SHAKING):
-        if s.full:
-            do_shake(det)                # FULL in water -> shake it out
-        else:
-            go_land(det)                 # done (empty/partial) -> return to land
-    else:  # LIMBO -- no prompt visible; TAP forward (toward land) until a cue
-        pulse_until(KEY_W, lambda: det.on_deposit() or det.on_pan(),
-                    LIMBO_NUDGE_MS, confirm=1)
+            go_water(det)                # FULL on land -> walk back to the water
+    else:
+        return_and_dig(det)              # empty -> DIG (probe) to find land
 
 
 def recover(det, s):
     """Stronger corrective when stuck on the SAME situation for STUCK_TICKS.
     Recovery moves are JITTERED (short taps) so they can't sail past the target,
     even though the normal legs hold smoothly."""
-    if s.where == LAND and s.full:
-        # full on land but not reaching water -> jitter S back toward the water
+    if s.full and s.pan:
+        do_shake(det)                    # full in water, won't empty -> shake again
+    elif s.full:
+        # full but not in water -> jitter S back toward the water
         pulse_until(KEY_S, det.on_pan, RECOVER_BACK_MS)
-    elif s.where in (WATER, SHAKING) and s.full:
-        do_shake(det)                    # won't empty -> shake again
-    elif s.where in (WATER, SHAKING) and not s.full:
-        pulse_until(KEY_W, det.on_deposit, RECOVER_BACK_MS)   # jitter toward land
-    else:  # LIMBO -- jitter forward toward land / away from lava
-        pulse_until(KEY_W, lambda: det.on_deposit() or det.on_pan(),
-                    LIMBO_NUDGE_MS)
+    else:
+        # empty, can't land -> jitter forward, then re-probe with a dig next tick
+        pulse_until(KEY_W, det.capacity_full, RECOVER_BACK_MS)
 
 
 class Supervisor:
@@ -932,6 +959,7 @@ class Supervisor:
         self.same = 0
         self.recoveries = 0
         State.shake_fails = 0
+        State.land_fails = 0
 
     def tick(self, det):
         s = sense_stable(det)
