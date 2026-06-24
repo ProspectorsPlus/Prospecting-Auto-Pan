@@ -185,7 +185,9 @@ SHAKE_HOLD_MS        = 1500 # max hold to empty (small pan; stops early when emp
 SHAKE_MOMENTUM_MS    = 120  # brief W held WHILE shaking (in water) -> momentum
                            # glides you onto land as the pan empties
 SHAKE_INIT_GAP_MS    = 10   # gap between the initiate-click and the hold
-SHAKE_PLAIN_HOLD     = True # plain LMB hold (like the AHK), no drag events
+SHAKE_PLAIN_HOLD     = False# False = keep the held press ALIVE with periodic drag
+                           # events (macOS drops a static hold, so the pan never
+                           # drains). True = plain static hold (Windows-style).
 SHAKE_START_MS    = 70    # (unused in timed path; kept for the detect path)
 GAP_MS            = 25    # tiny settle gap between phases
 POST_DIG_MS       = 60    # slight settle after a dig, before walking back
@@ -223,6 +225,10 @@ LIMBO_NUDGE_MS     = 200  # forward (toward land) probe BUDGET when NO cue (puls
 # EACH tap, so they stop the instant the target shows (no long blind holds).
 BURST_ON_MS        = 11   # hold the key this long per tap...
 BURST_OFF_MS       = 1    # ...release this long, then re-check the cue
+# Live terminal log: print every decision + sub-step with timing so you can SEE
+# what the macro is thinking (where it is, what it plans, how long each step
+# took). Set False for a quiet run.
+LOG_LIVE           = True
 
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
@@ -289,6 +295,21 @@ def sleep_until(deadline):
 
 def sleep_ms(ms):
     sleep_until(time.perf_counter() + ms / 1000.0)
+
+
+# ---- live logging (timestamped, scrolling) ----------------------------------
+_log_t0 = None
+
+
+def log(msg):
+    """Print a timestamped line so you can watch the macro's reasoning live."""
+    if not LOG_LIVE:
+        return
+    global _log_t0
+    now = time.perf_counter()
+    if _log_t0 is None:
+        _log_t0 = now
+    print(f"[{now - _log_t0:7.2f}s] {msg}", flush=True)
 
 
 # ---- Input engine (Quartz CGEvent, HID level) -------------------------------
@@ -749,12 +770,22 @@ def sense_stable(det):
     return Situation(where, contents, dep, pan, shk, full, empty)
 
 
+def plan_label(s):
+    """The action the supervisor WOULD take for situation s (for logs/monitor)."""
+    if s.where == LAND:
+        return "DIG" if s.contents == P_EMPTY else "go WATER (S back)"
+    if s.where in (WATER, SHAKING):
+        return "go LAND (W fwd)" if s.contents == P_EMPTY else "SHAKE"
+    return "PROBE fwd (no cue)"
+
+
 # ---- verified action primitives (each confirms its own result) --------------
 def do_dig(det):
     """Dig until the capacity bar reads FULL (your build: ~1 dig). Verifies the
     dig REGISTERED (bar started) and re-digs if it didn't. Bails after
     MAX_DIGS_PER_VISIT so a non-registering dig can't loop forever."""
-    for _ in range(MAX_DIGS_PER_VISIT):
+    t0 = time.perf_counter()
+    for i in range(MAX_DIGS_PER_VISIT):
         if not State.running:
             return
         baseline = det.cap_start_rgb()
@@ -763,9 +794,11 @@ def do_dig(det):
                              CAP_START_MS, confirm=1)
         if det.capacity_full() or wait_until(det.capacity_full, DIG_FILL_MS,
                                              confirm=1):
+            log(f"    dig#{i+1}: started={started} -> FULL "
+                f"({(time.perf_counter()-t0)*1000:.0f}ms)")
             return                       # full -> done
-        if not started:
-            continue                     # dig didn't register -> try again
+        log(f"    dig#{i+1}: started={started} not full yet, re-dig")
+    log("    dig: left PARTIAL after max digs")
     # left partial -> the supervisor will take us to water and shake it out
 
 
@@ -773,22 +806,28 @@ def go_water(det):
     """Walk S until the PAN cue (in the water), then BRAKE the backward glide so
     we stop at the edge. Confirms arrival before returning so the next tick
     doesn't act on a stale 'LAND' read."""
+    t0 = time.perf_counter()
     key_down(KEY_S)
     reached = wait_until(det.on_pan, PAN_BACK_MAX_MS, confirm=WALK_BACK_CONFIRM)
     key_up(KEY_S)
     if reached and WALK_BACK_BRAKE_MS > 0:
         key_down(KEY_W); sleep_ms(WALK_BACK_BRAKE_MS); key_up(KEY_W)
     wait_until(det.on_pan, MOVE_CONFIRM_MS, confirm=1)   # let the cue settle
+    log(f"    S back: reached_PAN={reached} ({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
 def do_shake(det):
-    """CLICK to initiate -> short gap -> HOLD (plain) until the CAPACITY reads
-    empty (the Shake cue can stick, so capacity is the truth). Fails fast if the
-    shake never starts AND we read land+full (we weren't in the water)."""
+    """CLICK to initiate -> short gap -> HOLD until the CAPACITY reads empty (the
+    Shake cue can stick, so capacity is the truth). The hold is kept ALIVE with
+    drag events (SHAKE_PLAIN_HOLD=False) so macOS doesn't drop it. Fails fast if
+    the shake never starts AND we read land+full (we weren't in the water)."""
+    t0 = time.perf_counter()
     mouse_tap(SHAKE_CLICK_MS)
     sleep_ms(SHAKE_INIT_GAP_MS)
     mouse_down()
     started = False
+    emptied = False
+    bailed = False
     init_deadline = time.perf_counter() + SHAKE_INIT_MS / 1000.0
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
@@ -798,23 +837,32 @@ def do_shake(det):
                 Quartz.kCGMouseButtonLeft))
         if not started and det.on_shake():
             started = True
+            log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
         if det.pan_empty():
+            emptied = True
             break
         if (not started and time.perf_counter() > init_deadline
                 and det.on_deposit() and det.capacity_full()):
+            bailed = True
             break                        # not in the water -> bail, re-locate
         sleep_ms(SHAKE_POLL_MS)
     mouse_up()
+    dur = (time.perf_counter() - t0) * 1000
+    log(f"    shake done: started={started} emptied={emptied} "
+        f"bail={bailed} ({dur:.0f}ms)")
 
 
 def go_land(det):
     """TAP W forward (11ms on / 1ms off, re-checking after each tap) until the
     COLLECT DEPOSIT cue shows, so we stop right at the dig spot without a long
     blind hold. A tiny S brake kills any residual glide."""
+    t0 = time.perf_counter()
     reached = pulse_until(KEY_W, det.on_deposit, DEPOSIT_MAX_MS, confirm=1)
     if reached and FWD_BRAKE_MS > 0:
         key_down(KEY_S); sleep_ms(FWD_BRAKE_MS); key_up(KEY_S)
     wait_until(det.on_deposit, MOVE_CONFIRM_MS, confirm=1)
+    log(f"    W fwd to land: reached_DEPOSIT={reached} "
+        f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
 def act(det, s):
@@ -874,10 +922,16 @@ class Supervisor:
             self.same += 1
         else:
             self.same, self.last_sig, self.recoveries = 0, sig, 0
+        cue = f"{'D' if s.dep else '-'}{'P' if s.pan else '-'}{'S' if s.shk else '-'}"
+        cap = f"{'F' if s.full else '-'}{'E' if s.empty else '-'}"
         if self.same < STUCK_TICKS:
+            log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
+                f"-> {plan_label(s)}")
             act(det, s)
         else:
             self.recoveries += 1
+            log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
+                f"** STUCK x{self.same}, RECOVER #{self.recoveries} **")
             if self.recoveries > RECOVER_LIMIT:
                 safe_stop(f"deadlocked at {s.where}/{s.contents}")
                 return
@@ -1132,8 +1186,11 @@ def main():
                     if not was_running:     # fresh start -> clear stuck-counters
                         sup.reset()
                         was_running = True
+                        log("=== RUNNING (live trace below) ===")
                     sup.tick(detector)
                 else:
+                    if was_running:
+                        log("=== PAUSED ===")
                     was_running = False
                     time.sleep(0.02)
         finally:
@@ -1156,17 +1213,8 @@ def monitor():
                 shk = "SHAKE" if s.shk else "-----"
                 full = "FULL" if s.full else "----"
                 empt = "EMPTY" if s.empty else "fill "
-                # what the supervisor WOULD do right now (no input sent):
-                if s.where == LAND:
-                    plan = "DIG" if s.contents == P_EMPTY else "-> WATER"
-                elif s.where == WATER:
-                    plan = "-> LAND" if s.contents == P_EMPTY else "SHAKE"
-                elif s.where == SHAKING:
-                    plan = "-> LAND" if s.contents == P_EMPTY else "SHAKE"
-                else:
-                    plan = "probe (no cue)"
                 print(f"\rcue:[{dep}{pan}{shk}] cap:[{full} {empt}]  "
-                      f"=> {s.where}/{s.contents:7} plan: {plan:14}",
+                      f"=> {s.where:7}/{s.contents:7} plan: {plan_label(s):18}",
                       end="", flush=True)
                 time.sleep(0.1)
         except KeyboardInterrupt:
