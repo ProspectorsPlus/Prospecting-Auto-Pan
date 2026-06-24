@@ -167,6 +167,11 @@ ANCHOR_WALKBACK   = True
 # Raise if it still goes too far back; lower (or 0) if the brake pushes you onto
 # land before the shake.
 WALK_BACK_BRAKE_MS = 70
+# After the Pan cue fires, KEEP holding S this long to walk a little FARTHER into
+# the water before shaking. The cue can trigger right at the edge; shaking there
+# sometimes misses, so going a touch deeper makes the shake land reliably. This
+# is the "delay between Pan detected and shake start". Raise to go deeper.
+WATER_EXTRA_BACK_MS = 110
 WALK_BACK_MS      = 95     # hold S to back into the water (fallback / if anchor off)
 WALK_BACK_EXTRA_MS = 0     # keep holding S this long AFTER touching water (go a
                           # bit deeper); the forward move adds the same so you
@@ -833,17 +838,17 @@ def do_dig(det):
 
 
 def go_water(det):
-    """Walk S until the PAN cue (in the water), then BRAKE the backward glide so
-    we stop at the edge. Confirms arrival before returning so the next tick
-    doesn't act on a stale 'LAND' read."""
+    """HOLD S until the PAN cue (in the water), then keep holding a touch longer
+    (WATER_EXTRA_BACK_MS) to walk a little FARTHER in before the shake -- the cue
+    can fire right at the edge, where the shake sometimes misses."""
     t0 = time.perf_counter()
     key_down(KEY_S)
     reached = wait_until(det.on_pan, PAN_BACK_MAX_MS, confirm=WALK_BACK_CONFIRM)
+    if reached and WATER_EXTRA_BACK_MS > 0:
+        sleep_ms(WATER_EXTRA_BACK_MS)    # keep holding S -> a bit deeper in
     key_up(KEY_S)
-    if reached and WALK_BACK_BRAKE_MS > 0:
-        key_down(KEY_W); sleep_ms(WALK_BACK_BRAKE_MS); key_up(KEY_W)
-    wait_until(det.on_pan, MOVE_CONFIRM_MS, confirm=1)   # let the cue settle
-    log(f"    S back: reached_PAN={reached} ({(time.perf_counter()-t0)*1000:.0f}ms)")
+    log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper) "
+        f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
 def do_shake(det):
