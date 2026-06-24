@@ -237,6 +237,21 @@ RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
 SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
                           # between water/land) before SAFE STOP -- catches the
                           # case where the shake silently never works
+# Shake bail is CAPACITY-based: only give up on a shake if the pan is STILL FULL
+# after this long (no drain at all = no real shake). Longer than a real shake
+# (~550ms) so an in-progress shake whose start-cue we just didn't SEE isn't killed
+# early (that early kill is what left us trying to walk mid-shake -> locked up).
+SHAKE_BAIL_MS      = 750
+# SMART BREAK-OUT: when the watchdog has recovered RECOVER_LIMIT times in a row and
+# we're still stuck, escalate -- a shake is probably ACTIVE and locking movement
+# (you can't walk mid-shake, but CLICKS still finish it). So click to finish it,
+# then reposition, then let normal logic resume. Only SAFE STOP if break-out also
+# fails BREAKOUT_LIMIT times.
+BREAKOUT_LIMIT     = 2    # break-outs before SAFE STOP
+BREAKOUT_SHAKE_MS  = 700  # when stuck + FULL, click this long to finish an active
+                          # shake that's locking movement
+BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets you
+                          # off the water edge if you keep landing too shallow)
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -574,6 +589,7 @@ class State:
     empty_fails = 0          # consecutive cycles the pan wouldn't empty
     shake_fails = 0          # consecutive shakes that didn't empty the pan
     land_fails = 0           # consecutive times the dig-probe couldn't find land
+    breakouts = 0            # consecutive smart break-outs (escape a stuck loop)
 
 
 def release_all():
@@ -592,6 +608,7 @@ def safe_stop(reason):
     State.empty_fails = 0
     State.shake_fails = 0
     State.land_fails = 0
+    State.breakouts = 0
     print(f"\n*** SAFE STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
     try:
         subprocess.Popen(["afplay", ALERT_SOUND])
@@ -871,7 +888,6 @@ def do_shake(det):
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
-    init_deadline = time.perf_counter() + SHAKE_INIT_MS / 1000.0
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
         mouse_tap(SHAKE_CLICK_MS)            # one shake click
@@ -884,15 +900,20 @@ def do_shake(det):
         if w_down and det.on_deposit():      # reached land -> stop gliding...
             key_up(KEY_W); w_down = False     # ...but keep clicking to finish
             on_land = True
-        if (not started and time.perf_counter() > init_deadline
-                and det.on_deposit() and det.capacity_full()):
+        # CAPACITY-based bail: only give up if the pan is STILL FULL well past a
+        # real shake's duration (no drain at all = no shake). We do NOT bail just
+        # because we didn't SEE the 'Shake' cue -- the clicks keep draining an
+        # actual shake, which is what frees us to move again.
+        if (time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
+                and det.capacity_full()):
             bailed = True
-            break                            # clicks aren't shaking -> re-locate
+            break                            # clicks truly aren't shaking
         sleep_ms(SHAKE_CLICK_GAP_MS)
     if w_down:
         key_up(KEY_W)
     if emptied:
         State.shake_fails = 0
+        State.breakouts = 0              # healthy progress -> clear escalation
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
@@ -934,6 +955,7 @@ def return_and_dig(det):
         if hit:
             wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)  # let it top off
             State.land_fails = 0
+            State.breakouts = 0          # healthy progress -> clear escalation
             log(f"    dig-probe HIT try{attempt+1} -> on land, pan filling")
             return True
         log(f"    dig-probe miss try{attempt+1} -> nudge W fwd")
@@ -973,6 +995,28 @@ def recover(det, s):
         pulse_until(KEY_W, det.capacity_full, RECOVER_BACK_MS)
 
 
+def break_out(det, s):
+    """Last-resort escape when normal recovery keeps failing on the SAME spot.
+    The usual cause is a shake that's ACTUALLY animating (so movement is locked --
+    every 'go water' reports it couldn't move). You can't walk mid-shake, but
+    CLICKS still finish it, so we click to drain it, then reposition forward to
+    get off the water edge. After this we reset the counters and let normal logic
+    try again ('do as if it was normal'). Returns True if it emptied the pan."""
+    log("    ** BREAK-OUT: finish any active shake by clicking, then reposition **")
+    if s.full:
+        end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
+        while time.perf_counter() < end and State.running:
+            mouse_tap(SHAKE_CLICK_MS)
+            if det.pan_empty():
+                log("    break-out: clicks finished the shake -> pan empty")
+                return True
+            sleep_ms(SHAKE_CLICK_GAP_MS)
+    # still stuck -> reposition forward (off the edge / onto land) for next try
+    log("    break-out: reposition W fwd")
+    key_down(KEY_W); sleep_ms(BREAKOUT_REPOS_MS); key_up(KEY_W)
+    return False
+
+
 class Supervisor:
     """Tick-based brain. Re-senses, acts, and watches for deadlock. Reset on
     every start so a fresh run can't inherit a stale stuck-count."""
@@ -985,6 +1029,7 @@ class Supervisor:
         self.recoveries = 0
         State.shake_fails = 0
         State.land_fails = 0
+        State.breakouts = 0
 
     def tick(self, det):
         s = sense_stable(det)
@@ -1004,15 +1049,29 @@ class Supervisor:
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"-> {plan_label(s)}")
             act(det, s)
-        else:
+        elif self.recoveries < RECOVER_LIMIT:
             self.recoveries += 1
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"** STUCK x{self.same}, RECOVER #{self.recoveries} **")
-            if self.recoveries > RECOVER_LIMIT:
-                safe_stop(f"deadlocked at {s.where}/{s.contents}")
-                return
             recover(det, s)
             self.same = 0
+        else:
+            # recovered RECOVER_LIMIT times and still stuck -> SMART BREAK-OUT:
+            # finish any active (movement-locking) shake by clicking + reposition,
+            # then reset and let normal logic try again. SAFE STOP only if the
+            # break-out itself keeps failing.
+            State.breakouts += 1
+            log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
+                f"** BREAK-OUT #{State.breakouts} (recovery loop) **")
+            if State.breakouts > BREAKOUT_LIMIT:
+                safe_stop(f"stuck at {s.where}/{s.contents} after break-outs")
+                return
+            if break_out(det, s):
+                State.breakouts = 0          # progress -> clear the escalation
+            # reset the watchdog so normal logic gets a fresh attempt next tick
+            self.same = 0
+            self.recoveries = 0
+            self.last_sig = None
 
 
 def loop_step(detector):
