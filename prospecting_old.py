@@ -249,6 +249,9 @@ DIG_PROBE_MS        = 320 # wait this long for a probe-dig to register before
 LAND_PROBE_NUDGE_MS = 90  # forward W nudge between failed probe-digs
 PROBE_GAP_MS        = 80  # settle after a forward nudge, before the next dig
                           # (stops it clicking W twice in a row too fast)
+PRE_DIG_SETTLE_MS   = 60  # VERY slight settle before the FIRST dig after a shake,
+                          # so the dig doesn't fire slightly early (miss -> needless
+                          # recovery nudge). Small; raise a touch if it still misses.
 POST_SHAKE_SETTLE_MS = 150 # pause after the pan empties (let the shake animation
                           # + momentum settle you onto land) BEFORE the dig-probe.
                           # Without it the first dig often fires mid-glide and
@@ -922,6 +925,8 @@ def return_and_dig(det):
     for attempt in range(LAND_DIG_TRIES):
         if not State.running:
             return False
+        if attempt == 0 and PRE_DIG_SETTLE_MS > 0:
+            sleep_ms(PRE_DIG_SETTLE_MS)      # let the landing settle before dig #1
         baseline = det.cap_start_rgb()
         dig_once(det)
         hit = wait_until(lambda: det.cap_changed(baseline) or det.capacity_full(),
