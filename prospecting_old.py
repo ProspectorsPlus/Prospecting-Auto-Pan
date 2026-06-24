@@ -171,7 +171,11 @@ WALK_BACK_BRAKE_MS = 70
 # the water before shaking. The cue can trigger right at the edge; shaking there
 # sometimes misses, so going a touch deeper makes the shake land reliably. This
 # is the "delay between Pan detected and shake start". Raise to go deeper.
-WATER_EXTRA_BACK_MS = 110
+WATER_EXTRA_BACK_MS = 55
+# Because we walk FARTHER back now, start the shake correspondingly LATER: a pause
+# between releasing S and the first shake click, so the W-momentum still carries
+# us onto land. Keep roughly equal to WATER_EXTRA_BACK_MS.
+SHAKE_START_DELAY_MS = 55
 WALK_BACK_MS      = 95     # hold S to back into the water (fallback / if anchor off)
 WALK_BACK_EXTRA_MS = 0     # keep holding S this long AFTER touching water (go a
                           # bit deeper); the forward move adds the same so you
@@ -859,6 +863,8 @@ def do_shake(det):
     clicking until the CAPACITY reads empty (capacity is the truth; the Shake cue
     sticks). Bails if a click never registers a shake AND we're on land + full."""
     t0 = time.perf_counter()
+    if SHAKE_START_DELAY_MS > 0:
+        sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
     w_down = False
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
