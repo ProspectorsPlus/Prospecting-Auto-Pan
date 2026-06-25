@@ -183,13 +183,8 @@ class Api:
             import Quartz
             import numpy as np
             import time as _t
-            if self._sct is None:
-                import mss
-                self._sct = mss.mss()
-                main = self._sct.monitors[1]
-                bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
-                lw = bounds.size.width
-                self._scale = main["width"] / lw if lw else 1.0
+            import mss
+            bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
             STATE = getattr(Quartz, "kCGEventSourceStateCombinedSessionState", 0)
             LBTN = getattr(Quartz, "kCGMouseButtonLeft", 0)
 
@@ -205,10 +200,21 @@ class Api:
                     return {"error": "timed out (no click)"}
                 _t.sleep(0.008)
             loc = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-            x = int(loc.x * self._scale)
-            y = int(loc.y * self._scale)
-            box = {"left": x - 3, "top": y - 3, "width": 6, "height": 6}
-            img = np.asarray(self._sct.grab(box))[:, :, :3]
+            # FRESH mss in THIS thread (mss is thread-bound). Scale points->pixels
+            # and clamp the box so an edge click can't go off-screen.
+            with mss.mss() as sct:
+                main = sct.monitors[1]
+                lw = bounds.size.width
+                scale = main["width"] / lw if lw else 1.0
+                x = int(loc.x * scale)
+                y = int(loc.y * scale)
+                vm = sct.monitors[0]
+                L, T = vm["left"], vm["top"]
+                R, B = L + vm["width"], T + vm["height"]
+                bx = min(max(x - 3, L), R - 6)
+                by = min(max(y - 3, T), B - 6)
+                img = np.asarray(sct.grab(
+                    {"left": bx, "top": by, "width": 6, "height": 6}))[:, :, :3]
             b, g, r = [int(v) for v in img.reshape(-1, 3).mean(0)]
             while down():
                 _t.sleep(0.008)

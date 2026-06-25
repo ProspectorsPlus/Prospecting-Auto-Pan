@@ -183,6 +183,7 @@ class Api:
             import ctypes
             import numpy as np
             import time as _t
+            import mss
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)
             except Exception:
@@ -190,9 +191,6 @@ class Api:
                     ctypes.windll.user32.SetProcessDPIAware()
                 except Exception:
                     pass
-            if self._sct is None:
-                import mss
-                self._sct = mss.mss()
             u = ctypes.windll.user32
             VK_LBUTTON = 0x01
 
@@ -213,8 +211,17 @@ class Api:
             pt = _P()
             u.GetCursorPos(ctypes.byref(pt))
             x, y = int(pt.x), int(pt.y)
-            box = {"left": x - 3, "top": y - 3, "width": 6, "height": 6}
-            img = np.asarray(self._sct.grab(box))[:, :, :3]
+            # IMPORTANT: make a FRESH mss in THIS thread (mss/GDI is thread-bound
+            # on Windows -- reusing one across threads gives "graphic function
+            # failed"). Clamp the box so an edge click can't go off-screen.
+            with mss.mss() as sct:
+                m = sct.monitors[0]                       # full virtual screen
+                L, T = m["left"], m["top"]
+                R, B = L + m["width"], T + m["height"]
+                bx = min(max(x - 3, L), R - 6)
+                by = min(max(y - 3, T), B - 6)
+                img = np.asarray(sct.grab(
+                    {"left": bx, "top": by, "width": 6, "height": 6}))[:, :, :3]
             b, g, r = [int(v) for v in img.reshape(-1, 3).mean(0)]
             while down():
                 _t.sleep(0.008)
