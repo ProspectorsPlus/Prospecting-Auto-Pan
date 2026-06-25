@@ -1,0 +1,9 @@
+#!/bin/bash
+# Resolve the project folder (this app lives inside it) and open the settings UI.
+DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+cd "$DIR" || exit 1
+for PY in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  [ -x "$PY" ] && exec "$PY" prospecting_ui.py
+done
+P="$(command -v python3)"; [ -n "$P" ] && exec "$P" prospecting_ui.py
+osascript -e 'display alert "Python 3 not found" message "Install Python 3 (python.org or Homebrew) to use this app."'

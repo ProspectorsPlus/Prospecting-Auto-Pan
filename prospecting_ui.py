@@ -161,6 +161,8 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  button:active{transform:translateY(1px)}
  .btn{background:var(--accent);color:#fff} .btn:hover{filter:brightness(1.08)}
  .btn2{background:#2a3340;color:#dfe5ee} .btn2:hover{background:#33404f}
+ .quit{color:#9aa3b1;text-decoration:none;font-weight:600;font-size:13px;
+   padding:9px 12px;border-radius:9px} .quit:hover{color:#ff8585;background:#2a1c1f}
  .body{flex:1 1 auto;display:flex;min-height:0}
  /* left nav */
  .side{flex:0 0 200px;background:var(--nav);border-right:1px solid var(--line);
@@ -207,6 +209,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  <div class="topbar">
    <div class="brand">⛏ Prospecting <b>Macro</b></div>
    <div class="grow"></div>
+   <a class="quit" href="/quit" title="Close the settings app">Quit</a>
    <button class="btn2" type="submit" formaction="/launch">Save &amp; Launch</button>
    <button class="btn" type="submit" formaction="/save">Save</button>
  </div>
@@ -254,6 +257,13 @@ class Handler(BaseHTTPRequestHandler):
         pass  # quiet
 
     def do_GET(self):
+        if self.path == "/quit":
+            self._send("<body style='background:#0f1115;color:#cfd5de;"
+                       "font:16px -apple-system,sans-serif;padding:48px'>"
+                       "<h2>Settings closed.</h2><p>You can close this window.</p>"
+                       "</body>")
+            threading.Timer(0.3, lambda: os._exit(0)).start()
+            return
         self._send(render())
 
     def do_POST(self):
