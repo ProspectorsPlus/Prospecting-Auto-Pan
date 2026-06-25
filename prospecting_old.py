@@ -232,17 +232,17 @@ LAND_SETTLE_MS     = 45   # after the land cue fires, hold W a touch longer to l
                           # Forward over-travel onto land is harmless; braking
                           # BACK toward the water is what caused the oscillation.
 SHAKE_POLL_MS      = 30   # poll spacing while holding the shake
-STUCK_TICKS        = 2    # identical (place, pan) reads in a row -> escalate
-                          # (lower = react/recover faster when an action fails)
+STUCK_TICKS        = 3    # identical (place, pan) reads in a row -> escalate
 RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
 SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
                           # between water/land) before SAFE STOP -- catches the
                           # case where the shake silently never works
-# Shake bail is CAPACITY-based: only give up on a shake if the pan is STILL FULL
-# after this long (no drain at all = no real shake). Longer than a real shake
-# (~550ms) so an in-progress shake whose start-cue we just didn't SEE isn't killed
-# early (that early kill is what left us trying to walk mid-shake -> locked up).
-SHAKE_BAIL_MS      = 750
+# Shake bail is CAPACITY-based: give up on a shake only if the pan is STILL
+# COMPLETELY FULL after this long. A REAL shake has already drained to PARTIAL by
+# now (so it reads not-full and is safe from this bail) -- only a shake that never
+# started stays full. So this can be fairly short to react FAST when a shake fails
+# to initiate (e.g. you clicked on land), without killing a real in-progress shake.
+SHAKE_BAIL_MS      = 500
 # SMART BREAK-OUT: when the watchdog has recovered RECOVER_LIMIT times in a row and
 # we're still stuck, escalate -- a shake is probably ACTIVE and locking movement
 # (you can't walk mid-shake, but CLICKS still finish it). So click to finish it,
@@ -259,13 +259,12 @@ BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets 
 # dirt, so the CAPACITY bar tells us if we're on land. Hit -> on land (pan now
 # filling). Miss -> nudge forward and retry.
 LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
-DIG_PROBE_MS        = 260 # wait this long for a probe-dig to register before
-                          # calling it a MISS, THEN react fast. Don't go much
-                          # lower or a slow-registering (but working) dig gets a
-                          # false miss -> needless extra W nudge.
+DIG_PROBE_MS        = 320 # wait this long for a probe-dig to register before
+                          # calling it a MISS (a working dig sometimes fills the
+                          # bar slowly -- too short and we nudge again too soon)
 LAND_PROBE_NUDGE_MS = 90  # forward W nudge between failed probe-digs
-PROBE_GAP_MS        = 35  # settle after a forward nudge, before the next dig
-                          # (lower = retry the dig faster after a miss)
+PROBE_GAP_MS        = 80  # settle after a forward nudge, before the next dig
+                          # (stops it clicking W twice in a row too fast)
 PRE_DIG_SETTLE_MS   = 60  # VERY slight settle before the FIRST dig after a shake,
                           # so the dig doesn't fire slightly early (miss -> needless
                           # recovery nudge). Small; raise a touch if it still misses.
