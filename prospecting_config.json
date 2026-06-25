@@ -1,7 +1,7 @@
 {
   "PERFECT": false,
-  "DIG_CLICK_MS": 15,
-  "MAX_DIGS_TO_FILL": 1,
+  "DIG_CLICK_MS": 65,
+  "MAX_DIGS_TO_FILL": 8,
   "DIG_FILL_MS": 250,
   "PRE_DIG_SETTLE_MS": 60,
   "PAN_BACK_MAX_MS": 200,
@@ -27,5 +27,21 @@
   "BREAKOUT_SHAKE_MS": 700,
   "BREAKOUT_REPOS_MS": 160,
   "BURST_ON_MS": 11,
-  "BURST_OFF_MS": 1
+  "BURST_OFF_MS": 1,
+  "RELICS": [
+    {
+      "name": "Solar Magnifier",
+      "minutes": 1,
+      "slot": 5,
+      "clicks": 2
+    },
+    {
+      "name": "Infernal Idol",
+      "minutes": 15,
+      "slot": 6,
+      "clicks": 2
+    }
+  ],
+  "RELICS_ENABLED": false,
+  "DIG_SPEED": 0
 }
