@@ -43,5 +43,9 @@
       "clicks": 2
     }
   ],
-  "RELICS_ENABLED": true
+  "RELICS_ENABLED": true,
+  "WEBHOOK_ENABLED": true,
+  "WEBHOOK_URL": "http://159.203.22.31:3001/notify",
+  "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
+  "WEBHOOK_STATS_MIN": 60
 }
