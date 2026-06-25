@@ -15,6 +15,7 @@ Terminal running the macro. Close the terminal (Ctrl+C) when done.
 
 import os
 import json
+import shlex
 import socket
 import subprocess
 import threading
@@ -187,15 +188,48 @@ class Handler(BaseHTTPRequestHandler):
             json.dump(data, f, indent=2)
         msg = f"Saved {len(data)} settings ✓"
         if self.path == "/launch":
-            cmd = f'cd {json.dumps(HERE)} && python3 {json.dumps(MACRO_FILE)}'
-            script = (f'tell application "Terminal" to do script "{cmd}"\n'
-                      'tell application "Terminal" to activate')
             try:
-                subprocess.run(["osascript", "-e", script], check=True)
+                launch_macro()
                 msg += " — launched in Terminal (press Ctrl+K to start)"
             except Exception as e:
                 msg += f" — couldn't auto-launch ({e}); run python3 prospecting_old.py"
         self._send(render(msg))
+
+
+def launch_macro():
+    """Open the macro in Terminal WITHOUT needing AppleScript automation perms:
+    write a .command file and `open` it (double-click-equivalent)."""
+    launcher = os.path.join(HERE, "_run_macro.command")
+    with open(launcher, "w") as f:
+        f.write("#!/bin/bash\n"
+                f"cd {shlex.quote(HERE)}\n"
+                f"exec python3 {shlex.quote(MACRO_FILE)}\n")
+    os.chmod(launcher, 0o755)
+    subprocess.run(["open", launcher], check=True)
+
+
+# Chromium-family browsers can open a chromeless "app" window with --app=URL,
+# so the settings panel looks like a standalone popup, not a browser tab.
+APP_BROWSERS = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+]
+
+
+def open_window(url):
+    """Open as an app-style popup window if a Chromium browser exists; else fall
+    back to a normal browser tab."""
+    for path in APP_BROWSERS:
+        if os.path.exists(path):
+            try:
+                subprocess.Popen([path, f"--app={url}", "--window-size=780,940"])
+                return "app window"
+            except Exception:
+                pass
+    webbrowser.open(url)
+    return "browser tab"
 
 
 def free_port(start=8765):
@@ -212,8 +246,8 @@ if __name__ == "__main__":
     port = free_port()
     url = f"http://127.0.0.1:{port}/"
     srv = HTTPServer(("127.0.0.1", port), Handler)
-    print(f"Prospecting settings UI -> {url}\nClose with Ctrl+C when done.")
-    threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    threading.Timer(0.5, lambda: print(f"Opened as {open_window(url)}.")).start()
+    print(f"Prospecting settings UI -> {url}\nClose this window / Ctrl+C when done.")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
