@@ -54,9 +54,14 @@ from collections import namedtuple
 #   many digs fill the pan (e.g. 1 on this build) -- skips capacity detection.
 MANUAL_DIG        = True
 DIGS_PER_CYCLE    = 1               # how many digs before emptying (MANUAL_DIG)
-# PERFECT: if True, TIME the dig to land on green (white-line color detection).
+# PERFECT: if True, TIME each dig to land on GREEN (release when the white skill-
+#   bar line crosses the green pixel) for a perfect dig. v2 keeps this ON so digs
+#   are perfect on builds that need MORE THAN ONE dig to fill the pan.
 #   If False, the dig is just a single quick click (no timing) -- DIG_CLICK_MS.
-PERFECT           = False
+PERFECT           = True
+# v2: dig DYNAMICALLY until the capacity bar reads FULL (don't assume 1 dig). This
+# is the max digs we'll do to fill before proceeding anyway (safety cap).
+MAX_DIGS_TO_FILL  = 8
 DIG_CLICK_MS      = 15              # quick-click length when PERFECT = False
 
 # Pixel to watch for the white line in "color" mode (= calibrated green pixel).
@@ -70,8 +75,11 @@ WHITE_MIN         = 175             # r,g,b must all be >= this
 #   comes FROM (down the bar), OR leave RELEASE_DELAY_MS at 0.
 #   If you UNDERSHOOT (release too early): add a few ms here.
 RELEASE_DELAY_MS  = 0
-DIG_MAX_MS        = 4000            # safety: release after this even if the
-                                   # white line is never detected
+DIG_MAX_MS        = 1500            # per-dig cap: release after this even if green
+                                   # was never seen. Long enough for the line to
+                                   # reach green on land; also caps how long a dig
+                                   # that landed in WATER (no bar) holds before we
+                                   # detect the miss and recover.
 BETWEEN_DIGS_MS   = 120            # pause between digs when the pan is NOT full
 CAP_CHECK_MS      = 30             # tiny settle after a dig before checking full
                                    # (lower = start the walk-back sooner)
@@ -938,12 +946,31 @@ def go_land(det):
         f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
+def fill_to_full(det):
+    """Once we're confirmed on land, dig until the capacity bar reads FULL. We do
+    NOT assume a dig count -- we watch the bar, so builds that need 2, 3, ... digs
+    all work. The probe already did dig #1; we wait for it to fill, then top up
+    with more PERFECT digs as needed (capped by MAX_DIGS_TO_FILL)."""
+    digs = 1                                  # the probe dig already happened
+    for i in range(MAX_DIGS_TO_FILL):
+        if det.capacity_full():
+            log(f"    filled in {digs} dig(s)")
+            return True
+        if not State.running:
+            return False
+        if i > 0:
+            dig_once(det)                     # another PERFECT dig (release on green)
+            digs += 1
+        wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)
+    log(f"    fill: still not full after {digs} digs -> proceed anyway")
+    return det.capacity_full()
+
+
 def return_and_dig(det):
     """Post-shake landing WITHOUT trusting the cue (it can stick on 'Shake').
     We trust the W-momentum put us near land and DIG as a probe -- a dig only
-    fills on dirt, so the CAPACITY tells us the truth. Hit = on land, pan filling.
-    Miss = nudge forward, retry. Gives up (SAFE STOP) only after it truly can't
-    find land, so it never digs forever in the water."""
+    fills on dirt, so the CAPACITY tells us the truth. Hit = on land -> then fill
+    the pan with as many PERFECT digs as it takes. Miss = nudge forward, retry."""
     for attempt in range(LAND_DIG_TRIES):
         if not State.running:
             return False
@@ -954,10 +981,10 @@ def return_and_dig(det):
         hit = wait_until(lambda: det.cap_changed(baseline) or det.capacity_full(),
                          DIG_PROBE_MS, confirm=1)
         if hit:
-            wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)  # let it top off
             State.land_fails = 0
             State.breakouts = 0          # healthy progress -> clear escalation
-            log(f"    dig-probe HIT try{attempt+1} -> on land, pan filling")
+            log(f"    dig-probe HIT try{attempt+1} -> on land, filling")
+            fill_to_full(det)            # dig until FULL (dynamic # of digs)
             return True
         log(f"    dig-probe miss try{attempt+1} -> nudge W fwd")
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
