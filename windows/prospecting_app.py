@@ -13,14 +13,67 @@ If pywebview isn't installed it falls back to the browser settings UI.
 import os
 import sys
 import json
+import shutil
 import signal
 import threading
 import subprocess
+import webbrowser
+import urllib.request
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(HERE, "prospecting_config.json")
-BUILDS_FILE = os.path.join(HERE, "prospecting_builds.json")
-MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
+# ---- version + update channel -------------------------------------------------
+# VERSION is compared against the "version" field in the JSON the app downloads
+# from UPDATE_MANIFEST_URL. If the site reports a newer version the app shows an
+# "Update available" banner that opens DOWNLOAD_PAGE_URL in the browser.
+# >>> EDIT THESE THREE LINES to point at your website <<<
+VERSION             = "1.0.0"
+UPDATE_MANIFEST_URL = "https://YOUR-SITE.example/prospectors/version.json"
+DOWNLOAD_PAGE_URL   = "https://YOUR-SITE.example/prospectors/"
+
+FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
+HERE = (os.path.dirname(sys.executable) if FROZEN
+        else os.path.dirname(os.path.abspath(__file__)))
+
+
+def _data_dir():
+    """Where read/write files (config, builds) live. When frozen we can't write
+    next to the .exe (Program Files is read-only for normal users), so use
+    %LOCALAPPDATA%\\Prospectors Plus. In dev it's just the script folder."""
+    if FROZEN:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        d = os.path.join(base, "Prospectors Plus")
+    else:
+        d = os.path.dirname(os.path.abspath(__file__))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _resource(name):
+    """Path to a bundled read-only resource (works frozen via _MEIPASS)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+DATA_DIR = _data_dir()
+CONFIG_FILE = os.path.join(DATA_DIR, "prospecting_config.json")
+BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
+MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prospecting_old.py")
+
+# First run when frozen: seed the writable config from the bundled default so the
+# baked-in webhook URL/secret are present without the user touching anything.
+if FROZEN and not os.path.exists(CONFIG_FILE):
+    try:
+        shutil.copyfile(_resource("prospecting_config.json"), CONFIG_FILE)
+    except OSError:
+        pass
+
+
+def _ver_tuple(s):
+    """'1.2.3' -> (1,2,3); tolerant of junk so a bad manifest never crashes."""
+    out = []
+    for part in str(s).strip().split("."):
+        num = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(num) if num else 0)
+    return tuple(out) or (0,)
 
 # reuse the settings schema + help from the browser UI so they never drift apart.
 # Tolerant import: a missing name (e.g. an older prospecting_ui.py without the
@@ -117,6 +170,35 @@ class Api:
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels}
+
+    # ---- updates ----
+    def app_version(self):
+        return VERSION
+
+    def check_update(self):
+        """Fetch the version manifest from the website and compare. Never raises
+        -- if offline or the URL isn't set yet, just reports no update."""
+        try:
+            req = urllib.request.Request(UPDATE_MANIFEST_URL,
+                                         headers={"User-Agent": "ProspectorsPlus"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            latest = str(data.get("version", "")).strip()
+            if latest and _ver_tuple(latest) > _ver_tuple(VERSION):
+                return {"update": True, "version": latest,
+                        "current": VERSION,
+                        "url": data.get("url") or DOWNLOAD_PAGE_URL,
+                        "notes": data.get("notes", "")}
+            return {"update": False, "version": VERSION}
+        except Exception as e:
+            return {"update": False, "error": str(e)}
+
+    def open_external(self, url):
+        try:
+            webbrowser.open(url or DOWNLOAD_PAGE_URL)
+            return True
+        except Exception:
+            return False
 
     def save_pixels(self, pixels):
         """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
@@ -270,9 +352,14 @@ class Api:
             self.save_relics(relics, enabled)
         if self.proc is not None:
             return "already running"
-        py = sys.executable or "python"
+        # When frozen there is no python.exe to run the .py macro, so re-launch
+        # THIS exe with --run-macro (handled in main()). In dev, run the script.
+        if FROZEN:
+            cmd = [sys.executable, "--run-macro"]
+        else:
+            cmd = [sys.executable or "python", MACRO_FILE]
         self.proc = subprocess.Popen(
-            [py, MACRO_FILE], cwd=HERE, stdout=subprocess.PIPE,
+            cmd, cwd=DATA_DIR, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
@@ -521,7 +608,19 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .ok{position:fixed;right:16px;bottom:14px;background:#10301f;color:#7fe6b5;
   border:1px solid #1f6b4a;border-radius:9px;padding:8px 12px;font-size:13px;opacity:0;
   transition:opacity .2s} .ok.show{opacity:1}
+ .upd{display:none;align-items:center;gap:10px;padding:8px 14px;
+   background:linear-gradient(90deg,#1f6feb,#388bfd);color:#fff;font-size:13px}
+ .upd b{font-weight:700}
+ .upd .grow{flex:1}
+ .upd button{background:#fff;color:#0b3a82;border:0;border-radius:6px;
+   padding:5px 12px;font-weight:700;cursor:pointer}
+ .upd .x{background:transparent;color:#cfe0ff;font-weight:400;padding:5px 8px}
 </style></head><body>
+ <div class="upd" id="upd">
+   <span id="updtext"></span><span class="grow"></span>
+   <button id="upddl">Download update</button>
+   <button class="x" id="updx">Later</button>
+ </div>
  <div class="topbar">
    <div class="brand">⛏ Prospectors <b>Plus</b></div>
    <div class="grow"></div>
@@ -644,9 +743,20 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    dh=document.querySelector('[data-key="DIG_CLICK_MS"]');
    if(ds&&dh)ds.addEventListener('input',()=>{const s=parseFloat(ds.value);
      if(s>0)dh.value=Math.round(55000/s);});})();
+ // update check (silent; shows a banner only if a newer version exists)
+ let _updUrl='';
+ async function checkUpdate(){try{const u=await window.pywebview.api.check_update();
+   if(u&&u.update){_updUrl=u.url;
+     $('#updtext').innerHTML='<b>Update available</b> — v'+u.version+
+       (u.notes?(' · '+u.notes):'')+' (you have v'+u.current+')';
+     $('#upd').style.display='flex';}}catch(e){}}
+ (function(){const dl=$('#upddl'),x=$('#updx');
+   if(dl)dl.onclick=()=>window.pywebview.api.open_external(_updUrl);
+   if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});}
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});
+   checkUpdate();}
  window.addEventListener('pywebviewready',init);
  if(window.pywebview&&window.pywebview.api)init();
 </script></body></html>"""
@@ -654,6 +764,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
 
 def main():
     global _window
+    # Frozen macro mode: the bundled exe re-invokes itself with --run-macro to
+    # run the actual macro in-process (there is no separate python.exe).
+    if FROZEN and "--run-macro" in sys.argv:
+        import runpy
+        runpy.run_path(_resource("prospecting_old.py"), run_name="__main__")
+        return
     try:
         import webview
     except ImportError:

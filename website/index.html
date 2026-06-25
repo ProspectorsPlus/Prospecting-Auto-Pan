@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prospectors Plus — auto-pan macro for Prospecting</title>
+<style>
+  :root{
+    --bg:#0c0f14; --panel:#141a22; --line:#222c38; --txt:#e8eef6;
+    --mut:#9fb0c3; --accent:#388bfd; --accent2:#1f6feb; --gold:#f5b942;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    background:radial-gradient(1200px 600px at 50% -10%,#16202c,var(--bg));
+    color:var(--txt);line-height:1.55}
+  .wrap{max-width:880px;margin:0 auto;padding:0 22px}
+  header{text-align:center;padding:70px 0 30px}
+  .logo{font-size:40px;font-weight:800;letter-spacing:-.5px}
+  .logo b{color:var(--gold)}
+  .tag{color:var(--mut);font-size:18px;margin-top:10px}
+  .ver{display:inline-block;margin-top:14px;font-size:13px;color:var(--mut);
+    border:1px solid var(--line);border-radius:999px;padding:4px 12px}
+  .cta{display:flex;flex-direction:column;align-items:center;gap:10px;margin:34px 0 10px}
+  .dl{display:inline-flex;align-items:center;gap:10px;text-decoration:none;
+    background:linear-gradient(90deg,var(--accent2),var(--accent));color:#fff;
+    font-weight:700;font-size:18px;padding:15px 30px;border-radius:12px;
+    box-shadow:0 8px 30px rgba(56,139,253,.35);transition:transform .08s}
+  .dl:hover{transform:translateY(-1px)}
+  .sub{color:var(--mut);font-size:13px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:40px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px}
+  .card h3{margin:0 0 6px;font-size:16px}
+  .card p{margin:0;color:var(--mut);font-size:14px}
+  .steps{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    padding:22px 26px;margin:30px 0}
+  .steps h2{margin-top:0;font-size:18px}
+  .steps ol{margin:0;padding-left:20px;color:var(--mut)}
+  .steps li{margin:8px 0}
+  .note{font-size:13px;color:var(--mut);background:#10161e;border:1px solid var(--line);
+    border-radius:10px;padding:12px 14px;margin-top:16px}
+  footer{text-align:center;color:#5d6b7d;font-size:13px;padding:40px 0}
+  @media(max-width:640px){.grid{grid-template-columns:1fr}.logo{font-size:32px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">⛏ Prospectors <b>Plus</b></div>
+    <div class="tag">A clean, tunable auto-pan helper for Prospecting.</div>
+    <div class="ver">Latest: <span id="ver">v1.0.0</span></div>
+  </header>
+
+  <div class="cta">
+    <!-- Point this at your installer file once uploaded -->
+    <a class="dl" id="dlbtn" href="Prospectors%20Plus%20Setup.exe" download>⬇ Download for Windows</a>
+    <div class="sub">Windows 10/11 · free · one-click installer</div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><h3>One-click install</h3><p>No Python, no terminal. Run the installer, get a desktop shortcut, done.</p></div>
+    <div class="card"><h3>Discord DMs</h3><p>Get pinged on start, stop, and live session stats straight to your DMs.</p></div>
+    <div class="card"><h3>Tunable builds</h3><p>Save full presets (e.g. a shards build) and switch between them in one click.</p></div>
+    <div class="card"><h3>Auto-updates</h3><p>The app tells you when a new version is out and links you straight here.</p></div>
+  </div>
+
+  <div class="steps">
+    <h2>How to install</h2>
+    <ol>
+      <li>Click <b>Download for Windows</b> above.</li>
+      <li>Open the downloaded <b>Prospectors Plus Setup.exe</b>.</li>
+      <li>If Windows shows a blue "Windows protected your PC" box, click <b>More info → Run anyway</b> (this is normal for new apps).</li>
+      <li>Follow the installer, then launch from your desktop or Start menu.</li>
+    </ol>
+    <div class="note">Macros are allowed in Prospecting. This tool only automates clicks and key presses — it does not inject code or modify the game.</div>
+  </div>
+</div>
+
+<footer>Prospectors Plus · not affiliated with the game developers</footer>
+
+<script>
+  // Keep the version label in sync with version.json
+  fetch('version.json?_='+Date.now()).then(r=>r.json()).then(d=>{
+    if(d&&d.version) document.getElementById('ver').textContent='v'+d.version;
+  }).catch(()=>{});
+</script>
+</body>
+</html>

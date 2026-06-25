@@ -47,8 +47,18 @@ from collections import namedtuple
 
 # Settings written by the UI (prospecting_ui.py). Loaded at startup to override
 # the defaults below, so you can tune everything without editing this file.
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "prospecting_config.json")
+# When bundled by PyInstaller (sys.frozen) the config lives in a writable
+# per-user folder, matching prospecting_app.py's data dir.
+if getattr(sys, "frozen", False):
+    _DATA_DIR = os.path.join(os.environ.get("LOCALAPPDATA")
+                             or os.path.expanduser("~"), "Prospectors Plus")
+else:
+    _DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+try:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+except OSError:
+    pass
+CONFIG_FILE = os.path.join(_DATA_DIR, "prospecting_config.json")
 
 
 def load_config():
@@ -1584,8 +1594,7 @@ def log_calibration():
         Esc    = stop & save
     Hand me the CSV and I'll read off DIRT_RGB / WET_RGB and the text bands."""
     import os
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "prospecting_calib_log.csv")
+    path = os.path.join(_DATA_DIR, "prospecting_calib_log.csv")
     label = {"v": "?"}
     stop = {"v": False}
     LABELS = {0x31: "DIRT", 0x32: "LAVA", 0x33: "SHAKE", 0x34: "DIG"}  # vk 1..4

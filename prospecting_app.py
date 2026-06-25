@@ -16,11 +16,27 @@ import json
 import signal
 import threading
 import subprocess
+import webbrowser
+import urllib.request
+
+# ---- version + update channel (compared to the website's version.json) -------
+# >>> EDIT THESE THREE LINES to point at your website <<<
+VERSION             = "1.0.0"
+UPDATE_MANIFEST_URL = "https://YOUR-SITE.example/prospectors/version.json"
+DOWNLOAD_PAGE_URL   = "https://YOUR-SITE.example/prospectors/"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(HERE, "prospecting_config.json")
 BUILDS_FILE = os.path.join(HERE, "prospecting_builds.json")
 MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
+
+
+def _ver_tuple(s):
+    out = []
+    for part in str(s).strip().split("."):
+        num = "".join(ch for ch in part if ch.isdigit())
+        out.append(int(num) if num else 0)
+    return tuple(out) or (0,)
 
 # reuse the settings schema + help from the browser UI so they never drift apart.
 # Tolerant import: a missing name (e.g. an older prospecting_ui.py without the
@@ -125,6 +141,32 @@ class Api:
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels}
+
+    # ---- updates ----
+    def app_version(self):
+        return VERSION
+
+    def check_update(self):
+        try:
+            req = urllib.request.Request(UPDATE_MANIFEST_URL,
+                                         headers={"User-Agent": "ProspectorsPlus"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            latest = str(data.get("version", "")).strip()
+            if latest and _ver_tuple(latest) > _ver_tuple(VERSION):
+                return {"update": True, "version": latest, "current": VERSION,
+                        "url": data.get("url") or DOWNLOAD_PAGE_URL,
+                        "notes": data.get("notes", "")}
+            return {"update": False, "version": VERSION}
+        except Exception as e:
+            return {"update": False, "error": str(e)}
+
+    def open_external(self, url):
+        try:
+            webbrowser.open(url or DOWNLOAD_PAGE_URL)
+            return True
+        except Exception:
+            return False
 
     def save_pixels(self, pixels):
         """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
@@ -520,7 +562,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .ok{position:fixed;right:16px;bottom:14px;background:#10301f;color:#7fe6b5;
   border:1px solid #1f6b4a;border-radius:9px;padding:8px 12px;font-size:13px;opacity:0;
   transition:opacity .2s} .ok.show{opacity:1}
+ .upd{display:none;align-items:center;gap:10px;padding:8px 14px;
+   background:linear-gradient(90deg,#1f6feb,#388bfd);color:#fff;font-size:13px}
+ .upd b{font-weight:700} .upd .grow{flex:1}
+ .upd button{background:#fff;color:#0b3a82;border:0;border-radius:6px;
+   padding:5px 12px;font-weight:700;cursor:pointer}
+ .upd .x{background:transparent;color:#cfe0ff;font-weight:400;padding:5px 8px}
 </style></head><body>
+ <div class="upd" id="upd">
+   <span id="updtext"></span><span class="grow"></span>
+   <button id="upddl">Download update</button>
+   <button class="x" id="updx">Later</button>
+ </div>
  <div class="topbar">
    <div class="brand">⛏ Prospectors <b>Plus</b></div>
    <div class="grow"></div>
@@ -643,9 +696,19 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    dh=document.querySelector('[data-key="DIG_CLICK_MS"]');
    if(ds&&dh)ds.addEventListener('input',()=>{const s=parseFloat(ds.value);
      if(s>0)dh.value=Math.round(55000/s);});})();
+ let _updUrl='';
+ async function checkUpdate(){try{const u=await window.pywebview.api.check_update();
+   if(u&&u.update){_updUrl=u.url;
+     $('#updtext').innerHTML='<b>Update available</b> — v'+u.version+
+       (u.notes?(' · '+u.notes):'')+' (you have v'+u.current+')';
+     $('#upd').style.display='flex';}}catch(e){}}
+ (function(){const dl=$('#upddl'),x=$('#updx');
+   if(dl)dl.onclick=()=>window.pywebview.api.open_external(_updUrl);
+   if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});}
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});
+   checkUpdate();}
  window.addEventListener('pywebviewready',init);
  if(window.pywebview&&window.pywebview.api)init();
 </script></body></html>"""
