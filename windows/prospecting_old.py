@@ -357,6 +357,7 @@ RELIC_PRE_MS       = 120   # settle after releasing movement, before switching s
 # structured fields ("event","user","stats") so a custom bot can DM people.
 WEBHOOK_ENABLED    = False
 WEBHOOK_URL        = ""     # Discord webhook URL or your bot's endpoint
+WEBHOOK_SECRET     = ""     # shared secret sent as x-macro-secret (bot auth)
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
 
@@ -833,9 +834,12 @@ def post_webhook(event, message, stats=None):
 
     def _send():
         try:
+            headers = {"Content-Type": "application/json"}
+            if WEBHOOK_SECRET:
+                headers["x-macro-secret"] = WEBHOOK_SECRET
             req = urllib.request.Request(
                 WEBHOOK_URL, data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"})
+                headers=headers)
             urllib.request.urlopen(req, timeout=8)
         except Exception as e:
             print(f"[webhook] failed: {e}")

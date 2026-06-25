@@ -72,10 +72,9 @@ SECTIONS = [
         ("BURST_OFF_MS",       "Tap release per pulse (ms)",             "int", 1),
     ]),
     ("Notifications", [
-        ("WEBHOOK_ENABLED",    "Send Discord notifications",             "bool", False),
-        ("WEBHOOK_URL",        "Webhook / bot URL",                      "str", ""),
-        ("WEBHOOK_USER",       "Your name or ID (for bot DMs)",          "str", ""),
-        ("WEBHOOK_STATS_MIN",  "Stats update every N min (0 = off)",     "int", 60),
+        ("WEBHOOK_ENABLED",    "DM me on Discord (start / stop / stats)", "bool", False),
+        ("WEBHOOK_USER",       "Your Discord username",                   "str", ""),
+        ("WEBHOOK_STATS_MIN",  "Stats DM every N min (0 = off)",          "int", 60),
     ]),
     ("Auto-stop", [
         ("AUTOSTOP_ENABLED",   "Auto-stop after a set time",             "bool", False),
@@ -108,7 +107,8 @@ SECTION_HINT = {
     "Return to land (dig-probe)": "Finding land after a shake by test-digging.",
     "Recovery / safety": "What happens when something goes wrong.",
     "Recovery movement (jitter taps)": "Tiny tap timing used only during recovery.",
-    "Notifications": "Ping a Discord webhook / your bot on start, stop and stats.",
+    "Notifications": "Get DMs from the Prospectors bot on start, stop and stats. "
+                     "Just enter your Discord username.",
     "Auto-stop": "Automatically stop the macro after a set time.",
     "Window": "Make calibration survive the Roblox window being moved.",
 }
@@ -179,13 +179,11 @@ HELP = {
     "BREAKOUT_REPOS_MS": "Forward reposition nudge during a break-out.",
     "BURST_ON_MS": "Recovery taps: how long each tap holds the key.",
     "BURST_OFF_MS": "Recovery taps: how long each tap releases before re-checking.",
-    "WEBHOOK_ENABLED": "Send a Discord notification on start, stop, safe-stop, "
-                       "auto-stop, and periodic stats.",
-    "WEBHOOK_URL": "A Discord webhook URL (Channel Settings → Integrations → "
-                   "Webhooks) OR your own bot's endpoint. The macro POSTs JSON "
-                   "with content/event/user/stats.",
-    "WEBHOOK_USER": "A name or ID sent in the payload so your bot knows who to DM.",
-    "WEBHOOK_STATS_MIN": "How often to send a stats update while running (0 = off).",
+    "WEBHOOK_ENABLED": "Get a Discord DM from the Prospectors bot on start, stop, "
+                       "safe-stop, auto-stop, bag-full, and periodic stats.",
+    "WEBHOOK_USER": "Your exact Discord username (the bot DMs this server member). "
+                    "You must be in the server and have DMs open.",
+    "WEBHOOK_STATS_MIN": "How often to DM a stats update while running (0 = off).",
     "AUTOSTOP_ENABLED": "Automatically stop the macro after AUTOSTOP minutes.",
     "AUTOSTOP_MINUTES": "How long to run before auto-stopping.",
     "STOP_AFTER_PANS": "Stop after this many pans emptied — a simple guard so it "
