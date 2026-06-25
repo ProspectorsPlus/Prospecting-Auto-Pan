@@ -62,6 +62,14 @@ def load_config():
         if k in g and not callable(g[k]):
             g[k] = v
             applied += 1
+    # pixel coords may arrive as [x, y] lists from the calibrator -> tuples
+    for pk in ("CAP_FULL_PIXEL", "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX",
+               "DIG_TRIGGER_PIXEL", "TERRAIN_PIXEL"):
+        if isinstance(g.get(pk), list):
+            g[pk] = tuple(g[pk])
+    # CAP_START_PIXEL is DERIVED -> recompute after any calibration change
+    g["CAP_START_PIXEL"] = (g["CAP_FULL_PIXEL"][0] - g["CAP_BAR_WIDTH"] + 12,
+                            g["CAP_FULL_PIXEL"][1])
     print(f"[config] applied {applied} setting(s) from "
           f"{os.path.basename(CONFIG_FILE)}")
 

@@ -161,6 +161,32 @@ HELP = {
     "BURST_OFF_MS": "Recovery taps: how long each tap releases before re-checking.",
 }
 
+# Calibratable on-screen pixels: (key, label, description, default [x, y]).
+# Defaults are the original values -- shown so you know what to calibrate; only
+# the Calibrate button changes them. CAP_LEFT_PIXEL is used to compute the bar
+# width (CAP_BAR_WIDTH); the rest map straight to macro pixel settings.
+PIXEL_FIELDS = [
+    ("CAP_FULL_PIXEL", "Capacity bar — RIGHT end",
+     "The right tip of the Pan Fill bar. Gray when empty, YELLOW when the pan is full.",
+     [1120, 900]),
+    ("CAP_LEFT_PIXEL", "Capacity bar — LEFT end",
+     "The left tip of the Pan Fill bar. Used with the right end to measure the bar width.",
+     [680, 900]),
+    ("DEPOSIT_PIX", "'Collect Deposit' text",
+     "A pixel on the white 'Collect Deposit' prompt (shown when you're on land).",
+     [770, 981]),
+    ("PAN_PIX", "'Pan' text",
+     "A pixel on the white 'Pan' prompt (shown when you're in the water).",
+     [847, 981]),
+    ("SHAKE_PIX", "'Shake' text",
+     "A pixel on the white 'Shake' prompt (shown while shaking).",
+     [830, 981]),
+    ("DIG_TRIGGER_PIXEL", "Green dig pixel (Perfect mode only)",
+     "The GREEN target on the dig skill bar. Only needed if you turn Perfect dig on.",
+     [1078, 532]),
+]
+PIXEL_DEFAULTS = {k: list(d) for (k, _l, _desc, d) in PIXEL_FIELDS}
+
 
 def render(msg=""):
     saved = load_saved()
@@ -190,6 +216,23 @@ def render(msg=""):
             f'<section class="panel{active}" id="p{idx}">'
             f'<div class="phead"><h2>{title}</h2><p class="chint">{hint}</p></div>'
             f'<div class="rows">{"".join(rows)}</div></section>')
+    # Pixels tab (manual x/y entry; the native app has click-to-calibrate)
+    navs.append('<button type="button" class="tab" data-tab="pix">'
+                '<span class="ti">🎯</span><span>Pixels</span></button>')
+    prows = []
+    for key, label, desc, default in PIXEL_FIELDS:
+        xy = saved.get(key, default)
+        prows.append(
+            f'<label class="row"><span class="lbl">{label}'
+            f'<span class="qm" data-tip="{desc.replace(chr(34), "&quot;")}">?</span></span>'
+            f'<input type="number" name="PIX_{key}_x" data-type="pix" value="{xy[0]}" '
+            f'style="width:78px"> <input type="number" name="PIX_{key}_y" data-type="pix" '
+            f'value="{xy[1]}" style="width:78px"></label>')
+    panels.append(
+        '<section class="panel" id="ppix"><div class="phead"><h2>Pixels</h2>'
+        '<p class="chint">On-screen coordinates the macro reads (x, y). The desktop '
+        'app lets you click-to-calibrate these; here you can type them.</p></div>'
+        f'<div class="rows">{"".join(prows)}</div></section>')
     banner = f'<div class="ok">{msg}</div>' if msg else ""
     return (PAGE.replace("{{NAV}}", "".join(navs))
                 .replace("{{PANELS}}", "".join(panels))
@@ -347,17 +390,30 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(n).decode("utf-8")
         form = urllib.parse.parse_qs(raw, keep_blank_values=True)
-        data = {}
+        cur = load_saved()                       # MERGE (preserve relics/pixels)
         for key, typ in TYPES.items():
             if typ == "bool":
-                data[key] = key in form          # checkbox only sent when checked
+                cur[key] = key in form           # checkbox only sent when checked
             else:
                 try:
-                    data[key] = int(form.get(key, [DEFAULTS[key]])[0])
+                    cur[key] = int(form.get(key, [cur.get(key, DEFAULTS[key])])[0])
                 except (ValueError, IndexError):
-                    data[key] = DEFAULTS[key]
+                    cur[key] = DEFAULTS[key]
+        # pixel coords (PIX_<KEY>_x / _y)
+        for pkey, _l, _d, default in PIXEL_FIELDS:
+            try:
+                px = int(form.get(f"PIX_{pkey}_x", [default[0]])[0])
+                py = int(form.get(f"PIX_{pkey}_y", [default[1]])[0])
+                cur[pkey] = [px, py]
+            except (ValueError, IndexError):
+                pass
+        if "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
+            w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
+            if w > 20:
+                cur["CAP_BAR_WIDTH"] = w
         with open(CONFIG_FILE, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(cur, f, indent=2)
+        data = cur
         msg = f"Saved {len(data)} settings ✓"
         if self.path == "/launch":
             try:

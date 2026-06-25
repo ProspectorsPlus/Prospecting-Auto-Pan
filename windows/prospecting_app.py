@@ -25,12 +25,15 @@ MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
 # reuse the settings schema + help from the browser UI so they never drift apart
 try:
     from prospecting_ui import (SECTIONS, DEFAULTS, TYPES, PRESET_V1, PRESET_V2,
-                                SECTION_HINT, TAB_ICON, HELP)
+                                SECTION_HINT, TAB_ICON, HELP, PIXEL_FIELDS,
+                                PIXEL_DEFAULTS)
 except Exception:
     SECTIONS = []
     DEFAULTS = TYPES = {}
     PRESET_V1 = PRESET_V2 = {}
     SECTION_HINT = TAB_ICON = HELP = {}
+    PIXEL_FIELDS = []
+    PIXEL_DEFAULTS = {}
 
 MAX_RELIC_ROWS = 4
 DEFAULT_RELICS = [
@@ -66,10 +69,34 @@ class Api:
         merged = dict(DEFAULTS)
         merged.update({k: v for k, v in saved.items() if k in DEFAULTS})
         relics = saved.get("RELICS", DEFAULT_RELICS)
+        pixels = {}
+        for key in PIXEL_DEFAULTS:
+            pixels[key] = list(saved.get(key, PIXEL_DEFAULTS[key]))
         return {"values": merged, "running": self.proc is not None,
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
-                "builds": self.list_builds()}
+                "builds": self.list_builds(), "pixels": pixels}
+
+    def save_pixels(self, pixels):
+        """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
+        ends. Only the real macro pixel keys are written (CAP_LEFT_PIXEL is a
+        helper used just to compute the width)."""
+        cur = load_saved()
+        for key in ("CAP_FULL_PIXEL", "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX",
+                    "DIG_TRIGGER_PIXEL"):
+            if key in pixels:
+                cur[key] = [int(pixels[key][0]), int(pixels[key][1])]
+        # remember the left end (for the UI) and compute the bar width
+        if "CAP_LEFT_PIXEL" in pixels:
+            cur["CAP_LEFT_PIXEL"] = [int(pixels["CAP_LEFT_PIXEL"][0]),
+                                     int(pixels["CAP_LEFT_PIXEL"][1])]
+        if "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
+            w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
+            if w > 20:
+                cur["CAP_BAR_WIDTH"] = w
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cur, f, indent=2)
+        return "saved"
 
     def save_config(self, data):
         """Write scalar settings, PRESERVING relic keys already in the file."""
@@ -136,11 +163,14 @@ class Api:
                 json.dump(builds, f, indent=2)
         return self.list_builds()
 
-    # ---- calibrate (live pixel under the cursor) ----
-    def calibrate_sample(self):
+    # ---- calibrate: wait for the user to CLICK a spot, capture its x/y + colour
+    def calibrate_capture(self):
+        """Block until the user left-clicks somewhere on screen, then return that
+        pixel's position and colour. (Windows / ctypes.)"""
         try:
             import ctypes
             import numpy as np
+            import time as _t
             try:
                 ctypes.windll.shcore.SetProcessDpiAwareness(2)
             except Exception:
@@ -151,23 +181,32 @@ class Api:
             if self._sct is None:
                 import mss
                 self._sct = mss.mss()
+            u = ctypes.windll.user32
+            VK_LBUTTON = 0x01
+
+            def down():
+                return bool(u.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+            # let go of the click that started this, then wait for the NEXT click
+            t0 = _t.perf_counter()
+            while down() and _t.perf_counter() - t0 < 0.5:
+                _t.sleep(0.01)
+            t0 = _t.perf_counter()
+            while not down():
+                if _t.perf_counter() - t0 > 20:
+                    return {"error": "timed out (no click)"}
+                _t.sleep(0.008)
 
             class _P(ctypes.Structure):
                 _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
             pt = _P()
-            ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
-            x, y = int(pt.x), int(pt.y)        # DPI-aware -> physical pixels
+            u.GetCursorPos(ctypes.byref(pt))
+            x, y = int(pt.x), int(pt.y)
             box = {"left": x - 3, "top": y - 3, "width": 6, "height": 6}
             img = np.asarray(self._sct.grab(box))[:, :, :3]
             b, g, r = [int(v) for v in img.reshape(-1, 3).mean(0)]
-            tags = []
-            if min(r, g, b) >= 175:
-                tags.append("WHITE")
-            if r >= 140 and g >= 140 and b <= min(r, g) - 45:
-                tags.append("YELLOW")
-            if g >= 110 and (g - r) >= 40 and (g - b) >= 40:
-                tags.append("GREEN")
-            return {"x": x, "y": y, "r": r, "g": g, "b": b, "tags": " ".join(tags)}
+            while down():
+                _t.sleep(0.008)
+            return {"x": x, "y": y, "r": r, "g": g, "b": b}
         except Exception as e:
             return {"error": str(e)}
 
@@ -260,14 +299,24 @@ def build_html():
 
     # Calibrate
     nav("cal", "🎯", "Calibrate")
+    calrows = []
+    for key, label, desc, _d in PIXEL_FIELDS:
+        calrows.append(
+            f'<div class="calrow" data-pkey="{key}">'
+            f'<div class="calinfo"><div class="calname">{label}</div>'
+            f'<div class="caldesc">{desc}</div></div>'
+            f'<div class="calval"><span class="calxy" id="cv_{key}">—</span>'
+            f'<span class="calsw2" id="cs_{key}"></span></div>'
+            f'<button type="button" class="btn2 calbtn" data-pkey="{key}">Calibrate</button>'
+            f'</div>')
     panels.append(
-        '<section class="panel" id="pcal"><div class="phead"><h2>Calibrate</h2>'
-        '<p class="chint">Hover any spot on screen; this shows the pixel + colour '
-        'under your cursor. Use it to find the coordinates for the capacity bar, '
-        'the cue text, or the green dig pixel.</p></div>'
-        '<div class="calbox"><div class="calbig" id="calreadout">move your mouse…</div>'
-        '<div class="calswatch" id="calsw"></div></div>'
-        '<p class="chint" id="caltags"></p></section>')
+        '<section class="panel" id="pcal"><div class="phead"><h2>Calibrate pixels</h2>'
+        '<p class="chint">Click a <b>Calibrate</b> button, then move your mouse to '
+        'that exact spot in the game and click once. It saves that position and '
+        'colour. Do them all, then click <b>Save calibration</b>.</p></div>'
+        f'<div class="calrows">{"".join(calrows)}</div>'
+        '<button type="button" id="savepixels" class="btn" style="margin-top:14px">'
+        'Save calibration</button></section>')
 
     # Relics
     nav("relics", "⏱", "Relics")
@@ -375,10 +424,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .log{background:#0a0c10;border:1px solid var(--line);border-radius:12px;padding:12px 14px;
   height:calc(100vh - 240px);overflow-y:auto;white-space:pre-wrap;font:12px ui-monospace,
   Menlo,monospace;color:#bfe3d2;margin:0}
- .calbox{display:flex;align-items:center;gap:18px}
- .calbig{font:20px ui-monospace,Menlo,monospace;background:var(--panel);border:1px solid var(--line);
-  border-radius:12px;padding:18px 22px;min-width:340px}
- .calswatch{width:80px;height:80px;border-radius:12px;border:1px solid var(--line);background:#000}
+ .calrows{max-width:720px}
+ .calrow{display:flex;align-items:center;gap:14px;background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px}
+ .calinfo{flex:1} .calname{font-weight:600;color:#e8eaed}
+ .caldesc{color:var(--mut);font-size:12.5px;margin-top:2px}
+ .calval{display:flex;align-items:center;gap:8px;min-width:130px;justify-content:flex-end}
+ .calxy{font:13px ui-monospace,Menlo,monospace;color:#bfe3d2}
+ .calsw2{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#000}
+ .calbtn.armed{background:var(--accent2);color:#06281c}
  .relicwrap{max-width:760px}
  .rrow{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
   border-radius:12px;padding:10px 12px;margin-bottom:8px}
@@ -443,19 +497,28 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
      slot:slot, clicks:parseInt(row.querySelector('.rclicks').value||'2',10)});});
    return out;}
  // tabs
- let calTimer=null;
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
    const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics')?('p'+id):('p_'+id);
-   document.getElementById(pid).classList.add('active');
-   if(id==='cal'){startCal();}else{stopCal();}});
- function startCal(){if(calTimer)return; calTimer=setInterval(async()=>{
-   const s=await window.pywebview.api.calibrate_sample();
-   if(s.error){$('#calreadout').textContent='need deps: '+s.error;return;}
-   $('#calreadout').textContent=`PIXEL=(${s.x}, ${s.y})  RGB=(${s.r}, ${s.g}, ${s.b})`;
-   $('#calsw').style.background=`rgb(${s.r},${s.g},${s.b})`;
-   $('#caltags').textContent=s.tags?('tags: '+s.tags):''; },150);}
- function stopCal(){if(calTimer){clearInterval(calTimer);calTimer=null;}}
+   document.getElementById(pid).classList.add('active');});
+ // calibrate: click a button, then click the spot in-game
+ let pixels={};
+ function setPixels(px){pixels=px||{};
+   for(const k in pixels){const xy=pixels[k];
+     const cv=document.getElementById('cv_'+k); if(cv)cv.textContent='('+xy[0]+', '+xy[1]+')';}}
+ let capturing=false;
+ $$('.calbtn').forEach(btn=>btn.onclick=async()=>{
+   if(capturing)return; capturing=true;
+   const key=btn.dataset.pkey; btn.classList.add('armed'); btn.textContent='Click the spot…';
+   const r=await window.pywebview.api.calibrate_capture();
+   btn.classList.remove('armed'); btn.textContent='Calibrate'; capturing=false;
+   if(r.error){toast('Calibrate failed: '+r.error);return;}
+   pixels[key]=[r.x,r.y];
+   const cv=document.getElementById('cv_'+key); if(cv)cv.textContent='('+r.x+', '+r.y+')';
+   const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=`rgb(${r.r},${r.g},${r.b})`;
+   toast(key+' set to ('+r.x+', '+r.y+')');});
+ $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(pixels);
+   toast('Calibration saved');};
  // presets
  $('#pv1').onclick=()=>preset(V1); $('#pv2').onclick=()=>preset(V2); $('#pdef').onclick=()=>preset(DEF);
  // save / run
@@ -490,7 +553,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
      if(s>0)dh.value=Math.round(55000/s);});})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);}
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});}
  window.addEventListener('pywebviewready',init);
  if(window.pywebview&&window.pywebview.api)init();
 </script></body></html>"""
