@@ -40,9 +40,33 @@ SETUP
 
 import sys
 import gc
+import os
+import json
 import time
 import subprocess
 from collections import namedtuple
+
+# Settings written by the UI (prospecting_ui.py). Loaded at startup to override
+# the defaults below, so you can tune everything without editing this file.
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "prospecting_config.json")
+
+
+def load_config():
+    """Override module config globals from prospecting_config.json (if present)."""
+    try:
+        with open(CONFIG_FILE) as f:
+            data = json.load(f)
+    except (FileNotFoundError, ValueError, OSError):
+        return
+    g = globals()
+    applied = 0
+    for k, v in data.items():
+        if k in g and not callable(g[k]):
+            g[k] = v
+            applied += 1
+    print(f"[config] applied {applied} setting(s) from "
+          f"{os.path.basename(CONFIG_FILE)}")
 
 # ============================================================================
 # CONFIG  --  everything you tune lives here
@@ -1330,6 +1354,7 @@ def log_calibration():
 
 # ---- Main -------------------------------------------------------------------
 def main():
+    load_config()                 # apply UI overrides from prospecting_config.json
     print(__doc__.split("SETUP")[0])
     print(f"Dig trigger pixel {DIG_TRIGGER_PIXEL} (white-line release).")
     print(f"Capacity-full pixel {CAP_FULL_PIXEL} (yellow = full).")
@@ -1367,6 +1392,7 @@ def main():
 def monitor():
     """Live sensor readout, NO input sent. Verify the cues/capacity read right
     on land, in the water, and mid-shake. Ctrl+C to quit."""
+    load_config()                 # apply UI overrides from prospecting_config.json
     print("MONITOR -- no input. Watch the values on land / in water / mid-shake.\n")
     with _MSS() as sct:
         det = Detector(sct)
