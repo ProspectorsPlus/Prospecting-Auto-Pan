@@ -232,7 +232,8 @@ LAND_SETTLE_MS     = 45   # after the land cue fires, hold W a touch longer to l
                           # Forward over-travel onto land is harmless; braking
                           # BACK toward the water is what caused the oscillation.
 SHAKE_POLL_MS      = 30   # poll spacing while holding the shake
-STUCK_TICKS        = 3    # identical (place, pan) reads in a row -> escalate
+STUCK_TICKS        = 2    # identical (place, pan) reads in a row -> escalate
+                          # (lower = react/recover faster when an action fails)
 RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
 SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
                           # between water/land) before SAFE STOP -- catches the
@@ -258,12 +259,13 @@ BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets 
 # dirt, so the CAPACITY bar tells us if we're on land. Hit -> on land (pan now
 # filling). Miss -> nudge forward and retry.
 LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
-DIG_PROBE_MS        = 320 # wait this long for a probe-dig to register before
-                          # calling it a MISS (a working dig sometimes fills the
-                          # bar slowly -- too short and we nudge again too soon)
+DIG_PROBE_MS        = 260 # wait this long for a probe-dig to register before
+                          # calling it a MISS, THEN react fast. Don't go much
+                          # lower or a slow-registering (but working) dig gets a
+                          # false miss -> needless extra W nudge.
 LAND_PROBE_NUDGE_MS = 90  # forward W nudge between failed probe-digs
-PROBE_GAP_MS        = 80  # settle after a forward nudge, before the next dig
-                          # (stops it clicking W twice in a row too fast)
+PROBE_GAP_MS        = 35  # settle after a forward nudge, before the next dig
+                          # (lower = retry the dig faster after a miss)
 PRE_DIG_SETTLE_MS   = 60  # VERY slight settle before the FIRST dig after a shake,
                           # so the dig doesn't fire slightly early (miss -> needless
                           # recovery nudge). Small; raise a touch if it still misses.
