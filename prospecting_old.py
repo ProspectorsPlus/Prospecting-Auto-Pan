@@ -370,6 +370,14 @@ AUTOSTOP_MINUTES   = 60     # stop the macro after this many minutes of running
 # inventory until proper count/colour reading is calibrated.
 STOP_AFTER_PANS    = 0
 
+# --- WINDOW-RELATIVE CAPTURE (opt-in) ----------------------------------------
+# When on, pixels are shifted by how far the Roblox window moved since you
+# calibrated, so calibration survives the window being in a different spot.
+# Default OFF = identical absolute-coordinate behaviour. (macOS: best-effort.)
+WINDOW_RELATIVE     = False
+ROBLOX_TITLE        = "Roblox"
+CALIB_WINDOW_ORIGIN = [0, 0]   # window top-left captured at calibration time
+
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
 
@@ -420,6 +428,55 @@ def get_scale(sct):
     bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
     logical_w = bounds.size.width
     return main["width"] / logical_w if logical_w else 1.0
+
+
+# ---- Window-relative capture (opt-in) ---------------------------------------
+def find_window_origin():
+    """(x, y) of the Roblox game viewport's top-left in PHYSICAL pixels, or None.
+    macOS best-effort via the window list; returns None if not found."""
+    try:
+        opt = (Quartz.kCGWindowListOptionOnScreenOnly
+               | Quartz.kCGWindowListExcludeDesktopElements)
+        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
+        with _MSS() as sct:
+            scale = get_scale(sct)
+        best, area = None, 0
+        for w in wins or []:
+            owner = str(w.get("kCGWindowOwnerName", ""))
+            if ROBLOX_TITLE.lower() in owner.lower():
+                b = w.get("kCGWindowBounds", {})
+                a = b.get("Width", 0) * b.get("Height", 0)
+                if a > area:
+                    area, best = a, b
+        if best:
+            return (int(best["X"] * scale), int(best["Y"] * scale))
+    except Exception as e:
+        print(f"[window] lookup failed: {e}")
+    return None
+
+
+def apply_window_offset():
+    """If WINDOW_RELATIVE, shift the calibrated pixels by how far the Roblox
+    window moved since calibration. No-op (current behaviour) when off, when the
+    window isn't found, or when it's in the calibrated position."""
+    if not WINDOW_RELATIVE:
+        return
+    o = find_window_origin()
+    if not o:
+        print("[window] Roblox window not found; using saved coords as-is")
+        return
+    dx = o[0] - CALIB_WINDOW_ORIGIN[0]
+    dy = o[1] - CALIB_WINDOW_ORIGIN[1]
+    if dx == 0 and dy == 0:
+        return
+    g = globals()
+    for pk in ("CAP_FULL_PIXEL", "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX",
+               "DIG_TRIGGER_PIXEL", "TERRAIN_PIXEL"):
+        x, y = g[pk]
+        g[pk] = (x + dx, y + dy)
+    g["CAP_START_PIXEL"] = (g["CAP_FULL_PIXEL"][0] - g["CAP_BAR_WIDTH"] + 12,
+                            g["CAP_FULL_PIXEL"][1])
+    print(f"[window] shifted pixels by ({dx},{dy}) for window move")
 
 
 # ---- High-precision timing --------------------------------------------------
@@ -1528,6 +1585,7 @@ def log_calibration():
 # ---- Main -------------------------------------------------------------------
 def main():
     load_config()                 # apply UI overrides from prospecting_config.json
+    apply_window_offset()         # shift pixels if the Roblox window moved (opt-in)
     print(__doc__.split("SETUP")[0])
     print(f"Dig trigger pixel {DIG_TRIGGER_PIXEL} (white-line release).")
     print(f"Capacity-full pixel {CAP_FULL_PIXEL} (yellow = full).")
@@ -1609,6 +1667,7 @@ def monitor():
     """Live sensor readout, NO input sent. Verify the cues/capacity read right
     on land, in the water, and mid-shake. Ctrl+C to quit."""
     load_config()                 # apply UI overrides from prospecting_config.json
+    apply_window_offset()
     print("MONITOR -- no input. Watch the values on land / in water / mid-shake.\n")
     with _MSS() as sct:
         det = Detector(sct)

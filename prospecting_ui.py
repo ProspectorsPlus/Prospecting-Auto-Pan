@@ -82,6 +82,9 @@ SECTIONS = [
         ("AUTOSTOP_MINUTES",   "Stop after this many minutes",           "int", 60),
         ("STOP_AFTER_PANS",    "Stop after N pans (0 = off, bag guard)", "int", 0),
     ]),
+    ("Window", [
+        ("WINDOW_RELATIVE",    "Shift pixels when the Roblox window moves", "bool", False),
+    ]),
 ]
 
 PRESET_V1 = {"PERFECT": False, "DIG_CLICK_MS": 15, "MAX_DIGS_TO_FILL": 1}
@@ -107,6 +110,7 @@ SECTION_HINT = {
     "Recovery movement (jitter taps)": "Tiny tap timing used only during recovery.",
     "Notifications": "Ping a Discord webhook / your bot on start, stop and stats.",
     "Auto-stop": "Automatically stop the macro after a set time.",
+    "Window": "Make calibration survive the Roblox window being moved.",
 }
 
 
@@ -119,6 +123,7 @@ TAB_ICON = {
     "Recovery movement (jitter taps)": "⚙",
     "Notifications": "🔔",
     "Auto-stop": "⏱",
+    "Window": "🪟",
 }
 
 # Per-setting explanations (shown as a ? tooltip next to each field).
@@ -185,6 +190,9 @@ HELP = {
     "AUTOSTOP_MINUTES": "How long to run before auto-stopping.",
     "STOP_AFTER_PANS": "Stop after this many pans emptied — a simple guard so it "
                        "doesn't keep panning into a full inventory. 0 = off.",
+    "WINDOW_RELATIVE": "Calibrate, then if you move the Roblox window the macro "
+                       "shifts its pixels to match. Re-calibrate to set the "
+                       "reference. Default off = absolute screen coordinates.",
 }
 
 # Calibratable on-screen pixels: (key, label, description, default [x, y]).

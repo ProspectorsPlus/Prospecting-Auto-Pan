@@ -77,6 +77,24 @@ def _coerce(t, v):
         return 0
 
 
+def _window_origin():
+    """Roblox window client top-left in physical px, or [0,0]. (Windows.)"""
+    try:
+        import ctypes
+        u = ctypes.windll.user32
+        hwnd = u.FindWindowW(None, "Roblox")
+        if not hwnd:
+            return [0, 0]
+
+        class _PT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        pt = _PT(0, 0)
+        u.ClientToScreen(hwnd, ctypes.byref(pt))
+        return [int(pt.x), int(pt.y)]
+    except Exception:
+        return [0, 0]
+
+
 # ============================================================================
 # JS <-> Python bridge
 # ============================================================================
@@ -117,6 +135,8 @@ class Api:
             w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
             if w > 20:
                 cur["CAP_BAR_WIDTH"] = w
+        # remember where the Roblox window was (for WINDOW_RELATIVE)
+        cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"

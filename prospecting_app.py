@@ -77,6 +77,32 @@ def _coerce(t, v):
         return 0
 
 
+def _window_origin():
+    """Roblox window top-left in physical px, or [0,0]. macOS best-effort."""
+    try:
+        import Quartz
+        import mss
+        opt = (Quartz.kCGWindowListOptionOnScreenOnly
+               | Quartz.kCGWindowListExcludeDesktopElements)
+        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
+        with mss.mss() as sct:
+            mainw = sct.monitors[1]["width"]
+        b = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+        scale = mainw / b.size.width if b.size.width else 1.0
+        best, area = None, 0
+        for w in wins or []:
+            if "roblox" in str(w.get("kCGWindowOwnerName", "")).lower():
+                bb = w.get("kCGWindowBounds", {})
+                a = bb.get("Width", 0) * bb.get("Height", 0)
+                if a > area:
+                    area, best = a, bb
+        if best:
+            return [int(best["X"] * scale), int(best["Y"] * scale)]
+    except Exception:
+        pass
+    return [0, 0]
+
+
 # ============================================================================
 # JS <-> Python bridge
 # ============================================================================
@@ -117,6 +143,8 @@ class Api:
             w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
             if w > 20:
                 cur["CAP_BAR_WIDTH"] = w
+        # remember where the Roblox window was (for WINDOW_RELATIVE)
+        cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
