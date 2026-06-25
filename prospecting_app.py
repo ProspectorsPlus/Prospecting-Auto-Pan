@@ -201,9 +201,12 @@ class Api:
         entry = builds.get(name)
         if entry is None:
             return None
-        # make it the active config too
+        # MERGE the build into the active config so we keep things the build
+        # doesn't carry (calibrated pixels, webhook URL/secret, window settings).
+        cur = load_saved()
+        cur.update(entry)
         with open(CONFIG_FILE, "w") as f:
-            json.dump(entry, f, indent=2)
+            json.dump(cur, f, indent=2)
         return entry
 
     def delete_build(self, name):
@@ -531,10 +534,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    <nav class="side">
      {{NAV}}
      <div class="navsep"></div>
-     <div class="pretitle">Presets</div>
+     <div class="pretitle">Quick presets</div>
      <button type="button" class="chip" id="pv1">v1 · fast 1-dig</button>
      <button type="button" class="chip" id="pv2">v2 · multi-dig</button>
      <button type="button" class="chip" id="pdef">Reset defaults</button>
+     <div class="pretitle" style="margin-top:10px">My builds (full)</div>
+     <div id="buildchips"></div>
    </nav>
    <div class="content">{{PANELS}}</div>
  </div>
@@ -605,16 +610,24 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
- // builds
+ // builds — a build saves ALL settings + relics; loading applies them all
+ async function loadBuild(name){if(!name)return;
+   const e=await window.pywebview.api.load_build(name);if(!e)return;
+   setVals(e); setRelics(e.RELICS||[], e.RELICS_ENABLED); toast('Loaded build "'+name+'"');}
+ function renderBuildChips(list){const box=$('#buildchips');box.innerHTML='';
+   if(!list||!list.length){box.innerHTML='<div style="color:#6b7280;font-size:12px;'+
+     'padding:2px 4px">none yet — type a name + Save build</div>';return;}
+   list.forEach(n=>{const b=document.createElement('button');b.type='button';
+     b.className='chip';b.textContent=n;b.onclick=()=>loadBuild(n);box.appendChild(b);});}
  function fillBuilds(list){const sel=$('#buildlist');sel.innerHTML='<option value="">Load build…</option>';
-   list.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});}
+   list.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
+   renderBuildChips(list);}
  $('#savebuild').onclick=async()=>{const name=$('#buildname').value.trim();
    if(!name){toast('Enter a build name');return;}
    await window.pywebview.api.save_build(name,collect(),collectRelics(),$('#relicsMaster').checked);
-   const st=await window.pywebview.api.get_state();fillBuilds(st.builds);$('#buildlist').value=name;toast('Build "'+name+'" saved');};
- $('#buildlist').onchange=async()=>{const name=$('#buildlist').value;if(!name)return;
-   const e=await window.pywebview.api.load_build(name);if(!e)return;
-   setVals(e); setRelics(e.RELICS||[], e.RELICS_ENABLED); toast('Loaded "'+name+'"');};
+   const st=await window.pywebview.api.get_state();fillBuilds(st.builds);$('#buildlist').value=name;
+   toast('Build "'+name+'" saved (all settings)');};
+ $('#buildlist').onchange=()=>loadBuild($('#buildlist').value);
  $('#delbuild').onclick=async()=>{const name=$('#buildlist').value;if(!name){toast('Pick a build to delete');return;}
    const list=await window.pywebview.api.delete_build(name);fillBuilds(list);toast('Deleted "'+name+'"');};
  // custom tooltip (native title tooltips don't show in the app window)
