@@ -26,8 +26,8 @@ import urllib.request
 # "Update available" banner that opens DOWNLOAD_PAGE_URL in the browser.
 # >>> EDIT THESE THREE LINES to point at your website <<<
 VERSION             = "1.0.0"
-UPDATE_MANIFEST_URL = "https://YOUR-SITE.example/prospectors/version.json"
-DOWNLOAD_PAGE_URL   = "https://YOUR-SITE.example/prospectors/"
+UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
+DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
 HERE = (os.path.dirname(sys.executable) if FROZEN

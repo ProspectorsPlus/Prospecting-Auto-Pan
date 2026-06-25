@@ -1,68 +1,70 @@
-# Prospectors Plus — Release & Update Guide
+# Prospectors Plus — Release & Update Guide (GitHub-hosted)
 
-This explains how to ship the standalone Windows installer and how the in-app
-"Update available" banner works. You do **not** need a Windows PC — the installer
-is built in the cloud by GitHub Actions.
+Everything is hosted on GitHub: the **download page** runs on GitHub Pages, the
+**installer file** lives on GitHub Releases, and the installer is **built in the
+cloud** by GitHub Actions — so you never need a Windows PC.
+
+Repo: `ProspectorsPlus/Prospecting-Auto-Pan`
+(If you renamed the repo, see "If your repo name is different" at the bottom.)
 
 ---
 
-## One-time setup
+## One-time setup (do this once)
 
-1. **Put these files on your website**, both reachable at the same folder, e.g.
-   `https://your-site.com/prospectors/`:
-   - `website/index.html`  → the download page
-   - `website/version.json` → the manifest the app checks for updates
-
-2. **Point the app at your site.** Edit the three lines at the top of **both**:
-   - `prospecting_app.py` (Mac)
-   - `windows/prospecting_app.py` (Windows)
-
-   ```python
-   VERSION             = "1.0.0"
-   UPDATE_MANIFEST_URL = "https://your-site.com/prospectors/version.json"
-   DOWNLOAD_PAGE_URL   = "https://your-site.com/prospectors/"
+1. **Push this repo to the new account.** Your remote is already set to
+   `https://github.com/ProspectorsPlus/Prospecting-Auto-Pan.git`. Push:
+   ```bash
+   git push -u origin main
    ```
-   Also set the `url` in `website/version.json` to your download page, and the
-   `href` of the download button in `website/index.html` to the installer file.
 
-3. **Push this repo to GitHub** (the `.github/workflows/build-windows.yml` file
-   makes cloud builds work).
+2. **Turn on GitHub Pages.** On GitHub: repo → **Settings → Pages** →
+   *Build and deployment* → Source: **Deploy from a branch** →
+   Branch: **main**, Folder: **/docs** → Save.
+
+   After a minute your download page is live at:
+   **https://prospectorsplus.github.io/Prospecting-Auto-Pan/**
+
+That's the whole setup. The app already points at that Pages URL for update
+checks, and the download button already points at your latest GitHub Release.
 
 ---
 
 ## Cutting a release (each new version)
 
-1. Bump the version number in **three** places so they match:
-   - `VERSION` in `windows/prospecting_app.py` (and the Mac one)
+1. Bump the version in **three** places so they match:
+   - `VERSION` in `prospecting_app.py` **and** `windows/prospecting_app.py`
    - `MyAppVersion` in `windows/installer.iss`
-   - `version` in `website/version.json`
+   - `version` in `docs/version.json`
 
-2. Commit, then tag and push:
+2. Commit, tag, push:
    ```bash
    git commit -am "release v1.0.1"
    git tag v1.0.1
    git push && git push --tags
    ```
 
-3. GitHub Actions builds **Prospectors Plus Setup.exe** automatically and
-   attaches it to a Release. Download it from the repo's **Releases** page
-   (or the **Actions** run if you used "Run workflow" manually).
+3. **GitHub Actions builds the installer automatically** and attaches
+   `ProspectorsPlusSetup.exe` to a new Release for that tag. Watch it under the
+   repo's **Actions** tab. (First run takes a few minutes.)
 
-4. **Upload `Prospectors Plus Setup.exe` to your website** (the same folder as
-   the download page), and update `version.json` on the site to the new version.
+4. Done. Because the download button uses
+   `releases/latest/download/ProspectorsPlusSetup.exe`, it **always** serves the
+   newest release — no manual upload. Anyone on an older version sees the
+   **"Update available"** banner next time they open the app.
 
-That's it. Anyone running an older version sees an **"Update available"** banner
-the next time they open the app, with a button that opens your download page.
+> Tip: to test the build without making a public release, go to **Actions →
+> Build Windows installer → Run workflow**. It builds and uploads the exe as an
+> *artifact* you can download, without creating a Release.
 
 ---
 
 ## How updates work (under the hood)
 
-- On launch the app fetches `version.json` from `UPDATE_MANIFEST_URL`.
-- If `version` there is higher than the app's built-in `VERSION`, it shows the
-  banner. The **Download update** button opens `url` (your download page).
-- It's a *notify + link* flow (not silent self-replace), so it can never brick
-  an install. If the user is offline the check fails silently.
+- On launch the app downloads `version.json` from the Pages URL.
+- If its `version` is higher than the app's built-in `VERSION`, the blue
+  **"Update available → Download"** banner appears. The button opens your
+  download page. It's notify-and-link (never a silent self-replace), so it can't
+  break an install, and it fails silently when offline.
 
 ---
 
@@ -70,25 +72,39 @@ the next time they open the app, with a button that opens your download page.
 
 1. Install Python 3 and [Inno Setup 6](https://jrsoftware.org/isdl.php).
 2. From the `windows/` folder run `build.bat`.
-3. Output: `windows/Output/Prospectors Plus Setup.exe`.
+3. Output: `windows/Output/ProspectorsPlusSetup.exe`.
 
 ---
 
-## Removing the SmartScreen warning (optional, costs money)
+## SmartScreen "unknown publisher" (optional, costs money)
 
-New apps from an unknown publisher trigger "Windows protected your PC"
-(users click **More info → Run anyway** once). To remove it entirely you need a
-**code-signing certificate** (~$100–400/yr from a CA like DigiCert/Sectigo, or
-cheaper via resellers). Once you have a `.pfx`, sign the exe in the workflow with
-`signtool`. Not required — the installer works without it.
+New apps trigger "Windows protected your PC" — users click **More info → Run
+anyway** once. To remove it entirely you need a **code-signing certificate**
+(~$100–400/yr). Not required; the installer works without it.
+
+---
+
+## If your repo name is different
+
+If you renamed the repo (not `Prospecting-Auto-Pan`) or used a different account,
+update these to match and re-tag:
+- `UPDATE_MANIFEST_URL` and `DOWNLOAD_PAGE_URL` in both `prospecting_app.py` files
+- the `url` in `docs/version.json`
+- the download button `href` in `docs/index.html`
+- the `git remote set-url origin ...`
+
+The pattern is:
+- Pages page:  `https://<account-lowercase>.github.io/<repo>/`
+- version.json: `https://<account-lowercase>.github.io/<repo>/version.json`
+- installer:    `https://github.com/<Account>/<repo>/releases/latest/download/ProspectorsPlusSetup.exe`
 
 ---
 
 ## Notes
 
-- Per-user settings, saved builds, and calibration live in
-  `%LOCALAPPDATA%\Prospectors Plus\` so updates never wipe them.
-- The baked-in Discord webhook URL/secret ship inside the installer, so friends
-  get DMs out of the box — they only type their Discord username.
-- The Mac version isn't packaged as an installer here (it runs from source), but
-  it gets the same update banner.
+- Per-user settings, builds, and calibration live in
+  `%LOCALAPPDATA%\Prospectors Plus\`, so updates never wipe them.
+- The baked-in Discord webhook ships inside the installer, so friends get DMs out
+  of the box — they only type their Discord username.
+- The Mac app isn't packaged as an installer (it runs from source) but gets the
+  same update banner.

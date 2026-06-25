@@ -22,8 +22,8 @@ import urllib.request
 # ---- version + update channel (compared to the website's version.json) -------
 # >>> EDIT THESE THREE LINES to point at your website <<<
 VERSION             = "1.0.0"
-UPDATE_MANIFEST_URL = "https://YOUR-SITE.example/prospectors/version.json"
-DOWNLOAD_PAGE_URL   = "https://YOUR-SITE.example/prospectors/"
+UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
+DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(HERE, "prospecting_config.json")

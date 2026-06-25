@@ -24,7 +24,7 @@ if not exist %ISCC% set ISCC="C:\Program Files\Inno Setup 6\ISCC.exe"
 if exist %ISCC% (
     %ISCC% installer.iss || goto :err
     echo.
-    echo DONE. Installer is in:  Output\Prospectors Plus Setup.exe
+    echo DONE. Installer is in:  Output\ProspectorsPlusSetup.exe
 ) else (
     echo.
     echo PyInstaller build is in:  dist\Prospectors Plus\
