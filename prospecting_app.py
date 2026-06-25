@@ -66,6 +66,17 @@ def load_saved():
     return _read_json(CONFIG_FILE, {})
 
 
+def _coerce(t, v):
+    if t == "bool":
+        return bool(v)
+    if t == "str":
+        return str(v)
+    try:
+        return int(v)
+    except (ValueError, TypeError):
+        return 0
+
+
 # ============================================================================
 # JS <-> Python bridge
 # ============================================================================
@@ -115,7 +126,7 @@ class Api:
         cur = load_saved()
         for k, t in TYPES.items():
             if k in data:
-                cur[k] = bool(data[k]) if t == "bool" else int(data[k])
+                cur[k] = _coerce(t, data[k])
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return len([k for k in TYPES if k in data])
@@ -149,7 +160,7 @@ class Api:
         entry = {}
         for k, t in TYPES.items():
             if k in data:
-                entry[k] = bool(data[k]) if t == "bool" else int(data[k])
+                entry[k] = _coerce(t, data[k])
         entry["RELICS"] = relics or []
         entry["RELICS_ENABLED"] = bool(enabled)
         builds[name] = entry
@@ -249,7 +260,11 @@ class Api:
 
     def _pump(self, proc):
         for line in iter(proc.stdout.readline, ""):
-            _emit_log(line.rstrip("\n"))
+            line = line.rstrip("\n")
+            if line.startswith("__STATS__ "):
+                _emit_stats(line[10:])        # raw JSON -> live stats panel
+                continue
+            _emit_log(line)
         rc = proc.wait()
         _emit_log(f"[macro exited, code {rc}]")
         self.proc = None
@@ -264,6 +279,15 @@ def _emit_log(text):
         return
     try:
         _window.evaluate_js(f"window.addLog && addLog({json.dumps(text)})")
+    except Exception:
+        pass
+
+
+def _emit_stats(json_str):
+    if _window is None:
+        return
+    try:
+        _window.evaluate_js(f"window.setStats && setStats({json_str})")
     except Exception:
         pass
 
@@ -304,6 +328,12 @@ def build_html():
         '<div class="runbtns"><button type="button" id="startbtn" class="big go">'
         'Start macro</button><button type="button" id="stopbtn" class="big stop" '
         'disabled>Stop</button><span id="rstate" class="rstate">stopped</span></div>'
+        '<div class="statsbar">'
+        '<div class="stat"><div class="sv" id="st_run">0:00</div><div class="sl">runtime</div></div>'
+        '<div class="stat"><div class="sv" id="st_cyc">0</div><div class="sl">pans</div></div>'
+        '<div class="stat"><div class="sv" id="st_rate">0</div><div class="sl">pans/hr</div></div>'
+        '<div class="stat"><div class="sv" id="st_rec">0</div><div class="sl">recoveries</div></div>'
+        '</div>'
         '<pre id="log" class="log"></pre></section>')
 
     # Calibrate
@@ -363,6 +393,9 @@ def build_html():
                 ctl = (f'<span class="switch"><input type="checkbox" data-key="{key}" '
                        f'data-type="bool"><span class="track"><span class="knob">'
                        f'</span></span></span>')
+            elif typ == "str":
+                ctl = (f'<input type="text" data-key="{key}" data-type="str" '
+                       f'style="width:240px;text-align:left">')
             else:
                 ctl = f'<input type="number" data-key="{key}" data-type="int">'
             rows.append(f'<label class="row"><span class="lbl">{label}{_qm(key)}</span>'
@@ -430,8 +463,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .big{padding:11px 20px;font-size:15px} .go{background:var(--accent2);color:#06281c}
  .stop{background:#3a2330;color:#ffb4b4} .stop:disabled,.go:disabled{opacity:.5;cursor:default}
  .rstate{color:var(--mut);margin-left:6px}
+ .statsbar{display:flex;gap:10px;margin:0 0 12px}
+ .stat{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+  padding:10px 12px;text-align:center}
+ .sv{font-size:20px;font-weight:700;color:#e8eaed;font-variant-numeric:tabular-nums}
+ .sl{font-size:11.5px;color:var(--mut);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
  .log{background:#0a0c10;border:1px solid var(--line);border-radius:12px;padding:12px 14px;
-  height:calc(100vh - 240px);overflow-y:auto;white-space:pre-wrap;font:12px ui-monospace,
+  height:calc(100vh - 320px);overflow-y:auto;white-space:pre-wrap;font:12px ui-monospace,
   Menlo,monospace;color:#bfe3d2;margin:0}
  .calrows{max-width:720px}
  .calrow{display:flex;align-items:center;gap:14px;background:var(--panel);
@@ -479,8 +517,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  const fields=()=>$$('[data-key]');
  function setVals(v){fields().forEach(el=>{const k=el.dataset.key;
    if(el.dataset.type==='bool')el.checked=!!v[k]; else el.value=(v[k]??'');});}
- function collect(){const o={};fields().forEach(el=>{const k=el.dataset.key;
-   o[k]=el.dataset.type==='bool'?el.checked:parseInt(el.value||'0',10);});return o;}
+ function collect(){const o={};fields().forEach(el=>{const k=el.dataset.key,t=el.dataset.type;
+   o[k]=(t==='bool')?el.checked:(t==='str')?el.value:parseInt(el.value||'0',10);});return o;}
  function preset(p){fields().forEach(el=>{const k=el.dataset.key; if(!(k in p))return;
    if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];});}
  function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');
@@ -488,6 +526,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  window.addLog=t=>{const l=$('#log');l.textContent+=t+"\n";l.scrollTop=l.scrollHeight;};
  window.setRunning=r=>{$('#startbtn').disabled=r;$('#stopbtn').disabled=!r;
    $('#rstate').textContent=r?'running':'stopped';};
+ window.setStats=s=>{if(!s)return;const m=Math.floor((s.runtime_s||0)/60),
+   sec=String((s.runtime_s||0)%60).padStart(2,'0');
+   $('#st_run').textContent=m+':'+sec; $('#st_cyc').textContent=s.cycles||0;
+   $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;};
  // relics
  function relicRows(){return $$('.rrow');}
  function setRelics(list,enabled){$('#relicsMaster').checked=!!enabled;

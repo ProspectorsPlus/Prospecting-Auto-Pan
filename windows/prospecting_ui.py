@@ -71,6 +71,16 @@ SECTIONS = [
         ("BURST_ON_MS",        "Tap hold per pulse (ms)",                 "int", 11),
         ("BURST_OFF_MS",       "Tap release per pulse (ms)",             "int", 1),
     ]),
+    ("Notifications", [
+        ("WEBHOOK_ENABLED",    "Send Discord notifications",             "bool", False),
+        ("WEBHOOK_URL",        "Webhook / bot URL",                      "str", ""),
+        ("WEBHOOK_USER",       "Your name or ID (for bot DMs)",          "str", ""),
+        ("WEBHOOK_STATS_MIN",  "Stats update every N min (0 = off)",     "int", 60),
+    ]),
+    ("Auto-stop", [
+        ("AUTOSTOP_ENABLED",   "Auto-stop after a set time",             "bool", False),
+        ("AUTOSTOP_MINUTES",   "Stop after this many minutes",           "int", 60),
+    ]),
 ]
 
 PRESET_V1 = {"PERFECT": False, "DIG_CLICK_MS": 15, "MAX_DIGS_TO_FILL": 1}
@@ -94,6 +104,8 @@ SECTION_HINT = {
     "Return to land (dig-probe)": "Finding land after a shake by test-digging.",
     "Recovery / safety": "What happens when something goes wrong.",
     "Recovery movement (jitter taps)": "Tiny tap timing used only during recovery.",
+    "Notifications": "Ping a Discord webhook / your bot on start, stop and stats.",
+    "Auto-stop": "Automatically stop the macro after a set time.",
 }
 
 
@@ -104,6 +116,8 @@ TAB_ICON = {
     "Return to land (dig-probe)": "↑",
     "Recovery / safety": "🛟",
     "Recovery movement (jitter taps)": "⚙",
+    "Notifications": "🔔",
+    "Auto-stop": "⏱",
 }
 
 # Per-setting explanations (shown as a ? tooltip next to each field).
@@ -159,6 +173,15 @@ HELP = {
     "BREAKOUT_REPOS_MS": "Forward reposition nudge during a break-out.",
     "BURST_ON_MS": "Recovery taps: how long each tap holds the key.",
     "BURST_OFF_MS": "Recovery taps: how long each tap releases before re-checking.",
+    "WEBHOOK_ENABLED": "Send a Discord notification on start, stop, safe-stop, "
+                       "auto-stop, and periodic stats.",
+    "WEBHOOK_URL": "A Discord webhook URL (Channel Settings → Integrations → "
+                   "Webhooks) OR your own bot's endpoint. The macro POSTs JSON "
+                   "with content/event/user/stats.",
+    "WEBHOOK_USER": "A name or ID sent in the payload so your bot knows who to DM.",
+    "WEBHOOK_STATS_MIN": "How often to send a stats update while running (0 = off).",
+    "AUTOSTOP_ENABLED": "Automatically stop the macro after AUTOSTOP minutes.",
+    "AUTOSTOP_MINUTES": "How long to run before auto-stopping.",
 }
 
 # Calibratable on-screen pixels: (key, label, description, default [x, y]).
@@ -204,6 +227,10 @@ def render(msg=""):
                 control = (f'<span class="switch"><input type="checkbox" name="{key}" '
                            f'data-type="bool" {checked}>'
                            f'<span class="track"><span class="knob"></span></span></span>')
+            elif typ == "str":
+                sval = str(val).replace(chr(34), "&quot;")
+                control = (f'<input type="text" name="{key}" data-type="str" '
+                           f'value="{sval}" style="width:240px;text-align:left">')
             else:
                 control = (f'<input type="number" name="{key}" data-type="int" '
                            f'value="{val}">')
@@ -394,6 +421,8 @@ class Handler(BaseHTTPRequestHandler):
         for key, typ in TYPES.items():
             if typ == "bool":
                 cur[key] = key in form           # checkbox only sent when checked
+            elif typ == "str":
+                cur[key] = form.get(key, [cur.get(key, DEFAULTS[key])])[0]
             else:
                 try:
                     cur[key] = int(form.get(key, [cur.get(key, DEFAULTS[key])])[0])
@@ -418,9 +447,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/launch":
             try:
                 launch_macro()
-                msg += " — launched in a console window (press Ctrl+K to start)"
+                msg += " — launched in Terminal (press Ctrl+K to start)"
             except Exception as e:
-                msg += f" — couldn't auto-launch ({e}); run python prospecting_old.py"
+                msg += f" — couldn't auto-launch ({e}); run python3 prospecting_old.py"
         self._send(render(msg))
 
 

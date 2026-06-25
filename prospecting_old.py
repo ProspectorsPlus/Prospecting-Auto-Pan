@@ -43,7 +43,9 @@ import gc
 import os
 import json
 import time
+import threading
 import subprocess
+import urllib.request
 from collections import namedtuple
 
 # Settings written by the UI (prospecting_ui.py). Loaded at startup to override
@@ -351,6 +353,19 @@ RELIC_SWITCH_MS    = 160   # wait after pressing a slot key before clicking
 RELIC_CLICK_MS     = 20    # each relic click length
 RELIC_CLICK_GAP_MS = 90    # gap between the relic clicks
 RELIC_PRE_MS       = 120   # settle after releasing movement, before switching slot
+
+# --- DISCORD WEBHOOK / NOTIFICATIONS -----------------------------------------
+# Posts JSON to WEBHOOK_URL on events (start, safe-stop, bag full, periodic
+# stats). Works as a plain Discord webhook (shows "content") AND carries
+# structured fields ("event","user","stats") so a custom bot can DM people.
+WEBHOOK_ENABLED    = False
+WEBHOOK_URL        = ""     # Discord webhook URL or your bot's endpoint
+WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
+WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
+
+# --- AUTO-STOP TIMER ---------------------------------------------------------
+AUTOSTOP_ENABLED   = False
+AUTOSTOP_MINUTES   = 60     # stop the macro after this many minutes of running
 
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
@@ -678,6 +693,46 @@ class State:
     shake_fails = 0          # consecutive shakes that didn't empty the pan
     land_fails = 0           # consecutive times the dig-probe couldn't find land
     breakouts = 0            # consecutive smart break-outs (escape a stuck loop)
+    stats = None             # SessionStats while running
+
+
+class SessionStats:
+    """Live counters for the current run (cycles, recoveries, runtime)."""
+    def __init__(self):
+        self.start = time.perf_counter()
+        self.cycles = 0       # pans emptied = completed cycles
+        self.recoveries = 0
+        self.safe_stops = 0
+
+    def runtime(self):
+        return time.perf_counter() - self.start
+
+    def as_dict(self):
+        rt = self.runtime()
+        hrs = rt / 3600.0
+        return {"cycles": self.cycles, "recoveries": self.recoveries,
+                "runtime_s": int(rt),
+                "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0}
+
+
+def post_webhook(event, message, stats=None):
+    """Fire a JSON notification to WEBHOOK_URL (non-blocking). Plain Discord
+    webhooks render 'content'; a custom bot can read event/user/stats."""
+    if not WEBHOOK_ENABLED or not WEBHOOK_URL:
+        return
+    payload = {"username": "Prospectors Plus", "content": message,
+               "event": event, "user": WEBHOOK_USER, "stats": stats or {}}
+
+    def _send():
+        try:
+            req = urllib.request.Request(
+                WEBHOOK_URL, data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=8)
+        except Exception as e:
+            print(f"[webhook] failed: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 def release_all():
@@ -698,6 +753,10 @@ def safe_stop(reason):
     State.land_fails = 0
     State.breakouts = 0
     print(f"\n*** SAFE STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
+    st = State.stats.as_dict() if State.stats else None
+    if State.stats:
+        State.stats.safe_stops += 1
+    post_webhook("safe_stop", f"⚠️ Macro SAFE-STOPPED: {reason}", st)
     try:
         subprocess.Popen(["afplay", ALERT_SOUND])
     except Exception:
@@ -1005,6 +1064,8 @@ def do_shake(det):
     if emptied:
         State.shake_fails = 0
         State.breakouts = 0              # healthy progress -> clear escalation
+        if State.stats:
+            State.stats.cycles += 1      # a pan emptied = one completed cycle
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
@@ -1101,6 +1162,8 @@ def recover(det, s):
     """Stronger corrective when stuck on the SAME situation for STUCK_TICKS.
     Recovery moves are JITTERED (short taps) so they can't sail past the target,
     even though the normal legs hold smoothly."""
+    if State.stats:
+        State.stats.recoveries += 1
     if s.full and s.pan:
         do_shake(det)                    # full in water, won't empty -> shake again
     elif s.full:
@@ -1478,19 +1541,50 @@ def main():
         sup = Supervisor()
         relics = RelicScheduler()
         was_running = False
+        last_emit = 0.0
+        last_wh_stats = 0.0
         try:
             while State.alive:
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
                         sup.reset()
                         relics.reset()      # start relic timers from now
+                        State.stats = SessionStats()
+                        last_emit = last_wh_stats = time.perf_counter()
                         was_running = True
                         log("=== RUNNING (live trace below) ===")
+                        post_webhook("start", "▶️ Macro started",
+                                     State.stats.as_dict())
                     relics.maybe_fire()     # timed relic use (no-op unless enabled)
                     sup.tick(detector)
+                    now = time.perf_counter()
+                    # live stats line for the app (parsed there, also harmless log)
+                    if now - last_emit >= 2.0:
+                        last_emit = now
+                        print("__STATS__ " + json.dumps(State.stats.as_dict()),
+                              flush=True)
+                    # periodic webhook stats update
+                    if (WEBHOOK_STATS_MIN > 0
+                            and now - last_wh_stats >= WEBHOOK_STATS_MIN * 60):
+                        last_wh_stats = now
+                        s = State.stats.as_dict()
+                        post_webhook("stats",
+                                     f"📊 {s['cycles']} pans · {s['pans_per_hr']}/hr "
+                                     f"· {s['runtime_s']//60} min", s)
+                    # auto-stop timer
+                    if (AUTOSTOP_ENABLED and State.stats
+                            and State.stats.runtime() >= AUTOSTOP_MINUTES * 60):
+                        log(f"=== AUTO-STOP after {AUTOSTOP_MINUTES} min ===")
+                        post_webhook("autostop", f"⏱️ Auto-stopped after "
+                                     f"{AUTOSTOP_MINUTES} min", State.stats.as_dict())
+                        State.running = False
+                        release_all()
                 else:
                     if was_running:
                         log("=== PAUSED ===")
+                        if State.stats:
+                            post_webhook("stop", "⏹️ Macro stopped",
+                                         State.stats.as_dict())
                     was_running = False
                     time.sleep(0.02)
         finally:
