@@ -54,15 +54,16 @@ from collections import namedtuple
 #   many digs fill the pan (e.g. 1 on this build) -- skips capacity detection.
 MANUAL_DIG        = True
 DIGS_PER_CYCLE    = 1               # how many digs before emptying (MANUAL_DIG)
-# PERFECT: if True, TIME each dig to land on GREEN (release when the white skill-
-#   bar line crosses the green pixel) for a perfect dig. v2 keeps this ON so digs
-#   are perfect on builds that need MORE THAN ONE dig to fill the pan.
-#   If False, the dig is just a single quick click (no timing) -- DIG_CLICK_MS.
-PERFECT           = True
+# PERFECT: if True, watch the green pixel and release on it. On this build the
+#   skill-bar line moves TOO FAST to catch by pixel, so we leave this OFF and use
+#   a fixed-length hold (DIG_CLICK_MS) that reliably lands on green instead.
+PERFECT           = False
 # v2: dig DYNAMICALLY until the capacity bar reads FULL (don't assume 1 dig). This
 # is the max digs we'll do to fill before proceeding anyway (safety cap).
 MAX_DIGS_TO_FILL  = 8
-DIG_CLICK_MS      = 15              # quick-click length when PERFECT = False
+DIG_CLICK_MS      = 75              # dig hold length -- tuned so the skill bar
+                                   # lands on GREEN for this build's dig speed
+                                   # (the green pixel is too fast to detect live)
 
 # Pixel to watch for the white line in "color" mode (= calibrated green pixel).
 # The macro releases LMB when this pixel goes WHITE (the line is on it).
@@ -884,12 +885,13 @@ def go_water(det):
 
 
 def do_shake(det):
-    """THE MOMENTUM TECHNIQUE. Start holding W (glide toward land) and rattle off
-    rapid CLICKS to shake -- no held press, because your build empties in a blink.
-    W carries you onto the land WHILE the pan drains; we drop W the instant the
-    Collect Deposit cue shows (so we don't sail past the dig spot) but keep
-    clicking until the CAPACITY reads empty (capacity is the truth; the Shake cue
-    sticks). Bails if a click never registers a shake AND we're on land + full."""
+    """THE MOMENTUM TECHNIQUE. Start holding W (glide toward land) and HOLD the
+    mouse button to shake (kept alive with drag events, since macOS drops a static
+    hold). This build's shake is slower, so a sustained hold drains it more
+    reliably than rapid clicks. W carries you onto land WHILE the pan drains; we
+    drop W when the Collect Deposit cue shows. Hold until the CAPACITY reads empty
+    (capacity is the truth; the Shake cue sticks). Bails only if the pan stays
+    COMPLETELY FULL past SHAKE_BAIL_MS (no drain at all = no real shake)."""
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
@@ -897,9 +899,13 @@ def do_shake(det):
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
+    mouse_down()                             # HOLD the shake
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
-        mouse_tap(SHAKE_CLICK_MS)            # one shake click
+        # keep the held press ALIVE (macOS drops a motionless hold)
+        _post(Quartz.CGEventCreateMouseEvent(
+            None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
+            Quartz.kCGMouseButtonLeft))
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
@@ -907,17 +913,18 @@ def do_shake(det):
             emptied = True
             break
         if w_down and det.on_deposit():      # reached land -> stop gliding...
-            key_up(KEY_W); w_down = False     # ...but keep clicking to finish
+            key_up(KEY_W); w_down = False     # ...but keep holding to finish
             on_land = True
         # CAPACITY-based bail: only give up if the pan is STILL FULL well past a
         # real shake's duration (no drain at all = no shake). We do NOT bail just
-        # because we didn't SEE the 'Shake' cue -- the clicks keep draining an
+        # because we didn't SEE the 'Shake' cue -- the hold keeps draining an
         # actual shake, which is what frees us to move again.
         if (time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
                 and det.capacity_full()):
             bailed = True
-            break                            # clicks truly aren't shaking
-        sleep_ms(SHAKE_CLICK_GAP_MS)
+            break                            # truly not shaking
+        sleep_ms(SHAKE_POLL_MS)
+    mouse_up()                               # release the held shake
     if w_down:
         key_up(KEY_W)
     if emptied:
@@ -1027,18 +1034,26 @@ def break_out(det, s):
     """Last-resort escape when normal recovery keeps failing on the SAME spot.
     The usual cause is a shake that's ACTUALLY animating (so movement is locked --
     every 'go water' reports it couldn't move). You can't walk mid-shake, but
-    CLICKS still finish it, so we click to drain it, then reposition forward to
-    get off the water edge. After this we reset the counters and let normal logic
-    try again ('do as if it was normal'). Returns True if it emptied the pan."""
-    log("    ** BREAK-OUT: finish any active shake by clicking, then reposition **")
+    HOLDING the mouse still finishes it, so we hold to drain it, then reposition
+    forward to get off the water edge. After this we reset the counters and let
+    normal logic try again ('do as if it was normal'). Returns True if it emptied."""
+    log("    ** BREAK-OUT: hold to finish any active shake, then reposition **")
     if s.full:
+        mouse_down()
         end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
+        emptied = False
         while time.perf_counter() < end and State.running:
-            mouse_tap(SHAKE_CLICK_MS)
+            _post(Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
+                Quartz.kCGMouseButtonLeft))
             if det.pan_empty():
-                log("    break-out: clicks finished the shake -> pan empty")
-                return True
-            sleep_ms(SHAKE_CLICK_GAP_MS)
+                emptied = True
+                break
+            sleep_ms(SHAKE_POLL_MS)
+        mouse_up()
+        if emptied:
+            log("    break-out: hold finished the shake -> pan empty")
+            return True
     # still stuck -> reposition forward (off the edge / onto land) for next try
     log("    break-out: reposition W fwd")
     key_down(KEY_W); sleep_ms(BREAKOUT_REPOS_MS); key_up(KEY_W)
