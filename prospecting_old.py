@@ -292,6 +292,10 @@ BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets 
 # dirt, so the CAPACITY bar tells us if we're on land. Hit -> on land (pan now
 # filling). Miss -> nudge forward and retry.
 LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
+# A dig "registered" (we're on land) if the capacity bar's FILL LEVEL RISES by at
+# least this fraction. This works even when the pan was already PARTIAL (the old
+# start-pixel check missed that, so it false-nudged W after the first dig).
+CAP_RISE_FRAC       = 0.03
 DIG_PROBE_MS        = 320 # wait this long for a probe-dig to register before
                           # calling it a MISS (a working dig sometimes fills the
                           # bar slowly -- too short and we nudge again too soon)
@@ -570,15 +574,21 @@ class Detector:
         r0, g0, b0 = baseline
         return max(abs(r - r0), abs(g - g0), abs(b - b0)) > CAP_START_DELTA
 
-    def pan_empty(self):
-        """True when the WHOLE capacity bar has essentially no yellow left."""
+    def cap_fill(self):
+        """Fraction (0..1) of the WHOLE capacity bar that reads yellow = how full
+        the pan is. Used to detect a dig REGISTERING (fill rises) even when the
+        pan was already partially full (so the start-pixel didn't change)."""
         x, y = CAP_FULL_PIXEL
         region = {"left": x - CAP_BAR_WIDTH, "top": y - 10,
                   "width": CAP_BAR_WIDTH, "height": 20}
         img = np.asarray(self.sct.grab(region))[:, :, :3].astype(np.int16)
         b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
         yellow = (r >= YEL_MIN) & (g >= YEL_MIN) & (b <= np.minimum(r, g) - YEL_BLUE_GAP)
-        return float(yellow.mean()) < CAP_EMPTY_FRAC
+        return float(yellow.mean())
+
+    def pan_empty(self):
+        """True when the WHOLE capacity bar has essentially no yellow left."""
+        return self.cap_fill() < CAP_EMPTY_FRAC
 
     def on_wet(self):
         """True if the feet pixel's colour proportion is closer to a WET (lava/
@@ -1002,10 +1012,12 @@ def return_and_dig(det):
             return False
         if attempt == 0 and PRE_DIG_SETTLE_MS > 0:
             sleep_ms(PRE_DIG_SETTLE_MS)      # let the landing settle before dig #1
-        baseline = det.cap_start_rgb()
+        before = det.cap_fill()              # fill level BEFORE the dig
         dig_once(det)
-        hit = wait_until(lambda: det.cap_changed(baseline) or det.capacity_full(),
-                         DIG_PROBE_MS, confirm=1)
+        # HIT = the bar got fuller (dig landed on dirt) -- robust even if the pan
+        # was already partial; also accept an outright FULL read.
+        hit = wait_until(lambda: det.cap_fill() > before + CAP_RISE_FRAC
+                         or det.capacity_full(), DIG_PROBE_MS, confirm=1)
         if hit:
             State.land_fails = 0
             State.breakouts = 0          # healthy progress -> clear escalation
