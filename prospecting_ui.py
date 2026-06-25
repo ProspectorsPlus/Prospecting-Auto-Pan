@@ -1,34 +1,35 @@
 #!/usr/bin/env python3
 """
-prospecting_ui.py -- a settings panel for the Prospecting macro (like an
-auto-clicker UI). Edit timings, pick v1/v2, set how many digs fill the pan, etc.
-It writes prospecting_config.json, which prospecting_old.py loads on startup.
+prospecting_ui.py -- settings panel for the Prospecting macro, served in your
+BROWSER (no tkinter needed -- works on any Python 3). Edit timings, pick v1/v2,
+set how many digs fill the pan, etc. Writes prospecting_config.json, which
+prospecting_old.py loads on startup.
 
 Run:
-    python3 prospecting_ui.py
+    python3 prospecting_ui.py          (or:  python3 prospecting_macro.py ui)
 
-Buttons:
-    Save              -> write the settings to prospecting_config.json
-    Save & Launch     -> save, then open Terminal running the macro
-    Load v1 / Load v2 -> fill the dig fields with a preset (then Save)
-    Reset defaults    -> restore every field to the built-in default
+It starts a tiny local web server and opens the page automatically. Edit fields,
+click Save (the macro reads them next time it starts). "Save & Launch" also opens
+Terminal running the macro. Close the terminal (Ctrl+C) when done.
 """
 
 import os
 import json
+import socket
 import subprocess
-import tkinter as tk
-from tkinter import ttk, messagebox
+import threading
+import webbrowser
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(HERE, "prospecting_config.json")
 MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
 
 # ---- settings schema: (key, label, type, default) ; type in {int, bool} ------
-# Defaults mirror prospecting_old.py. Grouped into sections for the form.
 SECTIONS = [
     ("Mode / Dig", [
-        ("PERFECT",            "Perfect dig (release on green) — off: timed hold", "bool", False),
+        ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
         ("DIG_CLICK_MS",       "Dig hold length (ms)",                    "int", 75),
         ("MAX_DIGS_TO_FILL",   "Max digs to fill the pan",                "int", 8),
         ("DIG_FILL_MS",        "Wait for FULL after each dig (ms)",        "int", 250),
@@ -36,7 +37,7 @@ SECTIONS = [
     ]),
     ("Walk back into water", [
         ("PAN_BACK_MAX_MS",    "Max S walk-back (ms)",                    "int", 200),
-        ("WATER_EXTRA_BACK_MS","Extra S after Pan cue / deeper (ms)",     "int", 0),
+        ("WATER_EXTRA_BACK_MS","Extra S after Pan cue / go deeper (ms)",  "int", 0),
     ]),
     ("Shake", [
         ("SHAKE_MOMENTUM_W",   "Hold W during shake (glide onto land)",   "bool", True),
@@ -52,7 +53,7 @@ SECTIONS = [
         ("LAND_SETTLE_MS",     "Hold W after land cue (ms)",              "int", 45),
         ("DIG_PROBE_MS",       "Wait to detect a probe-dig hit (ms)",     "int", 320),
         ("PROBE_GAP_MS",       "Settle between probe digs (ms)",          "int", 80),
-        ("LAND_PROBE_NUDGE_MS","Forward nudge between probe digs (ms)",   "int", 90),
+        ("LAND_PROBE_NUDGE_MS","Forward W nudge between probe digs (ms)", "int", 90),
         ("LAND_DIG_TRIES",     "Probe digs before giving up",             "int", 5),
     ]),
     ("Recovery / safety", [
@@ -66,14 +67,12 @@ SECTIONS = [
     ]),
     ("Recovery movement (jitter taps)", [
         ("BURST_ON_MS",        "Tap hold per pulse (ms)",                 "int", 11),
-        ("BURST_OFF_MS",       "Tap release per pulse (ms)",              "int", 1),
+        ("BURST_OFF_MS",       "Tap release per pulse (ms)",             "int", 1),
     ]),
 ]
 
-# presets: which fields each "version" sets (the rest stay as-is)
 PRESET_V1 = {"PERFECT": False, "DIG_CLICK_MS": 15, "MAX_DIGS_TO_FILL": 1}
 PRESET_V2 = {"PERFECT": False, "DIG_CLICK_MS": 75, "MAX_DIGS_TO_FILL": 8}
-
 DEFAULTS = {k: d for _, items in SECTIONS for (k, _l, _t, d) in items}
 TYPES = {k: t for _, items in SECTIONS for (k, _l, t, _d) in items}
 
@@ -86,128 +85,136 @@ def load_saved():
         return {}
 
 
-class App:
-    def __init__(self, root):
-        self.root = root
-        root.title("Prospecting Macro — Settings")
-        self.vars = {}
-        saved = load_saved()
-
-        # ---- scrollable body ----
-        outer = ttk.Frame(root, padding=8)
-        outer.pack(fill="both", expand=True)
-        canvas = tk.Canvas(outer, highlightthickness=0, width=520, height=560)
-        sb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        body = ttk.Frame(canvas)
-        body.bind("<Configure>",
-                  lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=body, anchor="nw")
-        canvas.configure(yscrollcommand=sb.set)
-        canvas.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        # trackpad / wheel scroll
-        canvas.bind_all("<MouseWheel>",
-                        lambda e: canvas.yview_scroll(int(-1 * (e.delta or 0) / 3), "units"))
-
-        ttk.Label(body, text="Prospecting auto-pan settings",
-                  font=("Helvetica", 15, "bold")).pack(anchor="w", pady=(0, 2))
-        ttk.Label(body, foreground="#888",
-                  text="Edit values, then Save. The macro reads these on start "
-                       "(Ctrl+K).").pack(anchor="w", pady=(0, 8))
-
-        # preset row
-        pr = ttk.Frame(body); pr.pack(fill="x", pady=(0, 8))
-        ttk.Label(pr, text="Preset:").pack(side="left")
-        ttk.Button(pr, text="Load v1 (fast 1-dig)",
-                   command=lambda: self.apply_preset(PRESET_V1)).pack(side="left", padx=4)
-        ttk.Button(pr, text="Load v2 (multi-dig)",
-                   command=lambda: self.apply_preset(PRESET_V2)).pack(side="left", padx=4)
-
-        for title, items in SECTIONS:
-            lf = ttk.LabelFrame(body, text=title, padding=8)
-            lf.pack(fill="x", pady=5)
-            for i, (key, label, typ, default) in enumerate(items):
-                val = saved.get(key, default)
-                if typ == "bool":
-                    var = tk.BooleanVar(value=bool(val))
-                    ttk.Checkbutton(lf, text=label, variable=var).grid(
-                        row=i, column=0, columnspan=2, sticky="w", pady=2)
-                else:
-                    var = tk.StringVar(value=str(val))
-                    ttk.Label(lf, text=label).grid(row=i, column=0, sticky="w", pady=2)
-                    ttk.Entry(lf, textvariable=var, width=8).grid(
-                        row=i, column=1, sticky="e", padx=(8, 0))
-                lf.columnconfigure(0, weight=1)
-                self.vars[key] = var
-
-        # ---- buttons + status (fixed at bottom) ----
-        bar = ttk.Frame(root, padding=(8, 6))
-        bar.pack(fill="x")
-        ttk.Button(bar, text="Save", command=self.save).pack(side="left")
-        ttk.Button(bar, text="Save & Launch", command=self.save_launch).pack(side="left", padx=6)
-        ttk.Button(bar, text="Reset defaults", command=self.reset).pack(side="left")
-        self.status = ttk.Label(bar, text="", foreground="#2a8")
-        self.status.pack(side="right")
-
-    def apply_preset(self, preset):
-        for k, v in preset.items():
-            if k in self.vars:
-                if TYPES[k] == "bool":
-                    self.vars[k].set(bool(v))
-                else:
-                    self.vars[k].set(str(v))
-        self.status.config(text="preset loaded — remember to Save")
-
-    def reset(self):
-        for k, var in self.vars.items():
-            if TYPES[k] == "bool":
-                var.set(bool(DEFAULTS[k]))
+def render(msg=""):
+    saved = load_saved()
+    rows = []
+    for title, items in SECTIONS:
+        rows.append(f'<fieldset><legend>{title}</legend>')
+        for key, label, typ, default in items:
+            val = saved.get(key, default)
+            if typ == "bool":
+                checked = "checked" if val else ""
+                rows.append(
+                    f'<label class="row chk"><input type="checkbox" name="{key}" '
+                    f'data-type="bool" {checked}><span>{label}</span></label>')
             else:
-                var.set(str(DEFAULTS[k]))
-        self.status.config(text="defaults restored — remember to Save")
+                rows.append(
+                    f'<label class="row"><span>{label}</span>'
+                    f'<input type="number" name="{key}" data-type="int" '
+                    f'value="{val}"></label>')
+        rows.append('</fieldset>')
+    body = "\n".join(rows)
+    banner = f'<div class="ok">{msg}</div>' if msg else ""
+    return PAGE.replace("{{ROWS}}", body).replace("{{MSG}}", banner) \
+        .replace("{{DEFAULTS}}", json.dumps(DEFAULTS)) \
+        .replace("{{V1}}", json.dumps(PRESET_V1)) \
+        .replace("{{V2}}", json.dumps(PRESET_V2))
 
-    def collect(self):
-        out = {}
-        for k, var in self.vars.items():
-            if TYPES[k] == "bool":
-                out[k] = bool(var.get())
+
+PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<title>Prospecting Macro — Settings</title>
+<style>
+ body{background:#15171c;color:#e6e6e6;font:14px -apple-system,Helvetica,Arial;margin:0;padding:24px}
+ h1{font-size:20px;margin:0 0 4px} .sub{color:#8a93a0;margin:0 0 16px}
+ .wrap{max-width:620px;margin:0 auto}
+ fieldset{border:1px solid #2a2f39;border-radius:10px;margin:0 0 14px;padding:10px 14px}
+ legend{color:#7fd1b9;font-weight:600;padding:0 6px}
+ .row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;gap:12px}
+ .row span{flex:1} .row input[type=number]{width:90px;background:#0e1014;color:#fff;
+   border:1px solid #333a45;border-radius:6px;padding:6px 8px;text-align:right}
+ .chk{cursor:pointer} .chk input{width:18px;height:18px}
+ .bar{position:sticky;bottom:0;background:#15171c;padding:14px 0;display:flex;gap:8px;
+   align-items:center;border-top:1px solid #2a2f39;margin-top:8px}
+ button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:10px 16px;
+   font-weight:600;cursor:pointer} button.alt{background:#374151} button.ghost{background:#222833}
+ .ok{background:#143a2a;color:#7fe6b5;border:1px solid #1f6b4a;border-radius:8px;
+   padding:8px 12px;margin:0 0 14px}
+ .presets{display:flex;gap:8px;margin:0 0 14px;align-items:center}
+ .presets span{color:#8a93a0}
+</style></head><body><div class="wrap">
+ <h1>Prospecting auto-pan — settings</h1>
+ <p class="sub">Edit values, then Save. The macro reads these each time it starts (Ctrl+K).</p>
+ {{MSG}}
+ <div class="presets"><span>Preset:</span>
+   <button type="button" class="ghost" onclick="preset(V1)">Load v1 (fast 1-dig)</button>
+   <button type="button" class="ghost" onclick="preset(V2)">Load v2 (multi-dig)</button>
+   <button type="button" class="ghost" onclick="preset(DEF)">Reset defaults</button>
+ </div>
+ <form method="POST" action="/save" id="f">
+   {{ROWS}}
+   <div class="bar">
+     <button type="submit" formaction="/save">Save</button>
+     <button type="submit" formaction="/launch" class="alt">Save &amp; Launch macro</button>
+     <span class="sub" style="margin-left:auto">changes apply on the macro's next start</span>
+   </div>
+ </form>
+</div>
+<script>
+ const DEF={{DEFAULTS}},V1={{V1}},V2={{V2}};
+ function preset(p){for(const k in p){const el=document.querySelector('[name="'+k+'"]');
+   if(!el)continue; if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];}}
+</script>
+</body></html>"""
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, html, code=200):
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
+
+    def log_message(self, *a):
+        pass  # quiet
+
+    def do_GET(self):
+        self._send(render())
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(n).decode("utf-8")
+        form = urllib.parse.parse_qs(raw, keep_blank_values=True)
+        data = {}
+        for key, typ in TYPES.items():
+            if typ == "bool":
+                data[key] = key in form          # checkbox only sent when checked
             else:
-                raw = var.get().strip()
                 try:
-                    out[k] = int(raw)
-                except ValueError:
-                    raise ValueError(f"'{k}' must be a whole number (got '{raw}')")
-        return out
-
-    def save(self):
-        try:
-            data = self.collect()
-        except ValueError as e:
-            messagebox.showerror("Invalid value", str(e))
-            return None
+                    data[key] = int(form.get(key, [DEFAULTS[key]])[0])
+                except (ValueError, IndexError):
+                    data[key] = DEFAULTS[key]
         with open(CONFIG_FILE, "w") as f:
             json.dump(data, f, indent=2)
-        self.status.config(text=f"saved {len(data)} settings ✓")
-        return data
+        msg = f"Saved {len(data)} settings ✓"
+        if self.path == "/launch":
+            cmd = f'cd {json.dumps(HERE)} && python3 {json.dumps(MACRO_FILE)}'
+            script = (f'tell application "Terminal" to do script "{cmd}"\n'
+                      'tell application "Terminal" to activate')
+            try:
+                subprocess.run(["osascript", "-e", script], check=True)
+                msg += " — launched in Terminal (press Ctrl+K to start)"
+            except Exception as e:
+                msg += f" — couldn't auto-launch ({e}); run python3 prospecting_old.py"
+        self._send(render(msg))
 
-    def save_launch(self):
-        if self.save() is None:
-            return
-        # open Terminal running the macro (Terminal has the accessibility perms)
-        cmd = f'cd {json.dumps(HERE)} && python3 {json.dumps(MACRO_FILE)}'
-        script = f'tell application "Terminal" to do script "{cmd}"\n' \
-                 'tell application "Terminal" to activate'
-        try:
-            subprocess.run(["osascript", "-e", script], check=True)
-            self.status.config(text="launched in Terminal ✓  (Ctrl+K to start)")
-        except Exception as e:
-            messagebox.showinfo(
-                "Saved",
-                "Settings saved. Couldn't auto-launch Terminal "
-                f"({e}).\nRun it yourself:\n  python3 prospecting_old.py")
+
+def free_port(start=8765):
+    for p in range(start, start + 20):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", p)); return p
+            except OSError:
+                continue
+    return start
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    App(root)
-    root.mainloop()
+    port = free_port()
+    url = f"http://127.0.0.1:{port}/"
+    srv = HTTPServer(("127.0.0.1", port), Handler)
+    print(f"Prospecting settings UI -> {url}\nClose with Ctrl+C when done.")
+    threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\nUI closed.")
