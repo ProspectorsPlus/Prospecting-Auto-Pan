@@ -885,13 +885,13 @@ def go_water(det):
 
 
 def do_shake(det):
-    """THE MOMENTUM TECHNIQUE. Start holding W (glide toward land) and HOLD the
-    mouse button to shake (kept alive with drag events, since macOS drops a static
-    hold). This build's shake is slower, so a sustained hold drains it more
-    reliably than rapid clicks. W carries you onto land WHILE the pan drains; we
-    drop W when the Collect Deposit cue shows. Hold until the CAPACITY reads empty
-    (capacity is the truth; the Shake cue sticks). Bails only if the pan stays
-    COMPLETELY FULL past SHAKE_BAIL_MS (no drain at all = no real shake)."""
+    """THE MOMENTUM TECHNIQUE. Hold W (glide toward land) and rattle RAPID CLICKS
+    to shake. macOS does NOT sustain a synthetic held press in Roblox, so a hold
+    silently does nothing -- clicks DO register, so we click fast and keep going
+    until the pan empties (a slower shake just takes more clicks). W carries you
+    onto land WHILE the pan drains; we drop W when the Collect Deposit cue shows.
+    Stop when the CAPACITY reads empty (capacity is the truth; the Shake cue
+    sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
@@ -899,13 +899,9 @@ def do_shake(det):
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
-    mouse_down()                             # HOLD the shake
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
-        # keep the held press ALIVE (macOS drops a motionless hold)
-        _post(Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
-            Quartz.kCGMouseButtonLeft))
+        mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
@@ -913,18 +909,17 @@ def do_shake(det):
             emptied = True
             break
         if w_down and det.on_deposit():      # reached land -> stop gliding...
-            key_up(KEY_W); w_down = False     # ...but keep holding to finish
+            key_up(KEY_W); w_down = False     # ...but keep clicking to finish
             on_land = True
         # CAPACITY-based bail: only give up if the pan is STILL FULL well past a
         # real shake's duration (no drain at all = no shake). We do NOT bail just
-        # because we didn't SEE the 'Shake' cue -- the hold keeps draining an
+        # because we didn't SEE the 'Shake' cue -- the clicks keep draining an
         # actual shake, which is what frees us to move again.
         if (time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
                 and det.capacity_full()):
             bailed = True
             break                            # truly not shaking
-        sleep_ms(SHAKE_POLL_MS)
-    mouse_up()                               # release the held shake
+        sleep_ms(SHAKE_CLICK_GAP_MS)
     if w_down:
         key_up(KEY_W)
     if emptied:
@@ -1037,23 +1032,15 @@ def break_out(det, s):
     HOLDING the mouse still finishes it, so we hold to drain it, then reposition
     forward to get off the water edge. After this we reset the counters and let
     normal logic try again ('do as if it was normal'). Returns True if it emptied."""
-    log("    ** BREAK-OUT: hold to finish any active shake, then reposition **")
+    log("    ** BREAK-OUT: click to finish any active shake, then reposition **")
     if s.full:
-        mouse_down()
         end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
-        emptied = False
         while time.perf_counter() < end and State.running:
-            _post(Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
-                Quartz.kCGMouseButtonLeft))
+            mouse_tap(SHAKE_CLICK_MS)
             if det.pan_empty():
-                emptied = True
-                break
-            sleep_ms(SHAKE_POLL_MS)
-        mouse_up()
-        if emptied:
-            log("    break-out: hold finished the shake -> pan empty")
-            return True
+                log("    break-out: clicks finished the shake -> pan empty")
+                return True
+            sleep_ms(SHAKE_CLICK_GAP_MS)
     # still stuck -> reposition forward (off the edge / onto land) for next try
     log("    break-out: reposition W fwd")
     key_down(KEY_W); sleep_ms(BREAKOUT_REPOS_MS); key_up(KEY_W)
