@@ -32,6 +32,7 @@ SECTIONS = [
     ("Mode / Dig", [
         ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
         ("DIG_CLICK_MS",       "Dig hold length (ms)",                    "int", 75),
+        ("DIG_SPEED",          "Dig speed (%) — scales the hold",         "int", 100),
         ("MAX_DIGS_TO_FILL",   "Max digs to fill the pan",                "int", 8),
         ("DIG_FILL_MS",        "Wait for FULL after each dig (ms)",        "int", 250),
         ("PRE_DIG_SETTLE_MS",  "Settle before first dig after shake (ms)", "int", 60),
@@ -105,6 +106,61 @@ TAB_ICON = {
     "Recovery movement (jitter taps)": "⚙",
 }
 
+# Per-setting explanations (shown as a ? tooltip next to each field).
+HELP = {
+    "PERFECT": "If on, the dig releases when the skill bar hits the green zone. "
+               "The bar is usually too fast to catch by pixel, so leave OFF and "
+               "use a timed hold instead.",
+    "DIG_CLICK_MS": "How long each dig holds the mouse. Tune so the skill bar "
+                    "lands on green for your build.",
+    "DIG_SPEED": "Your in-game dig-speed stat as a percent. Scales the dig hold "
+                 "(effective = hold ÷ speed/100). 100 = no change.",
+    "MAX_DIGS_TO_FILL": "Safety cap on how many digs it will do to fill the pan. "
+                        "It watches the bar, so set this above your build's need.",
+    "DIG_FILL_MS": "After a dig, how long to wait for the bar to read FULL before "
+                   "digging again.",
+    "PRE_DIG_SETTLE_MS": "Tiny pause after landing before the first dig, so it "
+                         "doesn't fire mid-glide and miss.",
+    "PAN_BACK_MAX_MS": "Safety cap on the backward (S) walk into the water.",
+    "WATER_EXTRA_BACK_MS": "Keep holding S a bit after the Pan cue to go deeper, "
+                           "so the shake doesn't start right at the edge.",
+    "SHAKE_MOMENTUM_W": "Hold W while shaking so momentum carries you back onto "
+                        "land as the pan drains.",
+    "SHAKE_CLICK_MS": "Length of each shake click (the shake is a rapid click "
+                      "stream, since a held press is dropped on macOS).",
+    "SHAKE_CLICK_GAP_MS": "Gap between shake clicks. Lower = faster rattle.",
+    "SHAKE_HOLD_MS": "Overall shake time limit; it stops early when the pan empties.",
+    "SHAKE_BAIL_MS": "If the pan is STILL completely full after this long, the "
+                     "shake didn't start — give up and retry. Keep above a real "
+                     "shake's drain time.",
+    "SHAKE_START_DELAY_MS": "Pause between reaching the water and starting the "
+                            "shake (usually 0).",
+    "POST_SHAKE_SETTLE_MS": "Pause after the pan empties so momentum settles you "
+                            "onto land before the dig-probe.",
+    "DEPOSIT_MAX_MS": "Safety cap on the forward (W) walk while looking for land.",
+    "LAND_SETTLE_MS": "Hold W a touch longer after the land cue to sit firmly on "
+                      "the dirt (prevents a land↔water flicker).",
+    "DIG_PROBE_MS": "How long to wait for a probe-dig to register before calling "
+                    "it a miss. Too short = needless extra nudges.",
+    "PROBE_GAP_MS": "Settle after a forward nudge before the next probe dig.",
+    "LAND_PROBE_NUDGE_MS": "How far forward (ms of W) to nudge between probe digs "
+                           "when searching for land.",
+    "LAND_DIG_TRIES": "How many nudge-forward rounds to try before giving up on "
+                      "finding land (then SAFE STOP).",
+    "STUCK_TICKS": "How many identical reads in a row before it triggers recovery.",
+    "RECOVER_LIMIT": "How many recoveries on the same spot before the smart "
+                     "break-out kicks in.",
+    "RECOVER_BACK_MS": "Budget for a recovery nudge (pulsed taps).",
+    "SHAKE_FAIL_LIMIT": "Shakes that don't empty (even while moving) before it "
+                        "SAFE STOPs.",
+    "BREAKOUT_LIMIT": "Break-out attempts before SAFE STOP.",
+    "BREAKOUT_SHAKE_MS": "When stuck, click this long to finish a shake that's "
+                         "locking your movement.",
+    "BREAKOUT_REPOS_MS": "Forward reposition nudge during a break-out.",
+    "BURST_ON_MS": "Recovery taps: how long each tap holds the key.",
+    "BURST_OFF_MS": "Recovery taps: how long each tap releases before re-checking.",
+}
+
 
 def render(msg=""):
     saved = load_saved()
@@ -125,7 +181,9 @@ def render(msg=""):
             else:
                 control = (f'<input type="number" name="{key}" data-type="int" '
                            f'value="{val}">')
-            rows.append(f'<label class="row"><span class="lbl">{label}</span>'
+            qm = (f'<span class="qm" title="{HELP[key]}">?</span>'
+                  if HELP.get(key) else "")
+            rows.append(f'<label class="row"><span class="lbl">{label}{qm}</span>'
                         f'{control}</label>')
         hint = SECTION_HINT.get(title, "")
         panels.append(
@@ -191,6 +249,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .row{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid #20242d}
  .rows .row:last-child{border-bottom:0}
  .lbl{flex:1;color:#d7dce4}
+ .qm{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
+   margin-left:7px;border-radius:50%;background:#2c3340;color:#9fb0c4;font-size:11px;
+   font-weight:700;cursor:help} .qm:hover{background:var(--accent);color:#fff}
  input[type=number]{width:104px;background:var(--field);color:#fff;border:1px solid #2c333f;
    border-radius:8px;padding:9px 11px;text-align:right;font-variant-numeric:tabular-nums}
  input[type=number]:focus{outline:0;border-color:var(--accent);
