@@ -224,7 +224,10 @@ def _emit_state(running):
 # HTML
 # ============================================================================
 def _qm(key):
-    return (f'<span class="qm" title="{HELP[key]}">?</span>' if HELP.get(key) else "")
+    if not HELP.get(key):
+        return ""
+    tip = HELP[key].replace('"', "&quot;")
+    return f'<span class="qm" data-tip="{tip}">?</span>'
 
 
 def build_html():
@@ -342,6 +345,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .qm{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
   margin-left:7px;border-radius:50%;background:#2c3340;color:#9fb0c4;font-size:11px;
   font-weight:700;cursor:help} .qm:hover{background:var(--accent);color:#fff}
+ .tip{position:fixed;display:none;max-width:300px;background:#0b0d12;color:#dfe5ee;
+  border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:12.5px;
+  line-height:1.4;z-index:300;box-shadow:0 8px 24px rgba(0,0,0,.5)}
  input[type=number]{width:104px;background:var(--field);color:#fff;border:1px solid #2c333f;
   border-radius:8px;padding:9px 11px;text-align:right}
  input[type=number]:focus,input[type=text]:focus,.rname:focus{outline:0;border-color:var(--accent);
@@ -460,6 +466,19 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    setVals(e); setRelics(e.RELICS||[], e.RELICS_ENABLED); toast('Loaded "'+name+'"');};
  $('#delbuild').onclick=async()=>{const name=$('#buildlist').value;if(!name){toast('Pick a build to delete');return;}
    const list=await window.pywebview.api.delete_build(name);fillBuilds(list);toast('Deleted "'+name+'"');};
+ // custom tooltip (native title tooltips don't show in the app window)
+ const _tip=document.createElement('div');_tip.className='tip';document.body.appendChild(_tip);
+ document.addEventListener('mouseover',e=>{const q=e.target.closest('.qm');if(!q)return;
+   _tip.textContent=q.dataset.tip||'';_tip.style.display='block';
+   const r=q.getBoundingClientRect();
+   _tip.style.left=Math.max(8,Math.min(r.left,window.innerWidth-308))+'px';
+   _tip.style.top=(r.bottom+6)+'px';});
+ document.addEventListener('mouseout',e=>{if(e.target.closest('.qm'))_tip.style.display='none';});
+ // dig speed -> auto-fill dig hold (100% = 550ms, hold = 55000/speed)
+ (function(){const ds=document.querySelector('[data-key="DIG_SPEED"]'),
+   dh=document.querySelector('[data-key="DIG_CLICK_MS"]');
+   if(ds&&dh)ds.addEventListener('input',()=>{const s=parseFloat(ds.value);
+     if(s>0)dh.value=Math.round(55000/s);});})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
    setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);}

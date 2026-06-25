@@ -88,10 +88,10 @@ MAX_DIGS_TO_FILL  = 8
 DIG_CLICK_MS      = 75              # dig hold length -- tuned so the skill bar
                                    # lands on GREEN for this build's dig speed
                                    # (the green pixel is too fast to detect live)
-# DIG SPEED SCALING: if your dig-speed stat changes, the bar fills faster/slower.
-# The effective dig hold = DIG_CLICK_MS / (DIG_SPEED/100). DIG_SPEED=100 -> no
-# change (so this is a no-op by default). Higher value -> shorter hold.
-DIG_SPEED         = 100            # percent (100 = unchanged)
+# DIG SPEED: your dig-speed stat (percent). The UI uses it to AUTO-FILL
+# DIG_CLICK_MS above (hold = 55000 / DIG_SPEED, i.e. 100% = 550ms, 200% = 275ms).
+# Stored for reference; the macro acts on DIG_CLICK_MS, so it's not scaled twice.
+DIG_SPEED         = 100            # percent
 
 # Pixel to watch for the white line in "color" mode (= calibrated green pixel).
 # The macro releases LMB when this pixel goes WHITE (the line is on it).
@@ -698,11 +698,12 @@ def safe_stop(reason):
 
 # ---- Cycle parts ------------------------------------------------------------
 def dig_once(detector):
-    """One dig. PERFECT=False -> quick click; PERFECT=True -> release on green."""
+    """One dig. PERFECT=False -> quick click; PERFECT=True -> release on green.
+    The hold length is DIG_CLICK_MS, which the UI auto-fills from DIG_SPEED
+    (so the scaling is done once, in the UI, not again here)."""
     if not PERFECT:
-        hold = DIG_CLICK_MS * (100.0 / DIG_SPEED) if DIG_SPEED else DIG_CLICK_MS
         mouse_down()
-        sleep_ms(hold)
+        sleep_ms(DIG_CLICK_MS)
         mouse_up()
         return
     # PERFECT: hold LMB and release when the white line crosses the green pixel

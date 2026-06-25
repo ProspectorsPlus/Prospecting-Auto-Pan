@@ -111,10 +111,10 @@ HELP = {
     "PERFECT": "If on, the dig releases when the skill bar hits the green zone. "
                "The bar is usually too fast to catch by pixel, so leave OFF and "
                "use a timed hold instead.",
-    "DIG_CLICK_MS": "How long each dig holds the mouse. Tune so the skill bar "
-                    "lands on green for your build.",
-    "DIG_SPEED": "Your in-game dig-speed stat as a percent. Scales the dig hold "
-                 "(effective = hold ÷ speed/100). 100 = no change.",
+    "DIG_CLICK_MS": "How long each dig holds the mouse. Auto-filled from Dig "
+                    "speed below, or set it manually.",
+    "DIG_SPEED": "Your dig-speed stat as a percent. Auto-fills the Dig hold above "
+                 "(100% = 550ms, 200% = 275ms; hold = 55000 / speed).",
     "MAX_DIGS_TO_FILL": "Safety cap on how many digs it will do to fill the pan. "
                         "It watches the bar, so set this above your build's need.",
     "DIG_FILL_MS": "After a dig, how long to wait for the bar to read FULL before "
@@ -181,7 +181,7 @@ def render(msg=""):
             else:
                 control = (f'<input type="number" name="{key}" data-type="int" '
                            f'value="{val}">')
-            qm = (f'<span class="qm" title="{HELP[key]}">?</span>'
+            qm = (f'<span class="qm" data-tip="{HELP[key].replace(chr(34), "&quot;")}">?</span>'
                   if HELP.get(key) else "")
             rows.append(f'<label class="row"><span class="lbl">{label}{qm}</span>'
                         f'{control}</label>')
@@ -252,6 +252,9 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .qm{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;
    margin-left:7px;border-radius:50%;background:#2c3340;color:#9fb0c4;font-size:11px;
    font-weight:700;cursor:help} .qm:hover{background:var(--accent);color:#fff}
+ .tip{position:fixed;display:none;max-width:300px;background:#0b0d12;color:#dfe5ee;
+   border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:12.5px;
+   line-height:1.4;z-index:200;box-shadow:0 8px 24px rgba(0,0,0,.5)}
  input[type=number]{width:104px;background:var(--field);color:#fff;border:1px solid #2c333f;
    border-radius:8px;padding:9px 11px;text-align:right;font-variant-numeric:tabular-nums}
  input[type=number]:focus{outline:0;border-color:var(--accent);
@@ -303,6 +306,19 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    for(const k in p){const el=document.querySelector('[name="'+k+'"]');
      if(!el)continue; if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];}
  }
+ // custom tooltip (native title tooltips are unreliable in app windows)
+ const _tip=document.createElement('div');_tip.className='tip';document.body.appendChild(_tip);
+ document.addEventListener('mouseover',e=>{const q=e.target.closest('.qm');if(!q)return;
+   _tip.textContent=q.dataset.tip||'';_tip.style.display='block';
+   const r=q.getBoundingClientRect();
+   _tip.style.left=Math.max(8,Math.min(r.left,window.innerWidth-308))+'px';
+   _tip.style.top=(r.bottom+6)+'px';});
+ document.addEventListener('mouseout',e=>{if(e.target.closest('.qm'))_tip.style.display='none';});
+ // dig speed -> auto-fill dig hold (100% = 550ms, hold = 55000/speed)
+ (function(){const ds=document.querySelector('[name="DIG_SPEED"]'),
+   dh=document.querySelector('[name="DIG_CLICK_MS"]');
+   if(ds&&dh)ds.addEventListener('input',()=>{const s=parseFloat(ds.value);
+     if(s>0)dh.value=Math.round(55000/s);});})();
 </script>
 </body></html>"""
 
