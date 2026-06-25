@@ -1,53 +1,65 @@
 @echo off
-setlocal enabledelayedexpansion
 cd /d "%~dp0"
 echo ============================================
 echo    Prospectors Plus  -  Installer
 echo ============================================
-echo This installs Python (if needed) and the packages the macro uses.
+echo This installs Python (if needed) and the packages the macro uses,
+echo then opens the app. You only need to run this once.
 echo.
 
-REM --- find an existing Python ---
-set "PYCMD="
-where py >nul 2>&1 && set "PYCMD=py -3"
-if not defined PYCMD ( where python >nul 2>&1 && set "PYCMD=python" )
+REM --- find a working Python (the "py" launcher avoids the Store stub) ---
+set "PYEXE="
+py -3 -c "import sys" >nul 2>&1 && set "PYEXE=py -3"
+if not defined PYEXE python -c "import sys" >nul 2>&1 && set "PYEXE=python"
+if defined PYEXE goto havePy
 
-if not defined PYCMD (
-  echo Python was not found.
-  REM Prefer winget (trusted by Windows / Smart App Control) if available.
-  where winget >nul 2>&1
-  if not errorlevel 1 (
-    echo Installing Python via winget ...
-    winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
-  ) else (
-    echo Downloading Python 3.12 from python.org ...
-    powershell -Command "try{Invoke-WebRequest -Uri 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe' -OutFile '%TEMP%\prospectors_python.exe'}catch{exit 1}"
-    if errorlevel 1 (
-      echo.
-      echo Could not download Python. Install it from the Microsoft Store
-      echo ^(search "Python 3.12" - Get^), then run Install.bat again.
-      pause & exit /b 1
-    )
-    echo Installing Python ^(this can take a minute^) ...
-    "%TEMP%\prospectors_python.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
-  )
-  set "PYCMD=%LocalAppData%\Programs\Python\Python312\python.exe"
-  if not exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "PYCMD=py -3"
+echo Python not found. Installing Python 3.12 ...
+where winget >nul 2>&1
+if errorlevel 1 goto dlPy
+winget install -e --id Python.Python.3.12 --accept-source-agreements --accept-package-agreements
+goto findPy
+
+:dlPy
+echo Downloading Python from python.org ...
+powershell -Command "try{Invoke-WebRequest 'https://www.python.org/ftp/python/3.12.7/python-3.12.7-amd64.exe' -OutFile '%TEMP%\pp_py.exe'}catch{exit 1}"
+if errorlevel 1 (
+  echo.
+  echo Could not download Python. Install Python 3.12 from the Microsoft Store
+  echo ^(open Store, search "Python 3.12", click Get^), then run Install.bat again.
+  pause & exit /b 1
+)
+"%TEMP%\pp_py.exe" /quiet InstallAllUsers=0 PrependPath=1 Include_pip=1 Include_launcher=1
+
+:findPy
+REM PATH isn't refreshed in this window after install, so use the py launcher
+REM that the installer drops in C:\Windows, or a known install folder.
+if exist "%SystemRoot%\py.exe" set "PYEXE=%SystemRoot%\py.exe -3"
+if not defined PYEXE if exist "%LocalAppData%\Programs\Python\Python312\python.exe" set "PYEXE=%LocalAppData%\Programs\Python\Python312\python.exe"
+if not defined PYEXE if exist "%ProgramFiles%\Python312\python.exe" set "PYEXE=%ProgramFiles%\Python312\python.exe"
+
+:havePy
+if not defined PYEXE (
+  echo.
+  echo Python was installed but this window can't see it yet.
+  echo Please RESTART your PC, then run Install.bat again.
+  pause & exit /b 1
 )
 
 echo.
-echo Installing required packages: mss, numpy, pywebview ...
-%PYCMD% -m pip install --upgrade pip
-%PYCMD% -m pip install mss numpy pywebview pythonnet
+echo Using Python: %PYEXE%
+echo Installing packages: mss numpy pywebview pythonnet ...
+%PYEXE% -m pip install --upgrade pip
+%PYEXE% -m pip install mss numpy pywebview pythonnet
 if errorlevel 1 (
   echo.
-  echo Something went wrong installing packages. Try running Install.bat again,
-  echo or run:  %PYCMD% -m pip install mss numpy pywebview pythonnet
+  echo Package install failed. Run Install.bat again, or run this yourself:
+  echo    %PYEXE% -m pip install mss numpy pywebview pythonnet
   pause & exit /b 1
 )
 
 echo.
 echo ============================================
-echo    Done!  Double-click  "Prospectors Plus.bat"  to start.
+echo    Done!  Opening Prospectors Plus ...
 echo ============================================
-pause
+start "" "%~dp0Prospectors Plus.bat"
+exit /b 0
