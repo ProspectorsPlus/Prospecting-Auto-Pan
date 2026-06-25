@@ -96,10 +96,24 @@ SECTION_HINT = {
 }
 
 
+TAB_ICON = {
+    "Mode / Dig": "⛏",
+    "Walk back into water": "↓",
+    "Shake": "🌀",
+    "Return to land (dig-probe)": "↑",
+    "Recovery / safety": "🛟",
+    "Recovery movement (jitter taps)": "⚙",
+}
+
+
 def render(msg=""):
     saved = load_saved()
-    cards = []
-    for title, items in SECTIONS:
+    navs, panels = [], []
+    for idx, (title, items) in enumerate(SECTIONS):
+        active = " active" if idx == 0 else ""
+        icon = TAB_ICON.get(title, "•")
+        navs.append(f'<button type="button" class="tab{active}" data-tab="{idx}">'
+                    f'<span class="ti">{icon}</span><span>{title}</span></button>')
         rows = []
         for key, label, typ, default in items:
             val = saved.get(key, default)
@@ -114,56 +128,69 @@ def render(msg=""):
             rows.append(f'<label class="row"><span class="lbl">{label}</span>'
                         f'{control}</label>')
         hint = SECTION_HINT.get(title, "")
-        cards.append(
-            f'<section class="card"><div class="chead"><h2>{title}</h2>'
-            f'<p class="chint">{hint}</p></div>'
+        panels.append(
+            f'<section class="panel{active}" id="p{idx}">'
+            f'<div class="phead"><h2>{title}</h2><p class="chint">{hint}</p></div>'
             f'<div class="rows">{"".join(rows)}</div></section>')
     banner = f'<div class="ok">{msg}</div>' if msg else ""
-    return PAGE.replace("{{CARDS}}", "".join(cards)).replace("{{MSG}}", banner) \
-        .replace("{{DEFAULTS}}", json.dumps(DEFAULTS)) \
-        .replace("{{V1}}", json.dumps(PRESET_V1)) \
-        .replace("{{V2}}", json.dumps(PRESET_V2))
+    return (PAGE.replace("{{NAV}}", "".join(navs))
+                .replace("{{PANELS}}", "".join(panels))
+                .replace("{{MSG}}", banner)
+                .replace("{{DEFAULTS}}", json.dumps(DEFAULTS))
+                .replace("{{V1}}", json.dumps(PRESET_V1))
+                .replace("{{V2}}", json.dumps(PRESET_V2)))
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prospecting Macro — Settings</title>
 <style>
- :root{--bg:#0f1115;--card:#171a21;--card2:#1c2029;--line:#262b35;--txt:#e8eaed;
-   --mut:#8b94a3;--accent:#3b82f6;--accent2:#10b981;--field:#0c0e12}
+ :root{--bg:#0f1115;--panel:#171a21;--head:#1c2029;--line:#262b35;--txt:#e8eaed;
+   --mut:#8b94a3;--accent:#3b82f6;--accent2:#10b981;--field:#0c0e12;--nav:#13161c}
  *{box-sizing:border-box}
+ html,body{height:100%}
  body{background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,BlinkMacSystemFont,
-   "Segoe UI",Helvetica,Arial,sans-serif;margin:0}
- .topbar{position:sticky;top:0;z-index:10;background:rgba(15,17,21,.92);
-   backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
-   padding:14px 22px;display:flex;align-items:center;gap:14px}
- .brand{font-size:17px;font-weight:700;letter-spacing:.2px}
- .brand b{color:var(--accent2)} .grow{flex:1}
+   "Segoe UI",Helvetica,Arial,sans-serif;margin:0;display:flex;flex-direction:column}
+ form{display:flex;flex-direction:column;height:100vh}
+ .topbar{flex:0 0 auto;background:rgba(15,17,21,.96);border-bottom:1px solid var(--line);
+   padding:13px 20px;display:flex;align-items:center;gap:12px}
+ .brand{font-size:16px;font-weight:700;letter-spacing:.2px} .brand b{color:var(--accent2)}
+ .grow{flex:1}
  button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:9px 15px;
-   cursor:pointer;transition:transform .04s,filter .15s}
+   cursor:pointer;transition:transform .04s,filter .15s,background .15s}
  button:active{transform:translateY(1px)}
  .btn{background:var(--accent);color:#fff} .btn:hover{filter:brightness(1.08)}
  .btn2{background:#2a3340;color:#dfe5ee} .btn2:hover{background:#33404f}
- .chip{background:#20262f;color:#cdd5e0;border:1px solid var(--line);
-   border-radius:999px;padding:7px 13px;font-size:13px}
- .chip:hover{border-color:#3a4757;background:#262d38}
- .wrap{max-width:660px;margin:0 auto;padding:18px 22px 90px}
- .lead{color:var(--mut);margin:2px 0 16px}
- .presets{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 18px}
- .presets .plabel{color:var(--mut);margin-right:2px}
- .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
-   margin:0 0 16px;overflow:hidden}
- .chead{padding:13px 16px 11px;background:var(--card2);border-bottom:1px solid var(--line)}
- .chead h2{margin:0;font-size:14.5px;color:#cfe9df;letter-spacing:.2px}
- .chint{margin:3px 0 0;color:var(--mut);font-size:12.5px}
- .rows{padding:4px 16px}
- .row{display:flex;align-items:center;gap:14px;padding:9px 0;
-   border-bottom:1px solid #20242d}
+ .body{flex:1 1 auto;display:flex;min-height:0}
+ /* left nav */
+ .side{flex:0 0 200px;background:var(--nav);border-right:1px solid var(--line);
+   padding:12px 10px;overflow-y:auto}
+ .tab{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+   background:transparent;color:#b9c1cd;font-weight:600;border-radius:9px;
+   padding:10px 11px;margin-bottom:3px}
+ .tab .ti{width:18px;text-align:center;opacity:.85}
+ .tab:hover{background:#1d222b;color:#e8eaed}
+ .tab.active{background:#223049;color:#fff}
+ .navsep{height:1px;background:var(--line);margin:10px 4px}
+ .pretitle{color:var(--mut);font-size:11.5px;text-transform:uppercase;
+   letter-spacing:.6px;margin:4px 8px 6px}
+ .chip{display:block;width:100%;text-align:left;background:#1b212b;color:#cdd5e0;
+   border:1px solid var(--line);border-radius:8px;padding:8px 11px;margin-bottom:6px;
+   font-size:13px;font-weight:600} .chip:hover{background:#222a35;border-color:#3a4757}
+ /* content */
+ .content{flex:1 1 auto;overflow-y:auto;padding:20px 26px}
+ .lead{color:var(--mut);margin:0 0 14px}
+ .panel{display:none} .panel.active{display:block;animation:fade .12s ease}
+ @keyframes fade{from{opacity:0;transform:translateY(3px)}to{opacity:1}}
+ .phead{margin:0 0 12px}
+ .phead h2{margin:0;font-size:18px} .chint{margin:3px 0 0;color:var(--mut)}
+ .rows{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+   padding:4px 16px;max-width:560px}
+ .row{display:flex;align-items:center;gap:14px;padding:12px 0;border-bottom:1px solid #20242d}
  .rows .row:last-child{border-bottom:0}
  .lbl{flex:1;color:#d7dce4}
- input[type=number]{width:96px;background:var(--field);color:#fff;
-   border:1px solid #2c333f;border-radius:8px;padding:8px 10px;text-align:right;
-   font-variant-numeric:tabular-nums}
+ input[type=number]{width:104px;background:var(--field);color:#fff;border:1px solid #2c333f;
+   border-radius:8px;padding:9px 11px;text-align:right;font-variant-numeric:tabular-nums}
  input[type=number]:focus{outline:0;border-color:var(--accent);
    box-shadow:0 0 0 3px rgba(59,130,246,.25)}
  .switch{position:relative;display:inline-flex} .switch input{display:none}
@@ -174,8 +201,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
  .switch input:checked + .track{background:var(--accent2)}
  .switch input:checked + .track .knob{left:23px}
  .ok{background:#10301f;color:#7fe6b5;border:1px solid #1f6b4a;border-radius:10px;
-   padding:10px 13px;margin:0 0 16px;font-size:13px}
- .foot{color:var(--mut);font-size:12.5px;text-align:center;margin-top:6px}
+   padding:10px 13px;margin:0 0 16px;font-size:13px;max-width:560px}
 </style></head><body>
 <form method="POST" action="/save" id="f">
  <div class="topbar">
@@ -184,24 +210,35 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
    <button class="btn2" type="submit" formaction="/launch">Save &amp; Launch</button>
    <button class="btn" type="submit" formaction="/save">Save</button>
  </div>
- <div class="wrap">
-   <p class="lead">Tune timings and behaviour. Click <b>Save</b>; the macro loads these
-     each time it starts (Ctrl+K). No file editing needed.</p>
-   {{MSG}}
-   <div class="presets">
-     <span class="plabel">Preset:</span>
+ <div class="body">
+   <nav class="side">
+     {{NAV}}
+     <div class="navsep"></div>
+     <div class="pretitle">Presets</div>
      <button type="button" class="chip" onclick="preset(V1)">v1 · fast 1-dig</button>
      <button type="button" class="chip" onclick="preset(V2)">v2 · multi-dig</button>
      <button type="button" class="chip" onclick="preset(DEF)">Reset defaults</button>
+   </nav>
+   <div class="content">
+     {{MSG}}
+     <p class="lead">Pick a category on the left, edit values, then <b>Save</b>.
+       The macro loads these each time it starts (Ctrl+K).</p>
+     {{PANELS}}
    </div>
-   {{CARDS}}
-   <p class="foot">Changes apply on the macro's next start.</p>
  </div>
 </form>
 <script>
  const DEF={{DEFAULTS}},V1={{V1}},V2={{V2}};
- function preset(p){for(const k in p){const el=document.querySelector('[name="'+k+'"]');
-   if(!el)continue; if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];}}
+ document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{
+   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+   document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));
+   b.classList.add('active');
+   document.getElementById('p'+b.dataset.tab).classList.add('active');
+ }));
+ function preset(p){let touched={};
+   for(const k in p){const el=document.querySelector('[name="'+k+'"]');
+     if(!el)continue; if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];}
+ }
 </script>
 </body></html>"""
 
