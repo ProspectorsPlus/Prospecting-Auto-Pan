@@ -305,15 +305,26 @@ APP_BROWSERS = [
 
 def open_window(url):
     """Open as an app-style popup window if a Chromium browser exists; else fall
-    back to a normal browser tab."""
+    back to a normal browser tab. After opening, ACTIVATE the app so it's the
+    front/focused window -- otherwise macOS 'wastes' your first click just
+    focusing the window (the 'have to double-click everything' problem)."""
+    import time as _t
     for path in APP_BROWSERS:
         if os.path.exists(path):
             try:
-                subprocess.Popen([path, f"--app={url}", "--window-size=780,940"])
+                subprocess.Popen([path, f"--app={url}", "--window-size=820,940"])
+                app = path.split("/Applications/")[1].split(".app")[0]
+                _t.sleep(1.2)                      # let the window appear...
+                subprocess.Popen(["open", "-a", app])   # ...then bring it to front
                 return "app window"
             except Exception:
                 pass
     webbrowser.open(url)
+    _t.sleep(0.8)
+    try:
+        subprocess.Popen(["open", "-a", "Safari"])      # focus default browser
+    except Exception:
+        pass
     return "browser tab"
 
 
