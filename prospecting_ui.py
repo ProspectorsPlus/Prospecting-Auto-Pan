@@ -86,70 +86,118 @@ def load_saved():
         return {}
 
 
+SECTION_HINT = {
+    "Mode / Dig": "How each dig works and how many it takes to fill the pan.",
+    "Walk back into water": "Getting from land into the water to shake.",
+    "Shake": "Emptying the pan; momentum carries you back to land.",
+    "Return to land (dig-probe)": "Finding land after a shake by test-digging.",
+    "Recovery / safety": "What happens when something goes wrong.",
+    "Recovery movement (jitter taps)": "Tiny tap timing used only during recovery.",
+}
+
+
 def render(msg=""):
     saved = load_saved()
-    rows = []
+    cards = []
     for title, items in SECTIONS:
-        rows.append(f'<fieldset><legend>{title}</legend>')
+        rows = []
         for key, label, typ, default in items:
             val = saved.get(key, default)
             if typ == "bool":
                 checked = "checked" if val else ""
-                rows.append(
-                    f'<label class="row chk"><input type="checkbox" name="{key}" '
-                    f'data-type="bool" {checked}><span>{label}</span></label>')
+                control = (f'<span class="switch"><input type="checkbox" name="{key}" '
+                           f'data-type="bool" {checked}>'
+                           f'<span class="track"><span class="knob"></span></span></span>')
             else:
-                rows.append(
-                    f'<label class="row"><span>{label}</span>'
-                    f'<input type="number" name="{key}" data-type="int" '
-                    f'value="{val}"></label>')
-        rows.append('</fieldset>')
-    body = "\n".join(rows)
+                control = (f'<input type="number" name="{key}" data-type="int" '
+                           f'value="{val}">')
+            rows.append(f'<label class="row"><span class="lbl">{label}</span>'
+                        f'{control}</label>')
+        hint = SECTION_HINT.get(title, "")
+        cards.append(
+            f'<section class="card"><div class="chead"><h2>{title}</h2>'
+            f'<p class="chint">{hint}</p></div>'
+            f'<div class="rows">{"".join(rows)}</div></section>')
     banner = f'<div class="ok">{msg}</div>' if msg else ""
-    return PAGE.replace("{{ROWS}}", body).replace("{{MSG}}", banner) \
+    return PAGE.replace("{{CARDS}}", "".join(cards)).replace("{{MSG}}", banner) \
         .replace("{{DEFAULTS}}", json.dumps(DEFAULTS)) \
         .replace("{{V1}}", json.dumps(PRESET_V1)) \
         .replace("{{V2}}", json.dumps(PRESET_V2))
 
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Prospecting Macro — Settings</title>
 <style>
- body{background:#15171c;color:#e6e6e6;font:14px -apple-system,Helvetica,Arial;margin:0;padding:24px}
- h1{font-size:20px;margin:0 0 4px} .sub{color:#8a93a0;margin:0 0 16px}
- .wrap{max-width:620px;margin:0 auto}
- fieldset{border:1px solid #2a2f39;border-radius:10px;margin:0 0 14px;padding:10px 14px}
- legend{color:#7fd1b9;font-weight:600;padding:0 6px}
- .row{display:flex;align-items:center;justify-content:space-between;padding:5px 0;gap:12px}
- .row span{flex:1} .row input[type=number]{width:90px;background:#0e1014;color:#fff;
-   border:1px solid #333a45;border-radius:6px;padding:6px 8px;text-align:right}
- .chk{cursor:pointer} .chk input{width:18px;height:18px}
- .bar{position:sticky;bottom:0;background:#15171c;padding:14px 0;display:flex;gap:8px;
-   align-items:center;border-top:1px solid #2a2f39;margin-top:8px}
- button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:10px 16px;
-   font-weight:600;cursor:pointer} button.alt{background:#374151} button.ghost{background:#222833}
- .ok{background:#143a2a;color:#7fe6b5;border:1px solid #1f6b4a;border-radius:8px;
-   padding:8px 12px;margin:0 0 14px}
- .presets{display:flex;gap:8px;margin:0 0 14px;align-items:center}
- .presets span{color:#8a93a0}
-</style></head><body><div class="wrap">
- <h1>Prospecting auto-pan — settings</h1>
- <p class="sub">Edit values, then Save. The macro reads these each time it starts (Ctrl+K).</p>
- {{MSG}}
- <div class="presets"><span>Preset:</span>
-   <button type="button" class="ghost" onclick="preset(V1)">Load v1 (fast 1-dig)</button>
-   <button type="button" class="ghost" onclick="preset(V2)">Load v2 (multi-dig)</button>
-   <button type="button" class="ghost" onclick="preset(DEF)">Reset defaults</button>
+ :root{--bg:#0f1115;--card:#171a21;--card2:#1c2029;--line:#262b35;--txt:#e8eaed;
+   --mut:#8b94a3;--accent:#3b82f6;--accent2:#10b981;--field:#0c0e12}
+ *{box-sizing:border-box}
+ body{background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,BlinkMacSystemFont,
+   "Segoe UI",Helvetica,Arial,sans-serif;margin:0}
+ .topbar{position:sticky;top:0;z-index:10;background:rgba(15,17,21,.92);
+   backdrop-filter:blur(8px);border-bottom:1px solid var(--line);
+   padding:14px 22px;display:flex;align-items:center;gap:14px}
+ .brand{font-size:17px;font-weight:700;letter-spacing:.2px}
+ .brand b{color:var(--accent2)} .grow{flex:1}
+ button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:9px 15px;
+   cursor:pointer;transition:transform .04s,filter .15s}
+ button:active{transform:translateY(1px)}
+ .btn{background:var(--accent);color:#fff} .btn:hover{filter:brightness(1.08)}
+ .btn2{background:#2a3340;color:#dfe5ee} .btn2:hover{background:#33404f}
+ .chip{background:#20262f;color:#cdd5e0;border:1px solid var(--line);
+   border-radius:999px;padding:7px 13px;font-size:13px}
+ .chip:hover{border-color:#3a4757;background:#262d38}
+ .wrap{max-width:660px;margin:0 auto;padding:18px 22px 90px}
+ .lead{color:var(--mut);margin:2px 0 16px}
+ .presets{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 18px}
+ .presets .plabel{color:var(--mut);margin-right:2px}
+ .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+   margin:0 0 16px;overflow:hidden}
+ .chead{padding:13px 16px 11px;background:var(--card2);border-bottom:1px solid var(--line)}
+ .chead h2{margin:0;font-size:14.5px;color:#cfe9df;letter-spacing:.2px}
+ .chint{margin:3px 0 0;color:var(--mut);font-size:12.5px}
+ .rows{padding:4px 16px}
+ .row{display:flex;align-items:center;gap:14px;padding:9px 0;
+   border-bottom:1px solid #20242d}
+ .rows .row:last-child{border-bottom:0}
+ .lbl{flex:1;color:#d7dce4}
+ input[type=number]{width:96px;background:var(--field);color:#fff;
+   border:1px solid #2c333f;border-radius:8px;padding:8px 10px;text-align:right;
+   font-variant-numeric:tabular-nums}
+ input[type=number]:focus{outline:0;border-color:var(--accent);
+   box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+ .switch{position:relative;display:inline-flex} .switch input{display:none}
+ .track{width:46px;height:26px;background:#39414e;border-radius:999px;position:relative;
+   transition:background .15s;cursor:pointer}
+ .knob{position:absolute;top:3px;left:3px;width:20px;height:20px;background:#fff;
+   border-radius:50%;transition:left .15s}
+ .switch input:checked + .track{background:var(--accent2)}
+ .switch input:checked + .track .knob{left:23px}
+ .ok{background:#10301f;color:#7fe6b5;border:1px solid #1f6b4a;border-radius:10px;
+   padding:10px 13px;margin:0 0 16px;font-size:13px}
+ .foot{color:var(--mut);font-size:12.5px;text-align:center;margin-top:6px}
+</style></head><body>
+<form method="POST" action="/save" id="f">
+ <div class="topbar">
+   <div class="brand">⛏ Prospecting <b>Macro</b></div>
+   <div class="grow"></div>
+   <button class="btn2" type="submit" formaction="/launch">Save &amp; Launch</button>
+   <button class="btn" type="submit" formaction="/save">Save</button>
  </div>
- <form method="POST" action="/save" id="f">
-   {{ROWS}}
-   <div class="bar">
-     <button type="submit" formaction="/save">Save</button>
-     <button type="submit" formaction="/launch" class="alt">Save &amp; Launch macro</button>
-     <span class="sub" style="margin-left:auto">changes apply on the macro's next start</span>
+ <div class="wrap">
+   <p class="lead">Tune timings and behaviour. Click <b>Save</b>; the macro loads these
+     each time it starts (Ctrl+K). No file editing needed.</p>
+   {{MSG}}
+   <div class="presets">
+     <span class="plabel">Preset:</span>
+     <button type="button" class="chip" onclick="preset(V1)">v1 · fast 1-dig</button>
+     <button type="button" class="chip" onclick="preset(V2)">v2 · multi-dig</button>
+     <button type="button" class="chip" onclick="preset(DEF)">Reset defaults</button>
    </div>
- </form>
-</div>
+   {{CARDS}}
+   <p class="foot">Changes apply on the macro's next start.</p>
+ </div>
+</form>
 <script>
  const DEF={{DEFAULTS}},V1={{V1}},V2={{V2}};
  function preset(p){for(const k in p){const el=document.querySelector('[name="'+k+'"]');
