@@ -217,7 +217,7 @@ HTML = """<!doctype html><html><head><meta charset="utf-8"><style>
   transition:opacity .2s} .ok.show{opacity:1}
 </style></head><body>
  <div class="topbar">
-   <div class="brand">⛏ Prospecting <b>Macro</b></div>
+   <div class="brand">⛏ Prospectors <b>Plus</b></div>
    <div class="grow"></div>
    <button class="btn" id="savebtn">Save settings</button>
  </div>
@@ -274,7 +274,7 @@ def main():
         runpy.run_path(os.path.join(HERE, "prospecting_ui.py"), run_name="__main__")
         return
     api = Api()
-    _window = webview.create_window("Prospecting Macro", html=build_html(),
+    _window = webview.create_window("Prospectors Plus", html=build_html(),
                                     js_api=api, width=940, height=860,
                                     min_size=(820, 640))
     webview.start()
