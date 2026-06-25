@@ -5,6 +5,29 @@ A Roblox "Prospecting" auto-pan macro. Same macro and UI as the macOS version,
 ported to Windows.
 
 ------------------------------------------------------------
+IF WINDOWS BLOCKS IT  (SmartScreen / Smart App Control)
+------------------------------------------------------------
+Windows flags files that came from the internet. This is normal for unsigned
+files - here's how to allow it:
+
+  1. BEFORE you extract: right-click the .zip you downloaded -> Properties ->
+     tick "Unblock" at the bottom -> OK.  THEN extract.  (Clears the block for
+     every file at once - do this and most issues disappear.)
+
+  2. If a .bat still gets blocked: right-click it -> Properties -> Unblock -> OK.
+
+  3. If "Smart App Control" still blocks it (Windows 11): open this folder,
+     click the address bar at the top, type  powershell  and press Enter, then:
+         python -m pip install mss numpy pywebview pythonnet
+         python prospecting_app.py
+     (If "python" isn't found, install Python 3.12 from the Microsoft Store
+      first: open Store, search "Python 3.12", click Get.)
+
+  4. Last resort: Settings -> Privacy & security -> Windows Security ->
+     App & browser control -> Smart App Control -> turn Off. (Note: once off it
+     can't be turned back on without resetting Windows, so only if needed.)
+
+------------------------------------------------------------
 QUICK START
 ------------------------------------------------------------
 1. Double-click   Install.bat
