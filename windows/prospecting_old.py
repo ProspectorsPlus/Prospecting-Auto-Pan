@@ -363,6 +363,9 @@ WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
 # --- AUTO-STOP TIMER ---------------------------------------------------------
 AUTOSTOP_ENABLED   = False
 AUTOSTOP_MINUTES   = 60     # stop the macro after this many minutes of running
+# Bag-full guard: stop after this many pans (0 = off). A simple proxy for a full
+# inventory until proper count/colour reading is calibrated.
+STOP_AFTER_PANS    = 0
 
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
@@ -1629,6 +1632,15 @@ def main():
                         log(f"=== AUTO-STOP after {AUTOSTOP_MINUTES} min ===")
                         post_webhook("autostop", f"⏱️ Auto-stopped after "
                                      f"{AUTOSTOP_MINUTES} min", State.stats.as_dict())
+                        State.running = False
+                        release_all()
+                    # bag-full guard (stop after N pans)
+                    if (STOP_AFTER_PANS > 0 and State.stats
+                            and State.stats.cycles >= STOP_AFTER_PANS):
+                        log(f"=== STOP after {STOP_AFTER_PANS} pans (bag-full guard) ===")
+                        post_webhook("bag_full", f"🎒 Stopped after "
+                                     f"{STOP_AFTER_PANS} pans (bag likely full)",
+                                     State.stats.as_dict())
                         State.running = False
                         release_all()
                 else:

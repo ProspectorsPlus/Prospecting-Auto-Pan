@@ -80,6 +80,7 @@ SECTIONS = [
     ("Auto-stop", [
         ("AUTOSTOP_ENABLED",   "Auto-stop after a set time",             "bool", False),
         ("AUTOSTOP_MINUTES",   "Stop after this many minutes",           "int", 60),
+        ("STOP_AFTER_PANS",    "Stop after N pans (0 = off, bag guard)", "int", 0),
     ]),
 ]
 
@@ -182,6 +183,8 @@ HELP = {
     "WEBHOOK_STATS_MIN": "How often to send a stats update while running (0 = off).",
     "AUTOSTOP_ENABLED": "Automatically stop the macro after AUTOSTOP minutes.",
     "AUTOSTOP_MINUTES": "How long to run before auto-stopping.",
+    "STOP_AFTER_PANS": "Stop after this many pans emptied — a simple guard so it "
+                       "doesn't keep panning into a full inventory. 0 = off.",
 }
 
 # Calibratable on-screen pixels: (key, label, description, default [x, y]).
