@@ -291,7 +291,12 @@ BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets 
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
 # dirt, so the CAPACITY bar tells us if we're on land. Hit -> on land (pan now
 # filling). Miss -> nudge forward and retry.
-LAND_DIG_TRIES      = 5   # dig-probes (forward nudge between) to find land
+LAND_DIG_TRIES      = 5   # nudge-forward ROUNDS while searching for land
+# Per round, re-dig IN PLACE this many times before deciding we're off-land and
+# nudging W. A dig that simply didn't register (timing) is NOT the same as being
+# in the water, so we don't walk away on the first miss -- this stops the jittery
+# "nudge between digs" on multi-dig builds.
+DIG_INPLACE_TRIES   = 3
 # A dig "registered" (we're on land) if the capacity bar's FILL LEVEL RISES by at
 # least this fraction. This works even when the pan was already PARTIAL (the old
 # start-pixel check missed that, so it false-nudged W after the first dig).
@@ -1005,30 +1010,34 @@ def fill_to_full(det):
 def return_and_dig(det):
     """Post-shake landing WITHOUT trusting the cue (it can stick on 'Shake').
     We trust the W-momentum put us near land and DIG as a probe -- a dig only
-    fills on dirt, so the CAPACITY tells us the truth. Hit = on land -> then fill
-    the pan with as many PERFECT digs as it takes. Miss = nudge forward, retry."""
-    for attempt in range(LAND_DIG_TRIES):
+    fills on dirt, so the CAPACITY tells us the truth. A dig registers if the bar
+    FILL RISES. We re-dig IN PLACE a few times before assuming we're off-land and
+    nudging W (so a single non-registering dig can't cause a jittery nudge)."""
+    for rnd in range(LAND_DIG_TRIES):
         if not State.running:
             return False
-        if attempt == 0 and PRE_DIG_SETTLE_MS > 0:
+        if rnd == 0 and PRE_DIG_SETTLE_MS > 0:
             sleep_ms(PRE_DIG_SETTLE_MS)      # let the landing settle before dig #1
-        before = det.cap_fill()              # fill level BEFORE the dig
-        dig_once(det)
-        # HIT = the bar got fuller (dig landed on dirt) -- robust even if the pan
-        # was already partial; also accept an outright FULL read.
-        hit = wait_until(lambda: det.cap_fill() > before + CAP_RISE_FRAC
-                         or det.capacity_full(), DIG_PROBE_MS, confirm=1)
-        if hit:
-            State.land_fails = 0
-            State.breakouts = 0          # healthy progress -> clear escalation
-            log(f"    dig-probe HIT try{attempt+1} -> on land, filling")
-            fill_to_full(det)            # dig until FULL (dynamic # of digs)
-            return True
-        log(f"    dig-probe miss try{attempt+1} -> nudge W fwd")
+        for t in range(DIG_INPLACE_TRIES):
+            if not State.running:
+                return False
+            before = det.cap_fill()          # fill level BEFORE the dig
+            dig_once(det)
+            hit = wait_until(lambda: det.cap_fill() > before + CAP_RISE_FRAC
+                             or det.capacity_full(), DIG_PROBE_MS, confirm=1)
+            if hit:
+                State.land_fails = 0
+                State.breakouts = 0          # healthy progress -> clear escalation
+                log(f"    dig-probe HIT (round {rnd+1}.{t+1}) -> on land, filling")
+                fill_to_full(det)            # dig until FULL (dynamic # of digs)
+                return True
+        # none of the in-place digs registered -> probably off land -> nudge fwd
+        log(f"    no dig registered (round {rnd+1}) -> nudge W fwd")
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
-        sleep_ms(PROBE_GAP_MS)           # settle before the next dig attempt
+        sleep_ms(PROBE_GAP_MS)               # settle before the next round
     State.land_fails += 1
-    log(f"    dig-probe: no land after {LAND_DIG_TRIES} (land_fails={State.land_fails})")
+    log(f"    dig-probe: no land after {LAND_DIG_TRIES} rounds "
+        f"(land_fails={State.land_fails})")
     if State.land_fails >= STUCK_LIMIT:
         safe_stop("dig-probe can't find land after shaking")
     return False

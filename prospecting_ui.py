@@ -293,8 +293,10 @@ def launch_macro():
     subprocess.run(["open", launcher], check=True)
 
 
-# Chromium-family browsers can open a chromeless "app" window with --app=URL,
-# so the settings panel looks like a standalone popup, not a browser tab.
+# Set APP_WINDOW=True ONLY if you want a chromeless Chrome/Brave/Edge "app" window.
+# Default False -> open in your DEFAULT browser (so it doesn't pop open Chrome
+# every time, which was annoying if Chrome isn't your main browser).
+APP_WINDOW = False
 APP_BROWSERS = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
@@ -304,28 +306,23 @@ APP_BROWSERS = [
 
 
 def open_window(url):
-    """Open as an app-style popup window if a Chromium browser exists; else fall
-    back to a normal browser tab. After opening, ACTIVATE the app so it's the
-    front/focused window -- otherwise macOS 'wastes' your first click just
-    focusing the window (the 'have to double-click everything' problem)."""
+    """Open the settings page. Default: your normal browser (a tab). If
+    APP_WINDOW=True and a Chromium browser exists, open a chromeless app window
+    and bring it to the front so the first click isn't wasted focusing it."""
     import time as _t
-    for path in APP_BROWSERS:
-        if os.path.exists(path):
-            try:
-                subprocess.Popen([path, f"--app={url}", "--window-size=820,940"])
-                app = path.split("/Applications/")[1].split(".app")[0]
-                _t.sleep(1.2)                      # let the window appear...
-                subprocess.Popen(["open", "-a", app])   # ...then bring it to front
-                return "app window"
-            except Exception:
-                pass
-    webbrowser.open(url)
-    _t.sleep(0.8)
-    try:
-        subprocess.Popen(["open", "-a", "Safari"])      # focus default browser
-    except Exception:
-        pass
-    return "browser tab"
+    if APP_WINDOW:
+        for path in APP_BROWSERS:
+            if os.path.exists(path):
+                try:
+                    subprocess.Popen([path, f"--app={url}", "--window-size=820,940"])
+                    app = path.split("/Applications/")[1].split(".app")[0]
+                    _t.sleep(1.2)
+                    subprocess.Popen(["open", "-a", app])   # bring to front
+                    return f"{app} app window"
+                except Exception:
+                    pass
+    webbrowser.open(url)                     # your default browser, as a tab
+    return "default browser"
 
 
 def free_port(start=8765):
