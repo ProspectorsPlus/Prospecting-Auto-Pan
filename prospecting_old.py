@@ -88,6 +88,10 @@ MAX_DIGS_TO_FILL  = 8
 DIG_CLICK_MS      = 75              # dig hold length -- tuned so the skill bar
                                    # lands on GREEN for this build's dig speed
                                    # (the green pixel is too fast to detect live)
+# DIG SPEED SCALING: if your dig-speed stat changes, the bar fills faster/slower.
+# The effective dig hold = DIG_CLICK_MS / (DIG_SPEED/100). DIG_SPEED=100 -> no
+# change (so this is a no-op by default). Higher value -> shorter hold.
+DIG_SPEED         = 100            # percent (100 = unchanged)
 
 # Pixel to watch for the white line in "color" mode (= calibrated green pixel).
 # The macro releases LMB when this pixel goes WHITE (the line is on it).
@@ -325,12 +329,30 @@ BURST_OFF_MS       = 1    # ...release this long, then re-check the cue
 # took). Set False for a quiet run.
 LOG_LIVE           = True
 
+# --- RELICS (timed item use: solar mags, idols, etc.) ------------------------
+# Every relic's "minutes" the macro PAUSES, switches to its hotbar slot, double-
+# clicks (uses it), switches back to RELIC_RETURN_SLOT (the pan), and resumes.
+# Add/remove/edit entries (the UI has a Relics tab). RELICS_ENABLED master toggle.
+RELICS_ENABLED     = False        # off by default (turn on in the UI / config)
+RELICS = [
+    {"name": "Solar Magnifier", "minutes": 10, "slot": 5, "clicks": 2},
+    {"name": "Infernal Idol",   "minutes": 10, "slot": 6, "clicks": 2},
+]
+RELIC_RETURN_SLOT  = 1     # hotbar slot to return to after using a relic (pan)
+RELIC_SWITCH_MS    = 160   # wait after pressing a slot key before clicking
+RELIC_CLICK_MS     = 20    # each relic click length
+RELIC_CLICK_GAP_MS = 90    # gap between the relic clicks
+RELIC_PRE_MS       = 120   # settle after releasing movement, before switching slot
+
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
 
 # --- Keys (macOS ANSI virtual keycodes) --------------------------------------
 KEY_W = 13
 KEY_S = 1
+# Hotbar slot number -> macOS virtual keycode (digits 1..0).
+SLOT_KEYCODES = {1: 18, 2: 19, 3: 20, 4: 21, 5: 23,
+                 6: 22, 7: 26, 8: 28, 9: 25, 0: 29}
 
 # --- Hotkeys -----------------------------------------------------------------
 # Toggle start/stop = Ctrl + (TOGGLE_VK).  Quit = Esc.
@@ -421,6 +443,15 @@ def key_down(code):
 
 def key_up(code):
     _post(Quartz.CGEventCreateKeyboardEvent(None, code, False))
+
+
+def tap_key(code, ms=40):
+    """Press and release a key (e.g. a hotbar number)."""
+    if code is None:
+        return
+    key_down(code)
+    sleep_ms(ms)
+    key_up(code)
 
 
 def _cursor_point():
@@ -669,8 +700,9 @@ def safe_stop(reason):
 def dig_once(detector):
     """One dig. PERFECT=False -> quick click; PERFECT=True -> release on green."""
     if not PERFECT:
+        hold = DIG_CLICK_MS * (100.0 / DIG_SPEED) if DIG_SPEED else DIG_CLICK_MS
         mouse_down()
-        sleep_ms(DIG_CLICK_MS)
+        sleep_ms(hold)
         mouse_up()
         return
     # PERFECT: hold LMB and release when the white line crosses the green pixel
@@ -1092,6 +1124,51 @@ def break_out(det, s):
     return False
 
 
+class RelicScheduler:
+    """Timed relic use (solar mags, idols, ...). Every relic's interval, PAUSE
+    the cycle, switch to its hotbar slot, double-click to use it, switch back to
+    the pan slot, and resume. Checked between supervisor ticks (a safe boundary);
+    the self-healing supervisor re-senses afterwards, so this can't corrupt the
+    cycle. Entirely additive: does nothing unless RELICS_ENABLED."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        now = time.perf_counter()
+        # schedule each relic's first fire one interval from the start
+        self.next = {}
+        for i, r in enumerate(RELICS):
+            self.next[i] = now + r.get("minutes", 10) * 60.0
+
+    def maybe_fire(self):
+        if not RELICS_ENABLED or not State.running:
+            return
+        now = time.perf_counter()
+        for i, r in enumerate(RELICS):
+            due = self.next.get(i)
+            if due is not None and now >= due:
+                self._fire(r)
+                self.next[i] = time.perf_counter() + r.get("minutes", 10) * 60.0
+
+    def _fire(self, r):
+        slot = int(r.get("slot", 0))
+        clicks = int(r.get("clicks", 2))
+        log(f"=== RELIC: use {r.get('name','relic')} (slot {slot}) ===")
+        release_all()
+        sleep_ms(RELIC_PRE_MS)
+        tap_key(SLOT_KEYCODES.get(slot))         # switch to the relic slot
+        sleep_ms(RELIC_SWITCH_MS)
+        for _ in range(max(1, clicks)):          # use it (double-click)
+            if not State.running:
+                break
+            mouse_tap(RELIC_CLICK_MS)
+            sleep_ms(RELIC_CLICK_GAP_MS)
+        sleep_ms(RELIC_SWITCH_MS)
+        tap_key(SLOT_KEYCODES.get(RELIC_RETURN_SLOT))   # back to the pan
+        sleep_ms(RELIC_SWITCH_MS)
+        log("=== RELIC done -> resuming ===")
+
+
 class Supervisor:
     """Tick-based brain. Re-senses, acts, and watches for deadlock. Reset on
     every start so a fresh run can't inherit a stale stuck-count."""
@@ -1390,14 +1467,17 @@ def main():
         for _ in range(5):                  # warm up capture path
             sct.grab(detector.dig_region)
         sup = Supervisor()
+        relics = RelicScheduler()
         was_running = False
         try:
             while State.alive:
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
                         sup.reset()
+                        relics.reset()      # start relic timers from now
                         was_running = True
                         log("=== RUNNING (live trace below) ===")
+                    relics.maybe_fire()     # timed relic use (no-op unless enabled)
                     sup.tick(detector)
                 else:
                     if was_running:
