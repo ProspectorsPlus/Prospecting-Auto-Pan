@@ -22,12 +22,24 @@ CONFIG_FILE = os.path.join(HERE, "prospecting_config.json")
 BUILDS_FILE = os.path.join(HERE, "prospecting_builds.json")
 MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
 
-# reuse the settings schema + help from the browser UI so they never drift apart
+# reuse the settings schema + help from the browser UI so they never drift apart.
+# Tolerant import: a missing name (e.g. an older prospecting_ui.py without the
+# new pixel schema) must NOT blank everything -- load each piece independently.
 try:
-    from prospecting_ui import (SECTIONS, DEFAULTS, TYPES, PRESET_V1, PRESET_V2,
-                                SECTION_HINT, TAB_ICON, HELP, PIXEL_FIELDS,
-                                PIXEL_DEFAULTS)
+    import prospecting_ui as _ui
+    SECTIONS = getattr(_ui, "SECTIONS", [])
+    DEFAULTS = getattr(_ui, "DEFAULTS", {})
+    TYPES = getattr(_ui, "TYPES", {})
+    PRESET_V1 = getattr(_ui, "PRESET_V1", {})
+    PRESET_V2 = getattr(_ui, "PRESET_V2", {})
+    SECTION_HINT = getattr(_ui, "SECTION_HINT", {})
+    TAB_ICON = getattr(_ui, "TAB_ICON", {})
+    HELP = getattr(_ui, "HELP", {})
+    PIXEL_FIELDS = getattr(_ui, "PIXEL_FIELDS", [])
+    PIXEL_DEFAULTS = getattr(_ui, "PIXEL_DEFAULTS", {})
 except Exception:
+    import traceback
+    traceback.print_exc()
     SECTIONS = []
     DEFAULTS = TYPES = {}
     PRESET_V1 = PRESET_V2 = {}
