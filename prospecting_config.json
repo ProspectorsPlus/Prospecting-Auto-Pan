@@ -1,6 +1,7 @@
 {
   "PERFECT": false,
-  "DIG_CLICK_MS": 65,
+  "DIG_CLICK_MS": 37,
+  "DIG_SPEED": 1474,
   "MAX_DIGS_TO_FILL": 8,
   "DIG_FILL_MS": 250,
   "PRE_DIG_SETTLE_MS": 60,
@@ -31,7 +32,7 @@
   "RELICS": [
     {
       "name": "Solar Magnifier",
-      "minutes": 1,
+      "minutes": 10,
       "slot": 5,
       "clicks": 2
     },
@@ -42,6 +43,5 @@
       "clicks": 2
     }
   ],
-  "RELICS_ENABLED": false,
-  "DIG_SPEED": 0
+  "RELICS_ENABLED": true
 }
