@@ -1,16 +1,16 @@
 # GitHub Release — copy/paste
 
-Draft a new release on GitHub → tag `v2.0.2`. Title + description below.
+Draft a new release on GitHub → tag `v2.0.3`. Title + description below.
 The installer (`ProspectorsPlusSetup.exe`) is attached automatically by the build.
 
 ---
 
-**Tag:** `v2.0.2`
-**Title:** `Prospectors Plus v2.0.2 — auto-update + run history`
+**Tag:** `v2.0.3`
+**Title:** `Prospectors Plus v2.0.3 — auto-update + run history`
 
 ---
 
-Prospectors Plus v2.0.2 — auto-update + run history
+Prospectors Plus v2.0.3 — auto-update + run history
 
 ### ✨ New
 

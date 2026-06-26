@@ -27,7 +27,7 @@ import hashlib
 # from UPDATE_MANIFEST_URL. If the site reports a newer version the app shows an
 # "Update available" banner that opens DOWNLOAD_PAGE_URL in the browser.
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "2.0.2"
+VERSION             = "2.0.3"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
