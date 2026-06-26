@@ -386,6 +386,13 @@ AUTOSTOP_MINUTES   = 60     # stop the macro after this many minutes of running
 # inventory until proper count/colour reading is calibrated.
 STOP_AFTER_PANS    = 0
 
+# --- SAFE-STOP behaviour -----------------------------------------------------
+# On a hazard/stuck, PAUSE and retry instead of hard-stopping, so an AFK run can
+# heal itself. Hard-stop only after this many failed retries in a row.
+SAFE_STOP_RETRY       = True
+SAFE_STOP_RETRY_SEC   = 60
+SAFE_STOP_MAX_RETRIES = 3
+
 # --- WINDOW-RELATIVE CAPTURE (opt-in) ----------------------------------------
 # When on, pixels are shifted by how far the Roblox window moved since you
 # calibrated, so calibration survives the window being in a different spot.
@@ -891,16 +898,23 @@ class State:
     shake_fails = 0          # consecutive shakes that didn't empty the pan
     land_fails = 0           # consecutive times the dig-probe couldn't find land
     breakouts = 0            # consecutive smart break-outs (escape a stuck loop)
+    safe_retries = 0         # consecutive safe-stop pauses (retry, not hard-stop)
+    want_reset = False       # supervisor resets itself after a safe-pause
+    stop_reason = ""         # latest stop reason (manual/safe/auto/bag)
     stats = None             # SessionStats while running
 
 
 class SessionStats:
-    """Live counters for the current run (cycles, recoveries, runtime)."""
+    """Live counters for the current run (cycles, recoveries, runtime, ...)."""
     def __init__(self):
         self.start = time.perf_counter()
         self.cycles = 0       # pans emptied = completed cycles
         self.recoveries = 0
         self.safe_stops = 0
+        self.hard_stops = 0
+        self.relics_used = 0
+        self.nudges = 0
+        self.stop_reason = ""
 
     def runtime(self):
         return time.perf_counter() - self.start
@@ -910,7 +924,10 @@ class SessionStats:
         hrs = rt / 3600.0
         return {"cycles": self.cycles, "recoveries": self.recoveries,
                 "runtime_s": int(rt),
-                "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0}
+                "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0,
+                "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
+                "relics_used": self.relics_used, "nudges": self.nudges,
+                "stop_reason": self.stop_reason}
 
 
 # which per-event toggle gates each event name
@@ -961,23 +978,70 @@ def release_all():
 
 
 def safe_stop(reason):
-    """Stop the macro and alert -- something is wrong (release everything)."""
+    """A hazard/stuck was detected. By DEFAULT pause and retry shortly instead of
+    hard-stopping (so an AFK run recovers itself); only hard-stop after
+    SAFE_STOP_MAX_RETRIES failed retries in a row."""
     release_all()
-    State.running = False
-    State.empty_fails = 0
-    State.shake_fails = 0
-    State.land_fails = 0
-    State.breakouts = 0
-    print(f"\n*** SAFE STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
-    st = State.stats.as_dict() if State.stats else None
+    State.empty_fails = State.shake_fails = State.land_fails = State.breakouts = 0
     if State.stats:
         State.stats.safe_stops += 1
-    post_webhook("safe_stop", f"⚠️ Macro SAFE-STOPPED: {reason}", st)
+
+    def _beep(hand=False):
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_ICONHAND if hand
+                                 else winsound.MB_ICONASTERISK)
+        except Exception:
+            try:
+                subprocess.Popen(["afplay", globals().get("ALERT_SOUND", "")])
+            except Exception:
+                print("\a", end="", flush=True)
+
+    if SAFE_STOP_RETRY and State.safe_retries < SAFE_STOP_MAX_RETRIES:
+        State.safe_retries += 1
+        msg = (f"{reason} - retrying in {SAFE_STOP_RETRY_SEC}s "
+               f"(attempt {State.safe_retries}/{SAFE_STOP_MAX_RETRIES})")
+        print(f"\n*** SAFE PAUSE: {msg} ***")
+        post_webhook("safe_stop", f"⚠️ Safe-paused: {msg}",
+                     State.stats.as_dict() if State.stats else None)
+        _beep(False)
+        end = time.perf_counter() + SAFE_STOP_RETRY_SEC
+        while time.perf_counter() < end and State.running and State.alive:
+            time.sleep(0.2)
+        State.want_reset = True
+        return
+    State.running = False
+    State.safe_retries = 0
+    State.stop_reason = "safe-stop"
+    if State.stats:
+        State.stats.hard_stops += 1
+        State.stats.stop_reason = "safe-stop"
+    print(f"\n*** HARD STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
+    post_webhook("stop", f"🛑 Hard-stopped: {reason}",
+                 State.stats.as_dict() if State.stats else None)
+    _beep(True)
+
+
+def append_history(stats, reason):
+    """Append a finished run's summary to run_history.json (kept to last 100) so
+    the user can review past runs after the app/macro closes."""
     try:
-        import winsound
-        winsound.MessageBeep(winsound.MB_ICONHAND)
-    except Exception:
-        print("\a", end="", flush=True)
+        import datetime
+        path = os.path.join(_DATA_DIR, "run_history.json")
+        hist = []
+        if os.path.exists(path):
+            try:
+                hist = json.load(open(path))
+            except Exception:
+                hist = []
+        d = stats.as_dict() if stats else {}
+        d["reason"] = reason
+        d["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        hist.append(d)
+        with open(path, "w") as f:
+            json.dump(hist[-100:], f, indent=2)
+    except Exception as e:
+        print("[history] save failed:", e)
 
 
 # ---- Cycle parts ------------------------------------------------------------
@@ -1279,6 +1343,7 @@ def do_shake(det):
     if emptied:
         State.shake_fails = 0
         State.breakouts = 0              # healthy progress -> clear escalation
+        State.safe_retries = 0
         if State.stats:
             State.stats.cycles += 1      # a pan emptied = one completed cycle
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
@@ -1345,11 +1410,13 @@ def return_and_dig(det):
             if hit:
                 State.land_fails = 0
                 State.breakouts = 0          # healthy progress -> clear escalation
+                State.safe_retries = 0
                 log(f"    dig-probe HIT (round {rnd+1}.{t+1}) -> on land, filling")
                 fill_to_full(det)            # dig until FULL (dynamic # of digs)
                 return True
         # none of the in-place digs registered -> probably off land -> nudge fwd
         log(f"    no dig registered (round {rnd+1}) -> nudge W fwd")
+        if State.stats: State.stats.nudges += 1
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
         sleep_ms(PROBE_GAP_MS)               # settle before the next round
     State.land_fails += 1
@@ -1385,9 +1452,11 @@ def recover(det, s):
         do_shake(det)                    # full in water, won't empty -> shake again
     elif s.full:
         # full but not in water -> jitter S back toward the water
+        if State.stats: State.stats.nudges += 1
         pulse_until(KEY_S, det.on_pan, RECOVER_BACK_MS)
     else:
         # empty, can't land -> jitter forward, then re-probe with a dig next tick
+        if State.stats: State.stats.nudges += 1
         pulse_until(KEY_W, det.capacity_full, RECOVER_BACK_MS)
 
 
@@ -1455,6 +1524,7 @@ class RelicScheduler:
         sleep_ms(RELIC_SWITCH_MS)
         tap_key(SLOT_KEYCODES.get(RELIC_RETURN_SLOT))   # back to the pan
         sleep_ms(RELIC_SWITCH_MS)
+        if State.stats: State.stats.relics_used += 1
         log("=== RELIC done -> resuming ===")
 
 
@@ -1473,6 +1543,10 @@ class Supervisor:
         State.breakouts = 0
 
     def tick(self, det):
+        if State.want_reset:           # fresh slate after a safe-pause
+            self.reset()
+            State.want_reset = False
+        release_all()                  # clear any stray held key/mouse (anti-drift)
         s = sense_stable(det)
         sig = (s.where, s.contents)
         if sig == self.last_sig:
@@ -1751,7 +1825,7 @@ def main():
     listener = make_listener()
     listener.start()
 
-    gc.disable()
+    gc.enable()   # keep GC ON: disabling it grew memory + slowed long runs
     with _MSS() as sct:
         detector = Detector(sct)
         for _ in range(5):                  # warm up capture path
@@ -1793,6 +1867,8 @@ def main():
                     if (AUTOSTOP_ENABLED and State.stats
                             and State.stats.runtime() >= AUTOSTOP_MINUTES * 60):
                         log(f"=== AUTO-STOP after {AUTOSTOP_MINUTES} min ===")
+                        State.stop_reason = "auto"
+                        if State.stats: State.stats.stop_reason = "auto"
                         post_webhook("autostop", f"⏱️ Auto-stopped after "
                                      f"{AUTOSTOP_MINUTES} min", State.stats.as_dict())
                         State.running = False
@@ -1801,6 +1877,8 @@ def main():
                     if (STOP_AFTER_PANS > 0 and State.stats
                             and State.stats.cycles >= STOP_AFTER_PANS):
                         log(f"=== STOP after {STOP_AFTER_PANS} pans (bag-full guard) ===")
+                        State.stop_reason = "bag-full"
+                        if State.stats: State.stats.stop_reason = "bag-full"
                         post_webhook("bag_full", f"🎒 Stopped after "
                                      f"{STOP_AFTER_PANS} pans (bag likely full)",
                                      State.stats.as_dict())
@@ -1808,10 +1886,18 @@ def main():
                         release_all()
                 else:
                     if was_running:
-                        log("=== PAUSED ===")
+                        reason = ((State.stats.stop_reason if State.stats
+                                   and State.stats.stop_reason else State.stop_reason)
+                                  or "manual")
                         if State.stats:
-                            post_webhook("stop", "⏹️ Macro stopped",
+                            State.stats.stop_reason = reason
+                        log(f"=== STOPPED ({reason}) ===")
+                        if reason == "manual" and State.stats:
+                            post_webhook("stop", "⏹️ Macro stopped (manual)",
                                          State.stats.as_dict())
+                        append_history(State.stats, reason)
+                        State.stop_reason = ""
+                        State.safe_retries = 0
                     was_running = False
                     time.sleep(0.02)
         except Exception as _e:

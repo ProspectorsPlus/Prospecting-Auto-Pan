@@ -66,6 +66,9 @@ SECTIONS = [
         ("BREAKOUT_LIMIT",     "Break-outs before STOP",                  "int", 2),
         ("BREAKOUT_SHAKE_MS",  "Break-out click-to-finish (ms)",          "int", 700),
         ("BREAKOUT_REPOS_MS",  "Break-out reposition W (ms)",             "int", 160),
+        ("SAFE_STOP_RETRY",     "Safe-stop = pause & retry (don't hard-stop)", "bool", True),
+        ("SAFE_STOP_RETRY_SEC", "Wait before each retry (seconds)",        "int", 60),
+        ("SAFE_STOP_MAX_RETRIES","Hard-stop after this many failed retries", "int", 3),
     ]),
     ("Recovery movement (jitter taps)", [
         ("BURST_ON_MS",        "Tap hold per pulse (ms)",                 "int", 11),
@@ -200,6 +203,9 @@ HELP = {
     "NOTIFY_RECOVERIES": "DM you each time it recovers from being stuck. Off by default "
                          "because recoveries can happen often and get spammy.",
     "NOTIFY_ERRORS": "DM you if the macro hits an unexpected error and stops.",
+    "SAFE_STOP_RETRY": "When the macro detects a hazard or gets stuck, pause and retry shortly instead of stopping — so an AFK run heals itself. Off = stop immediately.",
+    "SAFE_STOP_RETRY_SEC": "How long to wait before each safe-stop retry.",
+    "SAFE_STOP_MAX_RETRIES": "After this many failed retries in a row, hard-stop for real.",
     "AUTOSTOP_ENABLED": "Automatically stop the macro after AUTOSTOP minutes.",
     "AUTOSTOP_MINUTES": "How long to run before auto-stopping.",
     "STOP_AFTER_PANS": "Stop after this many pans emptied — a simple guard so it "

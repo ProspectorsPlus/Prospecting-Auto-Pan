@@ -430,6 +430,11 @@ class Api:
         return {"ok": True, "pixels": applied,
                 "colors": cur.get("PIXEL_COLORS", {})}
 
+    def run_history(self):
+        path = os.path.join(os.path.dirname(CONFIG_FILE), "run_history.json")
+        data = _read_json(path, [])
+        return list(reversed(data)) if isinstance(data, list) else []
+
     # ---- window detection + auto-calibrate ----
     def detect_roblox(self):
         """For the UI: report whether the Roblox window is found and where."""
@@ -701,6 +706,10 @@ def build_html():
         '<div class="stat"><div class="sv" id="st_cyc">0</div><div class="sl">pans</div></div>'
         '<div class="stat"><div class="sv" id="st_rate">0</div><div class="sl">pans/hr</div></div>'
         '<div class="stat"><div class="sv" id="st_rec">0</div><div class="sl">recoveries</div></div>'
+        '<div class="stat"><div class="sv" id="st_nud">0</div><div class="sl">nudges</div></div>'
+        '<div class="stat"><div class="sv" id="st_rel">0</div><div class="sl">relics</div></div>'
+        '<div class="stat"><div class="sv" id="st_safe">0</div><div class="sl">safe-stops</div></div>'
+        '<div class="stat"><div class="sv" id="st_hard">0</div><div class="sl">hard-stops</div></div>'
         '</div>'
         '<pre id="log" class="log"></pre></section>')
 
@@ -747,8 +756,8 @@ def build_html():
     for i in range(MAX_RELIC_ROWS):
         rrows.append(
             f'<div class="rrow" data-i="{i}">'
-            f'<span class="switch sm"><input type="checkbox" class="renable">'
-            f'<span class="track"><span class="knob"></span></span></span>'
+            f'<label class="switch sm"><input type="checkbox" class="renable">'
+            f'<span class="track"><span class="knob"></span></span></label>'
             f'<input class="rname" placeholder="Relic name">'
             f'<span class="rlab">every</span><input type="number" class="rmin" min="1">'
             f'<span class="rlab">min · slot</span><input type="number" class="rslot" min="0" max="9">'
@@ -766,6 +775,14 @@ def build_html():
         f'<div class="relicwrap">{"".join(rrows)}</div>'
         '<button type="button" id="saverelics" class="btn" style="margin-top:12px">'
         'Save relics</button></section>')
+
+    # History
+    nav("hist", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9 -9a9 9 0 0 0 -7 3.3L3 8"/><path d="M3 3v5h5"/><path d="M12 8v4l3 2"/></svg>', "History")
+    panels.append(
+        '<section class="panel" id="phist"><div class="phead"><h2>Run history</h2>'
+        '<p class="chint">Past runs and their stats, kept across restarts.</p></div>'
+        '<button type="button" id="histrefresh" class="btn2" style="margin-bottom:12px">Refresh</button>'
+        '<div id="histbox" class="histbox"></div></section>')
 
     # Settings tabs
     for title, items in SECTIONS:
@@ -856,7 +873,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .big{padding:11px 20px;font-size:15px} .go{background:var(--accent2);color:#04222a}
  .stop{background:#3a2330;color:#ffb4b4} .stop:disabled,.go:disabled{opacity:.5;cursor:default}
  .rstate{color:var(--mut);margin-left:6px}
- .statsbar{display:flex;gap:10px;margin:0 0 12px}
+ .statsbar{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 12px}
+ .histbox{max-width:680px;display:flex;flex-direction:column;gap:8px}
+ .hrow{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+ .hr-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+ .hr-top b{font-weight:600;color:var(--txt)}
+ .hr-reason{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent-lit);
+  background:var(--sand-dim);border:1px solid var(--sand-glow);border-radius:999px;padding:2px 9px}
+ .hr-stats{color:var(--mut);font-size:12.5px;font-family:ui-monospace,Menlo,monospace}
+ .hempty{color:var(--mut);font-size:13px}
  .stat{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:10px 12px;text-align:center}
  .sv{font-size:20px;font-weight:600;color:var(--txt);font-variant-numeric:tabular-nums}
@@ -1044,7 +1069,20 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  window.setStats=s=>{if(!s)return;const m=Math.floor((s.runtime_s||0)/60),
    sec=String((s.runtime_s||0)%60).padStart(2,'0');
    $('#st_run').textContent=m+':'+sec; $('#st_cyc').textContent=s.cycles||0;
-   $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;};
+   $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;
+   const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
+   _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
+   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);};
+ async function loadHistory(){let list=[];try{list=await window.pywebview.api.run_history();}catch(e){}
+   const box=document.getElementById('histbox');if(!box)return;
+   if(!list||!list.length){box.innerHTML='<div class="hempty">No runs yet \u2014 finish a session and it shows up here.</div>';return;}
+   box.innerHTML=list.map(r=>{const m=Math.floor((r.runtime_s||0)/60);
+     return '<div class="hrow"><div class="hr-top"><b>'+(r.ended||'run')+'</b>'+
+       '<span class="hr-reason">'+(r.reason||r.stop_reason||'')+'</span></div>'+
+       '<div class="hr-stats">'+(r.cycles||0)+' pans \u00b7 '+(r.pans_per_hr||0)+'/hr \u00b7 '+m+' min \u00b7 '+
+       (r.recoveries||0)+' rec \u00b7 '+(r.nudges||0)+' nudges \u00b7 '+(r.relics_used||0)+' relics \u00b7 '+
+       (r.safe_stops||0)+' safe \u00b7 '+(r.hard_stops||0)+' hard</div></div>';}).join('');}
+ (function(){const b=document.getElementById('histrefresh');if(b)b.onclick=loadHistory;})();
  // relics
  function relicRows(){return $$('.rrow');}
  function setRelics(list,enabled){$('#relicsMaster').checked=!!enabled;
@@ -1065,8 +1103,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // tabs
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics')?('p'+id):('p_'+id);
-   document.getElementById(pid).classList.add('active');});
+   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist')?('p'+id):('p_'+id);
+   document.getElementById(pid).classList.add('active');
+   if(id==='hist')loadHistory();});
  // calibrate: click a button, then click the spot in-game
  let pixels={};
  function setPixels(px){pixels=px||{};
@@ -1173,7 +1212,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
    setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});
-   checkUpdate();
+   checkUpdate();loadHistory();
    try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
  window.addEventListener('pywebviewready',boot);
  if(window.pywebview&&window.pywebview.api)boot();
