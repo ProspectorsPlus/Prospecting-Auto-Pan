@@ -25,7 +25,7 @@ import urllib.request
 # from UPDATE_MANIFEST_URL. If the site reports a newer version the app shows an
 # "Update available" banner that opens DOWNLOAD_PAGE_URL in the browser.
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "1.0.0"
+VERSION             = "1.0.1"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 
