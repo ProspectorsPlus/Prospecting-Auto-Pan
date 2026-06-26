@@ -4,149 +4,625 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Prospectors Plus — auto-pan bot for Prospecting</title>
-<meta name="description" content="A smart auto-pan bot for Prospecting. It runs the full pan, dig, shake and deposit loop for you — reading the screen so it keeps farming on its own.">
+<meta name="description" content="A smart auto-pan bot for Prospecting. It runs the full pan, dig, shake and deposit loop for you, reading the screen so it keeps farming on its own.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 <style>
-  :root{
-    --bg:#0a0d12; --bg2:#0e1219; --panel:#141a24; --panel2:#171e29;
-    --line:#222c3a; --line2:#2c384a;
-    --txt:#eef2f8; --mut:#93a3b8; --dim:#6a7889;
-    --gold:#f4b740; --gold2:#ffcf6b; --blue:#3b8cff; --green:#3fd07f;
-    --radius:16px;
+  :root {
+    --bg: #0c0b09;
+    --bg2: #11100d;
+    --panel: #171512;
+    --panel2: #1c1914;
+    --line: #2a2620;
+    --line2: #3a342c;
+    --txt: #f2ece2;
+    --mut: #a39a8c;
+    --dim: #6f675c;
+    --copper: #c49a6c;
+    --copper-lit: #ddb98a;
+    --copper-dim: rgba(196, 154, 108, 0.14);
+    --sage: #7d9a82;
+    --sage-dim: rgba(125, 154, 130, 0.12);
+    --radius: 14px;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
-  *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
-    background:var(--bg);color:var(--txt);line-height:1.6;-webkit-font-smoothing:antialiased}
-  a{color:inherit;text-decoration:none}
-  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
-  .muted{color:var(--mut)}
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--txt);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+  /* grain */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* reveal */
+  .reveal {
+    opacity: 0;
+    transform: translateY(22px);
+    transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
+  }
+  .reveal.visible {
+    opacity: 1;
+    transform: none;
+  }
+  .reveal-d1 { transition-delay: 0.08s; }
+  .reveal-d2 { transition-delay: 0.16s; }
+  .reveal-d3 { transition-delay: 0.24s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .mock { animation: none !important; }
+    .flow .ar { animation: none !important; }
+    .runpill .dot { animation: none !important; }
+  }
 
   /* nav */
-  nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);
-    background:rgba(10,13,18,.72);border-bottom:1px solid var(--line)}
-  nav .row{display:flex;align-items:center;gap:18px;height:64px}
-  .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-.3px}
-  .brand .pk{width:26px;height:26px}
-  .brand b{color:var(--gold)}
-  .nav-links{display:flex;gap:26px;margin-left:14px}
-  .nav-links a{color:var(--mut);font-size:14.5px;font-weight:500}
-  .nav-links a:hover{color:var(--txt)}
-  .grow{flex:1}
-  .ghost{display:inline-flex;align-items:center;gap:8px;color:var(--mut);font-size:14px;
-    border:1px solid var(--line2);border-radius:10px;padding:8px 14px;font-weight:600}
-  .ghost:hover{color:var(--txt);border-color:#3a485c}
-  .btn{display:inline-flex;align-items:center;gap:9px;font-weight:700;border:0;cursor:pointer;
-    background:linear-gradient(180deg,var(--gold2),var(--gold));color:#241a02;
-    border-radius:11px;padding:10px 18px;font-size:14.5px;transition:transform .08s,filter .15s}
-  .btn:hover{transform:translateY(-1px);filter:brightness(1.05)}
-  .btn.lg{padding:15px 30px;font-size:17px;border-radius:13px}
-  .btn[disabled]{filter:grayscale(.6) brightness(.8);cursor:default;transform:none}
+  nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    border-bottom: 1px solid transparent;
+    transition: background 0.35s var(--ease), border-color 0.35s var(--ease), backdrop-filter 0.35s;
+  }
+  nav.scrolled {
+    background: rgba(12, 11, 9, 0.88);
+    backdrop-filter: blur(14px);
+    border-bottom-color: var(--line);
+  }
+  nav .row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    height: 64px;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: -0.02em;
+  }
+  .brand-mark {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: var(--copper-dim);
+    border: 1px solid rgba(196, 154, 108, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+  }
+  .brand em {
+    font-family: "Instrument Serif", Georgia, serif;
+    font-style: italic;
+    font-weight: 400;
+    color: var(--copper-lit);
+  }
+  .nav-links {
+    display: flex;
+    gap: 28px;
+    margin-left: 12px;
+  }
+  .nav-links a {
+    color: var(--mut);
+    font-size: 14px;
+    font-weight: 500;
+    transition: color 0.2s;
+  }
+  .nav-links a:hover { color: var(--txt); }
+  .grow { flex: 1; }
+  .ghost {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--mut);
+    font-size: 14px;
+    border: 1px solid var(--line2);
+    border-radius: 9px;
+    padding: 8px 14px;
+    font-weight: 500;
+    transition: color 0.2s, border-color 0.2s, background 0.2s;
+  }
+  .ghost:hover {
+    color: var(--txt);
+    border-color: #4a433a;
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 9px;
+    font-weight: 600;
+    border: 0;
+    cursor: pointer;
+    background: var(--copper);
+    color: #1a1208;
+    border-radius: 9px;
+    padding: 10px 18px;
+    font-size: 14px;
+    transition: transform 0.2s var(--ease), background 0.2s, box-shadow 0.2s;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 4px 18px -6px rgba(196, 154, 108, 0.45);
+  }
+  .btn:hover {
+    transform: translateY(-2px);
+    background: var(--copper-lit);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) inset, 0 8px 24px -8px rgba(196, 154, 108, 0.5);
+  }
+  .btn.lg { padding: 15px 28px; font-size: 16px; border-radius: 11px; }
+  .btn[disabled] {
+    filter: grayscale(0.5) brightness(0.85);
+    cursor: default;
+    transform: none;
+    box-shadow: none;
+  }
 
   /* hero */
-  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
-  .hero:before{content:"";position:absolute;inset:0;
-    background:radial-gradient(800px 380px at 18% -10%,rgba(244,183,64,.14),transparent 60%),
-              radial-gradient(760px 420px at 92% 0%,rgba(59,140,255,.14),transparent 60%);
-    pointer-events:none}
-  .hero .row{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;
-    padding:84px 0 88px}
-  .badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--gold2);
-    background:rgba(244,183,64,.1);border:1px solid rgba(244,183,64,.28);
-    border-radius:999px;padding:5px 13px;font-weight:600}
-  .badge .dot{width:7px;height:7px;border-radius:50%;background:var(--green);
-    box-shadow:0 0 0 3px rgba(63,208,127,.18)}
-  h1{font-size:50px;line-height:1.05;letter-spacing:-1.5px;margin:18px 0 0;font-weight:830}
-  h1 .g{background:linear-gradient(90deg,var(--gold2),var(--gold));-webkit-background-clip:text;
-    background-clip:text;color:transparent}
-  .sub{font-size:18.5px;color:var(--mut);margin-top:18px;max-width:520px}
-  .hero-cta{display:flex;align-items:center;gap:14px;margin-top:30px;flex-wrap:wrap}
-  .cta-note{font-size:13px;color:var(--dim);margin-top:14px}
+  .hero {
+    position: relative;
+    overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  .hero-glow {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(ellipse 70% 55% at 12% -5%, rgba(196, 154, 108, 0.09), transparent 55%),
+      radial-gradient(ellipse 50% 40% at 88% 10%, rgba(125, 154, 130, 0.05), transparent 50%);
+  }
+  .hero .row {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1.05fr 0.95fr;
+    gap: 52px;
+    align-items: center;
+    padding: 88px 0 92px;
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--copper-lit);
+    background: var(--copper-dim);
+    border: 1px solid rgba(196, 154, 108, 0.28);
+    border-radius: 999px;
+    padding: 5px 13px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+  }
+  .badge .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--sage);
+    box-shadow: 0 0 0 3px var(--sage-dim);
+    animation: blink 2.4s ease-in-out infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  h1 {
+    font-family: "Instrument Serif", Georgia, serif;
+    font-size: clamp(2.6rem, 5vw, 3.35rem);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    margin: 20px 0 0;
+    font-weight: 400;
+  }
+  h1 .accent { color: var(--copper-lit); font-style: italic; }
+  .sub {
+    font-size: 17px;
+    color: var(--mut);
+    margin-top: 20px;
+    max-width: 500px;
+    font-weight: 400;
+  }
+  .hero-cta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-top: 32px;
+    flex-wrap: wrap;
+  }
+  .cta-note { font-size: 13px; color: var(--dim); margin-top: 16px; }
 
-  /* app mockup */
-  .mock{background:linear-gradient(180deg,var(--panel2),var(--panel));
-    border:1px solid var(--line2);border-radius:18px;overflow:hidden;
-    box-shadow:0 30px 70px -30px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.02) inset}
-  .mock .bar{display:flex;align-items:center;gap:7px;padding:12px 14px;
-    border-bottom:1px solid var(--line);background:#0f141c}
-  .mock .bar i{width:11px;height:11px;border-radius:50%;display:block}
-  .mock .bar .t{margin-left:10px;font-size:12.5px;color:var(--dim);font-weight:600}
-  .mock .body{padding:16px}
-  .statrow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
-  .stat{background:#10161f;border:1px solid var(--line);border-radius:11px;padding:11px 12px}
-  .stat .k{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
-  .stat .v{font-size:20px;font-weight:800;margin-top:3px}
-  .stat .v.green{color:var(--green)} .stat .v.gold{color:var(--gold2)}
-  .runpill{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;
-    color:var(--green);background:rgba(63,208,127,.1);border:1px solid rgba(63,208,127,.3);
-    border-radius:999px;padding:4px 11px;margin-bottom:11px}
-  .runpill .dot{width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 1.6s infinite}
-  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-  .log{background:#0b0f15;border:1px solid var(--line);border-radius:11px;padding:12px 14px;
-    font-family:Menlo,Consolas,monospace;font-size:12.5px;line-height:1.85;color:#9fb6c9}
-  .log .c1{color:var(--gold2)} .log .c2{color:var(--blue)} .log .c3{color:var(--green)}
+  /* mockup */
+  .mock {
+    background: var(--panel2);
+    border: 1px solid var(--line2);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.03) inset,
+      0 32px 64px -28px rgba(0, 0, 0, 0.75);
+    animation: float 6s ease-in-out infinite;
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+  .mock .bar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line);
+    background: #0e0d0b;
+  }
+  .mock .bar i {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: block;
+    opacity: 0.85;
+  }
+  .mock .bar .t {
+    margin-left: 10px;
+    font-size: 12px;
+    color: var(--dim);
+    font-weight: 500;
+    letter-spacing: 0.03em;
+  }
+  .mock .body { padding: 16px; }
+  .statrow {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+  .stat {
+    background: #12100d;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 11px;
+  }
+  .stat .k {
+    font-size: 10px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 500;
+  }
+  .stat .v {
+    font-size: 19px;
+    font-weight: 600;
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .v.sage { color: var(--sage); }
+  .stat .v.copper { color: var(--copper-lit); }
+  .runpill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--sage);
+    background: var(--sage-dim);
+    border: 1px solid rgba(125, 154, 130, 0.28);
+    border-radius: 999px;
+    padding: 4px 10px;
+    margin-bottom: 12px;
+  }
+  .runpill .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--sage);
+    animation: blink 1.8s ease-in-out infinite;
+  }
+  .log {
+    background: #0a0908;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.9;
+    color: #8a9a8c;
+    min-height: 108px;
+  }
+  .log .c1 { color: var(--copper-lit); }
+  .log .c2 { color: #8a9cb0; }
+  .log .c3 { color: var(--sage); }
+  .log-line {
+    opacity: 0;
+    animation: logIn 0.5s var(--ease) forwards;
+  }
+  .log-line:nth-child(1) { animation-delay: 0.4s; }
+  .log-line:nth-child(2) { animation-delay: 0.9s; }
+  .log-line:nth-child(3) { animation-delay: 1.4s; }
+  .log-line:nth-child(4) { animation-delay: 1.9s; }
+  .log-line:nth-child(5) { animation-delay: 2.4s; }
+  @keyframes logIn {
+    from { opacity: 0; transform: translateX(-6px); }
+    to { opacity: 1; transform: none; }
+  }
 
   /* sections */
-  section{padding:74px 0}
-  .eyebrow{text-align:center;color:var(--gold);font-weight:700;font-size:13px;
-    letter-spacing:1.5px;text-transform:uppercase}
-  h2{text-align:center;font-size:34px;letter-spacing:-1px;margin:10px 0 0;font-weight:820}
-  .lead{text-align:center;color:var(--mut);max-width:620px;margin:14px auto 0;font-size:16.5px}
+  section { padding: 80px 0; }
+  .eyebrow {
+    text-align: center;
+    color: var(--copper);
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  h2 {
+    font-family: "Instrument Serif", Georgia, serif;
+    text-align: center;
+    font-size: clamp(1.85rem, 3.5vw, 2.25rem);
+    letter-spacing: -0.02em;
+    margin: 12px 0 0;
+    font-weight: 400;
+  }
+  .lead {
+    text-align: center;
+    color: var(--mut);
+    max-width: 560px;
+    margin: 16px auto 0;
+    font-size: 16px;
+  }
 
-  .flow{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:center;margin:40px 0 0}
-  .node{background:var(--panel);border:1px solid var(--line2);border-radius:13px;
-    padding:14px 22px;text-align:center;min-width:108px}
-  .node .em{font-size:22px}
-  .node .lb{font-weight:700;margin-top:4px} .node .ds{font-size:12px;color:var(--dim)}
-  .flow .ar{color:var(--gold);font-size:22px;font-weight:800}
+  .flow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    justify-content: center;
+    margin: 44px 0 0;
+  }
+  .node {
+    background: var(--panel);
+    border: 1px solid var(--line2);
+    border-radius: 12px;
+    padding: 16px 20px;
+    text-align: center;
+    min-width: 100px;
+    transition: border-color 0.25s, transform 0.25s var(--ease);
+  }
+  .node:hover {
+    border-color: rgba(196, 154, 108, 0.4);
+    transform: translateY(-3px);
+  }
+  .node .ic {
+    width: 36px;
+    height: 36px;
+    margin: 0 auto 8px;
+    border-radius: 9px;
+    background: var(--copper-dim);
+    border: 1px solid rgba(196, 154, 108, 0.22);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .node .ic svg {
+    width: 18px;
+    height: 18px;
+    stroke: var(--copper-lit);
+    fill: none;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .node .lb { font-weight: 600; font-size: 14px; }
+  .node .ds { font-size: 12px; color: var(--dim); margin-top: 2px; }
+  .flow .ar {
+    color: var(--copper);
+    font-size: 18px;
+    font-weight: 400;
+    opacity: 0.7;
+    animation: nudge 2.8s ease-in-out infinite;
+  }
+  .flow .ar.loop { animation-delay: 0.6s; }
+  @keyframes nudge {
+    0%, 100% { opacity: 0.45; transform: translateX(0); }
+    50% { opacity: 1; transform: translateX(3px); }
+  }
 
-  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:44px}
-  .card{background:linear-gradient(180deg,var(--panel2),var(--panel));
-    border:1px solid var(--line);border-radius:var(--radius);padding:22px}
-  .card .ic{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;
-    justify-content:center;background:rgba(244,183,64,.12);border:1px solid rgba(244,183,64,.22);
-    margin-bottom:14px}
-  .card .ic svg{width:21px;height:21px;stroke:var(--gold2)}
-  .card h3{font-size:16.5px;margin-bottom:5px}
-  .card p{color:var(--mut);font-size:14px}
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 48px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 24px;
+    transition: border-color 0.3s, transform 0.35s var(--ease), background 0.3s;
+  }
+  .card:hover {
+    border-color: var(--line2);
+    background: var(--panel2);
+    transform: translateY(-4px);
+  }
+  .card .ic {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--copper-dim);
+    border: 1px solid rgba(196, 154, 108, 0.2);
+    margin-bottom: 16px;
+  }
+  .card .ic svg {
+    width: 20px;
+    height: 20px;
+    stroke: var(--copper-lit);
+    fill: none;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
+  .card p { color: var(--mut); font-size: 14px; line-height: 1.6; }
 
-  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:44px}
-  .step{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:24px}
-  .step .n{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-    font-weight:800;color:#241a02;background:linear-gradient(180deg,var(--gold2),var(--gold));margin-bottom:14px}
-  .step h3{font-size:16.5px;margin-bottom:6px}
-  .step p{color:var(--mut);font-size:14px}
-  .kbd{font-family:Menlo,Consolas,monospace;background:#10161e;border:1px solid var(--line2);
-    border-radius:6px;padding:1px 7px;font-size:13px;color:#cfe0ff}
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-top: 48px;
+  }
+  .step {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 26px;
+    position: relative;
+    overflow: hidden;
+  }
+  .step::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--copper), transparent);
+    opacity: 0;
+    transition: opacity 0.35s;
+  }
+  .step:hover::before { opacity: 1; }
+  .step .n {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--copper-lit);
+    background: var(--copper-dim);
+    border: 1px solid rgba(196, 154, 108, 0.25);
+    margin-bottom: 16px;
+  }
+  .step h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .step p { color: var(--mut); font-size: 14px; }
+  .kbd {
+    font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
+    background: #12100d;
+    border: 1px solid var(--line2);
+    border-radius: 5px;
+    padding: 1px 6px;
+    font-size: 12px;
+    color: var(--copper-lit);
+  }
 
-  .faq{max-width:760px;margin:40px auto 0}
-  details{background:var(--panel);border:1px solid var(--line);border-radius:13px;
-    padding:4px 20px;margin-bottom:12px}
-  summary{cursor:pointer;font-weight:650;padding:15px 0;list-style:none;display:flex;
-    justify-content:space-between;align-items:center;font-size:15.5px}
-  summary::-webkit-details-marker{display:none}
-  summary:after{content:"+";color:var(--gold);font-size:22px;font-weight:700;line-height:1}
-  details[open] summary:after{content:"–"}
-  details p{color:var(--mut);font-size:14.5px;padding:0 0 16px}
+  .faq { max-width: 720px; margin: 44px auto 0; }
+  details {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 2px 20px;
+    margin-bottom: 10px;
+    transition: border-color 0.25s;
+  }
+  details[open] { border-color: var(--line2); }
+  summary {
+    cursor: pointer;
+    font-weight: 500;
+    padding: 16px 0;
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 15px;
+    user-select: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary .chev {
+    color: var(--copper);
+    transition: transform 0.3s var(--ease);
+    flex-shrink: 0;
+    margin-left: 12px;
+  }
+  details[open] summary .chev { transform: rotate(180deg); }
+  details p {
+    color: var(--mut);
+    font-size: 14px;
+    padding: 0 0 18px;
+    line-height: 1.65;
+  }
 
-  .final{background:linear-gradient(180deg,var(--panel2),var(--panel));
-    border:1px solid var(--line2);border-radius:22px;padding:50px 30px;text-align:center;margin:10px 0}
-  .final h2{margin-bottom:8px}
+  .final {
+    background: var(--panel2);
+    border: 1px solid var(--line2);
+    border-radius: 20px;
+    padding: 52px 32px;
+    text-align: center;
+    margin: 12px 0;
+    position: relative;
+    overflow: hidden;
+  }
+  .final::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 60% 80% at 50% 120%, rgba(196, 154, 108, 0.08), transparent 60%);
+    pointer-events: none;
+  }
+  .final > * { position: relative; }
+  .final h2 { margin-bottom: 10px; }
 
-  footer{border-top:1px solid var(--line);padding:30px 0;color:var(--dim);font-size:13.5px;
-    display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+  footer {
+    border-top: 1px solid var(--line);
+    padding: 32px 0;
+    color: var(--dim);
+    font-size: 13px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  footer a { color: var(--mut); transition: color 0.2s; }
+  footer a:hover { color: var(--txt); }
 
-  @media(max-width:860px){
-    .hero .row{grid-template-columns:1fr;gap:36px;padding:56px 0}
-    h1{font-size:38px} .nav-links{display:none}
-    .grid,.steps{grid-template-columns:1fr} .statrow{grid-template-columns:repeat(2,1fr)}
+  @media (max-width: 860px) {
+    .hero .row { grid-template-columns: 1fr; gap: 40px; padding: 56px 0 64px; }
+    .nav-links { display: none; }
+    .grid, .steps { grid-template-columns: 1fr; }
+    .statrow { grid-template-columns: repeat(2, 1fr); }
+    .mock { max-width: 420px; margin: 0 auto; }
   }
 </style>
 </head>
 <body>
 
-<nav>
+<nav id="nav">
   <div class="wrap row">
-    <div class="brand"><span class="pk">⛏</span>Prospectors <b>Plus</b></div>
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">⛏</span>
+      Prospectors <em>Plus</em>
+    </div>
     <div class="nav-links">
       <a href="#features">Features</a>
       <a href="#how">How it works</a>
@@ -154,7 +630,7 @@
     </div>
     <div class="grow"></div>
     <a class="ghost" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan" target="_blank" rel="noopener">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.09.66-.22.66-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.16.58.67.48A10 10 0 0 0 22 12c0-5.52-4.48-10-10-10Z"/></svg>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.5.5.09.66-.22.66-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.16.58.67.48A10 10 0 0 0 22 12c0-5.52-4.48-10-10-10Z"/></svg>
       GitHub
     </a>
     <a class="btn" id="navdl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest">Download</a>
@@ -162,39 +638,45 @@
 </nav>
 
 <header class="hero">
+  <div class="hero-glow" aria-hidden="true"></div>
   <div class="wrap row">
-    <div>
+    <div class="reveal">
       <span class="badge"><span class="dot"></span>Latest: <span id="ver">v1.0.0</span> · Windows</span>
-      <h1>Auto-pan <span class="g">Prospecting</span>,<br>start to finish.</h1>
-      <p class="sub">Prospectors Plus runs the entire farming loop for you — pan, dig,
-        shake, deposit — reading the screen so it keeps going on its own, even while
-        you're away.</p>
+      <h1>Auto-pan <span class="accent">Prospecting</span>,<br>start to finish.</h1>
+      <p class="sub">Prospectors Plus runs the full farming loop for you: pan, dig,
+        shake, deposit. It reads the screen and keeps going on its own, even while
+        you are away.</p>
       <div class="hero-cta">
         <a class="btn lg" id="herodl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
           Download for Windows
         </a>
         <a class="ghost" href="#how">See how it works</a>
       </div>
-      <div class="cta-note" id="ctanote">Free · Windows 10 & 11 · no Python or setup needed</div>
+      <div class="cta-note" id="ctanote">Free · Windows 10 and 11 · no Python or setup needed</div>
     </div>
 
-    <div class="mock" aria-hidden="true">
-      <div class="bar"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i><span class="t">Prospectors Plus</span></div>
+    <div class="mock reveal reveal-d2" aria-hidden="true">
+      <div class="bar">
+        <i style="background:#c45c4a"></i>
+        <i style="background:#c9a227"></i>
+        <i style="background:#6a9e6e"></i>
+        <span class="t">Prospectors Plus</span>
+      </div>
       <div class="body">
         <span class="runpill"><span class="dot"></span>RUNNING</span>
         <div class="statrow">
-          <div class="stat"><div class="k">Runtime</div><div class="v">1:24:30</div></div>
-          <div class="stat"><div class="k">Cycles</div><div class="v gold">412</div></div>
-          <div class="stat"><div class="k">Pans / hr</div><div class="v green">168</div></div>
-          <div class="stat"><div class="k">Recoveries</div><div class="v">3</div></div>
+          <div class="stat"><div class="k">Runtime</div><div class="v" data-count="5050">0:00:00</div></div>
+          <div class="stat"><div class="k">Cycles</div><div class="v copper" data-count="412">0</div></div>
+          <div class="stat"><div class="k">Pans / hr</div><div class="v sage" data-count="168">0</div></div>
+          <div class="stat"><div class="k">Recoveries</div><div class="v" data-count="3">0</div></div>
         </div>
-        <div class="log">
-<span class="c2">[loop]</span> dirt detected → digging<br>
-<span class="c1">[dig]</span> landed · probing depth<br>
-<span class="c1">[shake]</span> momentum shake → pan full<br>
-<span class="c3">[deposit]</span> deposited · cycle 412 ✓<br>
-<span class="c2">[relic]</span> Solar Magnifier re-activated
+        <div class="log" id="log">
+          <div class="log-line"><span class="c2">[loop]</span> dirt detected, digging</div>
+          <div class="log-line"><span class="c1">[dig]</span> landed, probing depth</div>
+          <div class="log-line"><span class="c1">[shake]</span> momentum shake, pan full</div>
+          <div class="log-line"><span class="c3">[deposit]</span> deposited, cycle 412</div>
+          <div class="log-line"><span class="c2">[relic]</span> Solar Magnifier re-activated</div>
         </div>
       </div>
     </div>
@@ -203,46 +685,46 @@
 
 <section id="features">
   <div class="wrap">
-    <div class="eyebrow">What it does</div>
-    <h2>More than a click bot</h2>
-    <p class="lead">It watches the game and reacts — so a session doesn't stall the
-      moment something goes slightly wrong.</p>
+    <div class="eyebrow reveal">What it does</div>
+    <h2 class="reveal reveal-d1">More than a click bot</h2>
+    <p class="lead reveal reveal-d2">It watches the game and reacts, so a session does not stall
+      the moment something goes slightly wrong.</p>
 
     <div class="grid">
-      <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3"/></svg></div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3"/></svg></div>
         <h3>Reads the screen</h3>
-        <p>A supervisor watches key pixels to tell dirt, lava/water, the shake phase
-          and an active dig apart, then does the right thing for each.</p>
+        <p>A supervisor watches key pixels to tell dirt, lava, water, the shake phase
+          and an active dig apart, then picks the right action for each.</p>
       </div>
-      <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M3 15h4l3 6V3l-3 6H3z"/><path d="M16 8a5 5 0 0 1 0 8"/></svg></div>
+      <div class="card reveal reveal-d1">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 15h4l3 6V3l-3 6H3z"/><path d="M16 8a5 5 0 0 1 0 8"/></svg></div>
         <h3>Capacity-bar aware</h3>
-        <p>It tracks your pan's fill bar, so it knows when to keep digging and when
-          it's actually time to deposit — instead of looping blindly.</p>
+        <p>It tracks your pan fill bar, so it knows when to keep digging and when
+          it is time to deposit instead of looping blindly.</p>
       </div>
-      <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg></div>
+      <div class="card reveal reveal-d2">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg></div>
         <h3>Recovers itself</h3>
-        <p>Dig-probe landing, a momentum shake and layered break-out steps pull it
+        <p>Dig-probe landing, momentum shake, and layered break-out steps pull it
           out of bad spots so it keeps farming instead of getting stuck.</p>
       </div>
-      <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
         <h3>Relic timers</h3>
-        <p>Set each relic's slot and cooldown and it re-activates them on schedule
-          while it works — Solar Magnifier, Infernal Idol, whatever you run.</p>
+        <p>Set each relic slot and cooldown and it re-activates them on schedule
+          while it works: Solar Magnifier, Infernal Idol, or whatever you run.</p>
       </div>
-      <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z"/></svg></div>
+      <div class="card reveal reveal-d1">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z"/></svg></div>
         <h3>Discord DMs</h3>
         <p>Get a DM on start and stop plus periodic stats, so you can leave it
           running and still know how the session is going.</p>
       </div>
-      <div class="card">
-        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg></div>
-        <h3>Live stats &amp; auto-stop</h3>
-        <p>Cycles, pans-per-hour, recoveries and runtime update live — and you can
+      <div class="card reveal reveal-d2">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg></div>
+        <h3>Live stats and auto-stop</h3>
+        <p>Cycles, pans per hour, recoveries and runtime update live. You can also
           have it stop after a set number of minutes or pans.</p>
       </div>
     </div>
@@ -251,71 +733,116 @@
 
 <section id="how" style="background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
   <div class="wrap">
-    <div class="eyebrow">How it works</div>
-    <h2>The loop, on repeat</h2>
-    <p class="lead">Calibrate once, then it drives the full cycle by itself.</p>
+    <div class="eyebrow reveal">How it works</div>
+    <h2 class="reveal reveal-d1">The loop, on repeat</h2>
+    <p class="lead reveal reveal-d2">Calibrate once, then it drives the full cycle by itself.</p>
 
-    <div class="flow">
-      <div class="node"><div class="em">🪙</div><div class="lb">Pan</div><div class="ds">position</div></div>
-      <span class="ar">→</span>
-      <div class="node"><div class="em">⛏️</div><div class="lb">Dig</div><div class="ds">probe + land</div></div>
-      <span class="ar">→</span>
-      <div class="node"><div class="em">🌀</div><div class="lb">Shake</div><div class="ds">momentum</div></div>
-      <span class="ar">→</span>
-      <div class="node"><div class="em">📦</div><div class="lb">Deposit</div><div class="ds">when full</div></div>
-      <span class="ar">↺</span>
+    <div class="flow reveal">
+      <div class="node">
+        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg></div>
+        <div class="lb">Pan</div>
+        <div class="ds">position</div>
+      </div>
+      <span class="ar" aria-hidden="true">→</span>
+      <div class="node">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M14 3l7 7-4 1-3 5-3-1-3 5H2l5-17z"/></svg></div>
+        <div class="lb">Dig</div>
+        <div class="ds">probe and land</div>
+      </div>
+      <span class="ar" aria-hidden="true">→</span>
+      <div class="node">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 3v4M12 3l3 3"/></svg></div>
+        <div class="lb">Shake</div>
+        <div class="ds">momentum</div>
+      </div>
+      <span class="ar" aria-hidden="true">→</span>
+      <div class="node">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>
+        <div class="lb">Deposit</div>
+        <div class="ds">when full</div>
+      </div>
+      <span class="ar loop" aria-hidden="true">↺</span>
     </div>
 
     <div class="steps">
-      <div class="step"><div class="n">1</div><h3>Calibrate once</h3>
+      <div class="step reveal">
+        <div class="n">1</div>
+        <h3>Calibrate once</h3>
         <p>Click the listed spots in-game (pan, deposit, shake, dig trigger, capacity
-          bar) so the app knows where to look. Takes a minute.</p></div>
-      <div class="step"><div class="n">2</div><h3>Pick a build</h3>
+          bar) so the app knows where to look. Takes about a minute.</p>
+      </div>
+      <div class="step reveal reveal-d1">
+        <div class="n">2</div>
+        <h3>Pick a build</h3>
         <p>Tweak the timings or load a saved preset (like a shards build), set your
-          relics, and optionally add your Discord username for DMs.</p></div>
-      <div class="step"><div class="n">3</div><h3>Start farming</h3>
+          relics, and optionally add your Discord username for DMs.</p>
+      </div>
+      <div class="step reveal reveal-d2">
+        <div class="n">3</div>
+        <h3>Start farming</h3>
         <p>Hit <span class="kbd">Start</span>, then <span class="kbd">Ctrl+K</span>
-          in-game to begin. Press <span class="kbd">Esc</span> to stop anytime.</p></div>
+          in-game to begin. Press <span class="kbd">Esc</span> to stop anytime.</p>
+      </div>
     </div>
   </div>
 </section>
 
 <section id="faq">
   <div class="wrap">
-    <div class="eyebrow">Good to know</div>
-    <h2>FAQ</h2>
+    <div class="eyebrow reveal">Good to know</div>
+    <h2 class="reveal reveal-d1">FAQ</h2>
     <div class="faq">
-      <details open><summary>Are macros allowed in Prospecting?</summary>
-        <p>Yes. Prospectors Plus only automates mouse clicks and key presses — the
-          same inputs you'd make yourself. It does not inject code, read game memory,
-          or modify the game in any way.</p></details>
-      <details><summary>Do I need Python or any setup?</summary>
-        <p>No. It's a normal Windows installer — download, run, and launch from your
-          desktop or Start menu. Nothing else to install.</p></details>
-      <details><summary>Will Windows warn me when I open it?</summary>
+      <details open class="reveal">
+        <summary>Are macros allowed in Prospecting?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
+        <p>Yes. Prospectors Plus only automates mouse clicks and key presses, the
+          same inputs you would make yourself. It does not inject code, read game memory,
+          or modify the game in any way.</p>
+      </details>
+      <details class="reveal reveal-d1">
+        <summary>Do I need Python or any setup?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
+        <p>No. It is a normal Windows installer. Download, run, and launch from your
+          desktop or Start menu. Nothing else to install.</p>
+      </details>
+      <details class="reveal reveal-d2">
+        <summary>Will Windows warn me when I open it?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
         <p>It may show a blue "Windows protected your PC" box because the app is new
-          and unsigned. Click <b>More info → Run anyway</b> once. This is normal for
-          small indie tools.</p></details>
-      <details><summary>How do updates work?</summary>
+          and unsigned. Click <b>More info</b>, then <b>Run anyway</b> once. This is normal for
+          small indie tools.</p>
+      </details>
+      <details class="reveal">
+        <summary>How do updates work?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
         <p>The app checks for new versions on launch and shows a banner when one is
           available, linking you straight back here. Your settings, saved builds and
-          calibration are kept between updates.</p></details>
-      <details><summary>Does it work while I'm doing other things?</summary>
-        <p>It controls the mouse and keyboard, so it runs best on its own while you're
-          away. It sends Discord DMs so you can check in without watching it.</p></details>
+          calibration are kept between updates.</p>
+      </details>
+      <details class="reveal reveal-d1">
+        <summary>Does it work while I am doing other things?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
+        <p>It controls the mouse and keyboard, so it runs best on its own while you are
+          away. It sends Discord DMs so you can check in without watching it.</p>
+      </details>
     </div>
   </div>
 </section>
 
-<section style="padding-top:20px">
+<section style="padding-top:24px;padding-bottom:88px">
   <div class="wrap">
-    <div class="final">
+    <div class="final reveal">
       <div class="eyebrow">Get started</div>
       <h2>Download Prospectors Plus</h2>
-      <p class="lead" style="margin-bottom:26px">Free for Windows 10 &amp; 11.
+      <p class="lead" style="margin-bottom:28px">Free for Windows 10 and 11.
         Install in under a minute.</p>
       <a class="btn lg" id="finaldl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
         Download for Windows
       </a>
     </div>
@@ -323,38 +850,93 @@
 </section>
 
 <footer class="wrap">
-  <div>© <span id="yr"></span> Prospectors Plus — not affiliated with the game developers.</div>
-  <div><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan" target="_blank" rel="noopener" style="color:var(--mut)">View on GitHub</a></div>
+  <div>© <span id="yr"></span> Prospectors Plus. Not affiliated with the game developers.</div>
+  <div><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan" target="_blank" rel="noopener">View on GitHub</a></div>
 </footer>
 
 <script>
   document.getElementById('yr').textContent = new Date().getFullYear();
 
-  // Show the version from version.json (served next to this page)
-  fetch('version.json?_='+Date.now()).then(r=>r.json()).then(d=>{
-    if(d&&d.version) document.getElementById('ver').textContent='v'+d.version;
-  }).catch(()=>{});
+  // Nav scroll state
+  const nav = document.getElementById('nav');
+  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 12);
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
 
-  // Make the download buttons resilient: ask GitHub for the latest release and
-  // wire the .exe asset directly. If there's no release yet, show a clear state
-  // instead of a dead 404 link.
-  const REPO='ProspectorsPlus/Prospecting-Auto-Pan';
-  const dlButtons=[document.getElementById('herodl'),document.getElementById('finaldl')];
-  const setDisabled=(label)=>dlButtons.forEach(b=>{if(!b)return;
-    b.removeAttribute('href');b.setAttribute('disabled','');b.innerHTML=label;});
-  fetch('https://api.github.com/repos/'+REPO+'/releases/latest')
-    .then(r=>{if(!r.ok)throw 0;return r.json();})
-    .then(rel=>{
-      const exe=(rel.assets||[]).find(a=>/\.exe$/i.test(a.name));
-      if(exe){dlButtons.forEach(b=>{if(b)b.href=exe.browser_download_url;});
-        const nav=document.getElementById('navdl');if(nav)nav.href=exe.browser_download_url;}
-      if(rel.tag_name) document.getElementById('ver').textContent=rel.tag_name;
+  // Scroll reveal
+  const revealObs = new IntersectionObserver((entries) => {
+    entries.forEach(e => {
+      if (e.isIntersecting) {
+        e.target.classList.add('visible');
+        revealObs.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.reveal').forEach(el => revealObs.observe(el));
+
+  // Hero stat counters
+  const easeOut = t => 1 - Math.pow(1 - t, 3);
+  function animateStats() {
+    document.querySelectorAll('[data-count]').forEach(el => {
+      const raw = el.dataset.count;
+      const isTime = raw.length > 3;
+      const target = parseInt(raw, 10);
+      const start = performance.now();
+      const dur = 1400;
+      const tick = (now) => {
+        const p = Math.min((now - start) / dur, 1);
+        const v = Math.round(easeOut(p) * target);
+        if (isTime) {
+          const h = Math.floor(v / 3600);
+          const m = Math.floor((v % 3600) / 60);
+          const s = v % 60;
+          el.textContent = h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+        } else {
+          el.textContent = v;
+        }
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+  const mockObs = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting) {
+      animateStats();
+      mockObs.disconnect();
+    }
+  }, { threshold: 0.3 });
+  const mock = document.querySelector('.mock');
+  if (mock) mockObs.observe(mock);
+
+  // Version from version.json
+  fetch('version.json?_=' + Date.now()).then(r => r.json()).then(d => {
+    if (d && d.version) document.getElementById('ver').textContent = 'v' + d.version;
+  }).catch(() => {});
+
+  // Smart download buttons
+  const REPO = 'ProspectorsPlus/Prospecting-Auto-Pan';
+  const dlButtons = [document.getElementById('herodl'), document.getElementById('finaldl')];
+  const setDisabled = (label) => dlButtons.forEach(b => {
+    if (!b) return;
+    b.removeAttribute('href');
+    b.setAttribute('disabled', '');
+    b.innerHTML = label;
+  });
+  fetch('https://api.github.com/repos/' + REPO + '/releases/latest')
+    .then(r => { if (!r.ok) throw 0; return r.json(); })
+    .then(rel => {
+      const exe = (rel.assets || []).find(a => /\.exe$/i.test(a.name));
+      if (exe) {
+        dlButtons.forEach(b => { if (b) b.href = exe.browser_download_url; });
+        const navBtn = document.getElementById('navdl');
+        if (navBtn) navBtn.href = exe.browser_download_url;
+      }
+      if (rel.tag_name) document.getElementById('ver').textContent = rel.tag_name;
     })
-    .catch(()=>{
-      // no published release yet
+    .catch(() => {
       setDisabled('Build coming soon');
-      const n=document.getElementById('ctanote');
-      if(n)n.textContent='No release published yet — check back shortly.';
+      const n = document.getElementById('ctanote');
+      if (n) n.textContent = 'No release published yet. Check back shortly.';
     });
 </script>
 </body>
