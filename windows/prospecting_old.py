@@ -1895,7 +1895,6 @@ def main():
                         if reason == "manual" and State.stats:
                             post_webhook("stop", "⏹️ Macro stopped (manual)",
                                          State.stats.as_dict())
-                        append_history(State.stats, reason)
                         State.stop_reason = ""
                         State.safe_retries = 0
                     was_running = False

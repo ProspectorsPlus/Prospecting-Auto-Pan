@@ -155,6 +155,8 @@ class Api:
         self.proc = None
         self._sct = None
         self._scale = 1.0
+        self._last_stats = None   # latest stats from the macro (for history)
+        self._run_active = False  # a run is in progress (write history once)
 
     # ---- settings ----
     def get_state(self):
@@ -588,9 +590,37 @@ class Api:
             [py, MACRO_FILE], cwd=HERE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1)
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
+        self._run_active = True
+        self._last_stats = None
         return "launched"
 
+    def _save_history(self, reason=None):
+        """Append the just-finished run to run_history.json. The APP writes this
+        (not the macro) because Stop kills the macro before it could save. Guarded
+        so each run is recorded exactly once."""
+        if not getattr(self, "_run_active", False):
+            return
+        self._run_active = False
+        st = self._last_stats or {}
+        if not st or not (st.get("runtime_s") or st.get("cycles")):
+            return                      # nothing actually ran -> don't log
+        import datetime
+        entry = dict(st)
+        entry["reason"] = reason or st.get("stop_reason") or "manual"
+        entry["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        path = os.path.join(os.path.dirname(CONFIG_FILE), "run_history.json")
+        hist = _read_json(path, [])
+        if not isinstance(hist, list):
+            hist = []
+        hist.append(entry)
+        try:
+            with open(path, "w") as f:
+                json.dump(hist[-100:], f, indent=2)
+        except OSError:
+            pass
+
     def stop(self):
+        self._save_history()
         if self.proc is not None:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 try:
@@ -605,11 +635,16 @@ class Api:
             line = line.rstrip("\n")
             if line.startswith("__STATS__ "):
                 _emit_stats(line[10:])        # raw JSON -> live stats panel
+                try:
+                    self._last_stats = json.loads(line[10:])
+                except Exception:
+                    pass
                 continue
             _emit_log(line)
         rc = proc.wait()
         _emit_log(f"[macro exited, code {rc}]")
         self.proc = None
+        self._save_history()              # macro ended on its own (Esc / self-stop)
         _emit_state(False)
 
 
@@ -1232,6 +1267,10 @@ def main():
                                     js_api=api, width=980, height=880,
                                     min_size=(860, 660))
     webview.start()
+    try:
+        api._save_history()      # window closed while running -> log it
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

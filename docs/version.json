@@ -3,5 +3,5 @@
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Stability fixes for long runs, safe-stop now retries instead of stopping, run history, more stats, relic toggle fix"
+  "notes": "Run history now saves reliably; one-click auto-update; long-run stability, safe-stop retries, more stats, relic toggle fix"
 }
