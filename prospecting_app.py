@@ -18,6 +18,7 @@ import threading
 import subprocess
 import webbrowser
 import urllib.request
+import urllib.error
 import hashlib
 
 # ---- version + update channel (compared to the website's version.json) -------
@@ -212,6 +213,11 @@ class Api:
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read().decode("utf-8"))
             hashes = set(data.get("hashes") or [])
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                return {"ok": False, "error": "The access list isn't published "
+                        "yet. Ask the owner to publish codes, then try again."}
+            return {"ok": False, "error": "Code server error (%s)." % e.code}
         except Exception:
             return {"ok": False, "error": "Couldn't reach the code server. "
                     "Check your internet and try again."}
@@ -749,6 +755,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .gate-left .gl-top{position:relative;z-index:2;display:flex;align-items:center;gap:11px;font-weight:700;font-size:18px}
  .gl-pk{width:32px;height:32px;border-radius:9px;background:var(--sand-dim);border:1px solid var(--sand-glow);
   display:flex;align-items:center;justify-content:center;font-size:16px}
+ .pp-gem{width:1em;height:1em;vertical-align:-.16em}
+ .gl-pk .pp-gem{width:18px;height:18px} .gc-logo .gl-pk .pp-gem{width:15px;height:15px}
+ .sp-logo{display:inline-flex;align-items:center;gap:10px} .sp-logo .pp-gem{width:30px;height:30px}
+ .brand{display:inline-flex;align-items:center;gap:8px} .brand .pp-gem{width:18px;height:18px}
  .gate-left .gl-quote{position:relative;z-index:2;margin-top:auto}
  .gate-left .gl-quote p{font-size:19px;line-height:1.55;color:var(--txt);max-width:30ch}
  .gate-left .gl-quote footer{margin-top:12px;color:var(--mut);font-size:13px;font-family:ui-monospace,Menlo,monospace}
@@ -756,9 +766,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .gate-paths{position:absolute;inset:0;z-index:0;pointer-events:none}
  .gate-paths svg{width:100%;height:100%}
  .gate-paths path{fill:none;stroke:var(--accent);vector-effect:non-scaling-stroke}
- @keyframes lf{0%,100%{opacity:.3}50%{opacity:1}}
- @keyframes drift{0%{transform:translateX(-1.4%)}100%{transform:translateX(1.4%)}}
- .gate-paths svg g{animation:drift 34s ease-in-out infinite alternate}
+ @keyframes flow{0%{stroke-dashoffset:300}100%{stroke-dashoffset:0}}
+ @keyframes drift{0%{transform:translate(-2.5%,-1.5%)}100%{transform:translate(2.5%,1.5%)}}
+ .gate-paths svg g{animation:drift 24s ease-in-out infinite alternate;transform-origin:center}
  .gate-right{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px}
  .gate-card{width:100%;max-width:360px;animation:fadeIn .55s var(--ease) .1s both}
  .gate-card .gc-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;margin-bottom:28px}
@@ -779,7 +789,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .gate-foot{margin-top:24px;color:var(--dim);font-size:12.5px;line-height:1.6}
 </style></head><body>
  <div id="splash">
-   <div class="sp-logo">&#9935; Prospectors <b>Plus</b></div>
+   <div class="sp-logo"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospectors <b>Plus</b></div>
    <div class="sp-sub">loading&hellip;</div>
    <div class="sp-bar"><i></i></div>
  </div>
@@ -787,7 +797,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <div class="gate-left">
      <div class="gate-paths" id="gatePaths"></div>
      <div class="gate-fade"></div>
-     <div class="gl-top"><span class="gl-pk">&#9935;</span> Prospectors Plus</div>
+     <div class="gl-top"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospectors Plus</div>
      <div class="gl-quote">
        <p>&ldquo;Set it up once, hand it a code, and let it dig. Prospectors Plus runs the whole loop while you&rsquo;re away.&rdquo;</p>
        <footer>~ Prospectors Plus</footer>
@@ -795,7 +805,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    </div>
    <div class="gate-right">
      <div class="gate-card">
-       <div class="gc-logo"><span class="gl-pk">&#9935;</span> Prospectors Plus</div>
+       <div class="gc-logo"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospectors Plus</div>
        <h1>Enter your access code</h1>
        <div class="gc-sub">Prospectors Plus is invite-only. Enter the access code you were given to unlock it.</div>
        <form id="gateForm">
@@ -817,7 +827,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <button class="x" id="updx">Later</button>
  </div>
  <div class="topbar">
-   <div class="brand">⛏ Prospectors <b>Plus</b></div>
+   <div class="brand"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospectors <b>Plus</b></div>
    <div class="grow"></div>
    <input class="topfield sm" id="buildname" placeholder="build name">
    <button class="btn2" id="savebuild">Save build</button>
@@ -972,10 +982,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function _api(){return window.pywebview&&window.pywebview.api;}
  function genPaths(){const box=document.getElementById('gatePaths');if(!box||box.dataset.done)return;
    let s='<svg viewBox="0 0 696 316" preserveAspectRatio="xMidYMid slice"><g>';
-   [1,-1].forEach(position=>{for(let i=0;i<48;i++){
+   [1,-1].forEach(position=>{for(let i=0;i<44;i++){
      const d='M-'+(380-i*5*position)+' -'+(189+i*6)+'C-'+(380-i*5*position)+' -'+(189+i*6)+' -'+(312-i*5*position)+' '+(216-i*6)+' '+(152-i*5*position)+' '+(343-i*6)+'C'+(616-i*5*position)+' '+(470-i*6)+' '+(684-i*5*position)+' '+(875-i*6)+' '+(684-i*5*position)+' '+(875-i*6);
-     const w=(0.32+i*0.02).toFixed(2),op=(0.05+i*0.009).toFixed(3),dur=(7+Math.random()*7).toFixed(1),del=(Math.random()*-9).toFixed(1);
-     s+='<path d="'+d+'" stroke-width="'+w+'" style="stroke-opacity:'+op+';animation:lf '+dur+'s ease-in-out '+del+'s infinite"/>';}});
+     const w=(0.4+i*0.02).toFixed(2),op=(0.06+i*0.01).toFixed(3),dur=(6+Math.random()*7).toFixed(1),del=(Math.random()*-13).toFixed(1),dir=position>0?'normal':'reverse';
+     s+='<path d="'+d+'" pathLength="300" stroke-width="'+w+'" style="stroke-dasharray:150 150;stroke-opacity:'+op+';animation:flow '+dur+'s linear '+del+'s infinite;animation-direction:'+dir+'"/>';}});
    s+='</g></svg>';box.innerHTML=s;box.dataset.done='1';}
  function splashHide(){const s=document.getElementById('splash');if(!s)return;
    s.classList.add('hide');setTimeout(()=>{s.style.display='none';},520);}

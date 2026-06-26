@@ -121,7 +121,7 @@ SECTION_HINT = {
 
 
 TAB_ICON = {
-    "Mode / Dig": "⛏",
+    "Mode / Dig": "🪣",
     "Walk back into water": "↓",
     "Shake": "🌀",
     "Return to land (dig-probe)": "↑",
