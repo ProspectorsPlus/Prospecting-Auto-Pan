@@ -121,15 +121,15 @@ SECTION_HINT = {
 
 
 TAB_ICON = {
-    "Mode / Dig": "🪣",
-    "Walk back into water": "↓",
-    "Shake": "🌀",
-    "Return to land (dig-probe)": "↑",
-    "Recovery / safety": "🛟",
-    "Recovery movement (jitter taps)": "⚙",
-    "Notifications": "🔔",
-    "Auto-stop": "⏱",
-    "Window": "🪟",
+    "Mode / Dig": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c3 3.8 6 6.8 6 9.8a6 6 0 0 1 -12 0c0 -3 3 -6 6 -9.8z"/></svg>',
+    "Walk back into water": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v13M6 13l6 6l6 -6"/></svg>',
+    "Shake": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8c2 -2 4 -2 6 0s4 2 6 0 4 -2 6 0M3 14c2 -2 4 -2 6 0s4 2 6 0 4 -2 6 0"/></svg>',
+    "Return to land (dig-probe)": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6 -6l6 6"/></svg>',
+    "Recovery / safety": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5 -3 7.5 -7 8.5c-4 -1 -7 -4 -7 -8.5V6z"/></svg>',
+    "Recovery movement (jitter taps)": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/><circle cx="19" cy="12" r="1.5" fill="currentColor"/></svg>',
+    "Notifications": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6H4c.5 -.5 2 -2 2 -6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
+    "Auto-stop": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="7.5"/><path d="M12 13V9.5M9.5 2.5h5M18.6 6l1.2 -1.2"/></svg>',
+    "Window": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9.5h16"/></svg>',
 }
 
 # Per-setting explanations (shown as a ? tooltip next to each field).

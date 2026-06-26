@@ -167,7 +167,8 @@ class Api:
         return {"values": merged, "running": self.proc is not None,
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
-                "builds": self.list_builds(), "pixels": pixels}
+                "builds": self.list_builds(), "pixels": pixels,
+                "colors": saved.get("PIXEL_COLORS", {})}
 
     # ---- updates ----
     def app_version(self):
@@ -237,7 +238,7 @@ class Api:
         return {"ok": False,
                 "error": "That code isn't valid. Double-check and try again."}
 
-    def save_pixels(self, pixels):
+    def save_pixels(self, pixels, colors=None):
         """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
         ends. Only the real macro pixel keys are written (CAP_LEFT_PIXEL is a
         helper used just to compute the width)."""
@@ -270,9 +271,58 @@ class Api:
             cur["PIXEL_RATIOS"] = ratios
         else:
             cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
+        if colors:
+            cur["PIXEL_COLORS"] = {k: str(v) for k, v in colors.items()}
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
+
+    # ---- calibration export / import ----
+    def export_calibration(self):
+        cur = load_saved()
+        keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
+                "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
+        return {"app": "Prospectors Plus", "kind": "calibration",
+                "version": VERSION,
+                "pixels": {k: cur[k] for k in keys if k in cur},
+                "PIXEL_RATIOS": cur.get("PIXEL_RATIOS", {}),
+                "CALIB_WINDOW_RECT": cur.get("CALIB_WINDOW_RECT"),
+                "CAP_BAR_WIDTH": cur.get("CAP_BAR_WIDTH"),
+                "PIXEL_COLORS": cur.get("PIXEL_COLORS", {})}
+
+    def import_calibration(self, text):
+        try:
+            data = json.loads(text)
+        except Exception:
+            return {"ok": False, "error": "Not a valid calibration file."}
+        cur = load_saved()
+        px = data.get("pixels") or {}
+        keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
+                "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
+        applied = {}
+        for k in keys:
+            v = px.get(k)
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                cur[k] = [int(v[0]), int(v[1])]
+                applied[k] = cur[k]
+        if not applied:
+            return {"ok": False, "error": "No pixel data in that file."}
+        if isinstance(data.get("PIXEL_RATIOS"), dict):
+            cur["PIXEL_RATIOS"] = data["PIXEL_RATIOS"]
+        if isinstance(data.get("CALIB_WINDOW_RECT"), (list, tuple)):
+            cur["CALIB_WINDOW_RECT"] = list(data["CALIB_WINDOW_RECT"])
+        if isinstance(data.get("PIXEL_COLORS"), dict):
+            cur["PIXEL_COLORS"] = {k: str(v) for k, v in data["PIXEL_COLORS"].items()}
+        if "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
+            w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
+            if w > 20:
+                cur["CAP_BAR_WIDTH"] = w
+        elif data.get("CAP_BAR_WIDTH"):
+            cur["CAP_BAR_WIDTH"] = int(data["CAP_BAR_WIDTH"])
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cur, f, indent=2)
+        return {"ok": True, "pixels": applied,
+                "colors": cur.get("PIXEL_COLORS", {})}
 
     # ---- window detection + auto-calibrate ----
     def detect_roblox(self):
@@ -527,7 +577,7 @@ def build_html():
                     f'<span class="ti">{icon}</span><span>{label}</span></button>')
 
     # Run
-    nav("run", "▶", "Run", True)
+    nav("run", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5l12 7l-12 7z"/></svg>', "Run", True)
     panels.append(
         '<section class="panel active" id="prun"><div class="phead"><h2>Run</h2>'
         '<p class="chint">Start the macro, tab into Roblox. Ctrl+K also '
@@ -544,14 +594,17 @@ def build_html():
         '<pre id="log" class="log"></pre></section>')
 
     # Calibrate
-    nav("cal", "🎯", "Calibrate")
+    nav("cal", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.2"/></svg>', "Calibrate")
     calrows = []
     for key, label, desc, _d in PIXEL_FIELDS:
         calrows.append(
             f'<div class="calrow" data-pkey="{key}">'
             f'<div class="calinfo"><div class="calname">{label}</div>'
             f'<div class="caldesc">{desc}</div></div>'
-            f'<div class="calval"><span class="calxy" id="cv_{key}">—</span>'
+            f'<div class="calval">'
+            f'<input class="cnum cx" id="cx_{key}" type="number" placeholder="x">'
+            f'<input class="cnum cy" id="cy_{key}" type="number" placeholder="y">'
+            f'<input class="chex" id="cc_{key}" type="text" placeholder="#color" maxlength="7" spellcheck="false">'
             f'<span class="calsw2" id="cs_{key}"></span></div>'
             f'<button type="button" class="btn2 calbtn" data-pkey="{key}">Calibrate</button>'
             f'</div>')
@@ -570,11 +623,15 @@ def build_html():
         'either click the exact spot in-game, or hover it and press <b>Enter</b>. '
         'Press <b>Esc</b> to cancel. Do them all, then <b>Save calibration</b>.</p>'
         f'<div class="calrows">{"".join(calrows)}</div>'
-        '<button type="button" id="savepixels" class="btn" style="margin-top:14px">'
-        'Save calibration</button></section>')
+        '<div class="calactions">'
+        '<button type="button" id="savepixels" class="btn">Save calibration</button>'
+        '<button type="button" id="exportcal" class="btn2">Export\u2026</button>'
+        '<button type="button" id="importcal" class="btn2">Import\u2026</button>'
+        '<input type="file" id="importfile" accept="application/json,.json" style="display:none">'
+        '</div></section>')
 
     # Relics
-    nav("relics", "⏱", "Relics")
+    nav("relics", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>', "Relics")
     rrows = []
     for i in range(MAX_RELIC_ROWS):
         rrows.append(
@@ -649,7 +706,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .tab{display:flex;align-items:center;gap:11px;width:100%;text-align:left;
   background:transparent;color:var(--mut);border-radius:8px;padding:8px 11px;margin-bottom:1px;
   font-weight:500;position:relative;transition:color .15s,background .15s}
- .tab .ti{width:17px;text-align:center;opacity:.65;font-size:13px}
+ .tab .ti{width:17px;display:flex;align-items:center;justify-content:center;opacity:.65}
+ .tab .ti svg{width:16px;height:16px}
  .tab:hover{color:var(--txt)} .tab:hover .ti{opacity:1}
  .tab.active{background:var(--sand-dim);color:var(--accent-lit)}
  .tab.active .ti{opacity:1}
@@ -700,7 +758,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px}
  .calinfo{flex:1} .calname{font-weight:600;color:var(--txt)}
  .caldesc{color:var(--mut);font-size:12.5px;margin-top:2px}
- .calval{display:flex;align-items:center;gap:8px;min-width:130px;justify-content:flex-end}
+ .calval{display:flex;align-items:center;gap:6px;min-width:236px;justify-content:flex-end}
+ .cnum{width:62px;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:7px;padding:7px 8px;text-align:right;font-size:13px}
+ .chex{width:82px;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:7px;padding:7px 8px;font:12px ui-monospace,Menlo,monospace}
+ .cnum:focus,.chex:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(212,148,58,.2)}
+ .calactions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
  .calxy{font:13px ui-monospace,Menlo,monospace;color:var(--accent-lit)}
  .calsw2{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#000}
  .calbtn.armed{background:var(--accent2);color:#04222a}
@@ -897,7 +959,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  let pixels={};
  function setPixels(px){pixels=px||{};
    for(const k in pixels){const xy=pixels[k];
-     const cv=document.getElementById('cv_'+k); if(cv)cv.textContent='('+xy[0]+', '+xy[1]+')';}}
+     const cx=document.getElementById('cx_'+k); if(cx)cx.value=xy[0];
+     const cy=document.getElementById('cy_'+k); if(cy)cy.value=xy[1];}}
+ function setColors(colors){for(const k in (colors||{})){
+     const cc=document.getElementById('cc_'+k); if(cc)cc.value=colors[k];
+     const cs=document.getElementById('cs_'+k); if(cs&&colors[k])cs.style.background=colors[k];}}
  let capturing=false;
  function showWin(w){const el=$('#winstat');if(!el)return;
    if(w&&w.found){el.className='winstat ok';
@@ -911,8 +977,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(r.cancelled){toast('Cancelled');return;}
    if(r.error){toast('Calibrate failed: '+r.error);return;}
    pixels[key]=[r.x,r.y];
-   const cv=document.getElementById('cv_'+key); if(cv)cv.textContent='('+r.x+', '+r.y+')';
-   const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=`rgb(${r.r},${r.g},${r.b})`;
+   const cx=document.getElementById('cx_'+key); if(cx)cx.value=r.x;
+   const cy=document.getElementById('cy_'+key); if(cy)cy.value=r.y;
+   const hex='#'+[r.r,r.g,r.b].map(v=>v.toString(16).padStart(2,'0')).join('');
+   const cc=document.getElementById('cc_'+key); if(cc)cc.value=hex;
+   const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=hex;
    toast(key+' set to ('+r.x+', '+r.y+')');});
  $('#detectwin').onclick=async()=>{const w=await window.pywebview.api.detect_roblox();showWin(w);};
  $('#autocal').onclick=async()=>{const b=$('#autocal');const old=b.textContent;
@@ -922,8 +991,23 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    showWin(r.window||{found:false,error:r.error});
    if(r.ok){setPixels(r.pixels);toast('Auto-calibrated '+r.count+' spots ✓ — saved');}
    else{toast(r.error||'Auto-calibrate failed');}};
- $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(pixels);
-   toast('Calibration saved');};
+ function collectPixels(){const o={};document.querySelectorAll('.calrow').forEach(row=>{
+   const k=row.dataset.pkey,x=row.querySelector('.cx').value,y=row.querySelector('.cy').value;
+   if(x!==''&&y!=='')o[k]=[parseInt(x,10),parseInt(y,10)];});return o;}
+ function collectColors(){const o={};document.querySelectorAll('.calrow').forEach(row=>{
+   const k=row.dataset.pkey,c=(row.querySelector('.chex').value||'').trim();if(c)o[k]=c;});return o;}
+ document.querySelectorAll('.chex').forEach(inp=>inp.addEventListener('input',()=>{
+   const cs=inp.closest('.calrow').querySelector('.calsw2');if(cs)cs.style.background=inp.value;}));
+ $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(collectPixels(),collectColors());toast('Calibration saved');};
+ $('#exportcal').onclick=async()=>{const data=await window.pywebview.api.export_calibration();
+   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='prospectors_calibration.json';
+   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},150);toast('Exported calibration');};
+ $('#importcal').onclick=()=>$('#importfile').click();
+ $('#importfile').onchange=async ev=>{const f=ev.target.files[0];if(!f)return;
+   const text=await f.text();let r;try{r=await window.pywebview.api.import_calibration(text);}catch(_){r={ok:false,error:'could not read file'};}
+   if(r&&r.ok){setPixels(r.pixels||{});setColors(r.colors||{});toast('Imported calibration \u2713');}else{toast('Import failed: '+((r&&r.error)||'invalid'));}
+   ev.target.value='';};
  // presets
  $('#pv1').onclick=()=>preset(V1); $('#pv2').onclick=()=>preset(V2); $('#pdef').onclick=()=>preset(DEF);
  // save / run
@@ -975,7 +1059,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});
    checkUpdate();
    try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
  window.addEventListener('pywebviewready',boot);

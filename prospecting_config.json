@@ -29,15 +29,15 @@
   "BREAKOUT_REPOS_MS": 160,
   "BURST_ON_MS": 11,
   "BURST_OFF_MS": 1,
-  "WEBHOOK_ENABLED": false,
+  "WEBHOOK_ENABLED": true,
   "WEBHOOK_URL": "",
   "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
-  "WEBHOOK_USER": "",
-  "WEBHOOK_STATS_MIN": 0,
+  "WEBHOOK_USER": "Tedtheidot",
+  "WEBHOOK_STATS_MIN": 10,
   "AUTOSTOP_ENABLED": false,
   "AUTOSTOP_MINUTES": 60,
   "STOP_AFTER_PANS": 0,
-  "WINDOW_RELATIVE": false,
+  "WINDOW_RELATIVE": true,
   "RELICS": [
     {
       "name": "Solar Magnifier",
@@ -115,9 +115,11 @@
     ]
   },
   "NOTIFY_START": false,
-  "NOTIFY_STOP": false,
+  "NOTIFY_STOP": true,
   "NOTIFY_STATS": true,
   "NOTIFY_SAFE_STOP": true,
   "NOTIFY_RECOVERIES": true,
-  "NOTIFY_ERRORS": true
+  "NOTIFY_ERRORS": true,
+  "ACCESS_OK": true,
+  "ACCESS_HASH": "71786532ffb0949f55898b91d3876a8793240baa9c466519c067fabb75c72dd7"
 }
