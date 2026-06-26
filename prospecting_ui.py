@@ -190,6 +190,16 @@ HELP = {
     "WEBHOOK_USER": "Your exact Discord username (the bot DMs this server member). "
                     "You must be in the server and have DMs open.",
     "WEBHOOK_STATS_MIN": "How often to DM a stats update while running (0 = off).",
+    "NOTIFY_START": "DM you when a session starts (you press Ctrl+K to run).",
+    "NOTIFY_STOP": "DM you when the macro stops — whether you stop it, the auto-stop "
+                   "timer fires, or it stops because the bag is full.",
+    "NOTIFY_STATS": "DM you a periodic stats summary (cycles, pans/hr, recoveries) "
+                    "while it runs. Set the interval above.",
+    "NOTIFY_SAFE_STOP": "DM you if the macro safe-stops because it detected a hazard "
+                        "(e.g. it would walk into lava/water) and parked itself.",
+    "NOTIFY_RECOVERIES": "DM you each time it recovers from being stuck. Off by default "
+                         "because recoveries can happen often and get spammy.",
+    "NOTIFY_ERRORS": "DM you if the macro hits an unexpected error and stops.",
     "AUTOSTOP_ENABLED": "Automatically stop the macro after AUTOSTOP minutes.",
     "AUTOSTOP_MINUTES": "How long to run before auto-stopping.",
     "STOP_AFTER_PANS": "Stop after this many pans emptied — a simple guard so it "

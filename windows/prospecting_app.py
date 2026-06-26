@@ -19,6 +19,7 @@ import threading
 import subprocess
 import webbrowser
 import urllib.request
+import hashlib
 
 # ---- version + update channel -------------------------------------------------
 # VERSION is compared against the "version" field in the JSON the app downloads
@@ -28,6 +29,7 @@ import urllib.request
 VERSION             = "1.0.1"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
+ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
 HERE = (os.path.dirname(sys.executable) if FROZEN
@@ -266,6 +268,40 @@ class Api:
             return True
         except Exception:
             return False
+
+    # ---- access gate ----
+    def access_state(self):
+        """Has this PC already unlocked with a valid code?"""
+        return {"unlocked": bool(load_saved().get("ACCESS_OK"))}
+
+    def verify_access(self, code):
+        """Check an access code against the GitHub-hosted hashed list. On success
+        remember it on this PC so we don't ask again."""
+        norm = "".join((code or "").split()).upper()
+        if not norm:
+            return {"ok": False, "error": "Enter your access code."}
+        h = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        try:
+            req = urllib.request.Request(ACCESS_CODES_URL,
+                                         headers={"User-Agent": "ProspectorsPlus"})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            hashes = set(data.get("hashes") or [])
+        except Exception:
+            return {"ok": False, "error": "Couldn't reach the code server. "
+                    "Check your internet and try again."}
+        if h in hashes:
+            cur = load_saved()
+            cur["ACCESS_OK"] = True
+            cur["ACCESS_HASH"] = h
+            try:
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(cur, f, indent=2)
+            except OSError:
+                pass
+            return {"ok": True}
+        return {"ok": False,
+                "error": "That code isn't valid. Double-check and try again."}
 
     def save_pixels(self, pixels):
         """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
@@ -662,17 +698,20 @@ def build_html():
 
 
 HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
- :root{--bg:#0f1115;--panel:#171a21;--head:#1c2029;--line:#262b35;--txt:#e8eaed;
-  --mut:#8b94a3;--accent:#3b82f6;--accent2:#10b981;--field:#0c0e12;--nav:#13161c}
+ :root{--bg:#0c0b09;--bg2:#111009;--panel:#161410;--head:#1b1814;--line:#272318;
+  --line2:#373020;--txt:#f0ebe0;--mut:#a09585;--dim:#68604f;--accent:#d4943a;
+  --accent-lit:#f0b95a;--accent2:#2cb8c8;--teal-lit:#52d4e2;--green:#3db87a;
+  --field:#0f0d08;--nav:#100e09;--sand-dim:rgba(212,148,58,.14);
+  --sand-glow:rgba(212,148,58,.24);--ease:cubic-bezier(.22,1,.36,1)}
  *{box-sizing:border-box} html,body{height:100%;margin:0}
  body{background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,
   BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;display:flex;flex-direction:column}
- .topbar{flex:0 0 auto;background:#12151b;border-bottom:1px solid var(--line);
+ .topbar{flex:0 0 auto;background:var(--head);border-bottom:1px solid var(--line);
   padding:12px 18px;display:flex;align-items:center;gap:10px}
- .brand{font-size:16px;font-weight:700} .brand b{color:var(--accent2)} .grow{flex:1}
- button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:9px 14px;cursor:pointer}
- .btn{background:var(--accent);color:#fff} .btn:hover{filter:brightness(1.08)}
- .btn2{background:#2a3340;color:#dfe5ee} .btn2:hover{background:#33404f}
+ .brand{font-size:16px;font-weight:700} .brand b{color:var(--accent-lit)} .grow{flex:1}
+ button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:9px 14px;cursor:pointer;transition:transform .12s var(--ease),filter .15s,background .15s}
+ .btn{background:var(--accent);color:#241a02} .btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
+ .btn2{background:#2a2418;color:#e9e0cf} .btn2:hover{background:#352d1c}
  input,select{font:inherit}
  .topfield{background:var(--field);color:#fff;border:1px solid #2c333f;border-radius:8px;
   padding:8px 10px} .topfield.sm{width:140px}
@@ -682,12 +721,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .tab{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
   background:transparent;color:#b9c1cd;border-radius:9px;padding:10px 11px;margin-bottom:3px}
  .tab .ti{width:18px;text-align:center;opacity:.85}
- .tab:hover{background:#1d222b;color:#fff} .tab.active{background:#223049;color:#fff}
+ .tab:hover{background:#1c180f;color:var(--txt)} .tab.active{background:var(--sand-dim);color:var(--accent-lit)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
  .pretitle{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.6px;margin:4px 8px 6px}
- .chip{display:block;width:100%;text-align:left;background:#1b212b;color:#cdd5e0;
+ .chip{display:block;width:100%;text-align:left;background:#1a160f;color:#d8cdb8;
   border:1px solid var(--line);border-radius:8px;padding:8px 11px;margin-bottom:6px;font-size:13px}
- .chip:hover{background:#222a35}
+ .chip:hover{background:#221d12}
  .content{flex:1;overflow-y:auto;padding:18px 22px}
  .panel{display:none} .panel.active{display:block}
  .phead{margin:0 0 12px} .phead h2{margin:0;font-size:18px} .chint{margin:3px 0 0;color:var(--mut)}
@@ -703,16 +742,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  input[type=number]{width:104px;background:var(--field);color:#fff;border:1px solid #2c333f;
   border-radius:8px;padding:9px 11px;text-align:right}
  input[type=number]:focus,input[type=text]:focus,.rname:focus{outline:0;border-color:var(--accent);
-  box-shadow:0 0 0 3px rgba(59,130,246,.25)}
+  box-shadow:0 0 0 3px rgba(212,148,58,.25)}
  .switch{position:relative;display:inline-flex} .switch input{display:none}
- .track{width:46px;height:26px;background:#39414e;border-radius:999px;position:relative;cursor:pointer}
+ .track{width:46px;height:26px;background:#39342a;border-radius:999px;position:relative;cursor:pointer}
  .knob{position:absolute;top:3px;left:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:left .15s}
  .switch input:checked + .track{background:var(--accent2)}
  .switch input:checked + .track .knob{left:23px}
  .switch.sm .track{width:38px;height:22px} .switch.sm .knob{width:16px;height:16px}
  .switch.sm input:checked + .track .knob{left:19px}
  .runbtns{display:flex;align-items:center;gap:10px;margin-bottom:14px}
- .big{padding:11px 20px;font-size:15px} .go{background:var(--accent2);color:#06281c}
+ .big{padding:11px 20px;font-size:15px} .go{background:var(--accent2);color:#04222a}
  .stop{background:#3a2330;color:#ffb4b4} .stop:disabled,.go:disabled{opacity:.5;cursor:default}
  .rstate{color:var(--mut);margin-left:6px}
  .statsbar{display:flex;gap:10px;margin:0 0 12px}
@@ -731,7 +770,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .calval{display:flex;align-items:center;gap:8px;min-width:130px;justify-content:flex-end}
  .calxy{font:13px ui-monospace,Menlo,monospace;color:#bfe3d2}
  .calsw2{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#000}
- .calbtn.armed{background:var(--accent2);color:#06281c}
+ .calbtn.armed{background:var(--accent2);color:#04222a}
  .autocal{display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:720px;margin-bottom:14px}
  .winstat{flex-basis:100%;font:12.5px ui-monospace,Menlo,monospace;color:var(--mut);
   background:#0a0c10;border:1px solid var(--line);border-radius:9px;padding:8px 11px}
@@ -749,13 +788,95 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
   border:1px solid #1f6b4a;border-radius:9px;padding:8px 12px;font-size:13px;opacity:0;
   transition:opacity .2s} .ok.show{opacity:1}
  .upd{display:none;align-items:center;gap:10px;padding:8px 14px;
-   background:linear-gradient(90deg,#1f6feb,#388bfd);color:#fff;font-size:13px}
+   background:linear-gradient(90deg,#b07d28,#d4943a);color:#241a02;font-size:13px}
  .upd b{font-weight:700}
  .upd .grow{flex:1}
- .upd button{background:#fff;color:#0b3a82;border:0;border-radius:6px;
+ .upd button{background:#fff;color:#5a3d0a;border:0;border-radius:6px;
    padding:5px 12px;font-weight:700;cursor:pointer}
- .upd .x{background:transparent;color:#cfe0ff;font-weight:400;padding:5px 8px}
+ .upd .x{background:transparent;color:#f3e3c5;font-weight:400;padding:5px 8px}
+
+ /* ---- entrance + splash + access gate ---- */
+ .panel.active{animation:fadeIn .34s var(--ease)}
+ @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+ #splash{position:fixed;inset:0;z-index:1000;background:var(--bg);display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  transition:opacity .5s var(--ease)}
+ #splash.hide{opacity:0;pointer-events:none}
+ .sp-logo{font-size:30px;font-weight:800;letter-spacing:-.5px;color:var(--txt)}
+ .sp-logo b{color:var(--accent-lit)}
+ .sp-sub{color:var(--mut);font-size:13px;letter-spacing:.3px}
+ .sp-bar{width:180px;height:3px;border-radius:3px;background:var(--line2);overflow:hidden}
+ .sp-bar i{display:block;height:100%;width:38%;border-radius:3px;
+  background:linear-gradient(90deg,var(--accent),var(--accent-lit));animation:spbar 1.05s var(--ease) infinite}
+ @keyframes spbar{0%{transform:translateX(-120%)}100%{transform:translateX(330%)}}
+ #gate{position:fixed;inset:0;z-index:990;display:none;background:var(--bg);grid-template-columns:1.05fr .95fr}
+ #gate.show{display:grid;animation:fadeIn .4s var(--ease)}
+ @media(max-width:820px){#gate.show{grid-template-columns:1fr}.gate-left{display:none}}
+ .gate-left{position:relative;overflow:hidden;border-right:1px solid var(--line);
+  padding:40px;display:flex;flex-direction:column;background:var(--bg2)}
+ .gate-left .gl-top{position:relative;z-index:2;display:flex;align-items:center;gap:11px;font-weight:700;font-size:18px}
+ .gl-pk{width:32px;height:32px;border-radius:9px;background:var(--sand-dim);border:1px solid var(--sand-glow);
+  display:flex;align-items:center;justify-content:center;font-size:16px}
+ .gate-left .gl-quote{position:relative;z-index:2;margin-top:auto}
+ .gate-left .gl-quote p{font-size:19px;line-height:1.55;color:var(--txt);max-width:30ch}
+ .gate-left .gl-quote footer{margin-top:12px;color:var(--mut);font-size:13px;font-family:ui-monospace,Menlo,monospace}
+ .gate-fade{position:absolute;inset:0;z-index:1;background:linear-gradient(to top,var(--bg2),transparent 60%)}
+ .gate-paths{position:absolute;inset:0;z-index:0;pointer-events:none}
+ .gate-paths svg{width:100%;height:100%}
+ .gate-paths path{fill:none;stroke:var(--accent)}
+ @keyframes flow{0%{stroke-dashoffset:var(--L)}100%{stroke-dashoffset:calc(var(--L) * -1)}}
+ .gate-right{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px}
+ .gate-card{width:100%;max-width:360px;animation:fadeIn .55s var(--ease) .1s both}
+ .gate-card .gc-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;margin-bottom:28px}
+ .gate-card .gc-logo .gl-pk{width:28px;height:28px;font-size:14px}
+ .gate-card h1{font-size:24px;letter-spacing:-.3px;margin:0 0 6px;color:var(--txt)}
+ .gate-card .gc-sub{color:var(--mut);font-size:14.5px;margin-bottom:22px;line-height:1.55}
+ .gate-field{position:relative;margin-bottom:12px}
+ .gate-field input{width:100%;background:var(--field);color:var(--txt);border:1px solid var(--line2);
+  border-radius:11px;padding:13px 14px 13px 40px;font:inherit;font-size:15px;letter-spacing:2px;
+  text-transform:uppercase;transition:border-color .2s,box-shadow .2s}
+ .gate-field input::placeholder{letter-spacing:1px;text-transform:none;color:var(--dim)}
+ .gate-field input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(212,148,58,.22)}
+ .gate-field .ic{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:15px;opacity:.8}
+ #gateGo{width:100%;background:var(--accent);color:#241a02;font-size:15px;padding:13px;border-radius:11px;margin-top:2px}
+ #gateGo:hover{filter:brightness(1.05);transform:translateY(-1px)}
+ #gateGo[disabled]{opacity:.6;transform:none;cursor:default}
+ .gate-err{min-height:18px;margin-top:11px;color:#f0a6a6;font-size:13px}
+ .gate-foot{margin-top:24px;color:var(--dim);font-size:12.5px;line-height:1.6}
 </style></head><body>
+ <div id="splash">
+   <div class="sp-logo">&#9935; Prospectors <b>Plus</b></div>
+   <div class="sp-sub">loading&hellip;</div>
+   <div class="sp-bar"><i></i></div>
+ </div>
+ <div id="gate">
+   <div class="gate-left">
+     <div class="gate-paths" id="gatePaths"></div>
+     <div class="gate-fade"></div>
+     <div class="gl-top"><span class="gl-pk">&#9935;</span> Prospectors Plus</div>
+     <div class="gl-quote">
+       <p>&ldquo;Set it up once, hand it a code, and let it dig. Prospectors Plus runs the whole loop while you&rsquo;re away.&rdquo;</p>
+       <footer>~ Prospectors Plus</footer>
+     </div>
+   </div>
+   <div class="gate-right">
+     <div class="gate-card">
+       <div class="gc-logo"><span class="gl-pk">&#9935;</span> Prospectors Plus</div>
+       <h1>Enter your access code</h1>
+       <div class="gc-sub">Prospectors Plus is invite-only. Enter the access code you were given to unlock it.</div>
+       <form id="gateForm">
+         <div class="gate-field">
+           <span class="ic">&#128273;</span>
+           <input id="gateCode" placeholder="PPLUS-XXXX-XXXX" autocomplete="off" spellcheck="false">
+         </div>
+         <button type="submit" id="gateGo" class="btn">Unlock</button>
+         <div class="gate-err" id="gateErr"></div>
+       </form>
+       <div class="gate-foot">Don&rsquo;t have a code? Ask whoever shared Prospectors Plus with you.</div>
+     </div>
+   </div>
+ </div>
+
  <div class="upd" id="upd">
    <span id="updtext"></span><span class="grow"></span>
    <button id="upddl">Download update</button>
@@ -913,8 +1034,36 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});
    checkUpdate();
    try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
- window.addEventListener('pywebviewready',init);
- if(window.pywebview&&window.pywebview.api)init();
+ window.addEventListener('pywebviewready',boot);
+ if(window.pywebview&&window.pywebview.api)boot();
+
+ // ---- splash + access gate ----
+ function _api(){return window.pywebview&&window.pywebview.api;}
+ function genPaths(){const box=document.getElementById('gatePaths');if(!box||box.dataset.done)return;
+   let svg='<svg viewBox="0 0 696 316" preserveAspectRatio="xMidYMid slice">';
+   [1,-1].forEach(position=>{for(let i=0;i<36;i++){
+     const d='M-'+(380-i*5*position)+' -'+(189+i*6)+'C-'+(380-i*5*position)+' -'+(189+i*6)+' -'+(312-i*5*position)+' '+(216-i*6)+' '+(152-i*5*position)+' '+(343-i*6)+'C'+(616-i*5*position)+' '+(470-i*6)+' '+(684-i*5*position)+' '+(875-i*6)+' '+(684-i*5*position)+' '+(875-i*6);
+     const w=(0.5+i*0.06).toFixed(2),op=(0.10+i*0.02).toFixed(2),dur=(18+Math.random()*12).toFixed(1),del=(Math.random()*-22).toFixed(1);
+     svg+='<path d="'+d+'" stroke-width="'+w+'" style="stroke-opacity:'+op+';animation:flow '+dur+'s linear '+del+'s infinite"/>';}});
+   svg+='</svg>';box.innerHTML=svg;box.dataset.done='1';
+   box.querySelectorAll('path').forEach(p=>{const L=p.getTotalLength();
+     p.style.setProperty('--L',L+'px');p.style.strokeDasharray=L;p.style.strokeDashoffset=L;});}
+ function splashHide(){const s=document.getElementById('splash');if(!s)return;
+   s.classList.add('hide');setTimeout(()=>{s.style.display='none';},520);}
+ function gateShow(){genPaths();const g=document.getElementById('gate');if(g)g.classList.add('show');
+   setTimeout(()=>{const c=document.getElementById('gateCode');if(c)c.focus();},140);}
+ function gateHide(){const g=document.getElementById('gate');if(g)g.classList.remove('show');}
+ async function boot(){let a={unlocked:false};try{a=await _api().access_state();}catch(e){}
+   await new Promise(r=>setTimeout(r,650));splashHide();
+   if(a&&a.unlocked){init();}else{gateShow();}}
+ (function(){const f=document.getElementById('gateForm');if(!f)return;
+   f.addEventListener('submit',async e=>{e.preventDefault();
+     const inp=document.getElementById('gateCode'),btn=document.getElementById('gateGo'),err=document.getElementById('gateErr');
+     const code=(inp.value||'').trim();if(!code){err.textContent='Enter your access code.';return;}
+     btn.disabled=true;btn.textContent='Checking…';err.textContent='';
+     let r={};try{r=await _api().verify_access(code);}catch(e){r={ok:false,error:'Something went wrong. Try again.'};}
+     btn.disabled=false;btn.textContent='Unlock';
+     if(r&&r.ok){gateHide();init();}else{err.textContent=(r&&r.error)||'That code did not work.';inp.select();}});})();
 </script></body></html>"""
 
 
