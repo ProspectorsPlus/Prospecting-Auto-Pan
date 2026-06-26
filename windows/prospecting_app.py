@@ -31,6 +31,7 @@ VERSION             = "2.0.1"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
+INSTALLER_URL       = "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe"
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
 HERE = (os.path.dirname(sys.executable) if FROZEN
@@ -259,6 +260,8 @@ class Api:
                 return {"update": True, "version": latest,
                         "current": VERSION,
                         "url": data.get("url") or DOWNLOAD_PAGE_URL,
+                        "installer": data.get("installer") or INSTALLER_URL,
+                        "critical": bool(data.get("critical")),
                         "notes": data.get("notes", "")}
             return {"update": False, "version": VERSION}
         except Exception as e:
@@ -270,6 +273,53 @@ class Api:
             return True
         except Exception:
             return False
+
+    def do_update(self, url=None):
+        """One-click update for the installed Windows app: download the latest
+        installer and run it silently (it upgrades in place over the same install
+        and relaunches), then quit so the files can be replaced. On macOS / when
+        running from source we can't self-install, so we open the download page."""
+        target = url or INSTALLER_URL
+        frozen = bool(globals().get("FROZEN", False))
+        if not (frozen and sys.platform.startswith("win")):
+            try:
+                webbrowser.open(DOWNLOAD_PAGE_URL)
+            except Exception:
+                pass
+            return {"ok": False, "manual": True}
+        try:
+            import tempfile
+            tmp = os.path.join(tempfile.gettempdir(), "ProspectorsPlusSetup.exe")
+            req = urllib.request.Request(
+                target, headers={"User-Agent": "ProspectorsPlus"})
+            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            # /SILENT shows a small progress bar; the installer's [Run] entry
+            # relaunches the app afterwards. We exit so the .exe can be replaced.
+            subprocess.Popen([tmp, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
+                             close_fds=True)
+
+            def _bye():
+                import time as _t
+                _t.sleep(1.3)
+                try:
+                    if _window is not None:
+                        _window.destroy()
+                except Exception:
+                    pass
+                os._exit(0)
+            threading.Thread(target=_bye, daemon=True).start()
+            return {"ok": True}
+        except Exception as e:
+            try:
+                webbrowser.open(DOWNLOAD_PAGE_URL)
+            except Exception:
+                pass
+            return {"ok": False, "error": str(e)}
 
     # ---- access gate ----
     def access_state(self):
@@ -925,6 +975,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .upd button{background:#fff;color:#5a3d0a;border:0;border-radius:6px;
    padding:5px 12px;font-weight:700;cursor:pointer}
  .upd .x{background:transparent;color:#f3e3c5;font-weight:400;padding:5px 8px}
+ .upd.crit{background:linear-gradient(90deg,#7a1f1f,#c23b3b);color:#fff}
+ .upd.crit button{color:#5a0f0f}
 
  /* sleek refinements */
  .calrow,.rrow,.stat{transition:border-color .15s,background .15s}
@@ -1025,7 +1077,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
 
  <div class="upd" id="upd">
    <span id="updtext"></span><span class="grow"></span>
-   <button id="upddl">Download update</button>
+   <button id="upddl">Update now</button>
    <button class="x" id="updx">Later</button>
  </div>
  <div class="topbar">
@@ -1200,14 +1252,19 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(ds&&dh)ds.addEventListener('input',()=>{const s=parseFloat(ds.value);
      if(s>0)dh.value=Math.round(55000/s);});})();
  // update check (silent; shows a banner only if a newer version exists)
- let _updUrl='';
+ let _updUrl='',_updInstaller='';
  async function checkUpdate(){try{const u=await window.pywebview.api.check_update();
-   if(u&&u.update){_updUrl=u.url;
-     $('#updtext').innerHTML='<b>Update available</b> — v'+u.version+
-       (u.notes?(' · '+u.notes):'')+' (you have v'+u.current+')';
+   if(u&&u.update){_updUrl=u.url;_updInstaller=u.installer||'';
+     $('#updtext').innerHTML='<b>'+(u.critical?'Critical update required':'Update available')+
+       '</b> — v'+u.version+(u.notes?(' · '+u.notes):'')+' (you have v'+u.current+')';
+     if(u.critical){$('#upd').classList.add('crit');const x=$('#updx');if(x)x.style.display='none';}
      $('#upd').style.display='flex';}}catch(e){}}
  (function(){const dl=$('#upddl'),x=$('#updx');
-   if(dl)dl.onclick=()=>window.pywebview.api.open_external(_updUrl);
+   if(dl)dl.onclick=async()=>{dl.disabled=true;dl.textContent='Updating…';
+     let r={};try{r=await window.pywebview.api.do_update(_updInstaller);}catch(e){r={ok:false};}
+     if(r&&r.ok){$('#updtext').innerHTML='<b>Updating…</b> the app will reinstall and reopen automatically.';}
+     else{dl.disabled=false;dl.textContent='Update now';
+       toast(r&&r.manual?'Opened the download page':'Update failed — opening download page');}};
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);

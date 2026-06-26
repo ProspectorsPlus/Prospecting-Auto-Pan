@@ -6,6 +6,28 @@ goes in the **GitHub Release description** for the tag.
 
 ---
 
+## Auto-update & critical updates
+
+From v2.0.1 onward the app self-updates: on launch it reads `docs/version.json`,
+and if the site's `version` is higher than the user's, it shows an **Update now**
+banner that downloads the latest installer and runs it silently (upgrades in
+place and relaunches). Users don't reinstall manually.
+
+To push an update, you just bump the version + tag a release (below). Two flags
+in `docs/version.json` control the banner:
+
+- `"critical": true` — shows a red "Critical update required" banner with no
+  "Later" button (still one-click). Use for important fixes. Set back to `false`
+  for normal updates.
+- `"installer"` — the URL the updater downloads. Leave it as the
+  `releases/latest/download/ProspectorsPlusSetup.exe` link; it always points at
+  the newest release.
+
+Note: a user only gets one-click auto-update once they're on a build that has the
+updater (v2.0.1+). Anyone still on v2.0.0 gets sent to the download page instead.
+
+---
+
 ## Versioning (semver: MAJOR.MINOR.PATCH)
 
 - **PATCH** (1.0.0 → 1.0.**1**): bug fixes only, nothing new.

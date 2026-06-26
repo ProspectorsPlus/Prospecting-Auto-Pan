@@ -25,6 +25,9 @@ Update in-app or grab the installer below.
 
 ### ✨ New
 
+- **One-click auto-update.** When a new version is out, the app shows an update
+  banner with an **Update now** button that downloads and installs it in place and
+  reopens — no manual reinstall. (Takes effect from this version onward.)
 - **Safe-stop now retries instead of stopping.** If it hits a hazard or gets
   stuck while you're AFK, it pauses, waits, and tries again — only hard-stopping
   after several failed retries in a row. Wait time and retry count are adjustable
