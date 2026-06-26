@@ -1,0 +1,88 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Prospectors Plus — gate preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
+ :root{--bg:#0a0908;--bg2:#0d0c0a;--panel:#121110;--head:#0c0b0a;--line:#221f17;
+  --line2:#2e2a1e;--txt:#f0ebe0;--mut:#8f877a;--dim:#5f5849;--accent:#d4943a;
+  --accent-lit:#f0b95a;--accent2:#2cb8c8;--field:#100e0b;
+  --sand-dim:rgba(212,148,58,.12);--sand-glow:rgba(212,148,58,.22);--ease:cubic-bezier(.22,1,.36,1)}
+ *{box-sizing:border-box;margin:0} html,body{height:100%}
+ body{background:var(--bg);color:var(--txt);font:13.5px/1.5 "Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+ button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:9px 14px;cursor:pointer;transition:transform .12s var(--ease),filter .15s}
+ @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+ #splash{position:fixed;inset:0;z-index:1000;background:var(--bg);display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:16px;transition:opacity .5s var(--ease)}
+ #splash.hide{opacity:0;pointer-events:none}
+ .sp-logo{font-size:30px;font-weight:800;letter-spacing:-.5px}.sp-logo b{color:var(--accent-lit)}
+ .sp-sub{color:var(--mut);font-size:13px}
+ .sp-bar{width:180px;height:3px;border-radius:3px;background:var(--line2);overflow:hidden}
+ .sp-bar i{display:block;height:100%;width:38%;border-radius:3px;background:linear-gradient(90deg,var(--accent),var(--accent-lit));animation:spbar 1.05s var(--ease) infinite}
+ @keyframes spbar{0%{transform:translateX(-120%)}100%{transform:translateX(330%)}}
+ #gate{position:fixed;inset:0;z-index:990;display:grid;grid-template-columns:1.05fr .95fr;background:var(--bg);opacity:0;transition:opacity .4s var(--ease)}
+ #gate.show{opacity:1}
+ @media(max-width:820px){#gate{grid-template-columns:1fr}.gate-left{display:none}}
+ .gate-left{position:relative;overflow:hidden;border-right:1px solid var(--line);padding:40px;display:flex;flex-direction:column;background:var(--bg2)}
+ .gl-top{position:relative;z-index:2;display:flex;align-items:center;gap:11px;font-weight:700;font-size:18px}
+ .gl-pk{width:32px;height:32px;border-radius:9px;background:var(--sand-dim);border:1px solid var(--sand-glow);display:flex;align-items:center;justify-content:center;font-size:16px}
+ .gl-quote{position:relative;z-index:2;margin-top:auto}
+ .gl-quote p{font-size:19px;line-height:1.55;max-width:30ch}
+ .gl-quote footer{margin-top:12px;color:var(--mut);font-size:13px;font-family:ui-monospace,Menlo,monospace}
+ .gate-fade{position:absolute;inset:0;z-index:1;background:linear-gradient(to top,var(--bg2),transparent 60%)}
+ .gate-paths{position:absolute;inset:0;z-index:0;pointer-events:none}.gate-paths svg{width:100%;height:100%}
+ .gate-paths path{fill:none;stroke:var(--accent);vector-effect:non-scaling-stroke}
+ @keyframes lf{0%,100%{opacity:.3}50%{opacity:1}}
+ @keyframes drift{0%{transform:translateX(-1.4%)}100%{transform:translateX(1.4%)}}
+ .gate-paths svg g{animation:drift 34s ease-in-out infinite alternate}
+ .gate-right{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px}
+ .gate-card{width:100%;max-width:360px;animation:fadeIn .55s var(--ease) .1s both}
+ .gc-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;margin-bottom:28px}
+ .gc-logo .gl-pk{width:28px;height:28px;font-size:14px}
+ .gate-card h1{font-size:24px;letter-spacing:-.3px;margin:0 0 6px}
+ .gc-sub{color:var(--mut);font-size:14.5px;margin-bottom:22px;line-height:1.55}
+ .gate-field{position:relative;margin-bottom:12px}
+ .gate-field input{width:100%;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:11px;
+  padding:13px 14px 13px 40px;font:inherit;font-size:15px;letter-spacing:2px;text-transform:uppercase;transition:border-color .2s,box-shadow .2s}
+ .gate-field input::placeholder{letter-spacing:1px;text-transform:none;color:var(--dim)}
+ .gate-field input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(212,148,58,.22)}
+ .gate-field .ic{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:15px;opacity:.8}
+ #gateGo{width:100%;background:var(--accent);color:#241a02;font-size:15px;padding:13px;border-radius:11px;margin-top:2px}
+ #gateGo:hover{filter:brightness(1.05);transform:translateY(-1px)}
+ .gate-err{min-height:18px;margin-top:11px;color:#f0a6a6;font-size:13px}
+ .gate-ok{min-height:18px;margin-top:11px;color:#7fe0b0;font-size:13px}
+ .gate-foot{margin-top:24px;color:var(--dim);font-size:12.5px;line-height:1.6}
+ .note{position:fixed;bottom:10px;left:0;right:0;text-align:center;color:var(--dim);font-size:11px;z-index:1100}
+</style></head><body>
+ <div id="splash"><div class="sp-logo">⛏ Prospectors <b>Plus</b></div><div class="sp-sub">loading…</div><div class="sp-bar"><i></i></div></div>
+ <div id="gate">
+   <div class="gate-left">
+     <div class="gate-paths" id="gatePaths"></div>
+     <div class="gate-fade"></div>
+     <div class="gl-top"><span class="gl-pk">⛏</span> Prospectors Plus</div>
+     <div class="gl-quote"><p>“Set it up once, hand it a code, and let it dig. Prospectors Plus runs the whole loop while you’re away.”</p><footer>~ Prospectors Plus</footer></div>
+   </div>
+   <div class="gate-right"><div class="gate-card">
+     <div class="gc-logo"><span class="gl-pk">⛏</span> Prospectors Plus</div>
+     <h1>Enter your access code</h1>
+     <div class="gc-sub">Prospectors Plus is invite-only. Enter the access code you were given to unlock it.</div>
+     <form id="gateForm">
+       <div class="gate-field"><span class="ic">🔑</span><input id="gateCode" placeholder="PPLUS-XXXX-XXXX" autocomplete="off" spellcheck="false"></div>
+       <button type="submit" id="gateGo">Unlock</button>
+       <div class="gate-err" id="gateErr"></div>
+     </form>
+     <div class="gate-foot">Don’t have a code? Ask whoever shared Prospectors Plus with you. <span style="color:var(--accent-lit)">(Preview — type anything to see the success state.)</span></div>
+   </div></div>
+ </div>
+ <div class="note">Standalone preview of the in-app splash + access gate</div>
+<script>
+ function genPaths(){const box=document.getElementById('gatePaths');let s='<svg viewBox="0 0 696 316" preserveAspectRatio="xMidYMid slice"><g>';
+   [1,-1].forEach(position=>{for(let i=0;i<48;i++){
+     const d='M-'+(380-i*5*position)+' -'+(189+i*6)+'C-'+(380-i*5*position)+' -'+(189+i*6)+' -'+(312-i*5*position)+' '+(216-i*6)+' '+(152-i*5*position)+' '+(343-i*6)+'C'+(616-i*5*position)+' '+(470-i*6)+' '+(684-i*5*position)+' '+(875-i*6)+' '+(684-i*5*position)+' '+(875-i*6);
+     const w=(0.32+i*0.02).toFixed(2),op=(0.05+i*0.009).toFixed(3),dur=(7+Math.random()*7).toFixed(1),del=(Math.random()*-9).toFixed(1);
+     s+='<path d="'+d+'" stroke-width="'+w+'" style="stroke-opacity:'+op+';animation:lf '+dur+'s ease-in-out '+del+'s infinite"/>';}});
+   s+='</g></svg>';box.innerHTML=s;}
+ setTimeout(()=>{document.getElementById('splash').classList.add('hide');genPaths();document.getElementById('gate').classList.add('show');
+   setTimeout(()=>document.getElementById('gateCode').focus(),300);},1100);
+ document.getElementById('gateForm').addEventListener('submit',e=>{e.preventDefault();
+   const v=document.getElementById('gateCode').value.trim();const err=document.getElementById('gateErr');
+   if(!v){err.textContent='Enter your access code.';return;}
+   err.className='gate-ok';err.textContent='✓ Unlocked — opening Prospectors Plus…';});
+</script></body></html>
