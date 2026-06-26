@@ -23,7 +23,7 @@ import hashlib
 
 # ---- version + update channel (compared to the website's version.json) -------
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "2.0.0"
+VERSION             = "2.0.1"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
