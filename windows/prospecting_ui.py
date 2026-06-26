@@ -366,7 +366,7 @@ PAGE = """<!doctype html><html><head><meta charset="utf-8">
 </style></head><body>
 <form method="POST" action="/save" id="f">
  <div class="topbar">
-   <div class="brand">⛏ Prospecting <b>Macro</b></div>
+   <div class="brand"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospectors <b>Plus</b></div>
    <div class="grow"></div>
    <a class="quit" href="/quit" title="Close the settings app">Quit</a>
    <button class="btn2" type="submit" formaction="/launch">Save &amp; Launch</button>
