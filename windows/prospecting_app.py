@@ -283,8 +283,11 @@ class Api:
             return {"ok": False, "error": "Enter your access code."}
         h = hashlib.sha256(norm.encode("utf-8")).hexdigest()
         try:
-            req = urllib.request.Request(ACCESS_CODES_URL,
-                                         headers={"User-Agent": "ProspectorsPlus"})
+            import time as _t
+            url = ACCESS_CODES_URL + ("&" if "?" in ACCESS_CODES_URL else "?") \
+                  + "t=" + str(int(_t.time()))   # bust the GitHub Pages CDN cache
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "ProspectorsPlus", "Cache-Control": "no-cache"})
             with urllib.request.urlopen(req, timeout=8) as r:
                 data = json.loads(r.read().decode("utf-8"))
             hashes = set(data.get("hashes") or [])
