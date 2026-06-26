@@ -7,121 +7,114 @@
 <meta name="description" content="A smart auto-pan bot for Prospecting. It runs the full pan, dig, shake and deposit loop for you, reading the screen so it keeps farming on its own.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,600;1,9..144,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0c0b09;
-    --bg2: #11100d;
-    --panel: #171512;
-    --panel2: #1c1914;
-    --line: #2a2620;
-    --line2: #3a342c;
-    --txt: #f2ece2;
-    --mut: #a39a8c;
-    --dim: #6f675c;
-    --copper: #c49a6c;
-    --copper-lit: #ddb98a;
-    --copper-dim: rgba(196, 154, 108, 0.14);
-    --sage: #7d9a82;
-    --sage-dim: rgba(125, 154, 130, 0.12);
-    --radius: 14px;
+    /* Pulled straight from the banner: deep water, sand, gems */
+    --bg:        #080d10;
+    --bg2:       #0b1215;
+    --panel:     #0f181d;
+    --panel2:    #131e24;
+    --line:      #1c2b32;
+    --line2:     #253540;
+
+    --txt:       #e8f0f4;
+    --mut:       #8ca5b0;
+    --dim:       #4e6878;
+
+    /* teal water — the dominant accent */
+    --teal:      #2cb8c8;
+    --teal-lit:  #4fd4e2;
+    --teal-dim:  rgba(44, 184, 200, 0.12);
+    --teal-glow: rgba(44, 184, 200, 0.22);
+
+    /* amber sand */
+    --sand:      #d4943a;
+    --sand-lit:  #f0b95a;
+    --sand-dim:  rgba(212, 148, 58, 0.12);
+
+    /* amethyst gem */
+    --gem-purple: #9b6fd4;
+    --gem-purple-dim: rgba(155, 111, 212, 0.12);
+
+    /* ruby gem */
+    --gem-red:   #d44f4f;
+    --gem-red-dim: rgba(212, 79, 79, 0.12);
+
+    /* emerald gem */
+    --gem-green: #3db87a;
+    --gem-green-dim: rgba(61, 184, 122, 0.12);
+
+    --radius: 16px;
     --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html { scroll-behavior: smooth; }
   body {
-    font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
     background: var(--bg);
     color: var(--txt);
-    line-height: 1.65;
+    line-height: 1.7;
     -webkit-font-smoothing: antialiased;
   }
   a { color: inherit; text-decoration: none; }
-  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 0 32px; }
 
-  /* grain */
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 9999;
-    opacity: 0.035;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
-
-  /* reveal */
-  .reveal {
-    opacity: 0;
-    transform: translateY(22px);
-    transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
-  }
-  .reveal.visible {
-    opacity: 1;
-    transform: none;
-  }
-  .reveal-d1 { transition-delay: 0.08s; }
-  .reveal-d2 { transition-delay: 0.16s; }
-  .reveal-d3 { transition-delay: 0.24s; }
-
+  /* reduced motion */
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
-    .reveal { opacity: 1; transform: none; transition: none; }
-    .mock { animation: none !important; }
-    .flow .ar { animation: none !important; }
-    .runpill .dot { animation: none !important; }
+    .reveal, .mock { opacity: 1 !important; transform: none !important; transition: none !important; animation: none !important; }
+    .dot, .ar, .log-line { animation: none !important; opacity: 1 !important; transform: none !important; }
   }
 
-  /* nav */
+  /* reveal on scroll */
+  .reveal {
+    opacity: 0;
+    transform: translateY(28px);
+    transition: opacity 0.75s var(--ease), transform 0.75s var(--ease);
+  }
+  .reveal.visible { opacity: 1; transform: none; }
+  .reveal-d1 { transition-delay: 0.1s; }
+  .reveal-d2 { transition-delay: 0.2s; }
+  .reveal-d3 { transition-delay: 0.3s; }
+
+  /* ── NAV ─────────────────────────────────────────── */
   nav {
     position: sticky;
     top: 0;
-    z-index: 50;
+    z-index: 100;
+    transition: background 0.3s, border-color 0.3s, backdrop-filter 0.3s;
     border-bottom: 1px solid transparent;
-    transition: background 0.35s var(--ease), border-color 0.35s var(--ease), backdrop-filter 0.35s;
   }
   nav.scrolled {
-    background: rgba(12, 11, 9, 0.88);
-    backdrop-filter: blur(14px);
+    background: rgba(8, 13, 16, 0.9);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     border-bottom-color: var(--line);
   }
-  nav .row {
-    display: flex;
-    align-items: center;
-    gap: 18px;
-    height: 64px;
-  }
+  nav .row { display: flex; align-items: center; gap: 20px; height: 68px; }
   .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 11px;
     font-weight: 600;
     font-size: 17px;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
   }
-  .brand-mark {
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
-    background: var(--copper-dim);
-    border: 1px solid rgba(196, 154, 108, 0.35);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
+  .brand-icon {
+    width: 32px; height: 32px;
+    border-radius: 9px;
+    background: var(--teal-dim);
+    border: 1px solid var(--teal-glow);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px;
+    flex-shrink: 0;
   }
-  .brand em {
-    font-family: "Instrument Serif", Georgia, serif;
-    font-style: italic;
-    font-weight: 400;
-    color: var(--copper-lit);
-  }
-  .nav-links {
-    display: flex;
-    gap: 28px;
-    margin-left: 12px;
-  }
+  .brand-name { color: var(--txt); }
+  .brand-name span { color: var(--teal-lit); }
+  .nav-links { display: flex; gap: 30px; margin-left: 8px; }
   .nav-links a {
     color: var(--mut);
     font-size: 14px;
@@ -131,487 +124,432 @@
   .nav-links a:hover { color: var(--txt); }
   .grow { flex: 1; }
   .ghost {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--mut);
-    font-size: 14px;
-    border: 1px solid var(--line2);
-    border-radius: 9px;
-    padding: 8px 14px;
-    font-weight: 500;
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--mut); font-size: 14px; font-weight: 500;
+    border: 1px solid var(--line2); border-radius: 10px;
+    padding: 8px 16px;
     transition: color 0.2s, border-color 0.2s, background 0.2s;
   }
-  .ghost:hover {
-    color: var(--txt);
-    border-color: #4a433a;
-    background: rgba(255, 255, 255, 0.02);
-  }
+  .ghost:hover { color: var(--txt); border-color: var(--dim); background: rgba(255,255,255,0.02); }
   .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 9px;
-    font-weight: 600;
-    border: 0;
-    cursor: pointer;
-    background: var(--copper);
-    color: #1a1208;
-    border-radius: 9px;
-    padding: 10px 18px;
+    display: inline-flex; align-items: center; gap: 8px;
+    font-weight: 600; border: none; cursor: pointer;
+    font-family: inherit;
+    background: var(--teal);
+    color: #071418;
+    border-radius: 10px;
+    padding: 10px 20px;
     font-size: 14px;
     transition: transform 0.2s var(--ease), background 0.2s, box-shadow 0.2s;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 4px 18px -6px rgba(196, 154, 108, 0.45);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.1) inset, 0 4px 20px -6px var(--teal-glow);
   }
   .btn:hover {
     transform: translateY(-2px);
-    background: var(--copper-lit);
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.15) inset, 0 8px 24px -8px rgba(196, 154, 108, 0.5);
+    background: var(--teal-lit);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.14) inset, 0 8px 28px -8px rgba(79,212,226,0.5);
   }
-  .btn.lg { padding: 15px 28px; font-size: 16px; border-radius: 11px; }
-  .btn[disabled] {
-    filter: grayscale(0.5) brightness(0.85);
-    cursor: default;
-    transform: none;
-    box-shadow: none;
-  }
+  .btn.lg { padding: 16px 32px; font-size: 16px; border-radius: 12px; }
+  .btn[disabled] { opacity: 0.5; cursor: default; transform: none; box-shadow: none; }
 
-  /* hero */
+  /* ── HERO ────────────────────────────────────────── */
   .hero {
     position: relative;
     overflow: hidden;
     border-bottom: 1px solid var(--line);
   }
-  .hero-glow {
+  /* water shimmer behind hero */
+  .hero-bg {
     position: absolute;
     inset: 0;
     pointer-events: none;
     background:
-      radial-gradient(ellipse 70% 55% at 12% -5%, rgba(196, 154, 108, 0.09), transparent 55%),
-      radial-gradient(ellipse 50% 40% at 88% 10%, rgba(125, 154, 130, 0.05), transparent 50%);
+      radial-gradient(ellipse 80% 60% at 50% 130%, rgba(44,184,200,0.07), transparent 55%),
+      radial-gradient(ellipse 55% 50% at -5% 20%, rgba(44,184,200,0.08), transparent 50%),
+      radial-gradient(ellipse 40% 45% at 105% 15%, rgba(155,111,212,0.06), transparent 50%);
   }
   .hero .row {
     position: relative;
     display: grid;
-    grid-template-columns: 1.05fr 0.95fr;
-    gap: 52px;
+    grid-template-columns: 1fr 1fr;
+    gap: 64px;
     align-items: center;
-    padding: 88px 0 92px;
+    padding: 104px 0 112px;
   }
   .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12.5px;
-    color: var(--copper-lit);
-    background: var(--copper-dim);
-    border: 1px solid rgba(196, 154, 108, 0.28);
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 12px; font-weight: 500; letter-spacing: 0.04em;
+    color: var(--teal-lit);
+    background: var(--teal-dim);
+    border: 1px solid var(--teal-glow);
     border-radius: 999px;
-    padding: 5px 13px;
-    font-weight: 500;
-    letter-spacing: 0.02em;
+    padding: 5px 14px;
   }
   .badge .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--sage);
-    box-shadow: 0 0 0 3px var(--sage-dim);
-    animation: blink 2.4s ease-in-out infinite;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--gem-green);
+    box-shadow: 0 0 0 3px rgba(61,184,122,0.18);
+    animation: blink 2.2s ease-in-out infinite;
   }
-  @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-  h1 {
-    font-family: "Instrument Serif", Georgia, serif;
-    font-size: clamp(2.6rem, 5vw, 3.35rem);
-    line-height: 1.08;
-    letter-spacing: -0.02em;
-    margin: 20px 0 0;
-    font-weight: 400;
-  }
-  h1 .accent { color: var(--copper-lit); font-style: italic; }
-  .sub {
-    font-size: 17px;
-    color: var(--mut);
-    margin-top: 20px;
-    max-width: 500px;
-    font-weight: 400;
-  }
-  .hero-cta {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    margin-top: 32px;
-    flex-wrap: wrap;
-  }
-  .cta-note { font-size: 13px; color: var(--dim); margin-top: 16px; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.35} }
 
-  /* mockup */
+  h1 {
+    font-family: "Fraunces", Georgia, serif;
+    font-size: clamp(2.8rem, 5.5vw, 3.75rem);
+    line-height: 1.06;
+    letter-spacing: -0.03em;
+    margin: 24px 0 0;
+    font-weight: 600;
+  }
+  h1 .accent {
+    font-style: italic;
+    font-weight: 400;
+    background: linear-gradient(120deg, var(--teal-lit) 0%, #7fe8f0 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .sub {
+    font-size: 17.5px;
+    color: var(--mut);
+    margin-top: 22px;
+    max-width: 480px;
+    line-height: 1.7;
+  }
+  .hero-cta { display: flex; align-items: center; gap: 16px; margin-top: 36px; flex-wrap: wrap; }
+  .cta-note { font-size: 13px; color: var(--dim); margin-top: 18px; }
+
+  /* ── APP MOCKUP ──────────────────────────────────── */
   .mock {
     background: var(--panel2);
     border: 1px solid var(--line2);
-    border-radius: 16px;
+    border-radius: 18px;
     overflow: hidden;
     box-shadow:
-      0 0 0 1px rgba(255, 255, 255, 0.03) inset,
-      0 32px 64px -28px rgba(0, 0, 0, 0.75);
+      0 0 0 1px rgba(255,255,255,0.04) inset,
+      0 40px 80px -32px rgba(0,0,0,0.7),
+      0 0 60px -20px var(--teal-dim);
     animation: float 6s ease-in-out infinite;
   }
-  @keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-8px); }
-  }
+  @keyframes float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
   .mock .bar {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 12px 14px;
+    display: flex; align-items: center; gap: 7px;
+    padding: 13px 16px;
     border-bottom: 1px solid var(--line);
-    background: #0e0d0b;
+    background: #070c0f;
   }
-  .mock .bar i {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    display: block;
-    opacity: 0.85;
-  }
-  .mock .bar .t {
-    margin-left: 10px;
-    font-size: 12px;
-    color: var(--dim);
-    font-weight: 500;
-    letter-spacing: 0.03em;
-  }
-  .mock .body { padding: 16px; }
-  .statrow {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
-    margin-bottom: 14px;
-  }
+  .mock .bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .mock .bar .t { margin-left: 10px; font-size: 12px; color: var(--dim); font-weight: 500; }
+  .mock .body { padding: 18px; }
+  .statrow { display: grid; grid-template-columns: repeat(4,1fr); gap: 9px; margin-bottom: 14px; }
   .stat {
-    background: #12100d;
+    background: #0a1318;
     border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 10px 11px;
+    border-radius: 11px;
+    padding: 11px 12px;
   }
-  .stat .k {
-    font-size: 10px;
-    color: var(--dim);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 500;
-  }
-  .stat .v {
-    font-size: 19px;
-    font-weight: 600;
-    margin-top: 2px;
-    font-variant-numeric: tabular-nums;
-  }
-  .stat .v.sage { color: var(--sage); }
-  .stat .v.copper { color: var(--copper-lit); }
+  .stat .k { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.07em; font-weight: 600; }
+  .stat .v { font-size: 18px; font-weight: 700; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .stat .v.teal { color: var(--teal-lit); }
+  .stat .v.sand { color: var(--sand-lit); }
   .runpill {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    color: var(--sage);
-    background: var(--sage-dim);
-    border: 1px solid rgba(125, 154, 130, 0.28);
-    border-radius: 999px;
-    padding: 4px 10px;
-    margin-bottom: 12px;
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
+    color: var(--gem-green);
+    background: var(--gem-green-dim);
+    border: 1px solid rgba(61,184,122,0.3);
+    border-radius: 999px; padding: 4px 11px; margin-bottom: 13px;
   }
   .runpill .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--sage);
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--gem-green);
     animation: blink 1.8s ease-in-out infinite;
   }
   .log {
-    background: #0a0908;
+    background: #060b0e;
     border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 12px 14px;
+    border-radius: 11px;
+    padding: 13px 15px;
     font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
     font-size: 11.5px;
-    line-height: 1.9;
-    color: #8a9a8c;
-    min-height: 108px;
+    line-height: 1.95;
+    color: #5a8090;
+    min-height: 110px;
   }
-  .log .c1 { color: var(--copper-lit); }
-  .log .c2 { color: #8a9cb0; }
-  .log .c3 { color: var(--sage); }
-  .log-line {
-    opacity: 0;
-    animation: logIn 0.5s var(--ease) forwards;
-  }
-  .log-line:nth-child(1) { animation-delay: 0.4s; }
-  .log-line:nth-child(2) { animation-delay: 0.9s; }
-  .log-line:nth-child(3) { animation-delay: 1.4s; }
-  .log-line:nth-child(4) { animation-delay: 1.9s; }
-  .log-line:nth-child(5) { animation-delay: 2.4s; }
-  @keyframes logIn {
-    from { opacity: 0; transform: translateX(-6px); }
-    to { opacity: 1; transform: none; }
-  }
+  .log .c1 { color: var(--sand-lit); }
+  .log .c2 { color: var(--teal); }
+  .log .c3 { color: var(--gem-green); }
+  .log-line { opacity: 0; animation: logIn 0.5s var(--ease) forwards; }
+  .log-line:nth-child(1) { animation-delay: 0.5s; }
+  .log-line:nth-child(2) { animation-delay: 1.0s; }
+  .log-line:nth-child(3) { animation-delay: 1.5s; }
+  .log-line:nth-child(4) { animation-delay: 2.0s; }
+  .log-line:nth-child(5) { animation-delay: 2.5s; }
+  @keyframes logIn { from{opacity:0;transform:translateX(-8px)} to{opacity:1;transform:none} }
 
-  /* sections */
-  section { padding: 80px 0; }
+  /* ── SECTIONS ────────────────────────────────────── */
+  section { padding: 100px 0; }
   .eyebrow {
     text-align: center;
-    color: var(--copper);
-    font-weight: 600;
-    font-size: 12px;
-    letter-spacing: 0.14em;
+    color: var(--teal);
+    font-weight: 600; font-size: 11.5px;
+    letter-spacing: 0.18em;
     text-transform: uppercase;
   }
   h2 {
-    font-family: "Instrument Serif", Georgia, serif;
+    font-family: "Fraunces", Georgia, serif;
     text-align: center;
-    font-size: clamp(1.85rem, 3.5vw, 2.25rem);
-    letter-spacing: -0.02em;
-    margin: 12px 0 0;
-    font-weight: 400;
+    font-size: clamp(2rem, 4vw, 2.6rem);
+    letter-spacing: -0.025em;
+    margin: 14px 0 0;
+    font-weight: 600;
   }
   .lead {
     text-align: center;
     color: var(--mut);
-    max-width: 560px;
-    margin: 16px auto 0;
-    font-size: 16px;
+    max-width: 580px;
+    margin: 18px auto 0;
+    font-size: 16.5px;
   }
 
-  .flow {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    align-items: center;
-    justify-content: center;
-    margin: 44px 0 0;
-  }
-  .node {
-    background: var(--panel);
-    border: 1px solid var(--line2);
-    border-radius: 12px;
-    padding: 16px 20px;
-    text-align: center;
-    min-width: 100px;
-    transition: border-color 0.25s, transform 0.25s var(--ease);
-  }
-  .node:hover {
-    border-color: rgba(196, 154, 108, 0.4);
-    transform: translateY(-3px);
-  }
-  .node .ic {
-    width: 36px;
-    height: 36px;
-    margin: 0 auto 8px;
-    border-radius: 9px;
-    background: var(--copper-dim);
-    border: 1px solid rgba(196, 154, 108, 0.22);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .node .ic svg {
-    width: 18px;
-    height: 18px;
-    stroke: var(--copper-lit);
-    fill: none;
-    stroke-width: 1.75;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .node .lb { font-weight: 600; font-size: 14px; }
-  .node .ds { font-size: 12px; color: var(--dim); margin-top: 2px; }
-  .flow .ar {
-    color: var(--copper);
-    font-size: 18px;
-    font-weight: 400;
-    opacity: 0.7;
-    animation: nudge 2.8s ease-in-out infinite;
-  }
-  .flow .ar.loop { animation-delay: 0.6s; }
-  @keyframes nudge {
-    0%, 100% { opacity: 0.45; transform: translateX(0); }
-    50% { opacity: 1; transform: translateX(3px); }
-  }
-
+  /* ── FEATURE GRID ────────────────────────────────── */
   .grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    margin-top: 48px;
+    gap: 18px;
+    margin-top: 56px;
   }
+  /* each card gets a gem accent color */
   .card {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    padding: 24px;
-    transition: border-color 0.3s, transform 0.35s var(--ease), background 0.3s;
+    padding: 30px 28px;
+    transition: transform 0.35s var(--ease), border-color 0.3s, box-shadow 0.35s;
+    position: relative;
+    overflow: hidden;
   }
-  .card:hover {
-    border-color: var(--line2);
-    background: var(--panel2);
-    transform: translateY(-4px);
+  .card::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    opacity: 0;
+    transition: opacity 0.35s;
   }
+  .card:hover { transform: translateY(-5px); }
+  .card:hover::after { opacity: 1; }
+
+  /* teal */
+  .card.c-teal:hover { border-color: var(--teal-glow); box-shadow: 0 12px 40px -12px rgba(44,184,200,0.15); }
+  .card.c-teal::after { background: var(--teal); }
+  .card.c-teal .ic { background: var(--teal-dim); border-color: var(--teal-glow); }
+  .card.c-teal .ic svg { stroke: var(--teal-lit); }
+
+  /* sand */
+  .card.c-sand:hover { border-color: rgba(212,148,58,0.35); box-shadow: 0 12px 40px -12px rgba(212,148,58,0.12); }
+  .card.c-sand::after { background: var(--sand); }
+  .card.c-sand .ic { background: var(--sand-dim); border-color: rgba(212,148,58,0.25); }
+  .card.c-sand .ic svg { stroke: var(--sand-lit); }
+
+  /* purple */
+  .card.c-purple:hover { border-color: rgba(155,111,212,0.35); box-shadow: 0 12px 40px -12px rgba(155,111,212,0.12); }
+  .card.c-purple::after { background: var(--gem-purple); }
+  .card.c-purple .ic { background: var(--gem-purple-dim); border-color: rgba(155,111,212,0.25); }
+  .card.c-purple .ic svg { stroke: var(--gem-purple); }
+
+  /* red */
+  .card.c-red:hover { border-color: rgba(212,79,79,0.35); box-shadow: 0 12px 40px -12px rgba(212,79,79,0.12); }
+  .card.c-red::after { background: var(--gem-red); }
+  .card.c-red .ic { background: var(--gem-red-dim); border-color: rgba(212,79,79,0.25); }
+  .card.c-red .ic svg { stroke: var(--gem-red); }
+
+  /* green */
+  .card.c-green:hover { border-color: rgba(61,184,122,0.35); box-shadow: 0 12px 40px -12px rgba(61,184,122,0.12); }
+  .card.c-green::after { background: var(--gem-green); }
+  .card.c-green .ic { background: var(--gem-green-dim); border-color: rgba(61,184,122,0.25); }
+  .card.c-green .ic svg { stroke: var(--gem-green); }
+
+  /* blue */
+  .card.c-blue:hover { border-color: rgba(79,130,212,0.35); box-shadow: 0 12px 40px -12px rgba(79,130,212,0.12); }
+  .card.c-blue::after { background: #4f82d4; }
+  .card.c-blue .ic { background: rgba(79,130,212,0.1); border-color: rgba(79,130,212,0.25); }
+  .card.c-blue .ic svg { stroke: #7aaff0; }
+
   .card .ic {
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--copper-dim);
-    border: 1px solid rgba(196, 154, 108, 0.2);
-    margin-bottom: 16px;
+    width: 44px; height: 44px;
+    border-radius: 12px;
+    border: 1px solid;
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 18px;
+    flex-shrink: 0;
   }
   .card .ic svg {
-    width: 20px;
-    height: 20px;
-    stroke: var(--copper-lit);
-    fill: none;
-    stroke-width: 1.75;
-    stroke-linecap: round;
-    stroke-linejoin: round;
+    width: 21px; height: 21px;
+    fill: none; stroke-width: 1.75;
+    stroke-linecap: round; stroke-linejoin: round;
   }
-  .card h3 { font-size: 15px; font-weight: 600; margin-bottom: 6px; }
-  .card p { color: var(--mut); font-size: 14px; line-height: 1.6; }
+  .card h3 { font-size: 15.5px; font-weight: 600; margin-bottom: 8px; }
+  .card p { color: var(--mut); font-size: 14px; line-height: 1.65; }
+
+  /* ── HOW IT WORKS ────────────────────────────────── */
+  .how-section {
+    background: var(--bg2);
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+  .flow {
+    display: flex; flex-wrap: wrap; gap: 12px;
+    align-items: center; justify-content: center;
+    margin: 52px 0 0;
+  }
+  .node {
+    background: var(--panel);
+    border: 1px solid var(--line2);
+    border-radius: 14px;
+    padding: 20px 24px;
+    text-align: center;
+    min-width: 110px;
+    transition: border-color 0.25s, transform 0.3s var(--ease), box-shadow 0.3s;
+  }
+  .node:hover {
+    border-color: var(--teal-glow);
+    transform: translateY(-4px);
+    box-shadow: 0 8px 30px -8px var(--teal-dim);
+  }
+  .node .em { font-size: 26px; line-height: 1; margin-bottom: 8px; }
+  .node .lb { font-weight: 600; font-size: 14px; }
+  .node .ds { font-size: 12px; color: var(--dim); margin-top: 3px; }
+  .flow .ar {
+    color: var(--teal);
+    font-size: 20px;
+    opacity: 0.5;
+    animation: nudge 2.6s ease-in-out infinite;
+  }
+  .flow .ar.back { animation-delay: 0.5s; }
+  @keyframes nudge { 0%,100%{opacity:0.35;transform:translateX(0)} 50%{opacity:0.9;transform:translateX(4px)} }
 
   .steps {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 14px;
-    margin-top: 48px;
+    grid-template-columns: repeat(3,1fr);
+    gap: 18px;
+    margin-top: 52px;
   }
   .step {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    padding: 26px;
+    padding: 30px 28px;
     position: relative;
     overflow: hidden;
   }
   .step::before {
     content: "";
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, var(--copper), transparent);
+    top: 0; left: 0; right: 0; height: 2px;
     opacity: 0;
     transition: opacity 0.35s;
   }
+  .step:nth-child(1)::before { background: var(--teal); }
+  .step:nth-child(2)::before { background: var(--sand); }
+  .step:nth-child(3)::before { background: var(--gem-green); }
   .step:hover::before { opacity: 1; }
   .step .n {
-    width: 32px;
-    height: 32px;
-    border-radius: 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-weight: 600;
-    font-size: 14px;
-    color: var(--copper-lit);
-    background: var(--copper-dim);
-    border: 1px solid rgba(196, 154, 108, 0.25);
-    margin-bottom: 16px;
+    width: 34px; height: 34px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px;
+    margin-bottom: 18px;
   }
-  .step h3 { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+  .step:nth-child(1) .n { background: var(--teal-dim); color: var(--teal-lit); border: 1px solid var(--teal-glow); }
+  .step:nth-child(2) .n { background: var(--sand-dim); color: var(--sand-lit); border: 1px solid rgba(212,148,58,0.28); }
+  .step:nth-child(3) .n { background: var(--gem-green-dim); color: var(--gem-green); border: 1px solid rgba(61,184,122,0.28); }
+  .step h3 { font-size: 15.5px; font-weight: 600; margin-bottom: 8px; }
   .step p { color: var(--mut); font-size: 14px; }
   .kbd {
-    font-family: "IBM Plex Mono", Menlo, Consolas, monospace;
-    background: #12100d;
+    font-family: "IBM Plex Mono", Menlo, monospace;
+    background: #0a1318;
     border: 1px solid var(--line2);
     border-radius: 5px;
-    padding: 1px 6px;
+    padding: 1px 7px;
     font-size: 12px;
-    color: var(--copper-lit);
+    color: var(--teal-lit);
   }
 
-  .faq { max-width: 720px; margin: 44px auto 0; }
+  /* ── FAQ ─────────────────────────────────────────── */
+  .faq { max-width: 740px; margin: 52px auto 0; }
   details {
     background: var(--panel);
     border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 2px 20px;
+    border-radius: 14px;
+    padding: 2px 22px;
     margin-bottom: 10px;
     transition: border-color 0.25s;
   }
-  details[open] { border-color: var(--line2); }
+  details[open] { border-color: var(--teal-glow); }
   summary {
     cursor: pointer;
     font-weight: 500;
-    padding: 16px 0;
+    padding: 18px 0;
     list-style: none;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 15px;
+    font-size: 15.5px;
     user-select: none;
   }
   summary::-webkit-details-marker { display: none; }
-  summary .chev {
-    color: var(--copper);
-    transition: transform 0.3s var(--ease);
-    flex-shrink: 0;
-    margin-left: 12px;
-  }
+  summary .chev { color: var(--teal); transition: transform 0.3s var(--ease); flex-shrink: 0; margin-left: 14px; }
   details[open] summary .chev { transform: rotate(180deg); }
-  details p {
-    color: var(--mut);
-    font-size: 14px;
-    padding: 0 0 18px;
-    line-height: 1.65;
-  }
+  details p { color: var(--mut); font-size: 14.5px; padding: 0 0 18px; line-height: 1.7; }
 
+  /* ── CTA BLOCK ───────────────────────────────────── */
   .final {
-    background: var(--panel2);
+    background: var(--panel);
     border: 1px solid var(--line2);
-    border-radius: 20px;
-    padding: 52px 32px;
+    border-radius: 22px;
+    padding: 72px 32px;
     text-align: center;
     margin: 12px 0;
     position: relative;
     overflow: hidden;
   }
-  .final::after {
+  .final::before {
     content: "";
     position: absolute;
     inset: 0;
-    background: radial-gradient(ellipse 60% 80% at 50% 120%, rgba(196, 154, 108, 0.08), transparent 60%);
+    background:
+      radial-gradient(ellipse 70% 90% at 50% 130%, rgba(44,184,200,0.1), transparent 55%),
+      radial-gradient(ellipse 30% 50% at 10% -10%, rgba(155,111,212,0.06), transparent 50%),
+      radial-gradient(ellipse 25% 40% at 90% -5%, rgba(212,148,58,0.06), transparent 50%);
     pointer-events: none;
   }
   .final > * { position: relative; }
-  .final h2 { margin-bottom: 10px; }
+  .final h2 { margin-bottom: 12px; }
 
+  /* ── FOOTER ──────────────────────────────────────── */
   footer {
     border-top: 1px solid var(--line);
-    padding: 32px 0;
+    padding: 36px 0;
     color: var(--dim);
-    font-size: 13px;
+    font-size: 13.5px;
     display: flex;
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 12px;
   }
   footer a { color: var(--mut); transition: color 0.2s; }
   footer a:hover { color: var(--txt); }
 
-  @media (max-width: 860px) {
-    .hero .row { grid-template-columns: 1fr; gap: 40px; padding: 56px 0 64px; }
+  /* ── RESPONSIVE ──────────────────────────────────── */
+  @media (max-width: 900px) {
+    .hero .row { grid-template-columns: 1fr; gap: 48px; padding: 64px 0 72px; }
+    h1 { font-size: 2.75rem; }
+    .sub { max-width: 100%; }
     .nav-links { display: none; }
     .grid, .steps { grid-template-columns: 1fr; }
-    .statrow { grid-template-columns: repeat(2, 1fr); }
-    .mock { max-width: 420px; margin: 0 auto; }
+    .statrow { grid-template-columns: repeat(2,1fr); }
+    .mock { max-width: 440px; margin: 0 auto; }
+    section { padding: 72px 0; }
   }
 </style>
 </head>
@@ -620,8 +558,8 @@
 <nav id="nav">
   <div class="wrap row">
     <div class="brand">
-      <span class="brand-mark" aria-hidden="true">⛏</span>
-      Prospectors <em>Plus</em>
+      <span class="brand-icon" aria-hidden="true">⛏</span>
+      <span class="brand-name">Prospectors <span>Plus</span></span>
     </div>
     <div class="nav-links">
       <a href="#features">Features</a>
@@ -638,8 +576,9 @@
 </nav>
 
 <header class="hero">
-  <div class="hero-glow" aria-hidden="true"></div>
+  <div class="hero-bg" aria-hidden="true"></div>
   <div class="wrap row">
+
     <div class="reveal">
       <span class="badge"><span class="dot"></span>Latest: <span id="ver">v1.0.0</span> · Windows</span>
       <h1>Auto-pan <span class="accent">Prospecting</span>,<br>start to finish.</h1>
@@ -648,30 +587,30 @@
         you are away.</p>
       <div class="hero-cta">
         <a class="btn lg" id="herodl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe">
-          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
           Download for Windows
         </a>
         <a class="ghost" href="#how">See how it works</a>
       </div>
-      <div class="cta-note" id="ctanote">Free · Windows 10 and 11 · no Python or setup needed</div>
+      <p class="cta-note" id="ctanote">Free · Windows 10 and 11 · no Python or setup needed</p>
     </div>
 
     <div class="mock reveal reveal-d2" aria-hidden="true">
       <div class="bar">
         <i style="background:#c45c4a"></i>
         <i style="background:#c9a227"></i>
-        <i style="background:#6a9e6e"></i>
+        <i style="background:#55a060"></i>
         <span class="t">Prospectors Plus</span>
       </div>
       <div class="body">
         <span class="runpill"><span class="dot"></span>RUNNING</span>
         <div class="statrow">
           <div class="stat"><div class="k">Runtime</div><div class="v" data-count="5050">0:00:00</div></div>
-          <div class="stat"><div class="k">Cycles</div><div class="v copper" data-count="412">0</div></div>
-          <div class="stat"><div class="k">Pans / hr</div><div class="v sage" data-count="168">0</div></div>
+          <div class="stat"><div class="k">Cycles</div><div class="v sand" data-count="412">0</div></div>
+          <div class="stat"><div class="k">Pans / hr</div><div class="v teal" data-count="168">0</div></div>
           <div class="stat"><div class="k">Recoveries</div><div class="v" data-count="3">0</div></div>
         </div>
-        <div class="log" id="log">
+        <div class="log">
           <div class="log-line"><span class="c2">[loop]</span> dirt detected, digging</div>
           <div class="log-line"><span class="c1">[dig]</span> landed, probing depth</div>
           <div class="log-line"><span class="c1">[shake]</span> momentum shake, pan full</div>
@@ -680,6 +619,7 @@
         </div>
       </div>
     </div>
+
   </div>
 </header>
 
@@ -691,47 +631,47 @@
       the moment something goes slightly wrong.</p>
 
     <div class="grid">
-      <div class="card reveal">
+      <div class="card c-teal reveal">
         <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M4.2 4.2l2.1 2.1m11.4 11.4 2.1 2.1M2 12h3m14 0h3"/></svg></div>
         <h3>Reads the screen</h3>
-        <p>A supervisor watches key pixels to tell dirt, lava, water, the shake phase
-          and an active dig apart, then picks the right action for each.</p>
+        <p>A supervisor watches key pixels to tell dirt, lava, water, shake phase and active
+          digs apart, then picks the right action for each.</p>
       </div>
-      <div class="card reveal reveal-d1">
+      <div class="card c-sand reveal reveal-d1">
         <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 15h4l3 6V3l-3 6H3z"/><path d="M16 8a5 5 0 0 1 0 8"/></svg></div>
         <h3>Capacity-bar aware</h3>
         <p>It tracks your pan fill bar, so it knows when to keep digging and when
           it is time to deposit instead of looping blindly.</p>
       </div>
-      <div class="card reveal reveal-d2">
+      <div class="card c-green reveal reveal-d2">
         <div class="ic"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg></div>
         <h3>Recovers itself</h3>
         <p>Dig-probe landing, momentum shake, and layered break-out steps pull it
-          out of bad spots so it keeps farming instead of getting stuck.</p>
+          out of bad spots so it keeps farming instead of stalling.</p>
       </div>
-      <div class="card reveal">
+      <div class="card c-purple reveal">
         <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
         <h3>Relic timers</h3>
-        <p>Set each relic slot and cooldown and it re-activates them on schedule
-          while it works: Solar Magnifier, Infernal Idol, or whatever you run.</p>
+        <p>Set each relic slot and cooldown and it re-activates them on schedule:
+          Solar Magnifier, Infernal Idol, or whatever you run.</p>
       </div>
-      <div class="card reveal reveal-d1">
+      <div class="card c-blue reveal reveal-d1">
         <div class="ic"><svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4z"/></svg></div>
         <h3>Discord DMs</h3>
         <p>Get a DM on start and stop plus periodic stats, so you can leave it
           running and still know how the session is going.</p>
       </div>
-      <div class="card reveal reveal-d2">
+      <div class="card c-red reveal reveal-d2">
         <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg></div>
         <h3>Live stats and auto-stop</h3>
-        <p>Cycles, pans per hour, recoveries and runtime update live. You can also
-          have it stop after a set number of minutes or pans.</p>
+        <p>Cycles, pans per hour, recoveries and runtime update live. Set it to stop
+          after a number of minutes or pans.</p>
       </div>
     </div>
   </div>
 </section>
 
-<section id="how" style="background:var(--bg2);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+<section id="how" class="how-section">
   <div class="wrap">
     <div class="eyebrow reveal">How it works</div>
     <h2 class="reveal reveal-d1">The loop, on repeat</h2>
@@ -739,29 +679,29 @@
 
     <div class="flow reveal">
       <div class="node">
-        <div class="ic"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M8 12h8"/></svg></div>
+        <div class="em">🪙</div>
         <div class="lb">Pan</div>
         <div class="ds">position</div>
       </div>
       <span class="ar" aria-hidden="true">→</span>
       <div class="node">
-        <div class="ic"><svg viewBox="0 0 24 24"><path d="M14 3l7 7-4 1-3 5-3-1-3 5H2l5-17z"/></svg></div>
+        <div class="em">⛏️</div>
         <div class="lb">Dig</div>
         <div class="ds">probe and land</div>
       </div>
       <span class="ar" aria-hidden="true">→</span>
       <div class="node">
-        <div class="ic"><svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9"/><path d="M12 3v4M12 3l3 3"/></svg></div>
+        <div class="em">🌀</div>
         <div class="lb">Shake</div>
         <div class="ds">momentum</div>
       </div>
       <span class="ar" aria-hidden="true">→</span>
       <div class="node">
-        <div class="ic"><svg viewBox="0 0 24 24"><path d="M4 7h16v13H4z"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></div>
+        <div class="em">📦</div>
         <div class="lb">Deposit</div>
         <div class="ds">when full</div>
       </div>
-      <span class="ar loop" aria-hidden="true">↺</span>
+      <span class="ar back" aria-hidden="true">↺</span>
     </div>
 
     <div class="steps">
@@ -774,7 +714,7 @@
       <div class="step reveal reveal-d1">
         <div class="n">2</div>
         <h3>Pick a build</h3>
-        <p>Tweak the timings or load a saved preset (like a shards build), set your
+        <p>Tweak the timings or load a saved preset like a shards build, set your
           relics, and optionally add your Discord username for DMs.</p>
       </div>
       <div class="step reveal reveal-d2">
@@ -794,7 +734,7 @@
     <div class="faq">
       <details open class="reveal">
         <summary>Are macros allowed in Prospecting?
-          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </summary>
         <p>Yes. Prospectors Plus only automates mouse clicks and key presses, the
           same inputs you would make yourself. It does not inject code, read game memory,
@@ -802,14 +742,14 @@
       </details>
       <details class="reveal reveal-d1">
         <summary>Do I need Python or any setup?
-          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </summary>
         <p>No. It is a normal Windows installer. Download, run, and launch from your
-          desktop or Start menu. Nothing else to install.</p>
+          desktop or Start menu. Nothing else needed.</p>
       </details>
       <details class="reveal reveal-d2">
         <summary>Will Windows warn me when I open it?
-          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </summary>
         <p>It may show a blue "Windows protected your PC" box because the app is new
           and unsigned. Click <b>More info</b>, then <b>Run anyway</b> once. This is normal for
@@ -817,7 +757,7 @@
       </details>
       <details class="reveal">
         <summary>How do updates work?
-          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </summary>
         <p>The app checks for new versions on launch and shows a banner when one is
           available, linking you straight back here. Your settings, saved builds and
@@ -825,7 +765,7 @@
       </details>
       <details class="reveal reveal-d1">
         <summary>Does it work while I am doing other things?
-          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </summary>
         <p>It controls the mouse and keyboard, so it runs best on its own while you are
           away. It sends Discord DMs so you can check in without watching it.</p>
@@ -834,15 +774,15 @@
   </div>
 </section>
 
-<section style="padding-top:24px;padding-bottom:88px">
+<section style="padding-top:20px;padding-bottom:100px">
   <div class="wrap">
     <div class="final reveal">
       <div class="eyebrow">Get started</div>
       <h2>Download Prospectors Plus</h2>
-      <p class="lead" style="margin-bottom:28px">Free for Windows 10 and 11.
+      <p class="lead" style="margin-bottom:32px">Free for Windows 10 and 11.
         Install in under a minute.</p>
       <a class="btn lg" id="finaldl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe">
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
         Download for Windows
       </a>
     </div>
@@ -850,93 +790,67 @@
 </section>
 
 <footer class="wrap">
-  <div>© <span id="yr"></span> Prospectors Plus. Not affiliated with the game developers.</div>
-  <div><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan" target="_blank" rel="noopener">View on GitHub</a></div>
+  <span>© <span id="yr"></span> Prospectors Plus. Not affiliated with the game developers.</span>
+  <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan" target="_blank" rel="noopener">View on GitHub</a>
 </footer>
 
 <script>
   document.getElementById('yr').textContent = new Date().getFullYear();
 
-  // Nav scroll state
+  // Nav scroll
   const nav = document.getElementById('nav');
-  const onScroll = () => nav.classList.toggle('scrolled', window.scrollY > 12);
-  window.addEventListener('scroll', onScroll, { passive: true });
-  onScroll();
+  window.addEventListener('scroll', () => nav.classList.toggle('scrolled', window.scrollY > 16), { passive: true });
 
   // Scroll reveal
-  const revealObs = new IntersectionObserver((entries) => {
-    entries.forEach(e => {
-      if (e.isIntersecting) {
-        e.target.classList.add('visible');
-        revealObs.unobserve(e.target);
-      }
-    });
-  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
-  document.querySelectorAll('.reveal').forEach(el => revealObs.observe(el));
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); obs.unobserve(e.target); } });
+  }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+  document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
 
-  // Hero stat counters
-  const easeOut = t => 1 - Math.pow(1 - t, 3);
-  function animateStats() {
+  // Stat counters
+  const ease = t => 1 - Math.pow(1 - t, 3);
+  function countUp() {
     document.querySelectorAll('[data-count]').forEach(el => {
-      const raw = el.dataset.count;
-      const isTime = raw.length > 3;
-      const target = parseInt(raw, 10);
-      const start = performance.now();
-      const dur = 1400;
-      const tick = (now) => {
-        const p = Math.min((now - start) / dur, 1);
-        const v = Math.round(easeOut(p) * target);
-        if (isTime) {
-          const h = Math.floor(v / 3600);
-          const m = Math.floor((v % 3600) / 60);
-          const s = v % 60;
-          el.textContent = h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-        } else {
-          el.textContent = v;
-        }
+      const raw = el.dataset.count, target = parseInt(raw, 10), isTime = raw.length > 3;
+      const start = performance.now(), dur = 1500;
+      (function tick(now) {
+        const p = Math.min((now - start) / dur, 1), v = Math.round(ease(p) * target);
+        el.textContent = isTime
+          ? Math.floor(v/3600)+':'+String(Math.floor(v%3600/60)).padStart(2,'0')+':'+String(v%60).padStart(2,'0')
+          : v;
         if (p < 1) requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
+      })(performance.now());
     });
   }
-  const mockObs = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting) {
-      animateStats();
-      mockObs.disconnect();
-    }
-  }, { threshold: 0.3 });
-  const mock = document.querySelector('.mock');
-  if (mock) mockObs.observe(mock);
+  const mObs = new IntersectionObserver(entries => {
+    if (entries[0].isIntersecting) { countUp(); mObs.disconnect(); }
+  }, { threshold: 0.25 });
+  const m = document.querySelector('.mock');
+  if (m) mObs.observe(m);
 
-  // Version from version.json
-  fetch('version.json?_=' + Date.now()).then(r => r.json()).then(d => {
-    if (d && d.version) document.getElementById('ver').textContent = 'v' + d.version;
-  }).catch(() => {});
+  // Version badge
+  fetch('version.json?_='+Date.now()).then(r=>r.json()).then(d=>{
+    if(d?.version) document.getElementById('ver').textContent='v'+d.version;
+  }).catch(()=>{});
 
   // Smart download buttons
   const REPO = 'ProspectorsPlus/Prospecting-Auto-Pan';
-  const dlButtons = [document.getElementById('herodl'), document.getElementById('finaldl')];
-  const setDisabled = (label) => dlButtons.forEach(b => {
-    if (!b) return;
-    b.removeAttribute('href');
-    b.setAttribute('disabled', '');
-    b.innerHTML = label;
-  });
-  fetch('https://api.github.com/repos/' + REPO + '/releases/latest')
-    .then(r => { if (!r.ok) throw 0; return r.json(); })
+  const btns = [document.getElementById('herodl'), document.getElementById('finaldl')];
+  fetch('https://api.github.com/repos/'+REPO+'/releases/latest')
+    .then(r => { if(!r.ok) throw 0; return r.json(); })
     .then(rel => {
-      const exe = (rel.assets || []).find(a => /\.exe$/i.test(a.name));
+      const exe = (rel.assets||[]).find(a=>/\.exe$/i.test(a.name));
       if (exe) {
-        dlButtons.forEach(b => { if (b) b.href = exe.browser_download_url; });
-        const navBtn = document.getElementById('navdl');
-        if (navBtn) navBtn.href = exe.browser_download_url;
+        btns.forEach(b => { if(b) b.href = exe.browser_download_url; });
+        const n = document.getElementById('navdl');
+        if(n) n.href = exe.browser_download_url;
       }
-      if (rel.tag_name) document.getElementById('ver').textContent = rel.tag_name;
+      if(rel.tag_name) document.getElementById('ver').textContent = rel.tag_name;
     })
-    .catch(() => {
-      setDisabled('Build coming soon');
+    .catch(()=>{
+      btns.forEach(b=>{ if(!b) return; b.removeAttribute('href'); b.setAttribute('disabled',''); b.textContent='Build coming soon'; });
       const n = document.getElementById('ctanote');
-      if (n) n.textContent = 'No release published yet. Check back shortly.';
+      if(n) n.textContent = 'No release published yet. Check back shortly.';
     });
 </script>
 </body>
