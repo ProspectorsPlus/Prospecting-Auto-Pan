@@ -47,5 +47,31 @@
   "WEBHOOK_ENABLED": true,
   "WEBHOOK_URL": "http://159.203.22.31:3001/notify",
   "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
-  "WEBHOOK_STATS_MIN": 60
+  "WEBHOOK_STATS_MIN": 60,
+  "PIXEL_RATIOS": {
+    "CAP_FULL_PIXEL": [
+      0.62333,
+      0.78657
+    ],
+    "CAP_LEFT_PIXEL": [
+      0.37667,
+      0.78749
+    ],
+    "DEPOSIT_PIX": [
+      0.42667,
+      0.87121
+    ],
+    "PAN_PIX": [
+      0.46889,
+      0.86845
+    ],
+    "SHAKE_PIX": [
+      0.46167,
+      0.87029
+    ],
+    "DIG_TRIGGER_PIXEL": [
+      0.60111,
+      0.4517
+    ]
+  }
 }

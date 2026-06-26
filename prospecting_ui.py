@@ -72,9 +72,15 @@ SECTIONS = [
         ("BURST_OFF_MS",       "Tap release per pulse (ms)",             "int", 1),
     ]),
     ("Notifications", [
-        ("WEBHOOK_ENABLED",    "DM me on Discord (start / stop / stats)", "bool", False),
+        ("WEBHOOK_ENABLED",    "DM me on Discord",                        "bool", False),
         ("WEBHOOK_USER",       "Your Discord username",                   "str", ""),
         ("WEBHOOK_STATS_MIN",  "Stats DM every N min (0 = off)",          "int", 60),
+        ("NOTIFY_START",       "Notify: started",                        "bool", True),
+        ("NOTIFY_STOP",        "Notify: stopped (manual / timer / bag full)", "bool", True),
+        ("NOTIFY_STATS",       "Notify: periodic stats",                 "bool", True),
+        ("NOTIFY_SAFE_STOP",   "Notify: safe-stop (hit a hazard)",       "bool", True),
+        ("NOTIFY_RECOVERIES",  "Notify: recoveries (can be frequent)",   "bool", False),
+        ("NOTIFY_ERRORS",      "Notify: errors",                         "bool", True),
     ]),
     ("Auto-stop", [
         ("AUTOSTOP_ENABLED",   "Auto-stop after a set time",             "bool", False),

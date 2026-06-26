@@ -363,6 +363,14 @@ WEBHOOK_URL        = ""     # Discord webhook URL or your bot's endpoint
 WEBHOOK_SECRET     = ""     # shared secret sent as x-macro-secret (bot auth)
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
+# Per-event notification toggles (which DMs you actually get). Recoveries are
+# OFF by default because they can fire often; the rest are on.
+NOTIFY_START       = True
+NOTIFY_STOP        = True   # manual stop, auto-stop timer, bag-full
+NOTIFY_STATS       = True
+NOTIFY_SAFE_STOP   = True
+NOTIFY_RECOVERIES  = False
+NOTIFY_ERRORS      = True
 
 # --- AUTO-STOP TIMER ---------------------------------------------------------
 AUTOSTOP_ENABLED   = False
@@ -837,10 +845,25 @@ class SessionStats:
                 "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0}
 
 
+# which per-event toggle gates each event name
+_EVENT_FLAG = {
+    "start": "NOTIFY_START",
+    "stop": "NOTIFY_STOP", "autostop": "NOTIFY_STOP", "bag_full": "NOTIFY_STOP",
+    "stats": "NOTIFY_STATS",
+    "safe_stop": "NOTIFY_SAFE_STOP",
+    "recovery": "NOTIFY_RECOVERIES",
+    "error": "NOTIFY_ERRORS",
+}
+
+
 def post_webhook(event, message, stats=None):
     """Fire a JSON notification to WEBHOOK_URL (non-blocking). Plain Discord
-    webhooks render 'content'; a custom bot can read event/user/stats."""
+    webhooks render 'content'; a custom bot can read event/user/stats. Honours
+    the per-event NOTIFY_* toggles so users get only the DMs they want."""
     if not WEBHOOK_ENABLED or not WEBHOOK_URL:
+        return
+    flag = _EVENT_FLAG.get(event)
+    if flag and not globals().get(flag, True):
         return
     payload = {"username": "Prospectors Plus", "content": message,
                "event": event, "user": WEBHOOK_USER, "stats": stats or {}}
@@ -1289,6 +1312,8 @@ def recover(det, s):
     even though the normal legs hold smoothly."""
     if State.stats:
         State.stats.recoveries += 1
+        post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
+                     State.stats.as_dict())
     if s.full and s.pan:
         do_shake(det)                    # full in water, won't empty -> shake again
     elif s.full:
@@ -1723,6 +1748,10 @@ def main():
                                          State.stats.as_dict())
                     was_running = False
                     time.sleep(0.02)
+        except Exception as _e:
+            post_webhook("error", f"❌ Macro error: {_e}",
+                         State.stats.as_dict() if State.stats else None)
+            raise
         finally:
             release_all()
             gc.enable()

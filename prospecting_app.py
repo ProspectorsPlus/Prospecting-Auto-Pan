@@ -66,7 +66,11 @@ except Exception:
 # Built-in calibration profile: each pixel as a fraction of the Roblox game
 # window. When populated, users Auto-calibrate with zero clicking. Seeded by
 # calibrating once with Roblox open, then baking the result into the config.
-PIXEL_RATIOS_DEFAULT = {}
+PIXEL_RATIOS_DEFAULT = {
+    "CAP_FULL_PIXEL": [0.62333, 0.78657], "CAP_LEFT_PIXEL": [0.37667, 0.78749],
+    "DEPOSIT_PIX": [0.42667, 0.87121], "PAN_PIX": [0.46889, 0.86845],
+    "SHAKE_PIX": [0.46167, 0.87029], "DIG_TRIGGER_PIXEL": [0.60111, 0.4517],
+}
 
 MAX_RELIC_ROWS = 4
 DEFAULT_RELICS = [
