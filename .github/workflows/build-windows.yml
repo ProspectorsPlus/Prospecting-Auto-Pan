@@ -1,5 +1,8 @@
 name: Build Windows installer
 
+permissions:
+  contents: write
+
 # Build the standalone installer in the cloud (no Windows PC required).
 #  - Push a tag like v1.0.1  -> builds AND attaches the installer to a Release
 #  - Or run manually from the Actions tab (workflow_dispatch) -> artifact only
