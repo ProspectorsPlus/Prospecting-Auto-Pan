@@ -901,6 +901,7 @@ class State:
     safe_retries = 0         # consecutive safe-stop pauses (retry, not hard-stop)
     want_reset = False       # supervisor resets itself after a safe-pause
     stop_reason = ""         # latest stop reason (manual/safe/auto/bag)
+    water_fails = 0          # consecutive go_water tries that didn't reach water
     stats = None             # SessionStats while running
 
 
@@ -1293,13 +1294,17 @@ def go_water(det):
     (WATER_EXTRA_BACK_MS) to walk a little FARTHER in before the shake -- the cue
     can fire right at the edge, where the shake sometimes misses."""
     t0 = time.perf_counter()
+    # If we overshot far onto land (dig carried us forward), a fixed short S
+    # budget can't reach the water -> walk back FARTHER on each consecutive miss.
+    budget = PAN_BACK_MAX_MS * (1 + min(State.water_fails, 4))
     key_down(KEY_S)
-    reached = wait_until(det.on_pan, PAN_BACK_MAX_MS, confirm=WALK_BACK_CONFIRM)
+    reached = wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
     if reached and WATER_EXTRA_BACK_MS > 0:
         sleep_ms(WATER_EXTRA_BACK_MS)    # keep holding S -> a bit deeper in
     key_up(KEY_S)
-    log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper) "
-        f"({(time.perf_counter()-t0)*1000:.0f}ms)")
+    State.water_fails = 0 if reached else State.water_fails + 1
+    log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper, "
+        f"budget {budget}ms) ({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
 def do_shake(det):
@@ -1314,14 +1319,17 @@ def do_shake(det):
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
     w_down = False
-    if SHAKE_MOMENTUM_W:
-        key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
         mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
-        if not started and det.on_shake():
+        # Engage momentum W only ONCE the shake is really happening (cue OR the
+        # capacity actually dropping). Pressing W before that just shoves us
+        # forward onto land when a shake fails to start at the water's edge.
+        if not started and (det.on_shake() or not det.capacity_full()):
             started = True
+            if SHAKE_MOMENTUM_W and not w_down:
+                key_down(KEY_W); w_down = True   # now glide toward land as it drains
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
         if det.pan_empty():
             emptied = True
@@ -1344,6 +1352,7 @@ def do_shake(det):
         State.shake_fails = 0
         State.breakouts = 0              # healthy progress -> clear escalation
         State.safe_retries = 0
+        State.water_fails = 0
         if State.stats:
             State.stats.cycles += 1      # a pan emptied = one completed cycle
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land

@@ -1,0 +1,28 @@
+[
+  {
+    "cycles": 2,
+    "recoveries": 0,
+    "runtime_s": 8,
+    "pans_per_hr": 815.3,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 2,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-26 11:56"
+  },
+  {
+    "cycles": 23,
+    "recoveries": 0,
+    "runtime_s": 66,
+    "pans_per_hr": 1252.6,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 3,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-26 12:34"
+  }
+]
