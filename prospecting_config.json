@@ -29,7 +29,7 @@
   "BREAKOUT_REPOS_MS": 160,
   "BURST_ON_MS": 11,
   "BURST_OFF_MS": 1,
-  "WEBHOOK_ENABLED": true,
+  "WEBHOOK_ENABLED": false,
   "WEBHOOK_URL": "http://159.203.22.31:3001/notify",
   "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
   "WEBHOOK_USER": "tedtheidot",

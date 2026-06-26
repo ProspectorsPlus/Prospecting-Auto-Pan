@@ -63,6 +63,11 @@ except Exception:
     PIXEL_FIELDS = []
     PIXEL_DEFAULTS = {}
 
+# Built-in calibration profile: each pixel as a fraction of the Roblox game
+# window. When populated, users Auto-calibrate with zero clicking. Seeded by
+# calibrating once with Roblox open, then baking the result into the config.
+PIXEL_RATIOS_DEFAULT = {}
+
 MAX_RELIC_ROWS = 4
 DEFAULT_RELICS = [
     {"name": "Solar Magnifier", "minutes": 10, "slot": 5, "clicks": 2},
@@ -93,8 +98,11 @@ def _coerce(t, v):
         return 0
 
 
-def _window_origin():
-    """Roblox window top-left in physical px, or [0,0]. macOS best-effort."""
+def _roblox_rect():
+    """Find the Roblox GAME window and return its area in PHYSICAL pixels (so it
+    matches the pixels the calibrator captures). Returns {found:True,x,y,w,h,title}
+    or {found:False,error:"..."}. macOS / Quartz. Scans on-screen windows for an
+    owner named like 'Roblox' (not Studio) and picks the largest."""
     try:
         import Quartz
         import mss
@@ -105,18 +113,30 @@ def _window_origin():
             mainw = sct.monitors[1]["width"]
         b = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
         scale = mainw / b.size.width if b.size.width else 1.0
-        best, area = None, 0
+        best, area, title = None, 0, ""
         for w in wins or []:
-            if "roblox" in str(w.get("kCGWindowOwnerName", "")).lower():
+            owner = str(w.get("kCGWindowOwnerName", ""))
+            if "roblox" in owner.lower() and "studio" not in owner.lower():
                 bb = w.get("kCGWindowBounds", {})
-                a = bb.get("Width", 0) * bb.get("Height", 0)
-                if a > area:
-                    area, best = a, bb
+                ww, hh = bb.get("Width", 0), bb.get("Height", 0)
+                if ww * hh > area and ww >= 320 and hh >= 240:
+                    area, best, title = ww * hh, bb, owner
         if best:
-            return [int(best["X"] * scale), int(best["Y"] * scale)]
-    except Exception:
-        pass
-    return [0, 0]
+            return {"found": True,
+                    "x": int(best["X"] * scale), "y": int(best["Y"] * scale),
+                    "w": int(best["Width"] * scale), "h": int(best["Height"] * scale),
+                    "title": title}
+        return {"found": False,
+                "error": "Roblox window not found. Open Prospecting in Roblox "
+                         "(not minimized) and try again."}
+    except Exception as e:
+        return {"found": False, "error": "Detection failed: %s" % e}
+
+
+def _window_origin():
+    """Roblox client top-left [x,y] in physical px, or [0,0]. (Back-compat.)"""
+    r = _roblox_rect()
+    return [r["x"], r["y"]] if r.get("found") else [0, 0]
 
 
 # ============================================================================
@@ -185,11 +205,50 @@ class Api:
             w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
             if w > 20:
                 cur["CAP_BAR_WIDTH"] = w
-        # remember where the Roblox window was (for WINDOW_RELATIVE)
-        cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
+        # If Roblox is open, record the window rect AND express every calibrated
+        # pixel as a fraction of the game window so Auto-calibrate can replace it.
+        rect = _roblox_rect()
+        if rect.get("found"):
+            cur["CALIB_WINDOW_ORIGIN"] = [rect["x"], rect["y"]]
+            cur["CALIB_WINDOW_RECT"] = [rect["x"], rect["y"], rect["w"], rect["h"]]
+            ratios = cur.get("PIXEL_RATIOS", {}) or {}
+            for key in ("CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX",
+                        "PAN_PIX", "SHAKE_PIX", "DIG_TRIGGER_PIXEL"):
+                if key in cur and isinstance(cur[key], (list, tuple)):
+                    fx = (cur[key][0] - rect["x"]) / float(rect["w"])
+                    fy = (cur[key][1] - rect["y"]) / float(rect["h"])
+                    ratios[key] = [round(fx, 5), round(fy, 5)]
+            cur["PIXEL_RATIOS"] = ratios
+        else:
+            cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
+
+    # ---- window detection + auto-calibrate ----
+    def detect_roblox(self):
+        return _roblox_rect()
+
+    def auto_calibrate(self):
+        """Place every pixel automatically from the detected Roblox window using
+        the saved ratio profile. No clicking required."""
+        rect = _roblox_rect()
+        if not rect.get("found"):
+            return {"ok": False, "error": rect.get("error", "Roblox not found")}
+        cur = load_saved()
+        ratios = cur.get("PIXEL_RATIOS") or PIXEL_RATIOS_DEFAULT
+        if not ratios:
+            return {"ok": False, "needs_manual": True, "window": rect,
+                    "error": "No calibration profile yet. Calibrate the spots "
+                             "once with Roblox open (just this first time) and "
+                             "Auto-calibrate will handle it from then on."}
+        pixels = {}
+        for key, (fx, fy) in ratios.items():
+            pixels[key] = [int(round(rect["x"] + fx * rect["w"])),
+                           int(round(rect["y"] + fy * rect["h"]))]
+        self.save_pixels(pixels)
+        return {"ok": True, "pixels": pixels, "window": rect,
+                "count": len(pixels)}
 
     def save_config(self, data):
         """Write scalar settings, PRESERVING relic keys already in the file."""
@@ -261,46 +320,72 @@ class Api:
 
     # ---- calibrate: wait for the user to CLICK a spot, capture its x/y + colour
     def calibrate_capture(self):
-        """Block until the user left-clicks somewhere on screen, then return that
-        pixel's position and colour. (macOS / Quartz.)"""
+        """Wait for the user to mark a spot, then return its position + colour.
+
+        Two ways to mark: LEFT-CLICK the spot, or hover it and press ENTER. Press
+        ESC to cancel. Returns {x,y,r,g,b}, {error:...} or {cancelled:True}.
+        (macOS / Quartz.)"""
         try:
             import Quartz
+        except Exception as e:
+            return {"error": "Quartz unavailable: %s" % e}
+        try:
             import numpy as np
-            import time as _t
+        except Exception:
+            return {"error": "Image library (numpy) missing."}
+        try:
             import mss
+        except Exception:
+            return {"error": "Screen-capture library (mss) missing."}
+        import time as _t
+        try:
             bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
             STATE = getattr(Quartz, "kCGEventSourceStateCombinedSessionState", 0)
             LBTN = getattr(Quartz, "kCGMouseButtonLeft", 0)
+            KEY_RETURN, KEY_ENTER, KEY_ESC = 36, 76, 53  # macOS virtual key codes
 
             def down():
                 return bool(Quartz.CGEventSourceButtonState(STATE, LBTN))
-            # let go of the click that started this, then wait for the NEXT click
+
+            def key(kc):
+                return bool(Quartz.CGEventSourceKeyState(STATE, kc))
+
+            def enter():
+                return key(KEY_RETURN) or key(KEY_ENTER)
+            # release whatever started this, then wait for the NEXT mark
             t0 = _t.perf_counter()
-            while down() and _t.perf_counter() - t0 < 0.5:
+            while (down() or enter()) and _t.perf_counter() - t0 < 0.6:
                 _t.sleep(0.01)
             t0 = _t.perf_counter()
-            while not down():
-                if _t.perf_counter() - t0 > 20:
-                    return {"error": "timed out (no click)"}
+            while True:
+                if key(KEY_ESC):
+                    return {"cancelled": True}
+                if down() or enter():
+                    break
+                if _t.perf_counter() - t0 > 30:
+                    return {"error": "Timed out — no click or Enter within 30s. "
+                                     "Click the spot in-game, or hover it and press Enter."}
                 _t.sleep(0.008)
             loc = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-            # FRESH mss in THIS thread (mss is thread-bound). Scale points->pixels
-            # and clamp the box so an edge click can't go off-screen.
-            with mss.mss() as sct:
-                main = sct.monitors[1]
-                lw = bounds.size.width
-                scale = main["width"] / lw if lw else 1.0
-                x = int(loc.x * scale)
-                y = int(loc.y * scale)
-                vm = sct.monitors[0]
-                L, T = vm["left"], vm["top"]
-                R, B = L + vm["width"], T + vm["height"]
-                bx = min(max(x - 3, L), R - 6)
-                by = min(max(y - 3, T), B - 6)
-                img = np.asarray(sct.grab(
-                    {"left": bx, "top": by, "width": 6, "height": 6}))[:, :, :3]
-            b, g, r = [int(v) for v in img.reshape(-1, 3).mean(0)]
-            while down():
+            try:
+                with mss.mss() as sct:
+                    main = sct.monitors[1]
+                    lw = bounds.size.width
+                    scale = main["width"] / lw if lw else 1.0
+                    x = int(loc.x * scale)
+                    y = int(loc.y * scale)
+                    vm = sct.monitors[0]
+                    L, T = vm["left"], vm["top"]
+                    R, B = L + vm["width"], T + vm["height"]
+                    bx = min(max(x - 3, L), R - 6)
+                    by = min(max(y - 3, T), B - 6)
+                    img = np.asarray(sct.grab(
+                        {"left": bx, "top": by, "width": 6, "height": 6}))[:, :, :3]
+                b, g, r = [int(v) for v in img.reshape(-1, 3).mean(0)]
+            except Exception as e:
+                return {"error": "Couldn't read that pixel's colour: %s" % e}
+            t0 = _t.perf_counter()
+            while (down() or enter()) and _t.perf_counter() - t0 < 1.0:
                 _t.sleep(0.008)
             return {"x": x, "y": y, "r": r, "g": g, "b": b}
         except Exception as e:
@@ -423,9 +508,18 @@ def build_html():
             f'</div>')
     panels.append(
         '<section class="panel" id="pcal"><div class="phead"><h2>Calibrate pixels</h2>'
-        '<p class="chint">Click a <b>Calibrate</b> button, then move your mouse to '
-        'that exact spot in the game and click once. It saves that position and '
-        'colour. Do them all, then click <b>Save calibration</b>.</p></div>'
+        '<p class="chint">Easiest: open Prospecting in Roblox, then click '
+        '<b>Auto-calibrate</b> below — it finds the game window and places every '
+        'spot for you. Manual calibration is only a fallback.</p></div>'
+        '<div class="autocal">'
+        '  <button type="button" id="autocal" class="btn">⚡ Auto-calibrate (detect Roblox)</button>'
+        '  <button type="button" id="detectwin" class="btn2">Detect Roblox window</button>'
+        '  <div class="winstat" id="winstat">Roblox window: not checked yet</div>'
+        '</div>'
+        '<div class="caldiv"><span>or calibrate manually</span></div>'
+        '<p class="chint" style="margin:0 0 10px">Click a <b>Calibrate</b> button, then '
+        'either click the exact spot in-game, or hover it and press <b>Enter</b>. '
+        'Press <b>Esc</b> to cancel. Do them all, then <b>Save calibration</b>.</p>'
         f'<div class="calrows">{"".join(calrows)}</div>'
         '<button type="button" id="savepixels" class="btn" style="margin-top:14px">'
         'Save calibration</button></section>')
@@ -553,6 +647,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  .calxy{font:13px ui-monospace,Menlo,monospace;color:#bfe3d2}
  .calsw2{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#000}
  .calbtn.armed{background:var(--accent2);color:#06281c}
+ .autocal{display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:720px;margin-bottom:14px}
+ .winstat{flex-basis:100%;font:12.5px ui-monospace,Menlo,monospace;color:var(--mut);
+  background:#0a0c10;border:1px solid var(--line);border-radius:9px;padding:8px 11px}
+ .winstat.ok{color:#7fe8c0;border-color:#1f5b44} .winstat.bad{color:#f2b8b8;border-color:#5b1f1f}
+ .caldiv{display:flex;align-items:center;gap:10px;color:var(--mut);font-size:12px;
+  max-width:720px;margin:6px 0 12px;text-transform:uppercase;letter-spacing:.5px}
+ .caldiv:before,.caldiv:after{content:"";flex:1;height:1px;background:var(--line)}
  .relicwrap{max-width:760px}
  .rrow{display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);
   border-radius:12px;padding:10px 12px;margin-bottom:8px}
@@ -644,16 +745,29 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    for(const k in pixels){const xy=pixels[k];
      const cv=document.getElementById('cv_'+k); if(cv)cv.textContent='('+xy[0]+', '+xy[1]+')';}}
  let capturing=false;
+ function showWin(w){const el=$('#winstat');if(!el)return;
+   if(w&&w.found){el.className='winstat ok';
+     el.textContent='✓ Roblox found · '+w.w+'×'+w.h+' at ('+w.x+', '+w.y+')'+(w.title?(' · '+w.title):'');}
+   else{el.className='winstat bad';el.textContent='✕ '+((w&&w.error)||'Roblox window not found');}}
  $$('.calbtn').forEach(btn=>btn.onclick=async()=>{
    if(capturing)return; capturing=true;
-   const key=btn.dataset.pkey; btn.classList.add('armed'); btn.textContent='Click the spot…';
+   const key=btn.dataset.pkey; btn.classList.add('armed'); btn.textContent='Click or press Enter…';
    const r=await window.pywebview.api.calibrate_capture();
    btn.classList.remove('armed'); btn.textContent='Calibrate'; capturing=false;
+   if(r.cancelled){toast('Cancelled');return;}
    if(r.error){toast('Calibrate failed: '+r.error);return;}
    pixels[key]=[r.x,r.y];
    const cv=document.getElementById('cv_'+key); if(cv)cv.textContent='('+r.x+', '+r.y+')';
    const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=`rgb(${r.r},${r.g},${r.b})`;
    toast(key+' set to ('+r.x+', '+r.y+')');});
+ $('#detectwin').onclick=async()=>{const w=await window.pywebview.api.detect_roblox();showWin(w);};
+ $('#autocal').onclick=async()=>{const b=$('#autocal');const old=b.textContent;
+   b.disabled=true;b.textContent='Detecting…';
+   const r=await window.pywebview.api.auto_calibrate();
+   b.disabled=false;b.textContent=old;
+   showWin(r.window||{found:false,error:r.error});
+   if(r.ok){setPixels(r.pixels);toast('Auto-calibrated '+r.count+' spots ✓ — saved');}
+   else{toast(r.error||'Auto-calibrate failed');}};
  $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(pixels);
    toast('Calibration saved');};
  // presets
@@ -708,7 +822,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
    setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});
-   checkUpdate();}
+   checkUpdate();
+   try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
  window.addEventListener('pywebviewready',init);
  if(window.pywebview&&window.pywebview.api)init();
 </script></body></html>"""

@@ -378,6 +378,12 @@ STOP_AFTER_PANS    = 0
 WINDOW_RELATIVE     = False
 ROBLOX_TITLE        = "Roblox"
 CALIB_WINDOW_ORIGIN = [0, 0]   # window top-left captured at calibration time
+CALIB_WINDOW_RECT   = [0, 0, 0, 0]   # [x,y,w,h] of the game window at calibration
+# Auto-calibrate from the live Roblox window at start using the ratio profile
+# (each pixel as a fraction of the game window). ON by default: if PIXEL_RATIOS
+# is present and Roblox is found, the macro positions every pixel itself.
+AUTO_CALIBRATE      = True
+PIXEL_RATIOS        = {}
 
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
@@ -454,6 +460,61 @@ def find_window_origin():
     except Exception as e:
         print(f"[window] lookup failed: {e}")
     return None
+
+
+def find_roblox_rect():
+    """Roblox game client area as (x, y, w, h) in PHYSICAL pixels, or None.
+    macOS: largest on-screen window whose owner is 'Roblox' (not Studio)."""
+    try:
+        opt = (Quartz.kCGWindowListOptionOnScreenOnly
+               | Quartz.kCGWindowListExcludeDesktopElements)
+        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
+        with _MSS() as sct:
+            scale = get_scale(sct)
+        best, area = None, 0
+        for w in wins or []:
+            owner = str(w.get("kCGWindowOwnerName", ""))
+            if "roblox" in owner.lower() and "studio" not in owner.lower():
+                b = w.get("kCGWindowBounds", {})
+                ww, hh = b.get("Width", 0), b.get("Height", 0)
+                if ww * hh > area and ww >= 320 and hh >= 240:
+                    area, best = ww * hh, b
+        if best:
+            return (int(best["X"] * scale), int(best["Y"] * scale),
+                    int(best["Width"] * scale), int(best["Height"] * scale))
+    except Exception as e:
+        print(f"[window] lookup failed: {e}")
+    return None
+
+
+def apply_auto_calibrate():
+    """Position every watched pixel from the LIVE Roblox window using the ratio
+    profile. Runs at start when AUTO_CALIBRATE is on and PIXEL_RATIOS exist, so
+    calibration works with zero clicking and survives window moves / different
+    resolutions. Returns True if it placed the pixels."""
+    if not AUTO_CALIBRATE or not PIXEL_RATIOS:
+        return False
+    rect = find_roblox_rect()
+    if not rect:
+        print("[autocal] Roblox window not found; using saved coordinates")
+        return False
+    x, y, w, h = rect
+    g = globals()
+    placed = 0
+    for pk, fr in PIXEL_RATIOS.items():
+        if pk in g and isinstance(fr, (list, tuple)) and len(fr) == 2:
+            g[pk] = (int(round(x + fr[0] * w)), int(round(y + fr[1] * h)))
+            placed += 1
+    if "CAP_FULL_PIXEL" in PIXEL_RATIOS and "CAP_LEFT_PIXEL" in PIXEL_RATIOS:
+        bw = int(round((PIXEL_RATIOS["CAP_FULL_PIXEL"][0]
+                        - PIXEL_RATIOS["CAP_LEFT_PIXEL"][0]) * w))
+        if bw > 20:
+            g["CAP_BAR_WIDTH"] = bw
+    g["CAP_START_PIXEL"] = (g["CAP_FULL_PIXEL"][0] - g["CAP_BAR_WIDTH"] + 12,
+                            g["CAP_FULL_PIXEL"][1])
+    print(f"[autocal] placed {placed} pixels from Roblox window "
+          f"{w}x{h} at ({x},{y})")
+    return True
 
 
 def apply_window_offset():
@@ -1589,7 +1650,8 @@ def log_calibration():
 # ---- Main -------------------------------------------------------------------
 def main():
     load_config()                 # apply UI overrides from prospecting_config.json
-    apply_window_offset()         # shift pixels if the Roblox window moved (opt-in)
+    if not apply_auto_calibrate():  # place pixels from the live window (if profile)
+        apply_window_offset()       # else shift pixels if the window moved (opt-in)
     print(__doc__.split("SETUP")[0])
     print(f"Dig trigger pixel {DIG_TRIGGER_PIXEL} (white-line release).")
     print(f"Capacity-full pixel {CAP_FULL_PIXEL} (yellow = full).")
@@ -1671,7 +1733,8 @@ def monitor():
     """Live sensor readout, NO input sent. Verify the cues/capacity read right
     on land, in the water, and mid-shake. Ctrl+C to quit."""
     load_config()                 # apply UI overrides from prospecting_config.json
-    apply_window_offset()
+    if not apply_auto_calibrate():
+        apply_window_offset()
     print("MONITOR -- no input. Watch the values on land / in water / mid-shake.\n")
     with _MSS() as sct:
         det = Detector(sct)
