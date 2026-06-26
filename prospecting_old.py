@@ -1253,17 +1253,14 @@ def do_shake(det):
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
     w_down = False
+    if SHAKE_MOMENTUM_W:
+        key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
         mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
-        # Engage momentum W only ONCE the shake is really happening (cue OR the
-        # capacity actually dropping). Pressing W before that just shoves us
-        # forward onto land when a shake fails to start at the water's edge.
-        if not started and (det.on_shake() or not det.capacity_full()):
+        if not started and det.on_shake():
             started = True
-            if SHAKE_MOMENTUM_W and not w_down:
-                key_down(KEY_W); w_down = True   # now glide toward land as it drains
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
         if det.pan_empty():
             emptied = True

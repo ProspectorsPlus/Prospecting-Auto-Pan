@@ -3,5 +3,5 @@
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Fix: overshooting the water after a dig (failed shakes no longer push you onto land; walk-back now reaches the water reliably)"
+  "notes": "Fix: dig overshoot no longer traps the macro on land \u2014 the walk-back reaches farther each missed attempt until it gets back to the water"
 }

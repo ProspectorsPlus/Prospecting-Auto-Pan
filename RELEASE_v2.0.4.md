@@ -14,12 +14,11 @@ Prospectors Plus v2.0.4 — water walk-back fix
 
 ### 🐛 Fixed
 
-- **No more getting stuck after a dig overshoots toward land.** Previously a shake
-  that didn't start would still hold W and shove you further onto land, so the
-  pan stayed full and the macro bounced S↔W without ever reaching the water.
-  Momentum now only kicks in once the shake is actually draining, and the
-  walk-back to the water reaches farther each time it misses — so it gets back in
-  on its own.
+- **No more getting stuck after a dig overshoots toward land.** If a dig carried
+  you too far forward, the short walk-back couldn't reach the water and the macro
+  bounced S↔W. Now the walk-back to the water reaches **farther on each missed
+  attempt**, so it works its way back in on its own. (The momentum shake itself is
+  unchanged.)
 
 ### 🖥️ Update
 
