@@ -385,6 +385,13 @@ STOP_AFTER_PANS    = 0
 WINDOW_RELATIVE     = False
 ROBLOX_TITLE        = "Roblox"
 CALIB_WINDOW_ORIGIN = [0, 0]   # window top-left captured at calibration time
+CALIB_WINDOW_RECT   = [0, 0, 0, 0]   # [x,y,w,h] of the game window at calibration
+# Auto-calibrate from the live Roblox window at start using the ratio profile
+# (each pixel as a fraction of the game window). ON by default: if PIXEL_RATIOS
+# is present and Roblox is found, the macro positions every pixel itself, so the
+# calibration travels across machines/resolutions and survives window moves.
+AUTO_CALIBRATE      = True
+PIXEL_RATIOS        = {}
 
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
@@ -451,24 +458,88 @@ def get_scale(sct):
 
 
 # ---- Window-relative capture (opt-in) ---------------------------------------
-def find_window_origin():
-    """(x, y) of the Roblox game viewport's top-left in physical pixels, or None.
-    Windows: FindWindow by title, then the CLIENT-area origin (excludes the title
-    bar)."""
+def find_roblox_rect():
+    """Roblox game client area as (x, y, w, h) in physical px, or None. Scans all
+    visible top-level windows (class WINDOWSCLIENT, or title containing 'Roblox'
+    but not Studio) and picks the largest -- robust to title variations."""
     try:
+        from ctypes import wintypes
         u = ctypes.windll.user32
-        hwnd = u.FindWindowW(None, ROBLOX_TITLE)
-        if not hwnd:
-            return None
+        best = []
 
-        class _PT(ctypes.Structure):
-            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-        pt = _PT(0, 0)
-        u.ClientToScreen(hwnd, ctypes.byref(pt))   # client (0,0) -> screen coords
-        return (int(pt.x), int(pt.y))
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def _cb(hwnd, _lp):
+            try:
+                if not u.IsWindowVisible(hwnd):
+                    return True
+                n = u.GetWindowTextLengthW(hwnd)
+                tb = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(hwnd, tb, n + 1)
+                title = tb.value or ""
+                cb = ctypes.create_unicode_buffer(256)
+                u.GetClassNameW(hwnd, cb, 256)
+                cls = cb.value or ""
+                if not (cls == "WINDOWSCLIENT" or
+                        ("Roblox" in title and "Studio" not in title)):
+                    return True
+                rc = wintypes.RECT()
+                if not u.GetClientRect(hwnd, ctypes.byref(rc)):
+                    return True
+                w, h = rc.right - rc.left, rc.bottom - rc.top
+                if w < 320 or h < 240:
+                    return True
+                pt = wintypes.POINT(0, 0)
+                u.ClientToScreen(hwnd, ctypes.byref(pt))
+                best.append((w * h, int(pt.x), int(pt.y), int(w), int(h)))
+            except Exception:
+                pass
+            return True
+
+        u.EnumWindows(_cb, 0)
+        if best:
+            best.sort(reverse=True)
+            return best[0][1:]
+        return None
     except Exception as e:
         print(f"[window] lookup failed: {e}")
         return None
+
+
+def find_window_origin():
+    """(x, y) of the Roblox client top-left, or None. (Back-compat wrapper.)"""
+    r = find_roblox_rect()
+    return (r[0], r[1]) if r else None
+
+
+def apply_auto_calibrate():
+    """Position every watched pixel from the LIVE Roblox window using the ratio
+    profile. Runs at start when AUTO_CALIBRATE is on and PIXEL_RATIOS exist. This
+    is what lets calibration work with zero clicking and survive window moves /
+    different resolutions. Returns True if it placed the pixels."""
+    if not AUTO_CALIBRATE or not PIXEL_RATIOS:
+        return False
+    rect = find_roblox_rect()
+    if not rect:
+        print("[autocal] Roblox window not found; using saved coordinates")
+        return False
+    x, y, w, h = rect
+    g = globals()
+    placed = 0
+    for pk, fr in PIXEL_RATIOS.items():
+        if pk in g and isinstance(fr, (list, tuple)) and len(fr) == 2:
+            g[pk] = (int(round(x + fr[0] * w)), int(round(y + fr[1] * h)))
+            placed += 1
+    # recompute the capacity-bar width from the two bar-end ratios if present
+    if "CAP_FULL_PIXEL" in PIXEL_RATIOS and "CAP_LEFT_PIXEL" in PIXEL_RATIOS:
+        bw = int(round((PIXEL_RATIOS["CAP_FULL_PIXEL"][0]
+                        - PIXEL_RATIOS["CAP_LEFT_PIXEL"][0]) * w))
+        if bw > 20:
+            g["CAP_BAR_WIDTH"] = bw
+    g["CAP_START_PIXEL"] = (g["CAP_FULL_PIXEL"][0] - g["CAP_BAR_WIDTH"] + 12,
+                            g["CAP_FULL_PIXEL"][1])
+    print(f"[autocal] placed {placed} pixels from Roblox window "
+          f"{w}x{h} at ({x},{y})")
+    return True
 
 
 def apply_window_offset():
@@ -1645,7 +1716,8 @@ def log_calibration():
 # ---- Main -------------------------------------------------------------------
 def main():
     load_config()                 # apply UI overrides from prospecting_config.json
-    apply_window_offset()         # shift pixels if the Roblox window moved (opt-in)
+    if not apply_auto_calibrate():  # place pixels from the live window (if profile)
+        apply_window_offset()       # else shift pixels if the window moved (opt-in)
     print(__doc__.split("SETUP")[0])
     print(f"Dig trigger pixel {DIG_TRIGGER_PIXEL} (white-line release).")
     print(f"Capacity-full pixel {CAP_FULL_PIXEL} (yellow = full).")
@@ -1727,7 +1799,8 @@ def monitor():
     """Live sensor readout, NO input sent. Verify the cues/capacity read right
     on land, in the water, and mid-shake. Ctrl+C to quit."""
     load_config()                 # apply UI overrides from prospecting_config.json
-    apply_window_offset()
+    if not apply_auto_calibrate():
+        apply_window_offset()
     print("MONITOR -- no input. Watch the values on land / in water / mid-shake.\n")
     with _MSS() as sct:
         det = Detector(sct)
