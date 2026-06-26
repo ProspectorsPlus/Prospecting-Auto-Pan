@@ -278,7 +278,7 @@ class Api:
         return "saved"
 
     # ---- calibration export / import ----
-    def export_calibration(self):
+    def _calibration_dict(self):
         cur = load_saved()
         keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
                 "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
@@ -289,6 +289,36 @@ class Api:
                 "CALIB_WINDOW_RECT": cur.get("CALIB_WINDOW_RECT"),
                 "CAP_BAR_WIDTH": cur.get("CAP_BAR_WIDTH"),
                 "PIXEL_COLORS": cur.get("PIXEL_COLORS", {})}
+
+    def export_calibration(self):
+        """Write the calibration to a real .json file via the OS save dialog
+        (blob downloads don't work inside the desktop webview). Falls back to a
+        file next to the app data if no dialog is available."""
+        data = self._calibration_dict()
+        try:
+            import webview
+        except Exception:
+            webview = None
+        try:
+            path = None
+            if _window is not None and webview is not None:
+                res = _window.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    save_filename="prospectors_calibration.json",
+                    file_types=("JSON file (*.json)", "All files (*.*)"))
+                if not res:
+                    return {"cancelled": True}
+                path = res[0] if isinstance(res, (list, tuple)) else res
+            else:
+                path = os.path.join(os.path.dirname(CONFIG_FILE),
+                                    "prospectors_calibration.json")
+            if not str(path).lower().endswith(".json"):
+                path = str(path) + ".json"
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+            return {"ok": True, "path": path}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def import_calibration(self, text):
         try:
@@ -999,10 +1029,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  document.querySelectorAll('.chex').forEach(inp=>inp.addEventListener('input',()=>{
    const cs=inp.closest('.calrow').querySelector('.calsw2');if(cs)cs.style.background=inp.value;}));
  $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(collectPixels(),collectColors());toast('Calibration saved');};
- $('#exportcal').onclick=async()=>{const data=await window.pywebview.api.export_calibration();
-   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
-   const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='prospectors_calibration.json';
-   document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},150);toast('Exported calibration');};
+ $('#exportcal').onclick=async()=>{const r=await window.pywebview.api.export_calibration();
+   if(r&&r.ok){toast('Saved: '+r.path);}else if(r&&r.cancelled){}else{toast('Export failed: '+((r&&r.error)||''));}};
  $('#importcal').onclick=()=>$('#importfile').click();
  $('#importfile').onchange=async ev=>{const f=ev.target.files[0];if(!f)return;
    const text=await f.text();let r;try{r=await window.pywebview.api.import_calibration(text);}catch(_){r={ok:false,error:'could not read file'};}
