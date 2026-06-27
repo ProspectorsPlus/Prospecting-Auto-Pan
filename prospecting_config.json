@@ -1,8 +1,8 @@
 {
   "PERFECT": false,
-  "DIG_CLICK_MS": 37,
+  "DIG_CLICK_MS": 10,
   "DIG_SPEED": 1474,
-  "MAX_DIGS_TO_FILL": 8,
+  "MAX_DIGS_TO_FILL": 1,
   "DIG_FILL_MS": 250,
   "PRE_DIG_SETTLE_MS": 60,
   "PAN_BACK_MAX_MS": 200,
@@ -12,10 +12,10 @@
   "SHAKE_CLICK_GAP_MS": 14,
   "SHAKE_HOLD_MS": 1500,
   "SHAKE_BAIL_MS": 500,
-  "SHAKE_START_DELAY_MS": 12,
+  "SHAKE_START_DELAY_MS": 0,
   "POST_SHAKE_SETTLE_MS": 150,
   "DEPOSIT_MAX_MS": 1200,
-  "LAND_SETTLE_MS": 45,
+  "LAND_SETTLE_MS": 0,
   "DIG_PROBE_MS": 320,
   "PROBE_GAP_MS": 80,
   "LAND_PROBE_NUDGE_MS": 90,
@@ -47,7 +47,7 @@
     },
     {
       "name": "Infernal Idol",
-      "minutes": 600,
+      "minutes": 15,
       "slot": 6,
       "clicks": 2
     }

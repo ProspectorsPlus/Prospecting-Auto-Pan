@@ -393,6 +393,19 @@ SAFE_STOP_RETRY       = True
 SAFE_STOP_RETRY_SEC   = 60
 SAFE_STOP_MAX_RETRIES = 3
 
+# --- Smart / experimental ----------------------------------------------------
+# SMART_TIMING: trial-and-error auto-tuning. If shakes miss the water (or landing
+# needs nudges) more than ADAPT_MISS_PCT of the time over a window, it nudges the
+# relevant timing and KEEPS the change only if the miss rate drops next window.
+SMART_TIMING       = False
+ADAPT_WINDOW       = 12     # attempts per evaluation window
+ADAPT_MISS_PCT     = 20     # only adjust above this miss %
+ADAPT_STEP_MS      = 25     # how far to nudge a timing each step
+# X_PATTERN: walk BACK on alternating 45-degree diagonals (S+A, then S+D, ...)
+# instead of straight S, so each pass covers new ground -- helps when you keep
+# falling short of the water on a straight line. Forward (to land) stays straight.
+X_PATTERN          = False
+
 # --- WINDOW-RELATIVE CAPTURE (opt-in) ----------------------------------------
 # When on, pixels are shifted by how far the Roblox window moved since you
 # calibrated, so calibration survives the window being in a different spot.
@@ -415,6 +428,8 @@ SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
 #     most reliable way to drive Roblox on Windows). --------------------------
 KEY_W = 0x11            # W
 KEY_S = 0x1F            # S
+KEY_A = 0x1E            # A
+KEY_D = 0x20            # D
 # Hotbar slot number -> Windows scancode (digit row 1..0).
 SLOT_KEYCODES = {1: 0x02, 2: 0x03, 3: 0x04, 4: 0x05, 5: 0x06,
                  6: 0x07, 7: 0x08, 8: 0x09, 9: 0x0A, 0: 0x0B}
@@ -902,6 +917,15 @@ class State:
     want_reset = False       # supervisor resets itself after a safe-pause
     stop_reason = ""         # latest stop reason (manual/safe/auto/bag)
     water_fails = 0          # consecutive go_water tries that didn't reach water
+    x_dir = 0                # X-pattern: which diagonal side to use next
+    ad_shake_n = 0           # adaptive: shake attempts in the current window
+    ad_shake_miss = 0
+    ad_land_n = 0            # adaptive: land attempts in the current window
+    ad_land_miss = 0
+    ad_water_dir = 1         # hill-climb direction for the water-reach knob
+    ad_water_prev = None
+    ad_land_dir = 1          # hill-climb direction for the land-reach knob
+    ad_land_prev = None
     stats = None             # SessionStats while running
 
 
@@ -1043,6 +1067,56 @@ def append_history(stats, reason):
             json.dump(hist[-100:], f, indent=2)
     except Exception as e:
         print("[history] save failed:", e)
+
+
+# ---- Smart adaptive timing (trial & error; opt-in) --------------------------
+def smart_adapt():
+    """Hill-climb two timings from real miss rates. Direction defaults to MORE
+    distance (go deeper into the water / further onto land); if a step makes the
+    miss rate worse next window, it reverses. No-op unless SMART_TIMING."""
+    if not SMART_TIMING:
+        return
+    g = globals()
+    if State.ad_shake_n >= ADAPT_WINDOW:
+        rate = 100.0 * State.ad_shake_miss / max(1, State.ad_shake_n)
+        if rate > ADAPT_MISS_PCT:
+            if State.ad_water_prev is not None and rate > State.ad_water_prev:
+                State.ad_water_dir *= -1
+            nv = max(0, min(600, g["WATER_EXTRA_BACK_MS"]
+                            + State.ad_water_dir * ADAPT_STEP_MS))
+            g["WATER_EXTRA_BACK_MS"] = nv
+            log(f"[smart] shake miss {rate:.0f}% -> WATER_EXTRA_BACK_MS={nv}ms")
+        State.ad_water_prev = rate
+        State.ad_shake_n = State.ad_shake_miss = 0
+    if State.ad_land_n >= ADAPT_WINDOW:
+        rate = 100.0 * State.ad_land_miss / max(1, State.ad_land_n)
+        if rate > ADAPT_MISS_PCT:
+            if State.ad_land_prev is not None and rate > State.ad_land_prev:
+                State.ad_land_dir *= -1
+            nv = max(0, min(600, g["LAND_SETTLE_MS"]
+                            + State.ad_land_dir * ADAPT_STEP_MS))
+            g["LAND_SETTLE_MS"] = nv
+            log(f"[smart] land miss {rate:.0f}% -> LAND_SETTLE_MS={nv}ms")
+        State.ad_land_prev = rate
+        State.ad_land_n = State.ad_land_miss = 0
+
+
+def _adapt_shake(emptied):
+    if not SMART_TIMING:
+        return
+    State.ad_shake_n += 1
+    if not emptied:
+        State.ad_shake_miss += 1
+    smart_adapt()
+
+
+def _adapt_land(missed):
+    if not SMART_TIMING:
+        return
+    State.ad_land_n += 1
+    if missed:
+        State.ad_land_miss += 1
+    smart_adapt()
 
 
 # ---- Cycle parts ------------------------------------------------------------
@@ -1297,10 +1371,18 @@ def go_water(det):
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
     budget = PAN_BACK_MAX_MS * (1 + min(State.water_fails, 4))
+    side = None
+    if X_PATTERN:                        # alternate 45-degree diagonals each pass
+        side = KEY_A if State.x_dir == 0 else KEY_D
+        State.x_dir ^= 1
     key_down(KEY_S)
+    if side is not None:
+        key_down(side)
     reached = wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
     if reached and WATER_EXTRA_BACK_MS > 0:
         sleep_ms(WATER_EXTRA_BACK_MS)    # keep holding S -> a bit deeper in
+    if side is not None:
+        key_up(side)
     key_up(KEY_S)
     State.water_fails = 0 if reached else State.water_fails + 1
     log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper, "
@@ -1355,6 +1437,7 @@ def do_shake(det):
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
+    _adapt_shake(emptied)
     dur = (time.perf_counter() - t0) * 1000
     log(f"    shake done: started={started} emptied={emptied} "
         f"reached_land={on_land} bail={bailed} fails={State.shake_fails} "
@@ -1418,6 +1501,7 @@ def return_and_dig(det):
                 State.breakouts = 0          # healthy progress -> clear escalation
                 State.safe_retries = 0
                 log(f"    dig-probe HIT (round {rnd+1}.{t+1}) -> on land, filling")
+                _adapt_land(rnd > 0)         # needed nudges to land = a miss
                 fill_to_full(det)            # dig until FULL (dynamic # of digs)
                 return True
         # none of the in-place digs registered -> probably off land -> nudge fwd
@@ -1426,6 +1510,7 @@ def return_and_dig(det):
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
         sleep_ms(PROBE_GAP_MS)               # settle before the next round
     State.land_fails += 1
+    _adapt_land(True)
     log(f"    dig-probe: no land after {LAND_DIG_TRIES} rounds "
         f"(land_fails={State.land_fails})")
     if State.land_fails >= STUCK_LIMIT:

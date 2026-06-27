@@ -93,6 +93,11 @@ SECTIONS = [
     ("Window", [
         ("WINDOW_RELATIVE",    "Shift pixels when the Roblox window moves", "bool", False),
     ]),
+    ("Smart / experimental", [
+        ("SMART_TIMING",   "Auto-tune timing by trial & error",          "bool", False),
+        ("ADAPT_MISS_PCT", "Adjust when miss rate exceeds (%)",          "int", 20),
+        ("X_PATTERN",      "X pattern: diagonal walk-backs",             "bool", False),
+    ]),
 ]
 
 PRESET_V1 = {"PERFECT": False, "DIG_CLICK_MS": 15, "MAX_DIGS_TO_FILL": 1}
@@ -120,6 +125,8 @@ SECTION_HINT = {
                      "Just enter your Discord username.",
     "Auto-stop": "Automatically stop the macro after a set time.",
     "Window": "Make calibration survive the Roblox window being moved.",
+    "Smart / experimental": "Experimental auto-tuning and movement patterns. "
+                            "Off by default — turn on and test.",
 }
 
 
@@ -133,6 +140,7 @@ TAB_ICON = {
     "Notifications": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 4 1.5 5.5 2 6H4c.5 -.5 2 -2 2 -6z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>',
     "Auto-stop": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="7.5"/><path d="M12 13V9.5M9.5 2.5h5M18.6 6l1.2 -1.2"/></svg>',
     "Window": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 9.5h16"/></svg>',
+    "Smart / experimental": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-5 8a2 2 0 0 0 1.8 3h10.4a2 2 0 0 0 1.8 -3l-5 -8V3"/><path d="M7.5 14h9"/></svg>',
 }
 
 # Per-setting explanations (shown as a ? tooltip next to each field).
@@ -213,6 +221,14 @@ HELP = {
     "WINDOW_RELATIVE": "Calibrate, then if you move the Roblox window the macro "
                        "shifts its pixels to match. Re-calibrate to set the "
                        "reference. Default off = absolute screen coordinates.",
+    "SMART_TIMING": "Trial-and-error auto-tuning. If shakes miss the water or "
+                    "landing needs nudges too often, it nudges the timing and keeps "
+                    "the change only if the miss rate drops. Experimental — watch the log.",
+    "ADAPT_MISS_PCT": "Smart timing only kicks in once the miss rate is above this "
+                      "percentage over a short window.",
+    "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
+                 "straight back, so each pass covers new ground. Helps when you keep "
+                 "falling short on a straight line. Forward to land stays straight.",
 }
 
 # Calibratable on-screen pixels: (key, label, description, default [x, y]).

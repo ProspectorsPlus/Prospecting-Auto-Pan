@@ -1,7 +1,7 @@
 {
-  "version": "2.0.4",
+  "version": "2.1.0",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Fix: dig overshoot no longer traps the macro on land \u2014 the walk-back reaches farther each missed attempt until it gets back to the water"
+  "notes": "New: Smart auto-timing + X-pattern movement (experimental, off by default); rustic charcoal/coffee-gold reskin"
 }

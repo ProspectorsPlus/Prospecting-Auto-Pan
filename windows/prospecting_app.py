@@ -27,7 +27,7 @@ import hashlib
 # from UPDATE_MANIFEST_URL. If the site reports a newer version the app shows an
 # "Update available" banner that opens DOWNLOAD_PAGE_URL in the browser.
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "2.0.4"
+VERSION             = "2.1.0"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
@@ -896,11 +896,13 @@ def build_html():
 
 
 HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
- :root{--bg:#0a0908;--bg2:#0d0c0a;--panel:#121110;--head:#0c0b0a;--line:#221f17;
-  --line2:#2e2a1e;--txt:#f0ebe0;--mut:#8f877a;--dim:#5f5849;--accent:#d4943a;
-  --accent-lit:#f0b95a;--accent2:#2cb8c8;--teal-lit:#52d4e2;--green:#3db87a;
-  --field:#100e0b;--nav:#0a0908;--sand-dim:rgba(212,148,58,.12);
-  --sand-glow:rgba(212,148,58,.22);--ease:cubic-bezier(.22,1,.36,1)}
+ :root{--bg:#1a1816;--bg2:#1f1d1a;--panel:#232120;--head:#1b1a18;--line:#332f2a;
+  --line2:#423d35;--txt:#ece4d6;--mut:#9c9183;--dim:#6a6253;--accent:#c2924c;
+  --accent-lit:#e0b873;--accent2:#7d9b63;--teal-lit:#9bc07e;--green:#7faf5d;
+  --field:#191714;--nav:#161412;--sand-dim:rgba(194,146,76,.13);
+  --sand-glow:rgba(194,146,76,.26);--ease:cubic-bezier(.22,1,.36,1)}
+ body::after{content:"";position:fixed;inset:0;z-index:2;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");background-size:150px 150px;mix-blend-mode:overlay}
  *{box-sizing:border-box} html,body{height:100%;margin:0}
  body{background:var(--bg);color:var(--txt);font:13.5px/1.5 "Inter",-apple-system,
   BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;display:flex;flex-direction:column}
@@ -946,7 +948,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  input[type=number]{width:104px;background:var(--field);color:var(--txt);border:1px solid var(--line2);
   border-radius:8px;padding:9px 11px;text-align:right;transition:border-color .15s,box-shadow .15s}
  input[type=number]:focus,input[type=text]:focus,.rname:focus{outline:0;border-color:var(--accent);
-  box-shadow:0 0 0 3px rgba(212,148,58,.25)}
+  box-shadow:0 0 0 3px rgba(194,146,76,.25)}
  .switch{position:relative;display:inline-flex} .switch input{display:none}
  .track{width:46px;height:26px;background:#39342a;border-radius:999px;position:relative;cursor:pointer}
  .knob{position:absolute;top:3px;left:3px;width:20px;height:20px;background:#fff;border-radius:50%;transition:left .15s}
@@ -955,7 +957,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .switch.sm .track{width:38px;height:22px} .switch.sm .knob{width:16px;height:16px}
  .switch.sm input:checked + .track .knob{left:19px}
  .runbtns{display:flex;align-items:center;gap:10px;margin-bottom:14px}
- .big{padding:11px 20px;font-size:15px} .go{background:var(--accent2);color:#04222a}
+ .big{padding:11px 20px;font-size:15px} .go{background:var(--accent2);color:#14260f}
  .stop{background:#3a2330;color:#ffb4b4} .stop:disabled,.go:disabled{opacity:.5;cursor:default}
  .rstate{color:var(--mut);margin-left:6px}
  .statsbar{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 12px}
@@ -982,11 +984,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .calval{display:flex;align-items:center;gap:6px;min-width:236px;justify-content:flex-end}
  .cnum{width:62px;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:7px;padding:7px 8px;text-align:right;font-size:13px}
  .chex{width:82px;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:7px;padding:7px 8px;font:12px ui-monospace,Menlo,monospace}
- .cnum:focus,.chex:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(212,148,58,.2)}
+ .cnum:focus,.chex:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.2)}
  .calactions{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
  .calxy{font:13px ui-monospace,Menlo,monospace;color:var(--accent-lit)}
  .calsw2{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#000}
- .calbtn.armed{background:var(--accent2);color:#04222a}
+ .calbtn.armed{background:var(--accent2);color:#14260f}
  .autocal{display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:720px;margin-bottom:14px}
  .winstat{flex-basis:100%;font:12.5px ui-monospace,Menlo,monospace;color:var(--mut);
   background:#0a0c10;border:1px solid var(--line);border-radius:9px;padding:8px 11px}
@@ -1004,7 +1006,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   border:1px solid #1f6b4a;border-radius:9px;padding:8px 12px;font-size:13px;opacity:0;
   transition:opacity .2s} .ok.show{opacity:1}
  .upd{display:none;align-items:center;gap:10px;padding:8px 14px;
-   background:linear-gradient(90deg,#b07d28,#d4943a);color:#241a02;font-size:13px}
+   background:linear-gradient(90deg,#8a6a35,#c2924c);color:#241a02;font-size:13px}
  .upd b{font-weight:700}
  .upd .grow{flex:1}
  .upd button{background:#fff;color:#5a3d0a;border:0;border-radius:6px;
@@ -1016,8 +1018,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  /* sleek refinements */
  .calrow,.rrow,.stat{transition:border-color .15s,background .15s}
  .calrow:hover,.rrow:hover{border-color:var(--line2)}
- .topfield:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(212,148,58,.2)}
- ::selection{background:rgba(212,148,58,.3)}
+ .topfield:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.2)}
+ ::selection{background:rgba(194,146,76,.3)}
  ::-webkit-scrollbar{width:10px;height:10px}
  ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px;border:3px solid transparent;background-clip:padding-box}
  ::-webkit-scrollbar-thumb:hover{background:#4a4230;background-clip:padding-box}
@@ -1069,7 +1071,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   border-radius:11px;padding:13px 14px 13px 40px;font:inherit;font-size:15px;letter-spacing:2px;
   text-transform:uppercase;transition:border-color .2s,box-shadow .2s}
  .gate-field input::placeholder{letter-spacing:1px;text-transform:none;color:var(--dim)}
- .gate-field input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(212,148,58,.22)}
+ .gate-field input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.22)}
  .gate-field .ic{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:15px;opacity:.8}
  #gateGo{width:100%;background:var(--accent);color:#241a02;font-size:15px;padding:13px;border-radius:11px;margin-top:2px}
  #gateGo:hover{filter:brightness(1.05);transform:translateY(-1px)}
