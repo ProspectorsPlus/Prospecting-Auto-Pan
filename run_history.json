@@ -375,5 +375,44 @@
     "stop_reason": "",
     "reason": "manual",
     "ended": "2026-06-27 02:32"
+  },
+  {
+    "cycles": 165,
+    "recoveries": 0,
+    "runtime_s": 295,
+    "pans_per_hr": 2007.8,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 7,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 03:22"
+  },
+  {
+    "cycles": 3,
+    "recoveries": 0,
+    "runtime_s": 6,
+    "pans_per_hr": 1573.2,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 0,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 03:23"
+  },
+  {
+    "cycles": 675,
+    "recoveries": 3,
+    "runtime_s": 1123,
+    "pans_per_hr": 2162.8,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 32,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 03:47"
   }
 ]

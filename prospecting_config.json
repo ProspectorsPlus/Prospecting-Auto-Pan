@@ -38,20 +38,7 @@
   "AUTOSTOP_MINUTES": 60,
   "STOP_AFTER_PANS": 0,
   "WINDOW_RELATIVE": true,
-  "RELICS": [
-    {
-      "name": "Solar Magnifier",
-      "minutes": 10,
-      "slot": 5,
-      "clicks": 2
-    },
-    {
-      "name": "Infernal Idol",
-      "minutes": 15,
-      "slot": 6,
-      "clicks": 2
-    }
-  ],
+  "RELICS": [],
   "RELICS_ENABLED": true,
   "CAP_FULL_PIXEL": [
     1122,
@@ -125,5 +112,8 @@
   "PIXEL_COLORS": {},
   "SAFE_STOP_RETRY": true,
   "SAFE_STOP_RETRY_SEC": 60,
-  "SAFE_STOP_MAX_RETRIES": 3
+  "SAFE_STOP_MAX_RETRIES": 3,
+  "SMART_TIMING": false,
+  "ADAPT_MISS_PCT": 0,
+  "X_PATTERN": true
 }
