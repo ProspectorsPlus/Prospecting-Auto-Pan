@@ -29,6 +29,13 @@ MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
 
 # ---- settings schema: (key, label, type, default) ; type in {int, bool} ------
 SECTIONS = [
+    ("Easy tuning", [
+        ("EASY_WATER_BACK_MS",        "Go further back into the water (ms)",       "int", 0),
+        ("EASY_LAND_FWD_MS",          "Go further onto land (ms)",                 "int", 0),
+        ("EASY_SHAKE_DELAY_MS",       "Wait longer before the shake starts (ms)",  "int", 0),
+        ("EASY_FIRST_DIG_DELAY_MS",   "Wait longer before the first dig (ms)",     "int", 0),
+        ("EASY_WATER_RETURN_DELAY_MS","Wait before going back to water when full (ms)", "int", 0),
+    ]),
     ("Mode / Dig", [
         ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
         ("DIG_CLICK_MS",       "Dig hold length (ms)",                    "int", 75),
@@ -115,6 +122,8 @@ def load_saved():
 
 
 SECTION_HINT = {
+    "Easy tuning": "Plain-language tweaks. Type how much MORE you want of each move "
+                   "and the macro adjusts the underlying timings for you.",
     "Mode / Dig": "How each dig works and how many it takes to fill the pan.",
     "Walk back into water": "Getting from land into the water to shake.",
     "Shake": "Emptying the pan; momentum carries you back to land.",
@@ -131,6 +140,7 @@ SECTION_HINT = {
 
 
 TAB_ICON = {
+    "Easy tuning": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
     "Mode / Dig": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c3 3.8 6 6.8 6 9.8a6 6 0 0 1 -12 0c0 -3 3 -6 6 -9.8z"/></svg>',
     "Walk back into water": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v13M6 13l6 6l6 -6"/></svg>',
     "Shake": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8c2 -2 4 -2 6 0s4 2 6 0 4 -2 6 0M3 14c2 -2 4 -2 6 0s4 2 6 0 4 -2 6 0"/></svg>',
@@ -145,6 +155,16 @@ TAB_ICON = {
 
 # Per-setting explanations (shown as a ? tooltip next to each field).
 HELP = {
+    "EASY_WATER_BACK_MS": "Walk back into the water this many ms further before shaking. "
+                          "Raise if you stop short of the water; lower if you overshoot.",
+    "EASY_LAND_FWD_MS": "Walk forward onto land this many ms further after a shake. "
+                        "Raise if you keep landing short and needing nudges.",
+    "EASY_SHAKE_DELAY_MS": "Wait this many ms longer before the shake begins, in case the "
+                           "shake animation needs a moment to start.",
+    "EASY_FIRST_DIG_DELAY_MS": "Wait this many ms longer before the first dig after a shake, "
+                               "so you're settled on land before digging.",
+    "EASY_WATER_RETURN_DELAY_MS": "Pause this many ms after the pan fills before heading "
+                                  "back to the water.",
     "PERFECT": "If on, the dig releases when the skill bar hits the green zone. "
                "The bar is usually too fast to catch by pixel, so leave OFF and "
                "use a timed hold instead.",

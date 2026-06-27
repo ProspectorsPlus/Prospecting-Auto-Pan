@@ -1,14 +1,14 @@
 {
   "PERFECT": false,
-  "DIG_CLICK_MS": 73,
-  "DIG_SPEED": 755,
+  "DIG_CLICK_MS": 30,
+  "DIG_SPEED": 1474,
   "MAX_DIGS_TO_FILL": 15,
   "DIG_FILL_MS": 250,
   "PRE_DIG_SETTLE_MS": 60,
   "PAN_BACK_MAX_MS": 200,
   "WATER_EXTRA_BACK_MS": 0,
   "SHAKE_MOMENTUM_W": true,
-  "SHAKE_CLICK_MS": 18,
+  "SHAKE_CLICK_MS": 50,
   "SHAKE_CLICK_GAP_MS": 14,
   "SHAKE_HOLD_MS": 1500,
   "SHAKE_BAIL_MS": 500,
@@ -29,10 +29,10 @@
   "BREAKOUT_REPOS_MS": 160,
   "BURST_ON_MS": 11,
   "BURST_OFF_MS": 1,
-  "WEBHOOK_ENABLED": true,
+  "WEBHOOK_ENABLED": false,
   "WEBHOOK_URL": "http://159.203.22.31:3001/notify",
   "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
-  "WEBHOOK_USER": "tedtheidot",
+  "WEBHOOK_USER": "Tedtheidot",
   "WEBHOOK_STATS_MIN": 10,
   "AUTOSTOP_ENABLED": false,
   "AUTOSTOP_MINUTES": 60,
@@ -114,7 +114,7 @@
       0.4517
     ]
   },
-  "NOTIFY_START": true,
+  "NOTIFY_START": false,
   "NOTIFY_STOP": true,
   "NOTIFY_STATS": true,
   "NOTIFY_SAFE_STOP": true,
@@ -126,7 +126,7 @@
   "SAFE_STOP_RETRY": true,
   "SAFE_STOP_RETRY_SEC": 60,
   "SAFE_STOP_MAX_RETRIES": 3,
-  "SMART_TIMING": true,
-  "ADAPT_MISS_PCT": 5,
-  "X_PATTERN": false
+  "SMART_TIMING": false,
+  "ADAPT_MISS_PCT": 0,
+  "X_PATTERN": true
 }

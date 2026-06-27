@@ -69,6 +69,14 @@ def load_config():
                 continue          # a blank config must NOT wipe the baked default
             g[k] = v
             applied += 1
+    # --- Easy tuning: layer the friendly offsets on top of the real knobs -----
+    g["WATER_EXTRA_BACK_MS"] = g.get("WATER_EXTRA_BACK_MS", 0) + EASY_WATER_BACK_MS
+    g["PAN_BACK_MAX_MS"]     = g.get("PAN_BACK_MAX_MS", 0) + EASY_WATER_BACK_MS
+    g["LAND_SETTLE_MS"]      = g.get("LAND_SETTLE_MS", 0) + EASY_LAND_FWD_MS
+    g["DEPOSIT_MAX_MS"]      = g.get("DEPOSIT_MAX_MS", 0) + EASY_LAND_FWD_MS
+    g["SHAKE_START_DELAY_MS"] = g.get("SHAKE_START_DELAY_MS", 0) + EASY_SHAKE_DELAY_MS
+    g["PRE_DIG_SETTLE_MS"]   = g.get("PRE_DIG_SETTLE_MS", 0) + EASY_FIRST_DIG_DELAY_MS
+    g["POST_SHAKE_SETTLE_MS"] = g.get("POST_SHAKE_SETTLE_MS", 0) + EASY_FIRST_DIG_DELAY_MS
     # pixel coords may arrive as [x, y] lists from the calibrator -> tuples
     for pk in ("CAP_FULL_PIXEL", "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX",
                "DIG_TRIGGER_PIXEL", "TERRAIN_PIXEL"):
@@ -400,6 +408,15 @@ ADAPT_STEP_MS      = 25     # how far to nudge a timing each step
 # instead of straight S, so each pass covers new ground -- helps when you keep
 # falling short of the water on a straight line. Forward (to land) stays straight.
 X_PATTERN          = False
+
+# --- Easy tuning (plain-language offsets; 0 = no change). The backend maps each
+#     of these onto the real timing knobs in load_config(), so users can tune by
+#     intent without learning every setting.
+EASY_WATER_BACK_MS         = 0   # go this many ms FURTHER BACK into the water
+EASY_LAND_FWD_MS           = 0   # go this many ms FURTHER FORWARD onto land
+EASY_SHAKE_DELAY_MS        = 0   # wait this many ms longer before the shake starts
+EASY_FIRST_DIG_DELAY_MS    = 0   # wait this many ms longer before the first dig
+EASY_WATER_RETURN_DELAY_MS = 0   # wait this many ms before heading back to water
 
 # --- WINDOW-RELATIVE CAPTURE (opt-in) ----------------------------------------
 # When on, pixels are shifted by how far the Roblox window moved since you
@@ -1462,6 +1479,8 @@ def act(det, s):
         if s.pan:
             do_shake(det)                # FULL and in the water -> shake it out
         else:
+            if EASY_WATER_RETURN_DELAY_MS > 0:
+                sleep_ms(EASY_WATER_RETURN_DELAY_MS)
             go_water(det)                # FULL on land -> walk back to the water
     else:
         return_and_dig(det)              # empty -> DIG (probe) to find land
