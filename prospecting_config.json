@@ -1,22 +1,22 @@
 {
   "PERFECT": false,
-  "DIG_CLICK_MS": 30,
+  "DIG_CLICK_MS": 10,
   "DIG_SPEED": 1474,
-  "MAX_DIGS_TO_FILL": 15,
+  "MAX_DIGS_TO_FILL": 1,
   "DIG_FILL_MS": 250,
   "PRE_DIG_SETTLE_MS": 60,
   "PAN_BACK_MAX_MS": 200,
   "WATER_EXTRA_BACK_MS": 0,
   "SHAKE_MOMENTUM_W": true,
-  "SHAKE_CLICK_MS": 50,
+  "SHAKE_CLICK_MS": 18,
   "SHAKE_CLICK_GAP_MS": 14,
   "SHAKE_HOLD_MS": 1500,
   "SHAKE_BAIL_MS": 500,
-  "SHAKE_START_DELAY_MS": 10,
+  "SHAKE_START_DELAY_MS": 0,
   "POST_SHAKE_SETTLE_MS": 150,
   "DEPOSIT_MAX_MS": 1200,
-  "LAND_SETTLE_MS": 45,
-  "DIG_PROBE_MS": 320,
+  "LAND_SETTLE_MS": 0,
+  "DIG_PROBE_MS": 120,
   "PROBE_GAP_MS": 80,
   "LAND_PROBE_NUDGE_MS": 90,
   "LAND_DIG_TRIES": 5,
@@ -38,20 +38,7 @@
   "AUTOSTOP_MINUTES": 60,
   "STOP_AFTER_PANS": 0,
   "WINDOW_RELATIVE": true,
-  "RELICS": [
-    {
-      "name": "Solar Magnifier",
-      "minutes": 10,
-      "slot": 5,
-      "clicks": 2
-    },
-    {
-      "name": "Infernal Idol",
-      "minutes": 15,
-      "slot": 6,
-      "clicks": 2
-    }
-  ],
+  "RELICS": [],
   "RELICS_ENABLED": true,
   "CAP_FULL_PIXEL": [
     1122,
@@ -127,6 +114,11 @@
   "SAFE_STOP_RETRY_SEC": 60,
   "SAFE_STOP_MAX_RETRIES": 3,
   "SMART_TIMING": false,
-  "ADAPT_MISS_PCT": 0,
-  "X_PATTERN": true
+  "ADAPT_MISS_PCT": 1,
+  "X_PATTERN": true,
+  "EASY_WATER_BACK_MS": 10,
+  "EASY_LAND_FWD_MS": 20,
+  "EASY_SHAKE_DELAY_MS": 0,
+  "EASY_FIRST_DIG_DELAY_MS": 0,
+  "EASY_WATER_RETURN_DELAY_MS": 0
 }

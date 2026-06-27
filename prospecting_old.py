@@ -408,6 +408,7 @@ ADAPT_STEP_MS      = 25     # how far to nudge a timing each step
 # instead of straight S, so each pass covers new ground -- helps when you keep
 # falling short of the water on a straight line. Forward (to land) stays straight.
 X_PATTERN          = False
+X_STRAFE_MS        = 120   # X pattern: ms of sideways strafe per walk-back (0=off)
 
 # --- Easy tuning (plain-language offsets; 0 = no change). The backend maps each
 #     of these onto the real timing knobs in load_config(), so users can tune by
@@ -869,6 +870,7 @@ class State:
     stop_reason = ""         # latest stop reason (manual/safe/auto/bag)
     water_fails = 0          # consecutive go_water tries that didn't reach water
     x_dir = 0                # X-pattern: which diagonal side to use next
+    x_balance = 0.0          # X-pattern: running lateral balance (ms; +right/-left)
     ad_shake_n = 0           # adaptive: shake attempts in the current window
     ad_shake_miss = 0
     ad_land_n = 0            # adaptive: land attempts in the current window
@@ -1324,18 +1326,29 @@ def go_water(det):
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
     budget = PAN_BACK_MAX_MS * (1 + min(State.water_fails, 4))
-    side = None
-    if X_PATTERN:                        # alternate 45-degree diagonals each pass
-        side = KEY_A if State.x_dir == 0 else KEY_D
-        State.x_dir ^= 1
     key_down(KEY_S)
-    if side is not None:
+    # X pattern: a CONTROLLED lateral strafe that always corrects back toward the
+    # centre, so left/right can't drift over time. Pick the side that REDUCES the
+    # running balance, hold it briefly, then finish the walk-back dead straight.
+    if X_PATTERN and X_STRAFE_MS > 0:
+        if State.x_balance > 0:          # we've crept right -> strafe LEFT (A)
+            side, sgn = KEY_A, -1
+        elif State.x_balance < 0:        # crept left -> strafe RIGHT (D)
+            side, sgn = KEY_D, +1
+        else:                            # centred -> just alternate
+            side, sgn = (KEY_D, +1) if State.x_dir == 0 else (KEY_A, -1)
+            State.x_dir ^= 1
         key_down(side)
-    reached = wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
+        ss = time.perf_counter()
+        s_end = ss + X_STRAFE_MS / 1000.0
+        while time.perf_counter() < s_end and State.running and not det.on_pan():
+            sleep_ms(8)
+        held = (time.perf_counter() - ss) * 1000.0
+        key_up(side)
+        State.x_balance += sgn * held    # bounded: always pushed toward 0 -> no drift
+    reached = det.on_pan() or wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
     if reached and WATER_EXTRA_BACK_MS > 0:
         sleep_ms(WATER_EXTRA_BACK_MS)    # keep holding S -> a bit deeper in
-    if side is not None:
-        key_up(side)
     key_up(KEY_S)
     State.water_fails = 0 if reached else State.water_fails + 1
     log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper, "
@@ -1587,6 +1600,7 @@ class Supervisor:
         State.shake_fails = 0
         State.land_fails = 0
         State.breakouts = 0
+        State.x_balance = 0.0
 
     def tick(self, det):
         if State.want_reset:           # fresh slate after a safe-pause

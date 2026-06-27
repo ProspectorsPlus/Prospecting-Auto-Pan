@@ -104,6 +104,7 @@ SECTIONS = [
         ("SMART_TIMING",   "Auto-tune timing by trial & error",          "bool", False),
         ("ADAPT_MISS_PCT", "Adjust when miss rate exceeds (%)",          "int", 20),
         ("X_PATTERN",      "X pattern: diagonal walk-backs",             "bool", False),
+        ("X_STRAFE_MS",    "X strafe per pass (ms, 0 = off)",            "int", 120),
     ]),
 ]
 
@@ -246,6 +247,7 @@ HELP = {
                     "the change only if the miss rate drops. Experimental — watch the log.",
     "ADAPT_MISS_PCT": "Smart timing only kicks in once the miss rate is above this "
                       "percentage over a short window.",
+    "X_STRAFE_MS": "How far sideways each X-pattern walk-back strafes. The macro auto-alternates and corrects toward centre so it never drifts left/right over time. Bigger = wider zig-zag; 0 turns the strafe off.",
     "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
                  "straight back, so each pass covers new ground. Helps when you keep "
                  "falling short on a straight line. Forward to land stays straight.",
