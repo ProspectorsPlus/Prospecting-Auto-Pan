@@ -414,5 +414,70 @@
     "stop_reason": "",
     "reason": "manual",
     "ended": "2026-06-27 03:47"
+  },
+  {
+    "cycles": 16,
+    "recoveries": 0,
+    "runtime_s": 47,
+    "pans_per_hr": 1225.3,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 3,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 12:23"
+  },
+  {
+    "cycles": 59,
+    "recoveries": 1,
+    "runtime_s": 174,
+    "pans_per_hr": 1215.5,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 7,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 12:26"
+  },
+  {
+    "cycles": 850,
+    "recoveries": 36,
+    "runtime_s": 3253,
+    "pans_per_hr": 940.5,
+    "safe_stops": 3,
+    "hard_stops": 0,
+    "relics_used": 8,
+    "nudges": 269,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 13:42"
+  },
+  {
+    "cycles": 1,
+    "recoveries": 0,
+    "runtime_s": 4,
+    "pans_per_hr": 738.5,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 0,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 13:43"
+  },
+  {
+    "cycles": 13,
+    "recoveries": 0,
+    "runtime_s": 46,
+    "pans_per_hr": 1010.2,
+    "safe_stops": 0,
+    "hard_stops": 0,
+    "relics_used": 0,
+    "nudges": 3,
+    "stop_reason": "",
+    "reason": "manual",
+    "ended": "2026-06-27 13:45"
   }
 ]

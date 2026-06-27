@@ -65,6 +65,8 @@ def load_config():
     applied = 0
     for k, v in data.items():
         if k in g and not callable(g[k]):
+            if k in ("WEBHOOK_URL", "WEBHOOK_SECRET") and not v:
+                continue          # a blank config must NOT wipe the baked default
             g[k] = v
             applied += 1
     # pixel coords may arrive as [x, y] lists from the calibrator -> tuples
@@ -359,8 +361,8 @@ RELIC_PRE_MS       = 120   # settle after releasing movement, before switching s
 # stats). Works as a plain Discord webhook (shows "content") AND carries
 # structured fields ("event","user","stats") so a custom bot can DM people.
 WEBHOOK_ENABLED    = False
-WEBHOOK_URL        = ""     # Discord webhook URL or your bot's endpoint
-WEBHOOK_SECRET     = ""     # shared secret sent as x-macro-secret (bot auth)
+WEBHOOK_URL        = "http://159.203.22.31:3001/notify"  # baked default (config can override)
+WEBHOOK_SECRET     = "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13"  # baked default
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
 # Per-event notification toggles (which DMs you actually get). Recoveries are
