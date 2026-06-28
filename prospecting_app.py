@@ -436,6 +436,53 @@ class Api:
         return {"ok": True, "pixels": pixels, "window": rect,
                 "count": len(pixels)}
 
+    def sample_pixels(self):
+        """Live readout for the Calibrate 'Test detection' tool: sample every
+        calibrated pixel and say whether the capacity reads FULL and whether the
+        cue pixels are visible -- using the SAME thresholds as the macro so what
+        you see here is what the macro sees."""
+        try:
+            import mss
+            import numpy as np
+        except Exception as e:
+            return {"error": str(e)}
+        cur = load_saved()
+        keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
+                "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
+        out = {}
+        try:
+            with mss.mss() as sct:
+                m = sct.monitors[0]
+                L, T = m["left"], m["top"]
+                Rg, Bg = L + m["width"], T + m["height"]
+                for k in keys:
+                    v = cur.get(k)
+                    if not (isinstance(v, (list, tuple)) and len(v) == 2):
+                        continue
+                    x, y = int(v[0]), int(v[1])
+                    bx = min(max(x - 3, L), Rg - 6)
+                    by = min(max(y - 3, T), Bg - 6)
+                    img = np.asarray(sct.grab(
+                        {"left": bx, "top": by, "width": 6, "height": 6}))[:, :, :3]
+                    b, g, r = [int(c) for c in img.reshape(-1, 3).mean(0)]
+                    out[k] = {"r": r, "g": g, "b": b}
+        except Exception as e:
+            return {"error": str(e)}
+
+        def white(p):
+            return p["r"] >= 175 and p["g"] >= 175 and p["b"] >= 175
+
+        def yellow(p):
+            return (p["r"] >= 140 and p["g"] >= 140
+                    and p["b"] <= min(p["r"], p["g"]) - 45)
+        res = {"pixels": out}
+        if "CAP_FULL_PIXEL" in out:
+            res["cap_full"] = yellow(out["CAP_FULL_PIXEL"])
+        for k in ("DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX"):
+            if k in out:
+                res[k + "_white"] = white(out[k])
+        return res
+
     def save_config(self, data):
         """Write scalar settings, PRESERVING relic keys already in the file."""
         cur = load_saved()
@@ -741,6 +788,8 @@ def build_html():
         '  <button type="button" id="autocal" class="btn">⚡ Auto-calibrate (detect Roblox)</button>'
         '  <button type="button" id="detectwin" class="btn2">Detect Roblox window</button>'
         '  <div class="winstat" id="winstat">Roblox window: not checked yet</div>'
+        '  <button type="button" id="dettest" class="btn2">Test detection (live)</button>'
+        '  <div class="detout" id="detout"></div>'
         '</div>'
         '<div class="caldiv"><span>or calibrate manually</span></div>'
         '<p class="chint" style="margin:0 0 10px">Click a <b>Calibrate</b> button, then '
@@ -907,6 +956,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .calsw2{width:22px;height:22px;border-radius:6px;border:1px solid var(--line);background:#000}
  .calbtn.armed{background:var(--accent2);color:#14260f}
  .autocal{display:flex;align-items:center;gap:12px;flex-wrap:wrap;max-width:720px;margin-bottom:14px}
+ .detout{flex-basis:100%;display:flex;flex-direction:column;gap:5px;margin-top:4px}
+ .detrow{display:flex;align-items:center;gap:9px;font:12.5px ui-monospace,Menlo,monospace;color:var(--mut)}
+ .detsw{width:18px;height:18px;border-radius:5px;border:1px solid var(--line2);flex-shrink:0}
+ .det-ok{color:#7faf5d;font-weight:700} .det-no{color:#e08a5a;font-weight:700}
  .winstat{flex-basis:100%;font:12.5px ui-monospace,Menlo,monospace;color:var(--mut);
   background:#0a0c10;border:1px solid var(--line);border-radius:9px;padding:8px 11px}
  .winstat.ok{color:#7fe8c0;border-color:#1f5b44} .winstat.bad{color:#f2b8b8;border-color:#5b1f1f}
@@ -1155,6 +1208,25 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  document.querySelectorAll('.chex').forEach(inp=>inp.addEventListener('input',()=>{
    const cs=inp.closest('.calrow').querySelector('.calsw2');if(cs)cs.style.background=inp.value;}));
  $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(collectPixels(),collectColors());toast('Calibration saved');};
+ let _detT=null;
+ function _sw(c){return c?('rgb('+c.r+','+c.g+','+c.b+')'):'#000';}
+ function _drow(label,c,verdict){return '<div class="detrow"><span class="detsw" style="background:'+_sw(c)+'"></span>'
+   +'<b>'+label+'</b> '+(c?('rgb('+c.r+','+c.g+','+c.b+')'):'(not set)')+' '+(verdict||'')+'</div>';}
+ (function(){const b=document.getElementById('dettest');if(!b)return;
+   b.onclick=async()=>{
+     if(_detT){clearInterval(_detT);_detT=null;b.textContent='Test detection (live)';document.getElementById('detout').innerHTML='';return;}
+     b.textContent='Stop test';
+     const tick=async()=>{let r;try{r=await window.pywebview.api.sample_pixels();}catch(e){return;}
+       const box=document.getElementById('detout');if(!box)return;
+       if(!r||r.error){box.innerHTML='<div class="detrow det-no">Test failed: '+((r&&r.error)||'')+'</div>';return;}
+       const p=r.pixels||{};let h='';
+       h+=_drow('Capacity', p.CAP_FULL_PIXEL, r.cap_full?'<span class="det-ok">FULL \u2713</span>':'<span class="det-no">not full</span>');
+       h+=_drow('Pan cue', p.PAN_PIX, r.PAN_PIX_white?'<span class="det-ok">visible</span>':'');
+       h+=_drow('Shake cue', p.SHAKE_PIX, r.SHAKE_PIX_white?'<span class="det-ok">visible</span>':'');
+       h+=_drow('Deposit cue', p.DEPOSIT_PIX, r.DEPOSIT_PIX_white?'<span class="det-ok">visible</span>':'');
+       h+=_drow('Dig green', p.DIG_TRIGGER_PIXEL, '');
+       box.innerHTML=h;};
+     tick();_detT=setInterval(tick,300);};})();
  $('#exportcal').onclick=async()=>{const r=await window.pywebview.api.export_calibration();
    if(r&&r.ok){toast('Saved: '+r.path);}else if(r&&r.cancelled){}else{toast('Export failed: '+((r&&r.error)||''));}};
  $('#importcal').onclick=()=>$('#importfile').click();
