@@ -66,6 +66,9 @@ SECTIONS = [
         ("LAND_DIG_TRIES",     "Probe digs before giving up",             "int", 5),
     ]),
     ("Recovery / safety", [
+        ("RECOVER_ENABLED",     "Enable stuck-recovery",                  "bool", True),
+        ("SHAKE_RETRY_ENABLED", "Enable shake re-attempt recovery",       "bool", True),
+        ("BREAKOUT_ENABLED",    "Enable break-out (escape stuck loops)",  "bool", True),
         ("STUCK_TICKS",        "Stuck reads before recovery",             "int", 3),
         ("RECOVER_LIMIT",      "Recoveries before break-out",             "int", 3),
         ("RECOVER_BACK_MS",    "Recovery nudge budget (ms)",              "int", 160),
@@ -231,6 +234,9 @@ HELP = {
     "NOTIFY_RECOVERIES": "DM you each time it recovers from being stuck. Off by default "
                          "because recoveries can happen often and get spammy.",
     "NOTIFY_ERRORS": "DM you if the macro hits an unexpected error and stops.",
+    "RECOVER_ENABLED": "Master switch for the stuck-recovery step (the jitter taps that nudge you back on track). Turn off if recovery misbehaves; the macro then just retries the normal loop and safe-stops if it genuinely cannot progress.",
+    "SHAKE_RETRY_ENABLED": "When stuck full and in the water, re-attempt the shake. Turn off if the re-shake bugs out.",
+    "BREAKOUT_ENABLED": "The last-resort move that finishes a stuck shake and repositions. Turn off if you do not want it.",
     "SAFE_STOP_RETRY": "When the macro detects a hazard or gets stuck, pause and retry shortly instead of stopping — so an AFK run heals itself. Off = stop immediately.",
     "SAFE_STOP_RETRY_SEC": "How long to wait before each safe-stop retry.",
     "SAFE_STOP_MAX_RETRIES": "After this many failed retries in a row, hard-stop for real.",

@@ -321,6 +321,12 @@ BREAKOUT_SHAKE_MS  = 700  # when stuck + FULL, click this long to finish an acti
                           # shake that's locking movement
 BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets you
                           # off the water edge if you keep landing too shallow)
+# Each recovery SYSTEM can be turned off independently (in case one misbehaves or
+# a player just doesn't want it). With all off, the macro only does the normal
+# loop and still safe-stops via the per-situation guards if it truly can't progress.
+RECOVER_ENABLED     = True   # the stuck-recovery jitter step
+SHAKE_RETRY_ENABLED = True   # re-attempt a shake when stuck full+in-water
+BREAKOUT_ENABLED    = True   # the last-resort break-out to escape a stuck loop
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -1514,7 +1520,8 @@ def recover(det, s):
         post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
                      State.stats.as_dict())
     if s.full and s.pan:
-        do_shake(det)                    # full in water, won't empty -> shake again
+        if SHAKE_RETRY_ENABLED:
+            do_shake(det)                # full in water, won't empty -> shake again
     elif s.full:
         # full but not in water -> jitter S back toward the water
         if State.stats: State.stats.nudges += 1
@@ -1630,17 +1637,16 @@ class Supervisor:
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"-> {plan_label(s)}")
             act(det, s)
-        elif self.recoveries < RECOVER_LIMIT:
+        elif RECOVER_ENABLED and self.recoveries < RECOVER_LIMIT:
             self.recoveries += 1
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"** STUCK x{self.same}, RECOVER #{self.recoveries} **")
             recover(det, s)
             self.same = 0
-        else:
-            # recovered RECOVER_LIMIT times and still stuck -> SMART BREAK-OUT:
-            # finish any active (movement-locking) shake by clicking + reposition,
-            # then reset and let normal logic try again. SAFE STOP only if the
-            # break-out itself keeps failing.
+        elif BREAKOUT_ENABLED:
+            # recovered enough and still stuck -> SMART BREAK-OUT: finish any active
+            # (movement-locking) shake by clicking + reposition, then reset and let
+            # normal logic try again. SAFE STOP only if the break-out keeps failing.
             State.breakouts += 1
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"** BREAK-OUT #{State.breakouts} (recovery loop) **")
@@ -1653,6 +1659,14 @@ class Supervisor:
             self.same = 0
             self.recoveries = 0
             self.last_sig = None
+        else:
+            # recovery systems are all disabled -> just retry the normal action.
+            # The per-situation guards (shake/land fail limits) still safe-stop if
+            # it genuinely can't make progress.
+            log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
+                f"** STUCK x{self.same} (recovery off) -> retry **")
+            act(det, s)
+            self.same = 0
 
 
 def loop_step(detector):

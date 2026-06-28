@@ -102,7 +102,7 @@
     ]
   },
   "NOTIFY_START": false,
-  "NOTIFY_STOP": true,
+  "NOTIFY_STOP": false,
   "NOTIFY_STATS": true,
   "NOTIFY_SAFE_STOP": true,
   "NOTIFY_RECOVERIES": true,
