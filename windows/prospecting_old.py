@@ -268,6 +268,9 @@ SHAKE_FWD_COMP_MS = 0
 # until the CAPACITY reads empty (capacity is the truth; the Shake cue sticks).
 SHAKE_MOMENTUM_W   = True   # hold W during the shake -> glide onto land
 SHAKE_CLICK_MS     = 18     # length of each shake click (short, fast build)
+SHAKE_CLICKS       = 0      # EXACT number of shake clicks (0 = auto: shake until
+                            # the pan reads empty). Set a fixed count to stop the
+                            # shake cleanly so no extra click bleeds into the dig.
 SHAKE_CLICK_GAP_MS = 14     # gap between shake clicks
 SHAKE_HOLD_MS      = 1500   # overall shake timeout (stops early when empty)
 SHAKE_INIT_GAP_MS    = 10   # (legacy) unused now
@@ -1451,27 +1454,31 @@ def do_shake(det):
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
     started = emptied = bailed = on_land = False
+    clicks = 0
+    fixed = SHAKE_CLICKS > 0                  # exact-count mode (no extra click)
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
-    while time.perf_counter() < end and State.running:
+    while State.running and (clicks < SHAKE_CLICKS if fixed
+                             else time.perf_counter() < end):
         mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
+        clicks += 1
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
-        if det.pan_empty():
+        if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
             emptied = True
             break
         if w_down and det.on_deposit():      # reached land -> stop gliding...
             key_up(KEY_W); w_down = False     # ...but keep clicking to finish
             on_land = True
-        # CAPACITY-based bail: only give up if the pan is STILL FULL well past a
-        # real shake's duration (no drain at all = no shake). We do NOT bail just
-        # because we didn't SEE the 'Shake' cue -- the clicks keep draining an
-        # actual shake, which is what frees us to move again.
-        if (time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
+        # CAPACITY-based bail (auto mode only): give up if the pan is STILL FULL
+        # well past a real shake's duration (no drain at all = no shake).
+        if (not fixed and time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
                 and det.capacity_full()):
             bailed = True
             break                            # truly not shaking
         sleep_ms(SHAKE_CLICK_GAP_MS)
+    if fixed:
+        emptied = det.pan_empty()            # did exactly N clicks -> read result
     if w_down:
         key_up(KEY_W)
     if emptied:

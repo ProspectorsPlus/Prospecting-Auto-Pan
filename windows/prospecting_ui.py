@@ -50,6 +50,7 @@ SECTIONS = [
     ]),
     ("Shake", [
         ("SHAKE_MOMENTUM_W",   "Hold W during shake (glide onto land)",   "bool", True),
+        ("SHAKE_CLICKS",       "Exact shake clicks (0 = auto until empty)", "int", 0),
         ("SHAKE_CLICK_MS",     "Each shake click length (ms)",            "int", 18),
         ("SHAKE_CLICK_GAP_MS", "Gap between shake clicks (ms)",           "int", 14),
         ("SHAKE_HOLD_MS",      "Shake overall timeout (ms)",              "int", 1500),
@@ -186,6 +187,7 @@ HELP = {
                            "so the shake doesn't start right at the edge.",
     "SHAKE_MOMENTUM_W": "Hold W while shaking so momentum carries you back onto "
                         "land as the pan drains.",
+    "SHAKE_CLICKS": "Do EXACTLY this many shake clicks then stop (0 = auto: shake until the pan reads empty). Use a fixed count if an extra auto-click bleeds into the next dig and ruins your perfect digs — set it to the number your build needs to empty.",
     "SHAKE_CLICK_MS": "Length of each shake click (the shake is a rapid click "
                       "stream, since a held press is dropped on macOS).",
     "SHAKE_CLICK_GAP_MS": "Gap between shake clicks. Lower = faster rattle.",
