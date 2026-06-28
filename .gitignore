@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .DS_Store
 ACCESS_CODES_PRIVATE.txt
+run_history.json
+prospecting_builds.json
+windows/run_history.json
+windows/prospecting_builds.json
