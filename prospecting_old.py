@@ -69,14 +69,25 @@ def load_config():
                 continue          # a blank config must NOT wipe the baked default
             g[k] = v
             applied += 1
-    # --- Easy tuning: layer the friendly offsets on top of the real knobs -----
-    g["WATER_EXTRA_BACK_MS"] = g.get("WATER_EXTRA_BACK_MS", 0) + EASY_WATER_BACK_MS
-    g["PAN_BACK_MAX_MS"]     = g.get("PAN_BACK_MAX_MS", 0) + EASY_WATER_BACK_MS
-    g["LAND_SETTLE_MS"]      = g.get("LAND_SETTLE_MS", 0) + EASY_LAND_FWD_MS
-    g["DEPOSIT_MAX_MS"]      = g.get("DEPOSIT_MAX_MS", 0) + EASY_LAND_FWD_MS
+    # --- Easy tuning: layer the friendly offsets on top of the real knobs. Each
+    #     maps to ALL the knobs that actually drive that move, so the effect shows.
+    g["WATER_EXTRA_BACK_MS"]  = g.get("WATER_EXTRA_BACK_MS", 0) + EASY_WATER_BACK_MS
+    g["PAN_BACK_MAX_MS"]      = g.get("PAN_BACK_MAX_MS", 0) + EASY_WATER_BACK_MS
+    g["LAND_SETTLE_MS"]       = g.get("LAND_SETTLE_MS", 0) + EASY_LAND_FWD_MS
+    g["LAND_PROBE_NUDGE_MS"]  = g.get("LAND_PROBE_NUDGE_MS", 0) + EASY_LAND_FWD_MS
+    g["DEPOSIT_MAX_MS"]       = g.get("DEPOSIT_MAX_MS", 0) + EASY_LAND_FWD_MS
     g["SHAKE_START_DELAY_MS"] = g.get("SHAKE_START_DELAY_MS", 0) + EASY_SHAKE_DELAY_MS
-    g["PRE_DIG_SETTLE_MS"]   = g.get("PRE_DIG_SETTLE_MS", 0) + EASY_FIRST_DIG_DELAY_MS
+    g["PRE_DIG_SETTLE_MS"]    = g.get("PRE_DIG_SETTLE_MS", 0) + EASY_FIRST_DIG_DELAY_MS
     g["POST_SHAKE_SETTLE_MS"] = g.get("POST_SHAKE_SETTLE_MS", 0) + EASY_FIRST_DIG_DELAY_MS
+    if any((EASY_WATER_BACK_MS, EASY_LAND_FWD_MS, EASY_SHAKE_DELAY_MS,
+            EASY_FIRST_DIG_DELAY_MS, EASY_WATER_RETURN_DELAY_MS)):
+        print(f"[easy] water_back+{EASY_WATER_BACK_MS} land_fwd+{EASY_LAND_FWD_MS} "
+              f"shake_delay+{EASY_SHAKE_DELAY_MS} first_dig+{EASY_FIRST_DIG_DELAY_MS} "
+              f"water_return+{EASY_WATER_RETURN_DELAY_MS} -> "
+              f"WATER_EXTRA_BACK_MS={g['WATER_EXTRA_BACK_MS']} "
+              f"LAND_PROBE_NUDGE_MS={g['LAND_PROBE_NUDGE_MS']} "
+              f"SHAKE_START_DELAY_MS={g['SHAKE_START_DELAY_MS']} "
+              f"PRE_DIG_SETTLE_MS={g['PRE_DIG_SETTLE_MS']}")
     # pixel coords may arrive as [x, y] lists from the calibrator -> tuples
     for pk in ("CAP_FULL_PIXEL", "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX",
                "DIG_TRIGGER_PIXEL", "TERRAIN_PIXEL"):
@@ -408,7 +419,6 @@ ADAPT_STEP_MS      = 25     # how far to nudge a timing each step
 # instead of straight S, so each pass covers new ground -- helps when you keep
 # falling short of the water on a straight line. Forward (to land) stays straight.
 X_PATTERN          = False
-X_STRAFE_MS        = 120   # X pattern: ms of sideways strafe per walk-back (0=off)
 
 # --- Easy tuning (plain-language offsets; 0 = no change). The backend maps each
 #     of these onto the real timing knobs in load_config(), so users can tune by
@@ -1326,29 +1336,25 @@ def go_water(det):
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
     budget = PAN_BACK_MAX_MS * (1 + min(State.water_fails, 4))
-    key_down(KEY_S)
-    # X pattern: a CONTROLLED lateral strafe that always corrects back toward the
-    # centre, so left/right can't drift over time. Pick the side that REDUCES the
-    # running balance, hold it briefly, then finish the walk-back dead straight.
-    if X_PATTERN and X_STRAFE_MS > 0:
-        if State.x_balance > 0:          # we've crept right -> strafe LEFT (A)
+    side = sgn = None
+    if X_PATTERN:                        # ONE smooth diagonal (S+side held together);
+        if State.x_balance > 0:          # pick the side that corrects drift to centre
             side, sgn = KEY_A, -1
-        elif State.x_balance < 0:        # crept left -> strafe RIGHT (D)
+        elif State.x_balance < 0:
             side, sgn = KEY_D, +1
-        else:                            # centred -> just alternate
+        else:
             side, sgn = (KEY_D, +1) if State.x_dir == 0 else (KEY_A, -1)
             State.x_dir ^= 1
+    tb = time.perf_counter()
+    key_down(KEY_S)
+    if side is not None:
         key_down(side)
-        ss = time.perf_counter()
-        s_end = ss + X_STRAFE_MS / 1000.0
-        while time.perf_counter() < s_end and State.running and not det.on_pan():
-            sleep_ms(8)
-        held = (time.perf_counter() - ss) * 1000.0
-        key_up(side)
-        State.x_balance += sgn * held    # bounded: always pushed toward 0 -> no drift
-    reached = det.on_pan() or wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
+    reached = wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
     if reached and WATER_EXTRA_BACK_MS > 0:
         sleep_ms(WATER_EXTRA_BACK_MS)    # keep holding S -> a bit deeper in
+    if side is not None:
+        key_up(side)                     # released WITH S -> no mid-walk kink
+        State.x_balance += sgn * (time.perf_counter() - tb) * 1000.0
     key_up(KEY_S)
     State.water_fails = 0 if reached else State.water_fails + 1
     log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper, "
