@@ -334,6 +334,8 @@ BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets 
 RECOVER_ENABLED     = True   # the stuck-recovery jitter step
 SHAKE_RETRY_ENABLED = True   # re-attempt a shake when stuck full+in-water
 BREAKOUT_ENABLED    = True   # the last-resort break-out to escape a stuck loop
+NO_FULL_LIMIT       = 8      # if the pan never reads FULL this many cycles in a row,
+                             # stop and tell the user to re-calibrate the capacity pixel
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -955,6 +957,7 @@ class State:
     water_fails = 0          # consecutive go_water tries that didn't reach water
     x_dir = 0                # X-pattern: which diagonal side to use next
     x_balance = 0.0          # X-pattern: running lateral balance (ms; +right/-left)
+    no_full = 0              # consecutive dig cycles where the pan never read FULL
     ad_shake_n = 0           # adaptive: shake attempts in the current window
     ad_shake_miss = 0
     ad_land_n = 0            # adaptive: land attempts in the current window
@@ -1039,7 +1042,7 @@ def release_all():
         pass
 
 
-def safe_stop(reason):
+def safe_stop(reason, hard=False):
     """A hazard/stuck was detected. By DEFAULT pause and retry shortly instead of
     hard-stopping (so an AFK run recovers itself); only hard-stop after
     SAFE_STOP_MAX_RETRIES failed retries in a row."""
@@ -1059,7 +1062,7 @@ def safe_stop(reason):
             except Exception:
                 print("\a", end="", flush=True)
 
-    if SAFE_STOP_RETRY and State.safe_retries < SAFE_STOP_MAX_RETRIES:
+    if SAFE_STOP_RETRY and State.safe_retries < SAFE_STOP_MAX_RETRIES and not hard:
         State.safe_retries += 1
         msg = (f"{reason} - retrying in {SAFE_STOP_RETRY_SEC}s "
                f"(attempt {State.safe_retries}/{SAFE_STOP_MAX_RETRIES})")
@@ -1528,6 +1531,16 @@ def return_and_dig(det):
     fills on dirt, so the CAPACITY tells us the truth. A dig registers if the bar
     FILL RISES. We re-dig IN PLACE a few times before assuming we're off-land and
     nudging W (so a single non-registering dig can't cause a jittery nudge)."""
+    State.no_full += 1
+    if State.no_full >= NO_FULL_LIMIT:
+        # We keep digging/nudging but the capacity bar NEVER reads full -- almost
+        # always a mis-calibrated capacity pixel (common when auto-calibrate's
+        # ratios don't match this PC's Roblox GUI scale). Stop loudly instead of
+        # walking forward forever, and tell the user exactly what to fix.
+        safe_stop("the pan never reads FULL -- the Capacity bar pixel looks "
+                  "mis-calibrated. Open Calibrate and re-set the Capacity bar "
+                  "(or Auto-calibrate with Roblox open).", hard=True)
+        return False
     for rnd in range(LAND_DIG_TRIES):
         if not State.running:
             return False
@@ -1680,6 +1693,7 @@ class Supervisor:
         State.land_fails = 0
         State.breakouts = 0
         State.x_balance = 0.0
+        State.no_full = 0
 
     def tick(self, det):
         if State.want_reset:           # fresh slate after a safe-pause
@@ -1688,6 +1702,8 @@ class Supervisor:
         release_all()                  # clear any stray held key/mouse (anti-drift)
         s = sense_stable(det)
         sig = (s.where, s.contents)
+        if s.full:
+            State.no_full = 0            # capacity 'full' detected -> detection OK
         if sig == self.last_sig:
             self.same += 1
         else:
