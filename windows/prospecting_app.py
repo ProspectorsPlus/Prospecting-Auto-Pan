@@ -424,6 +424,11 @@ class Api:
             if fr.get("FR_HOME_PIXEL"):
                 cur["FR_HOME_PIXEL"] = [int(fr["FR_HOME_PIXEL"][0]),
                                         int(fr["FR_HOME_PIXEL"][1])]
+        # You have now calibrated for YOUR screen, so the saved pixels are
+        # authoritative -- stop the macro re-deriving them from the built-in
+        # ratio profile at startup (that profile is the dev's screen and is what
+        # made digs miss after a good calibration).
+        cur["AUTO_CALIBRATE"] = False
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
@@ -1793,8 +1798,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  (function(){const A=()=>window.pywebview.api;
    const WIZ=[
     {t:'Guided calibration',b:'This sets up every detection spot for you. Keep Roblox open with the HUD visible, then click Detect to find the game window.',d:async()=>{const w=await A().detect_roblox();return (w&&w.found)?{ok:true,msg:'Found Roblox '+w.w+'×'+w.h}:{ok:false,error:'Roblox not found — open the game, then Detect.'};},m:null},
-    {t:'Capacity bar — empty',b:'First make sure your capacity bar is <b>empty</b> (no yellow). Then click Detect to snapshot it.',d:()=>A().wizard_capture_empty(),m:null},
-    {t:'Capacity bar — full',b:'Now dig until the capacity bar is <b>completely full</b> (all yellow). Then Detect — it compares against the empty snapshot to find the bar.',d:()=>A().wizard_propose('CAP','Capacity bar (full)'),m:null},
+    {t:'Capacity bar',b:'Dig until your capacity bar is <b>completely full</b> (all yellow). Then Detect — review the red ✕ on the bar and Confirm (or Redo).',d:()=>A().wizard_propose('CAP','Capacity bar'),m:null},
     {t:'\u201cPan\u201d prompt',b:'Stand in the <b>water</b> so the white \u201cPan\u201d prompt shows at the bottom. Then Detect.',d:()=>A().wizard_propose('PAN_PIX','Pan'),m:null},
     {t:'\u201cCollect Deposit\u201d prompt',b:'Step onto <b>land</b> so \u201cCollect Deposit\u201d shows. Then Detect.',d:()=>A().wizard_propose('DEPOSIT_PIX','Collect Deposit'),m:null},
     {t:'\u201cShake\u201d prompt',b:'Begin a <b>shake</b> so the \u201cShake\u201d prompt shows. Then Detect.',d:()=>A().wizard_propose('SHAKE_PIX','Shake'),m:null},
