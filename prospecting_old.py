@@ -492,6 +492,7 @@ FR_SCROLL_WAIT_MS  = 250          # settle after each scroll (ms)
 FR_WARP_MS         = 2500         # wait after clicking for the teleport/load (ms)
 FR_STRAFE_MS       = 10           # tiny D strafe after returning to the pan (ms)
 FR_WALK_MAX_MS     = 6000         # max W walk to reach the water/dig spot (ms)
+FR_END_A_MS        = 300          # hold A this long once on land, before restarting
 
 # --- Keys (macOS ANSI virtual keycodes) --------------------------------------
 KEY_W = 13
@@ -1150,6 +1151,8 @@ def fortune_river_recover():
     wait_until(det.on_pan, FR_WALK_MAX_MS, confirm=1)
     wait_until(det.on_deposit, FR_WALK_MAX_MS, confirm=1)
     key_up(KEY_W)
+    if FR_END_A_MS > 0:
+        tap_key(KEY_A, FR_END_A_MS)                  # final A nudge before restarting
     log("FR-recover: reached the dig spot -- resuming")
     return True
 

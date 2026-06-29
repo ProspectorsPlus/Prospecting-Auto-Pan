@@ -73,32 +73,32 @@
     0,
     39,
     1800,
-    1086
+    1087
   ],
   "PIXEL_RATIOS": {
     "CAP_FULL_PIXEL": [
       0.62333,
-      0.79006
+      0.78933
     ],
     "CAP_LEFT_PIXEL": [
       0.37722,
-      0.79006
+      0.78933
     ],
     "DEPOSIT_PIX": [
       0.42722,
-      0.86924
+      0.86845
     ],
     "PAN_PIX": [
       0.47,
-      0.87109
+      0.87029
     ],
     "SHAKE_PIX": [
       0.46167,
-      0.86924
+      0.86845
     ],
     "DIG_TRIGGER_PIXEL": [
       0.60111,
-      0.45212
+      0.4517
     ]
   },
   "NOTIFY_START": false,
@@ -143,10 +143,23 @@
   "FR_SCROLL_STEPS": 3,
   "FR_OPEN_MS": 600,
   "FR_WARP_MS": 2500,
-  "FR_STRAFE_MS": 10,
+  "FR_STRAFE_MS": 50,
   "FR_WALK_MAX_MS": 6000,
   "FR_DOUBLE_GAP_MS": 120,
   "FR_CLICK_SETTLE_MS": 300,
   "FR_ACTION_GAP_MS": 500,
-  "FR_SCAN_HOVER_MS": 12
+  "FR_SCAN_HOVER_MS": 12,
+  "FR_SCAN_X": 811,
+  "FR_TEXT_RGB": [
+    172,
+    147,
+    177
+  ],
+  "FR_BOX_TOP": 386,
+  "FR_BOX_BOTTOM": 836,
+  "FR_HOME_PIXEL": [
+    901,
+    599
+  ],
+  "FR_MOVE_STEP": 8
 }

@@ -128,6 +128,7 @@ SECTIONS = [
         ("FR_WARP_MS",     "FR: wait after teleport to load (ms)",       "int", 2500),
         ("FR_STRAFE_MS",   "FR: tiny D strafe after return (ms)",        "int", 10),
         ("FR_WALK_MAX_MS", "FR: max W walk to reach water (ms)",         "int", 6000),
+        ("FR_END_A_MS",    "FR: hold A on land before restart (ms)",     "int", 300),
     ]),
 ]
 
@@ -299,6 +300,7 @@ HELP = {
     "FR_WARP_MS": "How long to wait after clicking Fortune River for the teleport and world to finish loading.",
     "FR_STRAFE_MS": "Length of the small D tap used to line up after returning to the pan.",
     "FR_WALK_MAX_MS": "Maximum time to hold W walking forward to reach the water / dig spot before giving up.",
+    "FR_END_A_MS": "Once it reaches land (Collect Deposit cue), hold A for this long to line up, then restart the macro loop. Set 0 to skip.",
     "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
                  "straight back, so each pass covers new ground. Helps when you keep "
                  "falling short on a straight line. Forward to land stays straight.",
