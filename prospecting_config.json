@@ -162,5 +162,29 @@
   "FR_OPEN_TRIES": 3,
   "FR_CROSS_CONFIRM": 3,
   "NOTIFY_SCREENSHOT": true,
-  "AUTO_CALIBRATE": false
+  "AUTO_CALIBRATE": false,
+  "HOTKEY_TOGGLE": {
+    "ctrl": true,
+    "alt": false,
+    "shift": false,
+    "code": "KeyK"
+  },
+  "HOTKEY_SOFTSTOP": {
+    "ctrl": true,
+    "alt": false,
+    "shift": false,
+    "code": "KeyJ"
+  },
+  "HOTKEY_QUIT": {
+    "ctrl": false,
+    "alt": false,
+    "shift": false,
+    "code": "Escape"
+  },
+  "HOTKEY_POPOUT": {
+    "ctrl": true,
+    "alt": false,
+    "shift": false,
+    "code": "KeyP"
+  }
 }

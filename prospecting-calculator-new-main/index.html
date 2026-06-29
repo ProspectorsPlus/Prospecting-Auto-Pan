@@ -1,0 +1,1654 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Prospecting Chance Calculator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Prospecting Tools</title>
+
+<style>
+:root{
+  --bg-main:#0b0d17;
+  --bg-panel:#14172a;
+  --bg-panel-soft:#101226;
+  --border:rgba(255,255,255,0.08);
+  --text-main:#f2f3ff;
+  --text-muted:#9aa0d1;
+  --accent:#7c8cff;
+  --shadow: 0 18px 40px rgba(0,0,0,0.35);
+}
+
+*{ box-sizing:border-box; }
+html,body{ min-height: 100svh; }
+
+body{
+  margin:0;
+  padding:16px;
+  background:
+    radial-gradient(1200px 600px at 15% 0%, rgba(124,140,255,0.18), transparent 60%),
+    radial-gradient(900px 500px at 90% 10%, rgba(34,197,94,0.10), transparent 55%),
+    linear-gradient(180deg, #0b0d17, #070812);
+  background-attachment: fixed;
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  color:var(--text-main);
+}
+
+.version{
+  margin-left: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
+h1{
+  margin:0 0 18px 0;
+  font-size: 1.7rem;
+  font-weight: 650;
+}
+
+/* =======================
+   MAIN LAYOUT
+======================= */
+
+.layout{
+  max-width: 1700px;
+  margin: 0 auto;
+  display:grid;
+  grid-template-columns: minmax(440px, 500px) minmax(780px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+/* Right column stack */
+.rightStack{
+  display:grid;
+  grid-template-rows: auto 1fr;
+  gap:22px;
+}
+
+/* =======================
+   PANELS
+======================= */
+
+.panel{
+  background: rgba(20,23,42,0.92);
+  border:1px solid var(--border);
+  border-radius:18px;
+  padding:20px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(6px);
+}
+
+.panel h2{
+  margin:0 0 14px 0;
+  font-size:0.72rem;
+  font-weight:650;
+  text-transform:uppercase;
+  letter-spacing:0.10em;
+  color:var(--text-muted);
+}
+
+/* =======================
+   FORM CONTROLS
+======================= */
+
+.control{ margin-bottom: 14px; }
+
+.control label{
+  display:block;
+  margin:0 0 6px 0;
+  font-size:0.82rem;
+  color:var(--text-muted);
+}
+
+.control input,
+.control select{
+  width:100%;
+  padding:10px 12px;
+  background: rgba(16,18,38,0.95);
+  border:1px solid var(--border);
+  border-radius:12px;
+  color:var(--text-main);
+  font-size:0.92rem;
+}
+
+.control input:focus,
+.control select:focus{
+  outline:none;
+  border-color: rgba(124,140,255,0.9);
+  box-shadow: 0 0 0 3px rgba(124,140,255,0.12);
+}
+
+.row2{
+  display:grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.note{
+  margin-top: 10px;
+  font-size:0.78rem;
+  color:var(--text-muted);
+  line-height: 1.35;
+}
+
+/* =======================
+   BADGES / METRICS
+======================= */
+
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:7px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(0,0,0,0.18);
+  font-size: 0.82rem;
+}
+
+.dot{
+  width:9px;
+  height:9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px rgba(124,140,255,0.12);
+}
+
+.rarityTag{
+  padding:4px 8px;
+  border-radius:999px;
+  font-size:0.72rem;
+  font-weight:600;
+  background: rgba(0,0,0,0.35);
+  border:1px solid var(--border);
+  text-transform:capitalize;
+}
+
+.metrics{
+  display:grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.metric{
+  background: rgba(16,18,38,0.75);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  min-height: 92px;
+}
+
+.metric .k{
+  font-size:0.70rem;
+  letter-spacing:0.10em;
+  text-transform:uppercase;
+  color:var(--text-muted);
+}
+
+.metric .v{
+  margin-top: 10px;
+  font-size: 1.55rem;
+  font-weight: 700;
+}
+
+.metric .s{
+  margin-top: 6px;
+  font-size: 0.80rem;
+  color: var(--text-muted);
+}
+
+/* =======================
+   TABLE (RIGHT COLUMN)
+======================= */
+
+.tablePanel{
+  padding:16px;
+}
+
+.tableWrap{
+  overflow-x:auto;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: rgba(16,18,38,0.55);
+}
+
+.table{
+  width:100%;
+  border-collapse: collapse;
+  min-width: 1180px;
+}
+
+.table th,
+.table td{
+  padding: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 0.90rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.table th{
+  position: sticky;
+  top: 0;
+  background: rgba(16,18,38,0.92);
+  font-size:0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.table tr:hover{
+  background: rgba(255,255,255,0.03);
+}
+
+/* =======================
+   RESPONSIVE FALLBACK
+======================= */
+
+@media (max-width: 1350px){
+
+  body{
+    padding: 14px;
+  }
+
+  .layout{
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    align-items: center;
+  }
+
+  .rightStack{
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    width: 100%;
+    align-items: center;
+  }
+
+  .panel{
+    width: 100%;
+    max-width: 560px;
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .row2{
+    grid-template-columns: 1fr;
+  }
+
+  .metrics{
+    grid-template-columns: 1fr;
+  }
+
+  .tablePanel{
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .tableWrap{
+    overflow-x: auto;
+  }
+
+  .table{
+    min-width: 900px;
+  }
+
+  .layout > .panel:first-child{
+    position: static;
+  }
+}
+
+/* =======================
+   SECTION DIVIDER + CRAFTING SECTION
+======================= */
+
+.sectionDivider{
+  max-width: 1700px;
+  margin: 44px auto 34px;
+  height: 1px;
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(124,140,255,0.30),
+    transparent
+  );
+  opacity: 0.9;
+}
+
+.toolsSection{
+  max-width: 1700px;
+  margin: 0 auto 80px;
+}
+
+.toolsHeader{
+  display:flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 0 16px 0;
+}
+
+.toolsHeader h2{
+  margin:0;
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.toolsHeader p{
+  margin:0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* Mirrors calculator layout */
+.toolsLayout{
+  display:grid;
+  grid-template-columns: minmax(440px, 500px) minmax(780px, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+/* =======================
+   STATS PANEL (CRAFTING)
+======================= */
+
+.statsPanel{
+  margin-top: 18px;
+  background: rgba(16,18,38,0.6);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.statsHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom: 12px;
+}
+
+.statsHeader h2{
+  margin:0;
+  font-size:0.72rem;
+  text-transform:uppercase;
+  letter-spacing:0.1em;
+  color:var(--text-muted);
+}
+
+.statsToggle{
+  display:flex;
+  gap:6px;
+}
+
+.statsBtn{
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background: rgba(0,0,0,0.25);
+  color:var(--text-muted);
+  font-size:0.8rem;
+  cursor:pointer;
+  transition: all 0.18s ease;
+}
+
+.statsBtn.active{
+  background: rgba(124,140,255,0.25);
+  border-color: rgba(124,140,255,0.6);
+  color: var(--text-main);
+  box-shadow: 0 0 0 3px rgba(124,140,255,0.15);
+}
+
+.statsGrid{
+  display:grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap:10px;
+}
+
+.statItem{
+  background: rgba(20,23,42,0.75);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.statLabel{
+  font-size:0.75rem;
+  color:var(--text-muted);
+}
+
+.statValue{
+  margin-top:4px;
+  font-weight:650;
+}
+
+/* Stat colors (JSON-safe keys) */
+.stat-luck{ color:#35ef88; }
+.stat-dig_speed{ color:#89d6ff; }
+.stat-dig_strength{ color:#ffb68a; }
+.stat-capacity{ color:#ffe7a3; }
+.stat-size_boost{ color:#ff6b6b; }
+.stat-modifier_boost{ color:#6bff82; }
+.stat-sell_boost{ color:#ffe066; }
+.stat-walkspeed,
+.stat-walk_speed{ color:#ffffff; }
+.stat-inventory_size{ color:#d88565; }
+.stat-shake_strength{ color:#ffffff; }
+.stat-shake_speed{ color:#ffffff; }
+.stat-treasure_map_chance{ color:#35ef88; }
+
+.statsBlock {
+  margin-top: 16px;
+}
+
+.statsSubheading {
+  font-size: 0.95rem;
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+
+.mutationGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.mutationCol {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+}
+
+.mutationLabel {
+  display: block;
+  font-size: 0.8rem;
+  opacity: 0.75;
+  margin-bottom: 6px;
+  text-align: center;
+}
+
+.statsGrid.small .statValue {
+  font-size: 0.85rem;
+}
+
+/* Match mobile collapse for crafting too */
+@media (max-width: 1350px){
+  .toolsLayout{
+    display:flex;
+    flex-direction: column;
+    gap: 18px;
+    align-items: center;
+  }
+}
+</style>
+</head>
+
+<body>
+<h1>Prospecting Chance Calculator <span class="version">v2.5.0</span></h1>
+
+<div class="layout">
+
+  <!-- LEFT -->
+  <div class="panel">
+    <h2>Pan Setup</h2>
+
+    <div class="control">
+      <label>Search mineral</label>
+      <input id="mineralSearch" placeholder="Type part of the name…" />
+    </div>
+
+    <div class="row2">
+      <div class="control">
+        <label>Filter by rarity</label>
+        <select id="rarityFilter">
+          <option value="all">(all)</option>
+          <option value="common">Common</option>
+          <option value="uncommon">Uncommon</option>
+          <option value="rare">Rare</option>
+          <option value="epic">Epic</option>
+          <option value="legendary">Legendary</option>
+          <option value="mythic">Mythic</option>
+          <option value="exotic">Exotic</option>
+        </select>
+      </div>
+
+      <div class="control">
+        <label>Select mineral</label>
+        <select id="mineralSelect"></select>
+      </div>
+    </div>
+
+    <div class="control">
+      <label>Luck (in-game)</label>
+      <input type="number" id="luckInput" min="0" value="10" />
+    </div>
+
+    <div class="control">
+      <label>Pan Capacity (C)</label>
+      <input type="number" id="capacityInput" min="1" value="50" />
+    </div>
+
+    <div class="note" id="rollsNote">—</div><br><br>
+
+    <!-- NEW: time method + params -->
+    <div class="control">
+      <label>Time method</label>
+      <select id="timeMethod">
+        <option value="sand">Sandshaking</option>
+        <option value="autopan">Autopan / Macro</option>
+      </select>
+    </div>
+
+    <div class="row2">
+      <div class="control">
+        <label>Shake speed %</label>
+        <input type="number" id="shakeSpeedInput" min="0" step="1" value="500" />
+      </div>
+      <div class="control">
+        <label>s = shake strength</label>
+        <input type="number" id="sInput" min="0" step="0.01" value="1" />
+      </div>
+    </div>
+
+    <div class="row2" id="autopanExtras" style="display:none;">
+      <div class="control">
+        <label>n = digs to fill</label>
+        <input type="number" id="nInput" min="0" step="1" value="3" />
+      </div>
+      <div class="control">
+        <label>d = dig speed %</label>
+        <input type="number" id="dInput" min="0.01" step="0.01" value="100" />
+      </div>
+    </div>
+
+    <div class="note">
+        <b>How to fill these values</b><br><br>
+
+        <b>Common Values</b><br>
+        • <b>s (shake strength):</b> you'll find this in the stats menu<br><br>
+
+        <b>Manual (Sandshaking)</b><br>
+        Use these values if you are shaking the pan yourself.<br>
+        • Dig inputs are <b>not used</b> for manual shaking<br><br>
+
+        <b>Autopan / Macro</b><br>
+        Use these values if a macro or autopan is shaking for you.<br>
+        • <b>n (digs to fill):</b> how many digs are needed to fill a pan<br>
+        • <b>d (dig speed %):</b> your dig speed from gear/upgrades<br><br>
+
+        <b>Important:</b><br>
+        Luck and Capacity affect <b>drop chance</b>.<br>
+        Shaking speed and dig speed affect <b>time only</b>.<br>
+        Faster pans do not increase RNG - they just reach it sooner.
+    </div>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="rightStack">
+
+    <!-- TOP RIGHT -->
+    <div class="panel">
+        <div class="row2" style="grid-template-columns: 1fr 1fr;">
+        <div class="control">
+            <label>Filter locations in table</label>
+            <select id="locationFilter">
+            <option value="all">(all)</option>
+            </select>
+        </div>
+        <div class="control">
+            <label>Location</label>
+            <select id="locationSelect"></select>
+        </div>
+        </div>
+
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+        <div class="badge">
+            <span class="dot" id="rarityDot"></span>
+            <span id="mineralLabel">Mineral: —</span>
+            <span class="rarityTag" id="rarityTag">—</span>
+        </div>
+        <div class="badge">
+            Best location: <b id="bestLocation">—</b>
+        </div>
+        </div>
+
+        <div class="metrics">
+        <div class="metric">
+            <div class="k">Chance per attempt</div>
+            <div class="v" id="chanceCell">—</div>
+            <div class="s muted" id="oneInAttempt">—</div>
+        </div>
+        <div class="metric">
+            <div class="k">Expected finds</div>
+            <div class="v" id="expectedCell">—</div>
+            <div class="s muted" id="expectedSub">—</div>
+        </div>
+        <div class="metric">
+            <div class="k">At least one</div>
+            <div class="v" id="atLeastOneCell">—</div>
+            <div class="s muted" id="atLeastSub">—</div>
+        </div>
+        </div>
+    </div>
+
+    <!-- TABLE IN GAP -->
+    <div class="panel tablePanel">
+      <h2>All Locations Overview</h2>
+
+      <div class="tableWrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Location</th>
+              <th>Base Chance<br>(Per Roll)</th>
+              <th>~1 In (Per Roll)</th>
+              <th>Chance Per Attempt</th>
+              <th>~1 In (Attempt)</th>
+              <th>Attempts for 50%</th>
+              <th>Attempts for 90%</th>
+              <th>Attempts for 99%</th>
+              <th>Time for 50%</th>
+              <th>Time for 90%</th>
+              <th>Time for 100%</th>
+            </tr>
+          </thead>
+          <tbody id="allLocationsTable"></tbody>
+        </table>
+      </div>
+
+      <div class="note">
+        “Attempt” = one full pan action. Time columns use the selected method’s cycle time (seconds per pan).
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- =======================
+     NEW SECTION: CRAFTING
+======================= -->
+
+<div class="sectionDivider"></div>
+
+<section class="toolsSection" id="craftingSection">
+
+  <div class="toolsHeader">
+    <h2>Equipment Crafting & Unlocks</h2>
+    <p>Pick an equipment piece to see materials, stats, and unlock details.</p>
+  </div>
+
+  <div class="toolsLayout">
+
+    <!-- LEFT -->
+    <div class="panel">
+      <h2>Equipment Finder</h2>
+
+      <div class="control">
+        <label>Search equipment</label>
+        <input id="equipSearch" placeholder="Type part of the name…" />
+      </div>
+
+      <div class="control">
+        <label>Filter by rarity</label>
+        <select id="equipRarityFilter">
+          <option value="all">(all)</option>
+          <option value="common">Common</option>
+          <option value="uncommon">Uncommon</option>
+          <option value="rare">Rare</option>
+          <option value="epic">Epic</option>
+          <option value="legendary">Legendary</option>
+          <option value="mythical">Mythical</option>
+          <option value="exotic">Exotic</option>
+        </select>
+      </div>
+
+      <div class="control">
+        <label>Select equipment</label>
+        <select id="equipSelect"></select>
+      </div>
+      <div class="note">
+
+      </div>
+    </div>
+
+    <!-- RIGHT -->
+    <div class="panel">
+      <h2>Details</h2>
+
+      <div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div class="badge">
+          <span class="dot" id="equipRarityDot"></span>
+          <span id="equipLabel">Equipment: —</span>
+          <span class="rarityTag" id="equipRarityTag">—</span>
+        </div>
+        <div class="badge">
+          Availability: <b id="equipAvailability">—</b>
+        </div>
+      </div>
+
+      <div class="metrics">
+        <div class="metric">
+          <div class="k">Materials</div>
+          <div class="v" id="equipMaterialsCount">—</div>
+          <div class="s" id="equipMaterialsHint">—</div>
+        </div>
+
+        <div class="metric">
+          <div class="k">Unlock</div>
+          <div class="v" id="equipUnlockType">—</div>
+          <div class="s" id="equipUnlockHint">—</div>
+        </div>
+
+        <div class="metric">
+          <div class="k">Cost</div>
+          <div class="v" id="equipCost">—</div>
+          <div class="s" id="equipSlot">—</div>
+        </div>
+      </div>
+
+      
+      <!-- STATS -->
+      <div class="statsPanel">
+        <div class="statsHeader">
+          <h2>Stats</h2>
+          <div class="statsToggle">
+            <button id="statsBaseBtn" class="statsBtn active">Base</button>
+            <button id="statsStarBtn" class="statsBtn">6★</button>
+          </div>
+        </div>
+
+        <!-- BASE STATS -->
+        <div class="statsBlock">
+          <h4 class="statsSubheading">Base Stats</h4>
+          <div id="statsGrid" class="statsGrid">
+            <div class="note">Select an item to view stats</div>
+          </div>
+        </div>
+
+        <!-- MUTATION STATS -->
+        <div class="statsBlock">
+          <h4 class="statsSubheading">With Mutations</h4>
+
+          <div class="mutationGrid">
+            <div class="mutationCol">
+              <span class="mutationLabel">Silver</span>
+              <div id="statsGrid-m110" class="statsGrid small"></div>
+            </div>
+
+            <div class="mutationCol">
+              <span class="mutationLabel">Gold</span>
+              <div id="statsGrid-m120" class="statsGrid small"></div>
+            </div>
+
+            <div class="mutationCol">
+              <span class="mutationLabel">Diamond</span>
+              <div id="statsGrid-m135" class="statsGrid small"></div>
+            </div>
+
+            <div class="mutationCol">
+              <span class="mutationLabel">Festive</span>
+              <div id="statsGrid-m140" class="statsGrid small"></div>
+            </div>
+
+            <div class="mutationCol">
+              <span class="mutationLabel">Prismatic</span>
+              <div id="statsGrid-m160" class="statsGrid small"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+</section>
+
+<script>
+let minerals = [];
+let filtered = [];
+let allLocationNames = new Set();
+
+const mineralSelect   = document.getElementById("mineralSelect");
+const mineralSearch   = document.getElementById("mineralSearch");
+const rarityFilter    = document.getElementById("rarityFilter");
+const locationSelect  = document.getElementById("locationSelect");
+const locationFilter  = document.getElementById("locationFilter");
+const luckInput       = document.getElementById("luckInput");
+const capacityInput   = document.getElementById("capacityInput");
+
+const timeMethod      = document.getElementById("timeMethod");
+const shakeSpeedInput = document.getElementById("shakeSpeedInput");
+const sInput          = document.getElementById("sInput");
+const nInput          = document.getElementById("nInput");
+const dInput          = document.getElementById("dInput");
+const autopanExtras   = document.getElementById("autopanExtras");
+
+const MAX_SHAKE = 3000;
+
+/* -------------------------
+   STAT / FORMAT HELPERS
+------------------------- */
+
+function fmtPct(x, digits = 5) {
+  if (!isFinite(x)) return "—";
+  return (x * 100).toFixed(digits) + "%";
+}
+
+function fmtOneInFromProb(p) {
+  if (!isFinite(p) || p <= 0) return "∞";
+  return Math.round(1 / p).toLocaleString();
+}
+
+function attemptsForTarget(pAttempt, target) {
+  if (!isFinite(pAttempt) || pAttempt <= 0) return Infinity;
+  if (pAttempt >= 1) return 1;
+  return Math.log(1 - target) / Math.log(1 - pAttempt);
+}
+
+function fmtDuration(seconds) {
+  if (!isFinite(seconds) || seconds < 0) return "—";
+  if (seconds === Infinity) return "∞";
+
+  const s = Math.round(seconds);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+/* -------------------------
+   SHAKE SPEED % -> r
+------------------------- */
+
+function shakeSpeedToR(x) {
+  x = Math.max(0, Number(x) || 0);
+  x = Math.min(x, MAX_SHAKE);
+
+  const r =
+    (4.03266e-9 * Math.pow(x, 3)) -
+    (1.68935e-5 * Math.pow(x, 2)) +
+    (0.0255557 * x) +
+    0.206594;
+
+  return Math.max(0, r);
+}
+
+/* -------------------------
+   CYCLE TIME MODEL
+------------------------- */
+
+function getCycleSeconds(C) {
+  const shakeSpeed = Math.max(0, Number(shakeSpeedInput?.value) || 0);
+  const s = Math.max(0, Number(sInput?.value) || 0);
+  const n = Math.max(0, Number(nInput?.value) || 0);
+  const d = Math.max(0.0001, Number(dInput?.value) || 0.0001);
+
+  const r = shakeSpeedToR(shakeSpeed);
+  const rs = r * s;
+
+  if (rs <= 0) return Infinity;
+
+  const base = C / rs;
+
+  if (timeMethod.value === "autopan") {
+    return base + 1.5 + (190 * n / d);
+  }
+
+  return base + 0.75 + (190 * Math.max(0, n - 1) / d);
+}
+
+/* -------------------------
+   UI
+------------------------- */
+
+function syncAutopanUI() {
+  if (!autopanExtras || !timeMethod) return;
+  autopanExtras.style.display = timeMethod.value === "autopan" ? "" : "none";
+}
+
+/* -------------------------
+   DATA LOAD
+------------------------- */
+
+fetch("./minerals.json?v=" + Date.now())
+  .then(r => r.json())
+  .then(d => {
+    minerals = (d.minerals || []).slice().sort((a, b) =>
+      a.mineral.localeCompare(b.mineral, "en", { sensitivity: "base" })
+    );
+
+    for (const m of minerals) {
+      for (const loc of (m.locations || [])) {
+        allLocationNames.add(loc.location);
+      }
+    }
+
+    const locs = [...allLocationNames].sort((a, b) => a.localeCompare(b));
+    for (const name of locs) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      locationFilter.appendChild(opt);
+    }
+
+    filtered = minerals.slice();
+    populateMinerals(true);
+  });
+
+/* -------------------------
+   EVENTS
+------------------------- */
+
+[
+  mineralSelect, locationSelect, luckInput, capacityInput, locationFilter,
+  timeMethod, shakeSpeedInput, sInput, nInput, dInput
+].forEach(el => {
+  if (!el) return;
+  el.addEventListener("input", () => {
+    if (el === mineralSelect) populateLocations();
+    if (el === timeMethod) syncAutopanUI();
+    calculate();
+  });
+});
+
+if (rarityFilter) rarityFilter.addEventListener("change", () => populateMinerals(false));
+if (mineralSearch) mineralSearch.addEventListener("input", () => populateMinerals(false));
+
+if (timeMethod) {
+  timeMethod.value = "autopan";
+}
+syncAutopanUI();
+
+/* -------------------------
+   DROPDOWNS
+------------------------- */
+
+function populateMinerals(keepSelection) {
+  const q = (mineralSearch?.value || "").toLowerCase();
+  const r = rarityFilter?.value || "all";
+  const prev = keepSelection ? mineralSelect?.value : null;
+
+  filtered = minerals.filter(m => {
+    const okName = (m.mineral || "").toLowerCase().includes(q);
+    const okRarity = r === "all" ? true : (m.rarity || "") === r;
+    return okName && okRarity;
+  });
+
+  if (!mineralSelect) return;
+
+  mineralSelect.innerHTML = "";
+
+  for (const m of filtered) {
+    const opt = document.createElement("option");
+    opt.value = m.mineral;
+    opt.textContent = m.mineral;
+    mineralSelect.appendChild(opt);
+  }
+
+  if (prev && filtered.some(m => m.mineral === prev)) {
+    mineralSelect.value = prev;
+  }
+
+  populateLocations();
+}
+
+function populateLocations() {
+  const m = filtered.find(x => x.mineral === mineralSelect?.value) ||
+            minerals.find(x => x.mineral === mineralSelect?.value);
+
+  if (!m || !locationSelect) {
+    if (locationSelect) locationSelect.innerHTML = "";
+    calculate();
+    return;
+  }
+
+  const prevLoc = locationSelect.options.length
+    ? locationSelect.options[locationSelect.selectedIndex]?.textContent
+    : null;
+
+  locationSelect.innerHTML = "";
+
+  for (const l of (m.locations || [])) {
+    const opt = document.createElement("option");
+    opt.value = String(l.chance_percent);
+    opt.textContent = l.location;
+    locationSelect.appendChild(opt);
+  }
+
+  if (prevLoc) {
+    const idx = [...locationSelect.options].findIndex(o => o.textContent === prevLoc);
+    locationSelect.selectedIndex = idx >= 0 ? idx : 0;
+  } else {
+    locationSelect.selectedIndex = 0;
+  }
+
+  calculate();
+}
+
+/* -------------------------
+   MAIN CALC
+------------------------- */
+
+function calculate() {
+  const selectedMineral = mineralSelect?.value;
+  const m = minerals.find(x => x.mineral === selectedMineral) ||
+            filtered.find(x => x.mineral === selectedMineral);
+
+  if (!m || !locationSelect?.value) return;
+
+  const luck = Math.max(0, Number(luckInput?.value) || 0);
+  const C = Math.max(1, Number(capacityInput?.value) || 1);
+
+  const rollsPerAttempt = luck * Math.sqrt(C);
+
+  const cycleSeconds = getCycleSeconds(C);
+  const pansPerMinute = isFinite(cycleSeconds) && cycleSeconds > 0
+    ? 60 / cycleSeconds
+    : 0;
+
+  const shakeSpeed = Math.max(0, Number(shakeSpeedInput?.value) || 0);
+  const r = shakeSpeedToR(shakeSpeed);
+  const s = Math.max(0, Number(sInput?.value) || 0);
+  const n = Math.max(0, Number(nInput?.value) || 0);
+  const d = Math.max(0.0001, Number(dInput?.value) || 0.0001);
+
+  let cycleFormulaText = "";
+
+  if (timeMethod?.value === "autopan") {
+    cycleFormulaText =
+      `Cycle time = C/(r×s) + 1.5 + 190n/d = ` +
+      `${C}/(${r.toFixed(2)}×${s.toFixed(2)}) + 1.5 + 190×${n.toFixed(2)}/${d.toFixed(2)}`;
+  } else {
+    cycleFormulaText =
+      `Cycle time = C/(r×s) + 0.75 + 190(n−1)/d = ` +
+      `${C}/(${r.toFixed(2)}×${s.toFixed(2)}) + 0.75 + 190×(${n.toFixed(2)}−1)/${d.toFixed(2)}`;
+  }
+
+  const rollsNote = document.getElementById("rollsNote");
+  if (rollsNote) {
+    rollsNote.textContent =
+      `Effective rolls per pan: ${rollsPerAttempt.toFixed(2)} ` +
+      `(Luck ${luck} × √Capacity ${Math.sqrt(C).toFixed(2)}) · ` +
+      `Shake speed ${shakeSpeed.toFixed(0)}% ⇒ ${r.toFixed(2)} shakes/sec · ` +
+      `Strength s=${s.toFixed(2)} · ` +
+      `${cycleFormulaText} · ` +
+      `Cycle time: ${isFinite(cycleSeconds) ? cycleSeconds.toFixed(2) + "s" : "∞"} · ` +
+      `Pans/min: ${isFinite(pansPerMinute) ? pansPerMinute.toFixed(2) : "—"}`;
+  }
+
+  const mineralLabel = document.getElementById("mineralLabel");
+  if (mineralLabel) mineralLabel.textContent = `Mineral: ${m.mineral}`;
+
+  const rarity = m.rarity || "unknown";
+
+  const rarityTag = document.getElementById("rarityTag");
+  if (rarityTag) rarityTag.textContent = rarity;
+
+  const c = rarityColor(rarity);
+  const rarityDot = document.getElementById("rarityDot");
+
+  if (rarityDot) {
+    rarityDot.style.background = c;
+    rarityDot.style.boxShadow = `0 0 0 3px ${c}22`;
+  }
+
+  const basePercent = Number(locationSelect.value);
+  const p = basePercent / 100;
+
+  const pAttempt = 1 - Math.pow(1 - p, rollsPerAttempt);
+  const expected = rollsPerAttempt * p;
+
+  const a50 = attemptsForTarget(pAttempt, 0.50);
+  const a90 = attemptsForTarget(pAttempt, 0.90);
+  const a99 = attemptsForTarget(pAttempt, 0.99);
+
+  const t50 = isFinite(a50) && isFinite(cycleSeconds) ? a50 * cycleSeconds : Infinity;
+  const t90 = isFinite(a90) && isFinite(cycleSeconds) ? a90 * cycleSeconds : Infinity;
+  const t99 = isFinite(a99) && isFinite(cycleSeconds) ? a99 * cycleSeconds : Infinity;
+
+  const chanceCell = document.getElementById("chanceCell");
+  if (chanceCell) chanceCell.textContent = fmtPct(pAttempt, 5);
+
+  const oneInAttempt = document.getElementById("oneInAttempt");
+  if (oneInAttempt) oneInAttempt.textContent = `~1 in ${fmtOneInFromProb(pAttempt)} (attempt)`;
+
+  const expectedCell = document.getElementById("expectedCell");
+  if (expectedCell) expectedCell.textContent = expected.toFixed(4);
+
+  const expectedSub = document.getElementById("expectedSub");
+  if (expectedSub) {
+    expectedSub.textContent =
+      `Expected finds per attempt · 99% pans: ${isFinite(a99) ? a99.toFixed(2) : "∞"}`;
+  }
+
+  const atLeastOneCell = document.getElementById("atLeastOneCell");
+  if (atLeastOneCell) atLeastOneCell.textContent = fmtPct(pAttempt, 2);
+
+  const atLeastSub = document.getElementById("atLeastSub");
+  if (atLeastSub) {
+    atLeastSub.textContent =
+      `Chance of ≥1 in one attempt · 99% time: ${fmtDuration(t99)}`;
+  }
+
+  const tbody = document.getElementById("allLocationsTable");
+  if (!tbody) return;
+
+  tbody.innerHTML = "";
+
+  const locFilterVal = locationFilter?.value || "all";
+
+  let best = { name: "—", pAttempt: -1, oneIn: "—" };
+  const rows = [];
+
+  for (const l of (m.locations || [])) {
+    if (locFilterVal !== "all" && l.location !== locFilterVal) continue;
+
+    const bp = Number(l.chance_percent) / 100;
+    const pAtt = 1 - Math.pow(1 - bp, rollsPerAttempt);
+
+    if (pAtt > best.pAttempt) {
+      best = {
+        name: l.location,
+        pAttempt: pAtt,
+        oneIn: fmtOneInFromProb(pAtt)
+      };
+    }
+
+    const row50 = attemptsForTarget(pAtt, 0.50);
+    const row90 = attemptsForTarget(pAtt, 0.90);
+    const row99 = attemptsForTarget(pAtt, 0.99);
+
+    const rowT50 = isFinite(row50) && isFinite(cycleSeconds)
+      ? row50 * cycleSeconds
+      : Infinity;
+
+    const rowT90 = isFinite(row90) && isFinite(cycleSeconds)
+      ? row90 * cycleSeconds
+      : Infinity;
+
+    const rowT99 = isFinite(row99) && isFinite(cycleSeconds)
+      ? row99 * cycleSeconds
+      : Infinity;
+
+    rows.push({
+      location: l.location,
+      basePercent: Number(l.chance_percent),
+      baseOneIn: fmtOneInFromProb(bp),
+      pAtt,
+      attemptOneIn: fmtOneInFromProb(pAtt),
+      a50: row50,
+      a90: row90,
+      a99: row99,
+      t50: rowT50,
+      t90: rowT90,
+      t99: rowT99
+    });
+  }
+
+  const bestLocation = document.getElementById("bestLocation");
+  if (bestLocation) {
+    bestLocation.textContent =
+      best.pAttempt > 0 ? `${best.name} (~1 in ${best.oneIn})` : "—";
+  }
+
+  for (const rRow of rows) {
+    const tr = document.createElement("tr");
+
+    if (rRow.location === best.name) tr.classList.add("bestRow");
+
+    tr.innerHTML = `
+      <td>${rRow.location}</td>
+      <td>${rRow.basePercent.toFixed(8)}%</td>
+      <td>~1 in ${rRow.baseOneIn}</td>
+      <td>${fmtPct(rRow.pAtt, 5)}</td>
+      <td>~1 in ${rRow.attemptOneIn}</td>
+      <td>${isFinite(rRow.a50) ? rRow.a50.toFixed(2) : "∞"}</td>
+      <td>${isFinite(rRow.a90) ? rRow.a90.toFixed(2) : "∞"}</td>
+      <td>${isFinite(rRow.a99) ? rRow.a99.toFixed(2) : "∞"}</td>
+      <td>${fmtDuration(rRow.t50)}</td>
+      <td>${fmtDuration(rRow.t90)}</td>
+      <td>${fmtDuration(rRow.t99)}</td>
+    `;
+
+    tbody.appendChild(tr);
+  }
+}
+</script>
+
+<script>
+let equipment = [];
+let filteredEquipment = [];
+let currentItem = null;
+let activeStatsMode = "base";
+
+/* -------------------------
+   STAT METADATA
+------------------------- */
+
+const MUTATION_MULTIPLIERS = [
+  { id: "m110", label: "Mutation ×1.1", value: 1.1 },
+  { id: "m120", label: "Mutation ×1.2", value: 1.2 },
+  { id: "m135", label: "Mutation ×1.35", value: 1.35 },
+  { id: "m140", label: "Mutation ×1.4", value: 1.4 },
+  { id: "m160", label: "Mutation ×1.6", value: 1.6 }
+];
+
+const PERCENT_STATS = new Set([
+  "dig_speed",
+  "shake_speed",
+  "sell_boost",
+  "size_boost",
+  "modifier_boost",
+  "treasure_map_chance",
+  "status_timer_speed"
+]);
+
+/* -------------------------
+   DOM ELEMENTS
+------------------------- */
+
+const equipSearch = document.getElementById("equipSearch");
+const equipRarityFilter = document.getElementById("equipRarityFilter");
+const equipSelect = document.getElementById("equipSelect");
+
+const equipLabel = document.getElementById("equipLabel");
+const equipRarityTag = document.getElementById("equipRarityTag");
+const equipRarityDot = document.getElementById("equipRarityDot");
+const equipAvailability = document.getElementById("equipAvailability");
+
+const equipMaterialsCount = document.getElementById("equipMaterialsCount");
+const equipMaterialsHint = document.getElementById("equipMaterialsHint");
+const equipUnlockType = document.getElementById("equipUnlockType");
+const equipUnlockHint = document.getElementById("equipUnlockHint");
+const equipCost = document.getElementById("equipCost");
+const equipSlot = document.getElementById("equipSlot");
+
+/* -------------------------
+   LOAD DATA
+------------------------- */
+
+fetch("./crafting.json")
+  .then(r => r.json())
+  .then(data => {
+    equipment = data.equipment || [];
+    filteredEquipment = [...equipment];
+    populateEquipmentDropdown();
+  })
+  .catch(err => console.error("Failed to load crafting.json", err));
+
+/* -------------------------
+   STATS RENDERING
+------------------------- */
+
+function renderStatsToGrid(gridId, stats, multiplier, extraBonuses = null){
+  const grid = document.getElementById(gridId);
+  if (!grid) return;
+
+  const bonuses = extraBonuses || {};
+
+  // Render union: existing stat keys + bonus keys (so missing stats can be added)
+  const keys = Array.from(new Set([
+    ...Object.keys(stats || {}),
+    ...Object.keys(bonuses)
+  ]));
+
+  if (!keys.length){
+    grid.innerHTML = `<div class="note">No stats available</div>`;
+    return;
+  }
+
+  grid.innerHTML = keys.map((key) => {
+    const val = stats ? stats[key] : undefined;
+
+    let baseMin, baseMax, baseVal;
+
+    if (typeof val === "object" && val !== null) {
+      if ("min" in val && "max" in val) {
+        baseMin = val.min;
+        baseMax = val.max;
+      } else if ("value" in val) {
+        baseVal = val.value;
+      }
+    } else if (typeof val === "number") {
+      baseVal = val;
+    }
+
+    // If stat doesn't exist but we have a bonus for it: base is 0
+    const hasBonus = typeof bonuses[key] === "number";
+    const bonus = hasBonus ? bonuses[key] : 0;
+
+    let display;
+
+    // Range stat
+    if (baseMin != null && baseMax != null) {
+      const minMult = baseMin < 0 ? (1 / multiplier) : multiplier;
+      const maxMult = baseMax < 0 ? (1 / multiplier) : multiplier;
+
+      let minVal = baseMin * minMult;
+      let maxVal = baseMax * maxMult;
+
+      // Add flat bonus AFTER multiplying
+      if (hasBonus) {
+        minVal += bonus;
+        maxVal += bonus;
+      }
+
+      display = `${roundStat(key, minVal)} – ${roundStat(key, maxVal)}`;
+    }
+
+    // Single value stat (including missing stats that only have a bonus)
+    else {
+      // if baseVal is missing and we have a bonus, baseVal becomes 0
+      if (baseVal == null && hasBonus) baseVal = 0;
+
+      // if still missing (no base value and no bonus), skip it
+      if (baseVal == null) return "";
+
+      const effectiveMultiplier = baseVal < 0 ? (1 / multiplier) : multiplier;
+
+      let finalValue = baseVal * effectiveMultiplier;
+
+      // Add flat bonus AFTER multiplying
+      if (hasBonus) finalValue += bonus;
+
+      display = roundStat(key, finalValue);
+    }
+
+    if (display === "") return "";
+
+    if (PERCENT_STATS.has(key)) {
+      display += "%";
+    }
+
+    const cls = `stat-${key}`;
+
+    return `
+      <div class="statItem">
+        <div class="statLabel">${prettyStat(key)}</div>
+        <div class="statValue ${cls}">${display}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+/* -------------------------
+   FLAT BONUS INJECTION (1.4x)
+------------------------- */
+
+function appendFlatBonusStat(gridId, key, value){
+  const grid = document.getElementById(gridId);
+  if (!grid) return;
+
+  const display =
+    roundStat(key, value) + (PERCENT_STATS.has(key) ? "%" : "");
+
+  grid.insertAdjacentHTML("beforeend", `
+    <div class="statItem bonusStat">
+      <div class="statLabel">${prettyStat(key)}</div>
+      <div class="statValue">+${display}</div>
+    </div>
+  `);
+}
+
+/* -------------------------
+   ROUNDING RULES
+------------------------- */
+
+function roundStat(key, value){
+  if (value == null || isNaN(value)) return value;
+
+  const abs = Math.abs(value);
+
+  if (key === "walkspeed" || key === "jump_power") {
+    return Math.round(value * 10) / 10;
+  }
+
+  if (abs > 0 && abs < 1) {
+    return Math.round(value * 10) / 10;
+  }
+
+  return Math.round(value);
+}
+
+function renderStats(){
+  if (!currentItem) return;
+
+  const stats = currentItem.stats?.[activeStatsMode];
+  if (!stats) return;
+
+  // Base
+  renderStatsToGrid("statsGrid", stats, 1);
+
+  // Mutations
+  MUTATION_MULTIPLIERS.forEach(m => {
+    const gridId = `statsGrid-${m.id}`;
+
+    // Only Festive/1.4x gets the flat bonuses
+    const bonuses = (m.id === "m140")
+      ? { luck: 50, size_boost: 10 }
+      : null;
+
+    renderStatsToGrid(gridId, stats, m.value, bonuses);
+  });
+}
+
+/* -------------------------
+   DROPDOWN POPULATION
+------------------------- */
+
+function populateEquipmentDropdown(){
+  equipSelect.innerHTML = "";
+
+  filteredEquipment.forEach(item => {
+    const opt = document.createElement("option");
+    opt.value = item.name;
+    opt.textContent = item.name;
+    equipSelect.appendChild(opt);
+  });
+
+  if (filteredEquipment.length){
+    equipSelect.value = filteredEquipment[0].name;
+    updateEquipmentDetails(filteredEquipment[0]);
+  }
+}
+
+/* -------------------------
+   FILTERING
+------------------------- */
+
+function applyEquipmentFilters(){
+  const search = equipSearch.value.toLowerCase();
+  const rarity = equipRarityFilter.value;
+
+  filteredEquipment = equipment.filter(e => {
+    const matchesSearch = !search || e.name.toLowerCase().includes(search);
+    const matchesRarity = rarity === "all" || e.rarity === rarity;
+    return matchesSearch && matchesRarity;
+  });
+
+  populateEquipmentDropdown();
+}
+
+equipSearch.addEventListener("input", applyEquipmentFilters);
+equipRarityFilter.addEventListener("change", applyEquipmentFilters);
+
+/* -------------------------
+   SELECTION
+------------------------- */
+
+equipSelect.addEventListener("change", () => {
+  const selected = equipment.find(e => e.name === equipSelect.value);
+  if (selected) updateEquipmentDetails(selected);
+});
+
+/* -------------------------
+   DETAILS PANEL
+------------------------- */
+
+function updateEquipmentDetails(item){
+  currentItem = item;
+
+  equipLabel.textContent = `Equipment: ${item.name}`;
+  equipRarityTag.textContent = item.rarity ?? "—";
+  equipAvailability.textContent = item.availability ?? "normal";
+  equipRarityDot.style.background = rarityColor(item.rarity);
+
+  equipCost.textContent = formatCost(item);
+  equipSlot.textContent = item.slot ? `Slot: ${item.slot}` : "—";
+
+  const mats = item.crafting?.materials ?? [];
+  equipMaterialsCount.textContent = mats.length || "0";
+  equipMaterialsHint.textContent = mats.length
+    ? mats.map(m =>
+        `${m.amount} ${m.item}${m.min_size ? ` (≥ ${m.min_size}kg)` : ""}`
+      ).join(", ")
+    : "No crafting required";
+
+  renderStats();
+  renderUnlock(item);
+}
+
+/* -------------------------
+   UNLOCK RENDERING
+------------------------- */
+
+function renderUnlock(item){
+  const unlock = item.unlock;
+
+  if (!unlock || unlock.type === "craft"){
+    equipUnlockType.textContent = "Craft Only";
+    equipUnlockHint.innerHTML = "No blueprint required";
+    return;
+  }
+
+  if (unlock.type === "quest"){
+    equipUnlockType.textContent = "Quest";
+    const q = unlock.quest;
+    let html = `<strong>${q.name}</strong>`;
+
+    if (q.giver){
+      html += `<br><span class="muted">
+        From ${q.giver.name}${q.giver.location ? " — " + q.giver.location : ""}
+      </span>`;
+    }
+
+    if (Array.isArray(q.stages)){
+      q.stages.forEach(stage => {
+        html += `
+          <div class="questStage">
+            <div class="questStageTitle">${stage.title}</div>
+            <ul class="questList">
+              ${stage.tasks.map(t => `<li>${t}</li>`).join("")}
+            </ul>
+          </div>
+        `;
+      });
+    } else if (Array.isArray(q.tasks)){
+      html += `
+        <ul class="questList">
+          ${q.tasks.map(t => `<li>${t}</li>`).join("")}
+        </ul>
+      `;
+    }
+
+    equipUnlockHint.innerHTML = html;
+    return;
+  }
+
+  if (unlock.type === "npc"){
+    equipUnlockType.textContent = "NPC Blueprint";
+    equipUnlockHint.innerHTML = `
+      <strong>${unlock.npc.name}</strong><br>
+      <span class="muted">${unlock.npc.location ?? ""}</span>
+    `;
+    return;
+  }
+
+  if (unlock.type === "event"){
+    equipUnlockType.textContent = "Event";
+    equipUnlockHint.innerHTML = `
+      <strong>${unlock.event.name}</strong><br>
+      <span class="muted">${unlock.event.note ?? ""}</span>
+    `;
+  }
+}
+
+/* -------------------------
+   HELPERS
+------------------------- */
+
+function rarityColor(r){
+  switch(r){
+    case "common": return "#a3a3a3";
+    case "uncommon": return "#22c55e";
+    case "rare": return "#3b82f6";
+    case "epic": return "#a855f7";
+    case "legendary": return "#f59e0b";
+    case "mythic": return "#cf0064";
+    case "mythical": return "#cf0064";
+    case "exotic": return "#ff0011";
+    case "ascended": return "#eceee0";
+    default: return "#7c8cff";
+  }
+}
+
+function prettyStat(key){
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function formatCost(item){
+  const cost = item.cost;
+  if (!cost || cost.amount == null) return "—";
+
+  const amount = cost.amount.toLocaleString();
+
+  switch (cost.currency){
+    case "candies": return `${amount} Candies`;
+    case "ornaments": return `${amount} Ornaments`;
+    case "easter eggs": return `${amount} Easter Eggs`;
+    case "sand dollars": return `${amount} Sand Dollars`;
+    case "money":
+    default: return `$${amount}`;
+  }
+}
+
+/* -------------------------
+   STATS TOGGLE
+------------------------- */
+
+document.getElementById("statsBaseBtn").onclick = () => {
+  activeStatsMode = "base";
+  setStatsToggle(true);
+  renderStats();
+};
+
+document.getElementById("statsStarBtn").onclick = () => {
+  activeStatsMode = "star6";
+  setStatsToggle(false);
+  renderStats();
+};
+
+function setStatsToggle(baseActive){
+  document.getElementById("statsBaseBtn")
+    .classList.toggle("active", baseActive);
+  document.getElementById("statsStarBtn")
+    .classList.toggle("active", !baseActive);
+}
+</script>
+</body>
+</html>
