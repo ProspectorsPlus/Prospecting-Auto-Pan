@@ -474,6 +474,8 @@ FR_OPEN_SLOT       = 4            # hotbar slot that equips the fast-travel item
 FR_PAN_SLOT        = 1            # hotbar slot for the pan (return to it after)
 FR_OPEN_PIXEL      = [0, 0]       # optional click to open Fast Travel (0,0 = skip)
 FR_DOUBLE_GAP_MS   = 120          # gap between the two slot-4 presses (double-tap)
+FR_CLICK_SETTLE_MS = 300          # pause after a cursor move, before/after a click (ms)
+FR_ACTION_GAP_MS   = 500          # pause between each step of the sequence (ms)
 FR_OPEN_MS         = 600          # wait for the menu to appear (ms)
 FR_TEXT_RGB        = [232, 120, 200]  # Fortune River row colour (pink, calibrate)
 FR_TEXT_TOL        = 55           # colour match tolerance (per channel)
@@ -1069,9 +1071,11 @@ def fortune_river_recover():
     tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)
     sleep_ms(FR_OPEN_MS)
     tap_key(KEY_SHIFT, 60)                            # exit shift-lock so the mouse can move
-    sleep_ms(150)
+    sleep_ms(FR_ACTION_GAP_MS)
     if FR_OPEN_PIXEL and (FR_OPEN_PIXEL[0] or FR_OPEN_PIXEL[1]):
-        click_at(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1], 50)
+        move_cursor(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1])
+        sleep_ms(FR_CLICK_SETTLE_MS)
+        mouse_tap(50)
         sleep_ms(FR_OPEN_MS)
     top = min(FR_BOX_TOP, FR_BOX_BOTTOM)
     bot = max(FR_BOX_TOP, FR_BOX_BOTTOM)
@@ -1082,7 +1086,10 @@ def fortune_river_recover():
         y = top
         while y <= bot:
             if _rgb_match(rgb_at(sct, FR_SCAN_X, y), FR_TEXT_RGB, FR_TEXT_TOL):
-                click_at(FR_SCAN_X, y, 60)
+                move_cursor(FR_SCAN_X, y)
+                sleep_ms(FR_CLICK_SETTLE_MS)
+                mouse_tap(60)
+                sleep_ms(FR_CLICK_SETTLE_MS)
                 found = True
                 log("FR-recover: found Fortune River at y=%d (try %d)"
                     % (y, attempt + 1))
@@ -1097,11 +1104,11 @@ def fortune_river_recover():
         return False
     sleep_ms(FR_WARP_MS)                              # wait for teleport/load
     tap_key(SLOT_KEYCODES.get(FR_PAN_SLOT), 60)       # back to the pan
-    sleep_ms(150)
+    sleep_ms(FR_ACTION_GAP_MS)
     tap_key(KEY_SHIFT, 60)                            # re-enter shift-lock before digging
-    sleep_ms(80)
+    sleep_ms(FR_ACTION_GAP_MS)
     tap_key(KEY_D, max(1, FR_STRAFE_MS))              # tiny strafe to line up
-    sleep_ms(60)
+    sleep_ms(FR_ACTION_GAP_MS)
     key_down(KEY_W)                                   # walk forward to the water
     wait_until(det.on_pan, FR_WALK_MAX_MS, confirm=1)
     wait_until(det.on_deposit, FR_WALK_MAX_MS, confirm=1)
