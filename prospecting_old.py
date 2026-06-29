@@ -155,6 +155,10 @@ YEL_BLUE_GAP      = 45             # ...and blue must be <= min(r,g) - this
 CAP_BAR_WIDTH     = 440
 CAP_EMPTY_FRAC    = 0.04           # yellow fraction below this -> pan is empty
 CAP_SEGMENTS      = 8             # split the capacity bar into this many slices
+HYPERSPEED        = False         # animation-skip glitch mode (faster, less consistent)
+HYPER_DIGS        = 1             # exact digs per pan in hyperspeed (no fill-wait)
+HYPER_DIG_GAP_MS  = 80            # gap between the spam digs in hyperspeed
+HYPER_WATER_MAX_MS = 600          # max S to reach water in hyperspeed
 SHAKE_STOP_SEGMENTS = 1           # stop shaking when this many (or fewer) slices remain
                                  #   filled -> the last bit empties from the in-flight
                                  #   click, so no extra click bleeds into a dig
@@ -1947,6 +1951,62 @@ class RelicScheduler:
         log("=== RELIC done -> resuming ===")
 
 
+def hyper_tick(det):
+    """HYPERSPEED: exploit the animation-skip glitches. Less consistent, faster.
+    One full cycle: dig EXACTLY HYPER_DIGS times (no fill-wait), then immediately
+    hold S back to the water (you can move during the dig/shake animation), then
+    rapid-click to shake -- and the INSTANT the bar drains to the first segment we
+    bail and go straight into the next dig (skipping the empty/refill animation).
+    Straight movement only (no X pattern)."""
+    # 1) dig exactly N times, no waiting for the fill animation
+    phase("Digging")
+    for _i in range(max(1, HYPER_DIGS)):
+        if not State.running:
+            return
+        dig_once(det)
+        if HYPER_DIG_GAP_MS > 0:
+            sleep_ms(HYPER_DIG_GAP_MS)
+    # 2) immediately hold S back to water (glitch: moves even mid-animation)
+    if not State.running:
+        return
+    phase("Walking to water")
+    key_down(KEY_S)
+    wait_until(det.on_pan, HYPER_WATER_MAX_MS, confirm=1)
+    if WATER_EXTRA_BACK_MS > 0:
+        sleep_ms(WATER_EXTRA_BACK_MS)
+    key_up(KEY_S)
+    # 3) shake (rapid clicks); glide W toward land; STOP at the first segment so
+    #    the last bit clears on its own and we start the next dig early
+    if not State.running:
+        return
+    phase("Shaking")
+    w_down = False
+    if SHAKE_MOMENTUM_W:
+        key_down(KEY_W)
+        w_down = True
+    end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
+    emptied = False
+    t0 = time.perf_counter()
+    while State.running and time.perf_counter() < end:
+        mouse_tap(SHAKE_CLICK_MS)
+        if det.cap_about_empty() or det.pan_empty():
+            emptied = True
+            break
+        if w_down and det.on_deposit():
+            key_up(KEY_W)
+            w_down = False
+        if (time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
+                and det.capacity_full()):
+            break                              # not actually shaking
+        sleep_ms(SHAKE_CLICK_GAP_MS)
+    if w_down:
+        key_up(KEY_W)
+    if emptied and State.stats:
+        State.stats.cycles += 1
+        State.stats.mark_cycle()
+    # next call digs immediately -- momentum left us at/near land
+
+
 def treasure_tick(det):
     """TREASURE CHEST mode (no shake): dig briefly, then strafe sideways -- D,
     then A, alternating -- until the Collect/Deposit cue appears again, then dig.
@@ -2367,6 +2427,8 @@ def main():
                     relics.maybe_fire()     # timed relic use (no-op unless enabled)
                     if TREASURE_MODE:
                         treasure_tick(detector)
+                    elif HYPERSPEED:
+                        hyper_tick(detector)
                     else:
                         sup.tick(detector)
                     now = time.perf_counter()
