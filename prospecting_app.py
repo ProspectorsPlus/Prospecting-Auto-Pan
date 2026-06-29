@@ -1210,14 +1210,11 @@ def build_html():
             f'</div>')
     panels.append(
         '<section class="panel" id="pcal"><div class="phead"><h2>Calibrate pixels</h2>'
-        '<p class="chint">Easiest: open Prospecting in Roblox, then click '
-        '<b>Auto-calibrate</b> below — it finds the game window and places every '
-        'spot for you. Manual calibration is only a fallback.</p></div>'
+        '<p class="chint">Open Prospecting in Roblox with the HUD visible, then run '
+        '<b>Guided calibration</b> below. <b>Test detection</b> shows live whether '
+        'the macro sees everything correctly.</p></div>'
         '<div class="autocal">'
         '  <button type="button" id="wizbtn" class="btn">✨ Guided calibration (recommended)</button>'
-        '  <button type="button" id="autocal" class="btn2">⚡ Auto-calibrate (detect Roblox)</button>'
-        '  <button type="button" id="detectwin" class="btn2">Detect Roblox window</button>'
-        '  <div class="winstat" id="winstat">Roblox window: not checked yet</div>'
         '  <button type="button" id="dettest" class="btn2">Test detection (live)</button>'
         '  <div class="detout" id="detout"></div>'
         '</div>'
@@ -1696,7 +1693,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // tabs
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist')?('p'+id):('p_'+id);
+   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist'||id==='keys')?('p'+id):('p_'+id);
    document.getElementById(pid).classList.add('active');
    const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
    if(id==='hist')loadHistory();});
@@ -1781,14 +1778,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(fr.open)o.FR_OPEN_PIXEL=fr.open;
    if(fr.home)o.FR_HOME_PIXEL=fr.home;
    return o;}
- $('#detectwin').onclick=async()=>{const w=await window.pywebview.api.detect_roblox();showWin(w);};
- $('#autocal').onclick=async()=>{const b=$('#autocal');const old=b.textContent;
-   b.disabled=true;b.textContent='Detecting…';
-   const r=await window.pywebview.api.auto_calibrate();
-   b.disabled=false;b.textContent=old;
-   showWin(r.window||{found:false,error:r.error});
-   if(r.ok){setPixels(r.pixels);toast('Auto-calibrated '+r.count+' spots ✓ — saved');}
-   else{toast(r.error||'Auto-calibrate failed');}};
  function collectPixels(){const o={};document.querySelectorAll('.calrow').forEach(row=>{
    const k=row.dataset.pkey,x=row.querySelector('.cx').value,y=row.querySelector('.cy').value;
    if(x!==''&&y!=='')o[k]=[parseInt(x,10),parseInt(y,10)];});return o;}
@@ -1895,7 +1884,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
    setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});
    checkUpdate();loadHistory();
-   try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
+}
  window.addEventListener('pywebviewready',boot);
  if(window.pywebview&&window.pywebview.api)boot();
 
