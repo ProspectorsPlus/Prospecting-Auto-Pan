@@ -858,10 +858,15 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def wizard_detect_cue(self, which):
-        """Find the white HUD prompt (Pan / Shake / Collect Deposit) in the lower
-        centre of the screen and save its pixel. Snaps to an actual white pixel."""
+        """Find the prompt's MOUSE ICON -- the white highlight just LEFT of the
+        Pan / Shake / Collect text. The mouse-icon white lands at a different
+        spot for each cue (the text is centred and different lengths), so unlike
+        the text the three cues never overlap. We take the LEFTMOST white blob on
+        the prompt's row."""
         try:
             import numpy as np
+            if which not in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
+                return {"ok": False, "error": "Unknown cue."}
             arr = self._grab_full()
             H, W = arr.shape[0], arr.shape[1]
             b = arr[:, :, 0].astype(np.int16)
@@ -869,20 +874,37 @@ class Api:
             r = arr[:, :, 2].astype(np.int16)
             lo = np.minimum(np.minimum(r, g), b)
             hi = np.maximum(np.maximum(r, g), b)
-            white = (lo >= 200) & ((hi - lo) <= 22)
-            mask = np.zeros_like(white)
-            y0, y1 = int(H * 0.55), int(H * 0.98)
-            x0, x1 = int(W * 0.18), int(W * 0.82)
+            white = (lo >= 190) & ((hi - lo) <= 30)
+            mask = np.zeros((H, W), dtype=bool)
+            y0, y1 = int(H * 0.50), int(H * 0.96)
+            x0, x1 = int(W * 0.15), int(W * 0.85)
             mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
-            ys, xs = np.where(mask)
-            if len(xs) < 25:
+            if int(mask.sum()) < 25:
                 return {"ok": False, "error": "Could not see the prompt. Make sure only that "
                         "one prompt is showing at the bottom, then Detect again (or pick manually)."}
-            cx, cy = float(xs.mean()), float(ys.mean())
-            k = int(((xs - cx) ** 2 + (ys - cy) ** 2).argmin())
-            px, py = int(xs[k]), int(ys[k])
-            if which not in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
-                return {"ok": False, "error": "Unknown cue."}
+            # lock onto the prompt's row (most white), then the leftmost blob on it
+            yband = int(mask.sum(axis=1).argmax())
+            yb0, yb1 = max(0, yband - 48), min(H, yband + 48)
+            band = np.zeros((H, W), dtype=bool)
+            band[yb0:yb1] = mask[yb0:yb1]
+            cols = np.where(band.any(axis=0))[0]
+            if len(cols) == 0:
+                return {"ok": False, "error": "No prompt row found -- pick manually."}
+            min_x = int(cols[0])
+            end = min_x
+            for c in cols:                       # extend the first blob, bridging tiny gaps
+                if int(c) - end <= 10:
+                    end = int(c)
+                else:
+                    break
+            ys, xs = np.where(band)
+            sel = (xs >= min_x) & (xs <= end)
+            mxs, mys = xs[sel], ys[sel]
+            if len(mxs) < 4:
+                return {"ok": False, "error": "Mouse icon not found clearly -- pick manually."}
+            cx, cy = float(mxs.mean()), float(mys.mean())
+            k = int(((mxs - cx) ** 2 + (mys - cy) ** 2).argmin())
+            px, py = int(mxs[k]), int(mys[k])
             self.save_pixels({which: [px, py]}, {which: "#ffffff"})
             return {"ok": True, "pixel": [px, py]}
         except Exception as e:
