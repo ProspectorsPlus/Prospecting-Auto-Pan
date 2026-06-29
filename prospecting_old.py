@@ -314,7 +314,7 @@ SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
 # now (so it reads not-full and is safe from this bail) -- only a shake that never
 # started stays full. So this can be fairly short to react FAST when a shake fails
 # to initiate (e.g. you clicked on land), without killing a real in-progress shake.
-SHAKE_BAIL_MS      = 350
+SHAKE_BAIL_MS      = 500
 # SMART BREAK-OUT: when the watchdog has recovered RECOVER_LIMIT times in a row and
 # we're still stuck, escalate -- a shake is probably ACTIVE and locking movement
 # (you can't walk mid-shake, but CLICKS still finish it). So click to finish it,
@@ -1658,11 +1658,11 @@ def _hold_keepalive():
 
 
 def do_shake(det):
-    """HOLD METHOD with fast-miss detection. One (or two) clicks to TRIGGER the
-    shake animation, a short pause, then HOLD LMB (drag-kept-alive) to shake the
-    pan out. The CAPACITY draining is the truth that the shake started; if it is
-    NOT draining well into the hold, we BAIL fast so the supervisor retries
-    immediately instead of holding the whole timeout. W glides us to land."""
+    """Click once to TRIGGER the shake, pause, then HOLD LMB (kept alive) to
+    drain the pan. 'Draining' = the capacity bar right end is no longer FULL (or
+    the fill fraction dropped) -- that flips `started`, so a working shake is
+    never bailed. We FAST-BAIL only when the pan stays COMPLETELY full (no drain
+    at all) past SHAKE_BAIL_MS, so a missed shake retries right away."""
     phase("Shaking")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
@@ -1672,42 +1672,31 @@ def do_shake(det):
         key_down(KEY_W)
         w_down = True
     base = det.cap_fill()
-    started = False
-    # 1) initiate -- click; if it didn't catch (no drain), click once more
-    for _ in range(2):
-        if not State.running:
-            break
-        mouse_tap(max(8, SHAKE_CLICK_MS))
-        sleep_ms(SHAKE_HOLD_DELAY_MS)
-        if det.on_shake() or det.cap_fill() < base - 0.03 or det.pan_empty():
-            started = True
-            break
-    # 2) HOLD to drain the pan
-    mouse_down()
+    mouse_tap(max(8, SHAKE_CLICK_MS))         # start the shake animation
+    sleep_ms(SHAKE_HOLD_DELAY_MS)
+    mouse_down()                              # HOLD to shake it out
     hold_start = time.perf_counter()
-    emptied = bailed = False
+    started = emptied = bailed = False
     hits = 0
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while State.running and time.perf_counter() < end:
         _hold_keepalive()
-        cf = det.cap_fill()
-        if not started and cf < base - 0.03:
+        if not started and (not det.capacity_full() or det.cap_fill() < base - 0.05):
             started = True
         if w_down and det.on_deposit():
             key_up(KEY_W)
             w_down = False
-        if cf < CAP_EMPTY_FRAC:
+        if det.pan_empty():
             hits += 1
             if hits >= 2:
                 emptied = True
                 break
         else:
             hits = 0
-        # FAST BAIL: no drain well into the hold -> the shake didn't take, retry
         if not started and (time.perf_counter() - hold_start) * 1000 > SHAKE_BAIL_MS:
             bailed = True
             break
-        sleep_ms(12)
+        sleep_ms(14)
     mouse_up()
     if w_down:
         key_up(KEY_W)

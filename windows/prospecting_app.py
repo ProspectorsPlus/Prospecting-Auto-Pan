@@ -1988,7 +1988,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const shDur=C/(r*s);
      const holdMs=cl(Math.max(1500, shDur*1000*6), 1200, 4500);
      const digHold=perfect?cl(55000/d,8,600):10;
-     const digPer=190/d, fillMs=cl(digPer*1000+90,120,1500);
+     const digPer=190/d, fillMs=cl(190000/d*0.5,60,900);  // spam: let go early, start next dig
      const wf=Math.max(0.45,Math.min(1.4,16/Math.max(8,ws)));
      const panBack=cl(220*wf,90,420), depMax=cl(1300*wf,500,2500),
        landSet=cl(60*wf,20,160), landNudge=cl(95*wf,40,220);
@@ -2010,7 +2010,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const rows=[
        ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
        ['Dig mode', m.perfect?('Perfect — '+S.DIG_CLICK_MS+' ms hold (55000 ÷ dig speed)'):('Fast spam — '+S.DIG_CLICK_MS+' ms')],
-       ['Wait for fill after dig', S.DIG_FILL_MS+' ms  (190÷speed/dig)'],
+       ['Re-dig gap (spam)', S.DIG_FILL_MS+' ms  (let go early, start next dig)'],
        ['Shake', 'rapid-clicks until the bar empties · '+S.SHAKE_CLICK_MS+'+'+S.SHAKE_CLICK_GAP_MS+' ms each'],
        ['Shake timeout', S.SHAKE_HOLD_MS+' ms  (~'+f(m.shToEmpty,1)+' shakes needed)'],
        ['Walk back into water', S.PAN_BACK_MAX_MS+' ms  (scaled by walk speed)'],
