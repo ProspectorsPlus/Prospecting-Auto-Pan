@@ -259,7 +259,7 @@ SHAKE_FWD_COMP_MS = 0
 # back ONTO THE LAND while the pan drains (the "special technique"). We stop
 # walking W when the Collect Deposit cue shows (we're on land) but keep clicking
 # until the CAPACITY reads empty (capacity is the truth; the Shake cue sticks).
-SHAKE_MOMENTUM_W   = False   # hold W during the shake -> glide onto land
+SHAKE_MOMENTUM_W   = True   # hold W during the shake -> glide onto land
 SHAKE_CLICK_MS     = 18     # length of each shake click (short, fast build)
 SHAKE_CLICKS       = 0      # EXACT number of shake clicks (0 = auto: shake until
                             # the pan reads empty). Set a fixed count to stop the
@@ -1678,17 +1678,17 @@ def do_shake(det):
     started = emptied = bailed = False
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while State.running and time.perf_counter() < end:
+        # Reached land? Stop BEFORE clicking so a click can't become a dig.
+        if w_down and det.on_deposit():
+            key_up(KEY_W)
+            w_down = False
+            break
         mouse_tap(max(8, SHAKE_CLICK_MS))      # one shake click (rattle)
         if not started and (det.on_shake() or det.cap_fill() < base - 0.05
                             or not det.capacity_full()):
             started = True
         if det.pan_empty():
             emptied = True
-            break
-        if w_down and det.on_deposit():
-            # reached land before emptying -> stop so clicks don't become digs
-            key_up(KEY_W)
-            w_down = False
             break
         if (not started and (time.perf_counter() - t0) * 1000 > SHAKE_BAIL_MS
                 and det.capacity_full()):

@@ -56,7 +56,7 @@ SECTIONS = [
         ("WATER_EXTRA_BACK_MS","Extra S after Pan cue / go deeper (ms)",  "int", 0),
     ]),
     ("Shake", [
-        ("SHAKE_MOMENTUM_W",   "Glide W onto land during shake (off = shake in place)", "bool", False),
+        ("SHAKE_MOMENTUM_W",   "Glide W onto land during shake (recommended)", "bool", True),
         ("SHAKE_CLICKS",       "Exact shake clicks (0 = auto until empty)", "int", 0),
         ("SHAKE_CLICK_MS",     "Each shake click length (ms)",            "int", 18),
         ("SHAKE_CLICK_GAP_MS", "Gap between shake clicks (ms)",           "int", 14),
