@@ -36,6 +36,12 @@ SECTIONS = [
         ("EASY_FIRST_DIG_DELAY_MS",   "Wait longer before the first dig (ms)",     "int", 0),
         ("EASY_WATER_RETURN_DELAY_MS","Wait before going back to water when full (ms)", "int", 0),
     ]),
+    ("Treasure chest", [
+        ("TREASURE_MODE",        "Treasure Chest mode (no shake, strafe L/R)", "bool", False),
+        ("TREASURE_DIG_MS",      "Quick dig click (ms)",                       "int", 8),
+        ("TREASURE_DIG_GAP_MS",  "Settle after dig before strafing (ms)",      "int", 60),
+        ("TREASURE_MOVE_MAX_MS", "Max strafe before moving on (ms)",           "int", 2500),
+    ]),
     ("Mode / Dig", [
         ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
         ("DIG_CLICK_MS",       "Dig hold length (ms)",                    "int", 75),
@@ -126,6 +132,9 @@ def load_saved():
 
 
 SECTION_HINT = {
+    "Treasure chest": "A no-shake mode for collecting chests: dig, then strafe right/left "
+                      "until the Collect cue, dig, repeat. Calibrate the Deposit pixel on the "
+                      "Collect prompt.",
     "Easy tuning": "Plain-language tweaks. Type how much MORE you want of each move "
                    "and the macro adjusts the underlying timings for you.",
     "Mode / Dig": "How each dig works and how many it takes to fill the pan.",
@@ -144,6 +153,7 @@ SECTION_HINT = {
 
 
 TAB_ICON = {
+    "Treasure chest": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9l1.6-3.2A2 2 0 0 1 7.4 4.5h9.2a2 2 0 0 1 1.8 1.3L20 9"/><rect x="3.5" y="9" width="17" height="10.5" rx="1.5"/><path d="M3.5 13h17"/><rect x="10.5" y="11.5" width="3" height="3.5" rx="1"/></svg>',
     "Easy tuning": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
     "Mode / Dig": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c3 3.8 6 6.8 6 9.8a6 6 0 0 1 -12 0c0 -3 3 -6 6 -9.8z"/></svg>',
     "Walk back into water": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v13M6 13l6 6l6 -6"/></svg>',
@@ -159,6 +169,13 @@ TAB_ICON = {
 
 # Per-setting explanations (shown as a ? tooltip next to each field).
 HELP = {
+    "TREASURE_MODE": "Switch to Treasure Chest Collection: NO shaking. It digs briefly, then "
+                     "holds D until the Collect cue shows, digs, holds A until the cue, and so on "
+                     "-- alternating sides. Uses the Deposit pixel as the Collect cue.",
+    "TREASURE_DIG_MS": "Length of the quick dig click in Treasure mode (5-10 ms).",
+    "TREASURE_DIG_GAP_MS": "Pause after the dig before strafing to the next chest.",
+    "TREASURE_MOVE_MAX_MS": "Safety cap: stop strafing after this long even if the Collect cue "
+                            "never appears, so it cannot run sideways forever.",
     "EASY_WATER_BACK_MS": "Walk back into the water this many ms further before shaking. "
                           "Raise if you stop short of the water; lower if you overshoot.",
     "EASY_LAND_FWD_MS": "Walk forward onto land this many ms further after a shake. "

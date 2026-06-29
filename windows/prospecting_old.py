@@ -339,6 +339,14 @@ SHAKE_RETRY_ENABLED = True   # re-attempt a shake when stuck full+in-water
 BREAKOUT_ENABLED    = True   # the last-resort break-out to escape a stuck loop
 NO_FULL_LIMIT       = 8      # if the pan never reads FULL this many cycles in a row,
                              # stop and tell the user to re-calibrate the capacity pixel
+
+# --- Treasure Chest Collection mode ------------------------------------------
+# A separate, simple loop: NO shake. Dig briefly, then strafe sideways (right,
+# then left, alternating) until the Collect/Deposit cue shows again, then dig.
+TREASURE_MODE        = False
+TREASURE_DIG_MS      = 8     # quick dig click length (5-10 ms)
+TREASURE_DIG_GAP_MS  = 60    # settle after the dig before strafing
+TREASURE_MOVE_MAX_MS = 2500  # safety cap on the strafe before moving on
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -961,6 +969,7 @@ class State:
     x_dir = 0                # X-pattern: which diagonal side to use next
     x_balance = 0.0          # X-pattern: running lateral balance (ms; +right/-left)
     no_full = 0              # consecutive dig cycles where the pan never read FULL
+    t_side = 0               # Treasure mode: 0 -> strafe D (right), 1 -> A (left)
     ad_shake_n = 0           # adaptive: shake attempts in the current window
     ad_shake_miss = 0
     ad_land_n = 0            # adaptive: land attempts in the current window
@@ -1686,6 +1695,27 @@ class RelicScheduler:
         log("=== RELIC done -> resuming ===")
 
 
+def treasure_tick(det):
+    """TREASURE CHEST mode (no shake): dig briefly, then strafe sideways -- D,
+    then A, alternating -- until the Collect/Deposit cue appears again, then dig.
+    Reuses the Deposit pixel (calibrate it on the 'Collect' prompt)."""
+    release_all()
+    mouse_tap(TREASURE_DIG_MS)               # quick dig / open the chest
+    if State.stats:
+        State.stats.cycles += 1
+    if TREASURE_DIG_GAP_MS > 0:
+        sleep_ms(TREASURE_DIG_GAP_MS)
+    if not State.running:
+        return
+    side = KEY_D if State.t_side == 0 else KEY_A
+    State.t_side ^= 1                         # alternate L/R each chest
+    key_down(side)
+    reached = wait_until(det.on_deposit, TREASURE_MOVE_MAX_MS, confirm=1)
+    key_up(side)
+    log(f"    treasure: dug, strafed {'D' if side == KEY_D else 'A'} "
+        f"-> collect cue={reached}")
+
+
 class Supervisor:
     """Tick-based brain. Re-senses, acts, and watches for deadlock. Reset on
     every start so a fresh run can't inherit a stale stuck-count."""
@@ -2009,6 +2039,7 @@ def main():
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
                         sup.reset()
+                        State.t_side = 0
                         relics.reset()      # start relic timers from now
                         State.stats = SessionStats()
                         last_emit = last_wh_stats = time.perf_counter()
@@ -2017,7 +2048,10 @@ def main():
                         post_webhook("start", "▶️ Macro started",
                                      State.stats.as_dict())
                     relics.maybe_fire()     # timed relic use (no-op unless enabled)
-                    sup.tick(detector)
+                    if TREASURE_MODE:
+                        treasure_tick(detector)
+                    else:
+                        sup.tick(detector)
                     now = time.perf_counter()
                     # live stats line for the app (parsed there, also harmless log)
                     if now - last_emit >= 2.0:
