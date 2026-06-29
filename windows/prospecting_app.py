@@ -229,6 +229,7 @@ class Api:
         self._scale = 1.0
         self._last_stats = None   # latest stats from the macro (for history)
         self._run_active = False  # a run is in progress (write history once)
+        self._macro_status = "off"  # off/idle/running/paused/safe-pause/recovering/stopped
 
     # ---- settings ----
     def get_state(self):
@@ -740,6 +741,7 @@ class Api:
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         self._run_active = True
         self._last_stats = None
+        self._macro_status = "idle"
         return "launched"
 
     def _save_history(self, reason=None):
@@ -778,10 +780,16 @@ class Api:
                 except Exception:
                     pass
             self.proc = None
+        self._macro_status = "off"
         return "stopped"
 
     def is_running(self):
         return self.proc is not None
+
+    def pill_state(self):
+        return {"alive": self.proc is not None,
+                "status": getattr(self, "_macro_status", "off"),
+                "stats": self._last_stats or {}}
 
     def popout(self):
         """Condense into a small always-on-top draggable pill; hide the main
@@ -965,7 +973,7 @@ class Api:
         try:
             _pill = webview.create_window(
                 "Prospectors Plus", html=PILL_HTML, js_api=self,
-                width=224, height=58, frameless=True, on_top=True,
+                width=272, height=132, frameless=True, on_top=True,
                 easy_drag=True, resizable=False, background_color="#1a1816")
         except Exception as e:
             print("[pill] create failed: %s" % e)
@@ -1010,6 +1018,8 @@ class Api:
                     self._last_stats = json.loads(line[10:])
                 except Exception:
                     pass
+                if self._macro_status in ("off", "idle"):
+                    self._macro_status = "running"
                 continue
             if line.strip() == "__POPOUT__":
                 try:
@@ -1017,10 +1027,22 @@ class Api:
                 except Exception:
                     pass
                 continue
+            _s = line.strip()
+            if _s.startswith("[RUNNING]"):
+                self._macro_status = "running"
+            elif _s.startswith("[PAUSED]"):
+                self._macro_status = "paused"
+            elif "SAFE PAUSE" in _s:
+                self._macro_status = "safe-pause"
+            elif "FR-recover" in _s or "RECOVERY" in _s:
+                self._macro_status = "recovering"
+            elif "HARD STOP" in _s:
+                self._macro_status = "stopped"
             _emit_log(line)
         rc = proc.wait()
         _emit_log(f"[macro exited, code {rc}]")
         self.proc = None
+        self._macro_status = "off"
         self._save_history()              # macro ended on its own (Esc / self-stop)
         _emit_state(False)
 
@@ -1038,30 +1060,41 @@ _pill = None
 _overlay = None
 
 PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
- html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:600 13px/1 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
- .pill{display:flex;align-items:center;gap:8px;height:54px;padding:0 8px 0 12px;border:1px solid #423d35;border-radius:14px;background:#1f1d1a;box-sizing:border-box}
- .drag{flex:1;display:flex;align-items:center;gap:8px;cursor:move}
- .dot{width:9px;height:9px;border-radius:50%;background:#6a6253}
+ html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:13px/1.3 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+ .card{display:flex;flex-direction:column;gap:7px;height:100%;padding:9px 11px;border:1px solid #423d35;border-radius:14px;background:#1f1d1a;box-sizing:border-box}
+ .top{display:flex;align-items:center;gap:8px}
+ .drag{flex:1;display:flex;align-items:center;gap:8px;cursor:move;min-width:0}
+ .dot{width:9px;height:9px;border-radius:50%;background:#6a6253;flex:0 0 auto}
  .dot.on{background:#7faf5d;animation:pulse 1.6s infinite}
+ .dot.warn{background:#c2924c} .dot.busy{background:#7d9b63}
  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(127,175,93,.5)}70%{box-shadow:0 0 0 6px rgba(127,175,93,0)}100%{box-shadow:0 0 0 0 rgba(127,175,93,0)}}
- .lab{font-weight:700;letter-spacing:-.01em} .lab b{color:#e0b873}
- button{font:inherit;border:0;border-radius:9px;padding:8px 11px;cursor:pointer;color:#241a02}
- .go{background:#7faf5d} .st{background:#c2924c} .ex{background:#2a2418;color:#e9e0cf;padding:8px 9px}
+ .st{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis} .st b{color:#e0b873}
+ .ex{background:#2a2418;color:#e9e0cf;border:0;border-radius:8px;padding:6px 9px;cursor:pointer;font:inherit;flex:0 0 auto}
+ .stats{display:flex;gap:12px;font-variant:tabular-nums;color:#9c9183;font-weight:600;font-size:12px}
+ .stats span b{color:#ece4d6;font-weight:700}
+ .go{width:100%;border:0;border-radius:9px;padding:9px;cursor:pointer;font:inherit;font-weight:700;color:#241a02;background:#7faf5d}
+ .go.stop{background:#c2924c}
 </style></head><body>
- <div class="pill">
-   <div class="drag"><span class="dot" id="dot"></span><span class="lab">Prospectors <b>Plus</b></span></div>
-   <button id="toggle" class="go">Start</button>
-   <button id="expand" class="ex" title="Back to app">&#9635;</button>
+ <div class="card">
+   <div class="top">
+     <div class="drag"><span class="dot" id="dot"></span><span class="st" id="status">Off</span></div>
+     <button class="ex" id="expand" title="Back to app">&#9635;</button>
+   </div>
+   <div class="stats"><span><b id="rt">0:00</b> run</span><span><b id="pans">0</b> pans</span><span><b id="rate">0</b>/hr</span><span><b id="rec">0</b> rec</span></div>
+   <button class="go" id="toggle">Start</button>
  </div>
 <script>
  const api=()=>window.pywebview&&window.pywebview.api;
- let running=false;
- function paint(){document.getElementById("dot").className="dot"+(running?" on":"");
-   const b=document.getElementById("toggle");b.textContent=running?"Stop":"Start";b.className=running?"st":"go";}
- async function poll(){try{running=await api().is_running();}catch(e){}paint();}
- document.getElementById("toggle").onclick=async()=>{
-   try{if(running){await api().stop();running=false;}else{await api().launch();running=true;}}catch(e){}paint();};
- document.getElementById("expand").onclick=()=>{try{api().restore();}catch(e){}};
+ let alive=false;const $=id=>document.getElementById(id);
+ const SM={running:["on","Running"],paused:["warn","Paused"],"safe-pause":["warn","Safe-pause"],recovering:["busy","Recovering"],stopped:["warn","Stopped"],idle:["warn","Ready · press start key"],off:["","Off"]};
+ function fmt(s){s=s||0;return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
+ async function poll(){let r;try{r=await api().pill_state();}catch(e){return;}
+   alive=r.alive;const sm=SM[r.status||"off"]||["","—"];
+   $("dot").className="dot "+sm[0];$("status").innerHTML=sm[1];
+   const s=r.stats||{};$("rt").textContent=fmt(s.runtime_s);$("pans").textContent=s.cycles||0;$("rate").textContent=s.pans_per_hr||0;$("rec").textContent=s.recoveries||0;
+   const b=$("toggle");b.textContent=alive?"Stop":"Start";b.className="go"+(alive?" stop":"");}
+ $("toggle").onclick=async()=>{try{if(alive){await api().stop();}else{await api().launch();}}catch(e){}poll();};
+ $("expand").onclick=()=>{try{api().restore();}catch(e){}};
  setInterval(poll,1000);poll();
 </script></body></html>'''
 
