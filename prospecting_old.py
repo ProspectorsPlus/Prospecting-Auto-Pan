@@ -494,6 +494,7 @@ FR_WARP_MS         = 2500         # wait after clicking for the teleport/load (m
 FR_STRAFE_MS       = 10           # tiny D strafe after returning to the pan (ms)
 FR_WALK_MAX_MS     = 6000         # max W walk to reach the water/dig spot (ms)
 FR_END_A_MS        = 300          # hold A this long once on land, before restarting
+FR_CROSS_CONFIRM   = 3            # consecutive cue reads to confirm water-cross / arrival
 
 # --- Keys (macOS ANSI virtual keycodes) --------------------------------------
 KEY_W = 13
@@ -1155,9 +1156,15 @@ def fortune_river_recover():
     sleep_ms(FR_ACTION_GAP_MS)
     tap_key(KEY_D, max(1, FR_STRAFE_MS))              # tiny strafe to line up
     sleep_ms(FR_ACTION_GAP_MS)
-    key_down(KEY_W)                                   # walk forward to the water
-    wait_until(det.on_pan, FR_WALK_MAX_MS, confirm=1)
-    wait_until(det.on_deposit, FR_WALK_MAX_MS, confirm=1)
+    key_down(KEY_W)                                   # walk forward ACROSS the water
+    # 1) must reach the WATER first (sustained Pan cue) -- proves we left the
+    #    spawn shore and are genuinely crossing, not still on the near shore
+    in_water = wait_until(det.on_pan, FR_WALK_MAX_MS, confirm=FR_CROSS_CONFIRM)
+    # 2) ONLY after crossing the water do we accept the next shore's Collect cue
+    if in_water:
+        wait_until(det.on_deposit, FR_WALK_MAX_MS, confirm=FR_CROSS_CONFIRM)
+    else:
+        log("FR-recover: never saw the water (Pan) -- check walk direction")
     key_up(KEY_W)
     if FR_END_A_MS > 0:
         tap_key(KEY_A, FR_END_A_MS)                  # final A nudge before restarting

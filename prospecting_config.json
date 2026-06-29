@@ -138,7 +138,7 @@
   "SHAKE_CLICKS": 0,
   "TREASURE_DIGS": 0,
   "FR_RECOVERY": true,
-  "FR_TEXT_TOL": 55,
+  "FR_TEXT_TOL": 20,
   "FR_FIND_TRIES": 8,
   "FR_SCROLL_STEPS": 3,
   "FR_OPEN_MS": 600,
@@ -162,5 +162,6 @@
     599
   ],
   "FR_MOVE_STEP": 8,
-  "FR_END_A_MS": 300
+  "FR_END_A_MS": 300,
+  "FR_OPEN_TRIES": 3
 }
