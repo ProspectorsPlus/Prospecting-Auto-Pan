@@ -843,6 +843,7 @@ class Api:
         self._overlay_key = key
         self._overlay_label = label or key
         self._overlay_pending = None
+        self._overlay_proposed = None
         try:
             if _overlay is not None:
                 _overlay.evaluate_js("window.__reload && window.__reload()")
@@ -852,8 +853,15 @@ class Api:
         return {"ok": True}
 
     def overlay_image(self):
-        return {"src": getattr(self, "_shot_b64", ""),
-                "label": getattr(self, "_overlay_label", "")}
+        d = {"src": getattr(self, "_shot_b64", ""),
+             "label": getattr(self, "_overlay_label", "")}
+        p = getattr(self, "_overlay_proposed", None)
+        w = getattr(self, "_shot_w", 0)
+        h = getattr(self, "_shot_h", 0)
+        if p and w and h:
+            d["proposed"] = {"fx": p["x"] / float(w), "fy": p["y"] / float(h),
+                             "hex": p["hex"], "x": p["x"], "y": p["y"]}
+        return d
 
     def overlay_pick(self, fx, fy):
         try:
@@ -873,7 +881,11 @@ class Api:
         key = getattr(self, "_overlay_key", None)
         if p and key:
             x, y, hexv = p["x"], p["y"], p["hex"]
-            if key == "FR_TEXT":
+            if key == "CAP":
+                cl = getattr(self, "_overlay_cap_left", None) or [max(0, x - 200), y]
+                self.save_pixels({"CAP_FULL_PIXEL": [x, y], "CAP_LEFT_PIXEL": cl},
+                                 {"CAP_FULL_PIXEL": hexv})
+            elif key == "FR_TEXT":
                 self.save_pixels({}, None, {"FR_SCAN_X": x,
                                             "FR_TEXT_RGB": [p["r"], p["g"], p["b"]]})
             elif key in ("FR_BOX_TOP", "FR_BOX_BOTTOM"):
@@ -911,7 +923,7 @@ class Api:
 
     def wizard_capture_empty(self):
         """Remember a snapshot of the screen with the capacity bar EMPTY. The
-        next step compares against it: whatever turns yellow is the bar."""
+        full step compares against it: whatever turns gold is the bar."""
         try:
             import numpy as np
             self._cap_empty = self._grab_full().astype(np.int16)
@@ -919,99 +931,124 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def wizard_detect_capacity(self):
-        """Find the capacity bar. Best method: diff the FULL screen against the
-        EMPTY snapshot and keep the part that both CHANGED and is now yellow --
-        that is the bar. Falls back to plain yellow detection if no empty snap."""
-        try:
-            import numpy as np
-            arr = self._grab_full()
-            b = arr[:, :, 0].astype(np.int16)
-            g = arr[:, :, 1].astype(np.int16)
-            r = arr[:, :, 2].astype(np.int16)
-            # a generous "yellow/gold" test (bar can be a muted gold)
-            yellow = (r >= 120) & (g >= 110) & (b <= np.minimum(r, g) - 30)
-            emp = getattr(self, "_cap_empty", None)
-            if emp is not None and emp.shape == arr.shape:
-                diff = (np.abs(r - emp[:, :, 2]) + np.abs(g - emp[:, :, 1])
-                        + np.abs(b - emp[:, :, 0]))
-                barmask = yellow & (diff > 45)
-                source = "empty/full diff"
-            else:
-                barmask = yellow
-                source = "yellow scan"
-            counts = barmask.sum(axis=1)
-            y = int(counts.argmax())
-            if int(counts[y]) < 50:
-                return {"ok": False, "error": "Could not find the bar. Make sure it is "
-                        "COMPLETELY full (and that you captured the empty bar first), "
-                        "then Detect again -- or pick manually."}
-            xs = np.where(barmask[y])[0]
-            breaks = np.where(np.diff(xs) > 6)[0]
-            seg = max(np.split(xs, breaks + 1), key=len)
-            left, right = int(seg[0]), int(seg[-1])
-            if right - left < 50:
-                return {"ok": False, "error": "Bar looks too short -- pick manually instead."}
-            hexv = "#%02x%02x%02x" % (int(r[y, right]), int(g[y, right]), int(b[y, right]))
-            self.save_pixels({"CAP_FULL_PIXEL": [right, y], "CAP_LEFT_PIXEL": [left, y]},
-                             {"CAP_FULL_PIXEL": hexv})
-            return {"ok": True, "left": [left, y], "right": [right, y],
-                    "width": right - left, "via": source}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+    def _detect_capacity_px(self, arr):
+        import numpy as np
+        b = arr[:, :, 0].astype(np.int16)
+        g = arr[:, :, 1].astype(np.int16)
+        r = arr[:, :, 2].astype(np.int16)
+        yellow = (r >= 120) & (g >= 110) & (b <= np.minimum(r, g) - 30)
+        emp = getattr(self, "_cap_empty", None)
+        if emp is not None and emp.shape == arr.shape:
+            diff = (np.abs(r - emp[:, :, 2]) + np.abs(g - emp[:, :, 1])
+                    + np.abs(b - emp[:, :, 0]))
+            barmask = yellow & (diff > 45)
+        else:
+            barmask = yellow
+        counts = barmask.sum(axis=1)
+        y = int(counts.argmax())
+        if int(counts[y]) < 50:
+            return {"ok": False, "error": "no full bar found"}
+        xs = np.where(barmask[y])[0]
+        seg = max(np.split(xs, np.where(np.diff(xs) > 6)[0] + 1), key=len)
+        left, right = int(seg[0]), int(seg[-1])
+        if right - left < 50:
+            return {"ok": False, "error": "bar too short"}
+        return {"ok": True, "left": [left, y], "right": [right, y]}
 
-    def wizard_detect_cue(self, which):
-        """Find the prompt's MOUSE ICON -- the white highlight just LEFT of the
-        Pan / Shake / Collect text. The mouse-icon white lands at a different
-        spot for each cue (the text is centred and different lengths), so unlike
-        the text the three cues never overlap. We take the LEFTMOST white blob on
-        the prompt's row."""
+    def _detect_cue_px(self, arr, which):
+        import numpy as np
+        H, W = arr.shape[0], arr.shape[1]
+        b = arr[:, :, 0].astype(np.int16)
+        g = arr[:, :, 1].astype(np.int16)
+        r = arr[:, :, 2].astype(np.int16)
+        lo = np.minimum(np.minimum(r, g), b)
+        hi = np.maximum(np.maximum(r, g), b)
+        white = (lo >= 225) & ((hi - lo) <= 25)
+        mask = np.zeros((H, W), dtype=bool)
+        y0, y1 = int(H * 0.50), int(H * 0.96)
+        x0, x1 = int(W * 0.15), int(W * 0.85)
+        mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
+        if int(mask.sum()) < 20:
+            return {"ok": False, "error": "prompt not visible"}
+        yband = int(mask.sum(axis=1).argmax())
+        yb0, yb1 = max(0, yband - 48), min(H, yband + 48)
+        band = np.zeros((H, W), dtype=bool)
+        band[yb0:yb1] = mask[yb0:yb1]
+        cols = np.where(band.any(axis=0))[0]
+        if len(cols) == 0:
+            return {"ok": False, "error": "no prompt row"}
+        min_x = int(cols[0])
+        end = min_x
+        for c in cols:
+            if int(c) - end <= 10:
+                end = int(c)
+            else:
+                break
+        ys, xs = np.where(band)
+        sel = (xs >= min_x) & (xs <= end)
+        mxs, mys = xs[sel], ys[sel]
+        if len(mxs) < 3:
+            return {"ok": False, "error": "mouse icon unclear"}
+        cx, cy = float(mxs.mean()), float(mys.mean())
+        k = int(((mxs - cx) ** 2 + (mys - cy) ** 2).argmin())
+        return {"ok": True, "pixel": [int(mxs[k]), int(mys[k])]}
+
+    def wizard_propose(self, kind, label=""):
+        """Auto-detect a spot, then OPEN THE OVERLAY pre-marked with a red X at
+        the guess so the user can Confirm or Redo. Nothing is saved until they
+        confirm. If detection fails, the overlay opens for a plain manual pick."""
+        global _overlay
         try:
+            import base64
+            import mss.tools
             import numpy as np
-            if which not in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
-                return {"ok": False, "error": "Unknown cue."}
-            arr = self._grab_full()
-            H, W = arr.shape[0], arr.shape[1]
-            b = arr[:, :, 0].astype(np.int16)
-            g = arr[:, :, 1].astype(np.int16)
-            r = arr[:, :, 2].astype(np.int16)
-            lo = np.minimum(np.minimum(r, g), b)
-            hi = np.maximum(np.maximum(r, g), b)
-            white = (lo >= 190) & ((hi - lo) <= 30)
-            mask = np.zeros((H, W), dtype=bool)
-            y0, y1 = int(H * 0.50), int(H * 0.96)
-            x0, x1 = int(W * 0.15), int(W * 0.85)
-            mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
-            if int(mask.sum()) < 25:
-                return {"ok": False, "error": "Could not see the prompt. Make sure only that "
-                        "one prompt is showing at the bottom, then Detect again (or pick manually)."}
-            # lock onto the prompt's row (most white), then the leftmost blob on it
-            yband = int(mask.sum(axis=1).argmax())
-            yb0, yb1 = max(0, yband - 48), min(H, yband + 48)
-            band = np.zeros((H, W), dtype=bool)
-            band[yb0:yb1] = mask[yb0:yb1]
-            cols = np.where(band.any(axis=0))[0]
-            if len(cols) == 0:
-                return {"ok": False, "error": "No prompt row found -- pick manually."}
-            min_x = int(cols[0])
-            end = min_x
-            for c in cols:                       # extend the first blob, bridging tiny gaps
-                if int(c) - end <= 10:
-                    end = int(c)
-                else:
-                    break
-            ys, xs = np.where(band)
-            sel = (xs >= min_x) & (xs <= end)
-            mxs, mys = xs[sel], ys[sel]
-            if len(mxs) < 4:
-                return {"ok": False, "error": "Mouse icon not found clearly -- pick manually."}
-            cx, cy = float(mxs.mean()), float(mys.mean())
-            k = int(((mxs - cx) ** 2 + (mys - cy) ** 2).argmin())
-            px, py = int(mxs[k]), int(mys[k])
-            self.save_pixels({which: [px, py]}, {which: "#ffffff"})
-            return {"ok": True, "pixel": [px, py]}
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"error": str(e)}
+        try:
+            arr = self._grab_full()
+        except Exception as e:
+            return {"error": str(e)}
+        if kind == "CAP":
+            det = self._detect_capacity_px(arr)
+        elif kind in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
+            det = self._detect_cue_px(arr, kind)
+        else:
+            det = {"ok": False, "error": "unknown target"}
+        self._shot = arr
+        self._shot_h, self._shot_w = arr.shape[0], arr.shape[1]
+        step = max(1, int(round(self._shot_w / 1600.0)))
+        disp = arr[::step, ::step]
+        png = mss.tools.to_png(disp[:, :, (2, 1, 0)].tobytes(),
+                               (disp.shape[1], disp.shape[0]))
+        self._shot_b64 = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        self._overlay_key = kind
+        self._overlay_label = label or kind
+        self._overlay_pending = None
+        self._overlay_proposed = None
+        self._overlay_cap_left = None
+        if det.get("ok"):
+            if kind == "CAP":
+                lx, ly = det["left"]
+                rx, ry = det["right"]
+                px = arr[ry, rx]
+                self._overlay_cap_left = [lx, ly]
+                self._overlay_pending = {"x": rx, "y": ry, "r": int(px[2]),
+                                         "g": int(px[1]), "b": int(px[0]),
+                                         "hex": "#%02x%02x%02x" % (int(px[2]), int(px[1]), int(px[0]))}
+            else:
+                x, y = det["pixel"]
+                px = arr[y, x]
+                self._overlay_pending = {"x": x, "y": y, "r": int(px[2]),
+                                         "g": int(px[1]), "b": int(px[0]),
+                                         "hex": "#%02x%02x%02x" % (int(px[2]), int(px[1]), int(px[0]))}
+            self._overlay_proposed = dict(self._overlay_pending)
+        try:
+            if _overlay is not None:
+                _overlay.evaluate_js("window.__reload && window.__reload()")
+                _overlay.show()
+        except Exception as e:
+            return {"error": str(e)}
+        return {"ok": True, "detected": bool(self._overlay_proposed), "msg": det.get("error")}
 
     def restore(self):
         """Show the main window again and hide the pill."""
@@ -1164,7 +1201,7 @@ def _qm(key):
     return f'<span class="qm" data-tip="{tip}">?</span>'
 
 
-_OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:14px;height:14px;border:2px solid #e0b873;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #000,0 0 8px #000;display:none;z-index:8;pointer-events:none}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:196px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; click the pixel &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0;\n function reset(){picked=false;marker.style.display=\'none\';tip.style.display=\'none\';loupe.style.display=\'none\';}\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW)return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;\n   const f=frac(e);let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;picked=true;loupe.style.display=\'none\';\n   marker.style.display=\'block\';marker.style.left=e.clientX+\'px\';marker.style.top=e.clientY+\'px\';\n   document.getElementById(\'sw\').style.background=r.hex;document.getElementById(\'hex\').textContent=r.hex;\n   document.getElementById(\'xy\').textContent=r.x+\', \'+r.y;\n   let tx=e.clientX+20,ty=e.clientY+20;if(tx>innerWidth-230)tx=e.clientX-216;if(ty>innerHeight-160)ty=e.clientY-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';});\n document.getElementById(\'redo\').onclick=()=>{reset();};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n window.__reload=function(){reset();boot();};\n window.addEventListener(\'pywebviewready\',boot);\n boot();\n</script></body></html>'
+_OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:24px;height:24px;transform:translate(-50%,-50%);display:none;z-index:8;pointer-events:none}\n #marker::before,#marker::after{content:"";position:absolute;left:50%;top:50%;width:24px;height:3px;background:#ff5b5b;border-radius:2px;box-shadow:0 0 4px #000,0 0 1px #000;transform:translate(-50%,-50%) rotate(45deg)}\n #marker::after{transform:translate(-50%,-50%) rotate(-45deg)}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:200px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; the red &#10005; is the detected spot &mdash; Confirm or Redo &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0,prop=null;\n function reset(){picked=false;marker.style.display=\'none\';tip.style.display=\'none\';loupe.style.display=\'none\';prop=null;}\n function showTipAt(cx,cy,hex,x,y){marker.style.display=\'block\';marker.style.left=cx+\'px\';marker.style.top=cy+\'px\';\n   document.getElementById(\'sw\').style.background=hex;document.getElementById(\'hex\').textContent=hex;document.getElementById(\'xy\').textContent=x+\', \'+y;\n   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';picked=true;loupe.style.display=\'none\';}\n function placeProposed(){if(!prop||!natW)return;const r=shot.getBoundingClientRect();\n   showTipAt(r.left+prop.fx*r.width, r.top+prop.fy*r.height, prop.hex, prop.x, prop.y);}\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}prop=(d&&d.proposed)||null;}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';if(prop)placeProposed();};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW)return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;\n   const f=frac(e);let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;showTipAt(e.clientX,e.clientY,r.hex,r.x,r.y);});\n document.getElementById(\'redo\').onclick=()=>{reset();};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n window.__reload=function(){reset();boot();};\n window.addEventListener(\'pywebviewready\',boot);\n boot();\n</script></body></html>'
 
 
 def build_html():
@@ -1740,10 +1777,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const WIZ=[
     {t:'Guided calibration',b:'This sets up every detection spot for you. Keep Roblox open with the HUD visible, then click Detect to find the game window.',d:async()=>{const w=await A().detect_roblox();return (w&&w.found)?{ok:true,msg:'Found Roblox '+w.w+'×'+w.h}:{ok:false,error:'Roblox not found — open the game, then Detect.'};},m:null},
     {t:'Capacity bar — empty',b:'First make sure your capacity bar is <b>empty</b> (no yellow). Then click Detect to snapshot it.',d:()=>A().wizard_capture_empty(),m:null},
-    {t:'Capacity bar — full',b:'Now dig until the capacity bar is <b>completely full</b> (all yellow). Then Detect — it compares against the empty snapshot to find the bar.',d:()=>A().wizard_detect_capacity(),m:'CAP_FULL_PIXEL'},
-    {t:'\u201cPan\u201d prompt',b:'Stand in the <b>water</b> so the white \u201cPan\u201d prompt shows at the bottom. Then Detect.',d:()=>A().wizard_detect_cue('PAN_PIX'),m:'PAN_PIX'},
-    {t:'\u201cCollect Deposit\u201d prompt',b:'Step onto <b>land</b> so \u201cCollect Deposit\u201d shows. Then Detect.',d:()=>A().wizard_detect_cue('DEPOSIT_PIX'),m:'DEPOSIT_PIX'},
-    {t:'\u201cShake\u201d prompt',b:'Begin a <b>shake</b> so the \u201cShake\u201d prompt shows. Then Detect.',d:()=>A().wizard_detect_cue('SHAKE_PIX'),m:'SHAKE_PIX'},
+    {t:'Capacity bar — full',b:'Now dig until the capacity bar is <b>completely full</b> (all yellow). Then Detect — it compares against the empty snapshot to find the bar.',d:()=>A().wizard_propose('CAP','Capacity bar (full)'),m:null},
+    {t:'\u201cPan\u201d prompt',b:'Stand in the <b>water</b> so the white \u201cPan\u201d prompt shows at the bottom. Then Detect.',d:()=>A().wizard_propose('PAN_PIX','Pan'),m:null},
+    {t:'\u201cCollect Deposit\u201d prompt',b:'Step onto <b>land</b> so \u201cCollect Deposit\u201d shows. Then Detect.',d:()=>A().wizard_propose('DEPOSIT_PIX','Collect Deposit'),m:null},
+    {t:'\u201cShake\u201d prompt',b:'Begin a <b>shake</b> so the \u201cShake\u201d prompt shows. Then Detect.',d:()=>A().wizard_propose('SHAKE_PIX','Shake'),m:null},
     {t:'All set \u2713',b:'Calibration saved. Re-run anytime, or fine-tune any single spot manually in the list below. Use <b>Test detection</b> to confirm.',d:null,m:null}];
    let i=0;const wrap=document.getElementById('wizard');const W=id=>document.getElementById(id);
    function render(){const s=WIZ[i];W('wizstep').textContent='Step '+(i+1)+' / '+WIZ.length;
@@ -1756,8 +1793,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    W('wiznext').onclick=()=>{if(i>=WIZ.length-1){closeW();return;}i++;render();};
    W('wizdetect').onclick=async()=>{const s=WIZ[i];const btn=W('wizdetect');btn.disabled=true;const o=btn.textContent;btn.textContent='Detecting…';
      let r;try{r=await s.d();}catch(e){r={ok:false,error:String(e)};}btn.disabled=false;btn.textContent=o;
-     if(r&&r.ok){let d=r.msg||(r.pixel?('set ('+r.pixel.join(', ')+')'):(r.right?('bar '+r.left.join(',')+' \u2192 '+r.right.join(',')):'done'));
-       W('wizresult').innerHTML='<span class="ok">\u2713 '+d+'</span>';try{window.__calRefresh&&window.__calRefresh();}catch(e){}
+     if(r&&r.ok){let msg;
+       if('detected' in r){msg=r.detected?'Found a spot — check the red ✕ in the overlay, then Confirm (or Redo to pick it yourself).':'Could not auto-find it — click the spot in the overlay, then Confirm.';}
+       else{msg=r.msg||'Done';}
+       W('wizresult').innerHTML='<span class="ok">\u2713 '+msg+'</span>';try{window.__calRefresh&&window.__calRefresh();}catch(e){}
        W('wiznext').textContent=(i===WIZ.length-1)?'Done':'Next ›';}
      else{W('wizresult').innerHTML='<span class="no">'+((r&&r.error)||'Could not detect')+'</span>';}};
    W('wizmanual').onclick=()=>{const s=WIZ[i];if(s.m){try{A().start_overlay_calibrate(s.m,s.t);}catch(e){}}};
