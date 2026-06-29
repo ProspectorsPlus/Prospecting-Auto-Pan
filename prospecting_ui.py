@@ -118,11 +118,6 @@ SECTIONS = [
         ("SMART_TIMING",   "Auto-tune timing by trial & error",          "bool", False),
         ("ADAPT_MISS_PCT", "Adjust when miss rate exceeds (%)",          "int", 20),
         ("X_PATTERN",      "X pattern: diagonal walk-backs",             "bool", False),
-        ("HYPERSPEED",      "Hyperspeed (animation-skip glitch; faster, less consistent)", "bool", False),
-        ("HYPER_DIGS",      "Hyperspeed: exact digs per pan",            "int", 1),
-        ("HYPER_DIG_GAP_MS","Hyperspeed: gap between digs (ms)",         "int", 80),
-        ("HYPER_S_LEAD_MS","Hyperspeed: start S this many ms before last dig ends", "int", 7),
-        ("HYPER_WATER_MAX_MS","Hyperspeed: max S to reach water (ms)",   "int", 600),
         ("FR_RECOVERY",    "Fortune River recovery (fast-travel on soft stop)", "bool", False),
         ("FR_TEXT_TOL",    "FR: colour match tolerance",                 "int", 55),
         ("FR_SCAN_HOVER_MS","FR: dwell per step while sweeping (ms)",     "int", 12),
@@ -316,11 +311,6 @@ HELP = {
     "FR_WALK_MAX_MS": "Maximum time to hold W walking forward to reach the water / dig spot before giving up.",
     "FR_END_A_MS": "Once it reaches land (Collect Deposit cue), hold A for this long to line up, then restart the macro loop. Set 0 to skip.",
     "FR_CROSS_CONFIRM": "How many cue reads in a row are needed to count as truly in the water, and then truly on the next shore. Higher = it must really cross the water before restarting (stops it from restarting on the shore it spawned on). Lower if it is too slow to commit.",
-    "HYPERSPEED": "Animation-skip glitch mode: dig an EXACT number of times then immediately hold S back to water (moving during the animation), shake, and start the next dig the instant the bar hits the first segment. Faster but less consistent and lower-quality. Set up via the Auto-build tab.",
-    "HYPER_DIGS": "How many digs fill your pan (hyperspeed digs exactly this many, no fill-wait). Auto-build fills this from your stats.",
-    "HYPER_DIG_GAP_MS": "Gap between the spam digs in hyperspeed.",
-    "HYPER_S_LEAD_MS": "On the last dig, start holding S this many ms BEFORE the dig hold ends, so you glide back during the tail of the dig without cutting it short. e.g. a 37ms dig hold with lead 7 starts S at 30ms.",
-    "HYPER_WATER_MAX_MS": "Max time to hold S getting back to the water in hyperspeed.",
     "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
                  "straight back, so each pass covers new ground. Helps when you keep "
                  "falling short on a straight line. Forward to land stays straight.",

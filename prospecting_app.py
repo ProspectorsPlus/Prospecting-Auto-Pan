@@ -1335,7 +1335,6 @@ def build_html():
                   f'<input type="number" id="{fid}" placeholder="\u2014"></label>' for fid, lbl in _abf)
         + '</div>'
         '<label class="abcheck"><input type="checkbox" id="ab_perfect" checked><span>Perfect dig &mdash; use the precise calculated dig hold. Off = fast 10&nbsp;ms spam (shards / speed builds).</span></label>'
-        '<label class="abcheck"><input type="checkbox" id="ab_hyper"><span>Hyperspeed &mdash; animation-skip glitch: exact dig count, no waits, straight movement, start next dig at the first segment. Faster, less consistent, lower quality.</span></label>'
         '<div class="calactions"><button type="button" class="btn" id="abgen">\u2728 Generate &amp; apply build</button></div>'
         '<div class="abreadout" id="abreadout"></div>'
         '<div class="abhead">Live build analysis</div>'
@@ -1900,7 +1899,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const r=rOf(ss);
      const n=nOv>0?Math.round(nOv):Math.max(1,Math.ceil(C/(1.5*DS)));
      const perfect=!!((document.getElementById('ab_perfect')||{}).checked);
-     const hyper=!!((document.getElementById('ab_hyper')||{}).checked);
      const shToEmpty=C/s;                 // info only -- the macro shakes until empty
      const clickMs=18, gapMs=14;          // fast rattle (proven shake defaults)
      const shDur=C/(r*s);
@@ -1921,11 +1919,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        SHAKE_CLICKS:0,SHAKE_CLICK_MS:clickMs,SHAKE_CLICK_GAP_MS:gapMs,
        SHAKE_HOLD_MS:holdMs,SHAKE_BAIL_MS:500,SHAKE_START_DELAY_MS:0,POST_SHAKE_SETTLE_MS:150,
        DEPOSIT_MAX_MS:depMax,LAND_SETTLE_MS:landSet,DIG_PROBE_MS:320,PROBE_GAP_MS:80,
-       LAND_PROBE_NUDGE_MS:landNudge,LAND_DIG_TRIES:5,
-       HYPERSPEED:hyper,HYPER_DIGS:n,HYPER_DIG_GAP_MS:cl(190000/d*0.35,40,300),
-       HYPER_WATER_MAX_MS:cl(600*wf,300,1200),X_PATTERN:hyper?false:false};
+       LAND_PROBE_NUDGE_MS:landNudge,LAND_DIG_TRIES:5};
      const metrics={r:r,shToEmpty:shToEmpty,n:n,shDur:shDur,
-       digPer:digPer,cycleSec:cycleSec,ppm:ppm,rolls:L*Math.sqrt(C),perfect:perfect,hyper:hyper};
+       digPer:digPer,cycleSec:cycleSec,ppm:ppm,rolls:L*Math.sqrt(C),perfect:perfect};
      return {settings:settings,metrics:metrics};
    }
    function render(b){const m=b.metrics,S=b.settings,f=(x,p)=>Number(x).toFixed(p===undefined?2:p);
@@ -1933,7 +1929,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code> &middot; auto-pan <code>'+Math.round(m.ppm*60)+'/hr</code> <span style="color:var(--mut)">(incl. measured ~0.62s/cycle overhead)</span></div>';
      const rows=[
        ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
-       ['Mode', m.hyper?('⚡ Hyperspeed (exact '+m.n+' digs, animation-skip)'):'Standard'],
        ['Dig mode', m.perfect?('Perfect — '+S.DIG_CLICK_MS+' ms hold (55000 ÷ dig speed)'):('Fast spam — '+S.DIG_CLICK_MS+' ms')],
        ['Re-dig gap (spam)', S.DIG_FILL_MS+' ms  (let go early, start next dig)'],
        ['Shake', 'rapid-clicks until the bar empties · '+S.SHAKE_CLICK_MS+'+'+S.SHAKE_CLICK_GAP_MS+' ms each'],
@@ -1954,7 +1949,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      try{await window.pywebview.api.save_autobuild({ab_luck:gv('ab_luck'),ab_cap:gv('ab_cap'),
        ab_ds:gv('ab_ds'),ab_dspeed:gv('ab_dspeed'),ab_ss:gv('ab_ss'),ab_sspeed:gv('ab_sspeed'),
        ab_ws:gv('ab_ws'),ab_n:gv('ab_n'),ab_perfect:!!((document.getElementById('ab_perfect')||{}).checked),
-       ab_hyper:!!((document.getElementById('ab_hyper')||{}).checked),
        autopan_pph:Math.round(b.metrics.ppm*60)});}catch(e){}
      window.AUTOPAN_PPH=b.metrics.ppm*60;
      render(b);
