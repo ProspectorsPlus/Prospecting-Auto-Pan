@@ -3,5 +3,5 @@
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Treasure Chest mode: digs-per-chest count, two-stage strafe (hold until Pan then Collect), and a delay-between-dig-clicks setting (default 12s) for the slow chest animation"
+  "notes": "Treasure Chest mode (digs-per-chest, delay-between-digs); Fortune River recovery (auto fast-travel back on a soft stop, with calibratable pink-text find + scroll); manual soft-stop test key (Ctrl+J)"
 }

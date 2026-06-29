@@ -167,7 +167,12 @@ class Api:
         pixels = {}
         for key in PIXEL_DEFAULTS:
             pixels[key] = list(saved.get(key, PIXEL_DEFAULTS[key]))
-        return {"values": merged, "running": self.proc is not None,
+        fr = {"FR_OPEN_PIXEL": list(saved.get("FR_OPEN_PIXEL", [0, 0])),
+              "FR_SCAN_X": int(saved.get("FR_SCAN_X", 0)),
+              "FR_TEXT_RGB": list(saved.get("FR_TEXT_RGB", [232, 120, 200])),
+              "FR_BOX_TOP": int(saved.get("FR_BOX_TOP", 0)),
+              "FR_BOX_BOTTOM": int(saved.get("FR_BOX_BOTTOM", 0))}
+        return {"values": merged, "running": self.proc is not None, "fr": fr,
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels,
@@ -290,7 +295,7 @@ class Api:
         return {"ok": False,
                 "error": "That code isn't valid. Double-check and try again."}
 
-    def save_pixels(self, pixels, colors=None):
+    def save_pixels(self, pixels, colors=None, fr=None):
         """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
         ends. Only the real macro pixel keys are written (CAP_LEFT_PIXEL is a
         helper used just to compute the width)."""
@@ -325,6 +330,18 @@ class Api:
             cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
         if colors:
             cur["PIXEL_COLORS"] = {k: str(v) for k, v in colors.items()}
+        if fr:
+            if fr.get("FR_OPEN_PIXEL"):
+                cur["FR_OPEN_PIXEL"] = [int(fr["FR_OPEN_PIXEL"][0]),
+                                        int(fr["FR_OPEN_PIXEL"][1])]
+            if fr.get("FR_SCAN_X") is not None:
+                cur["FR_SCAN_X"] = int(fr["FR_SCAN_X"])
+            if fr.get("FR_TEXT_RGB"):
+                cur["FR_TEXT_RGB"] = [int(c) for c in fr["FR_TEXT_RGB"][:3]]
+            if fr.get("FR_BOX_TOP") is not None:
+                cur["FR_BOX_TOP"] = int(fr["FR_BOX_TOP"])
+            if fr.get("FR_BOX_BOTTOM") is not None:
+                cur["FR_BOX_BOTTOM"] = int(fr["FR_BOX_BOTTOM"])
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
@@ -796,6 +813,28 @@ def build_html():
         'either click the exact spot in-game, or hover it and press <b>Enter</b>. '
         'Press <b>Esc</b> to cancel. Do them all, then <b>Save calibration</b>.</p>'
         f'<div class="calrows">{"".join(calrows)}</div>'
+        '<div class="caldiv"><span>Fortune River recovery (optional)</span></div>'
+        '<p class="chint" style="margin:0 0 10px">Only for <b>Fortune River recovery</b> '
+        '(Smart tab). Open the Fast Travel menu in-game first, then calibrate each spot.</p>'
+        '<div class="calrows">'
+        '<div class="calrow"><div class="calinfo"><div class="calname">Fortune River row (pink text)</div>'
+        '<div class="caldesc">Click the pink Fortune River text. Sets the scan column and the colour to match.</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_text">not set</span>'
+        '<span class="calsw2" id="frsw_text"></span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="text">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">List - TOP edge</div>'
+        '<div class="caldesc">Click just inside the top of the travel list box.</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_top">not set</span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="top">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">List - BOTTOM edge</div>'
+        '<div class="caldesc">Click just inside the bottom of the travel list box.</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_bottom">not set</span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="bottom">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">Open Fast Travel (optional)</div>'
+        '<div class="caldesc">A spot to click to open the menu. Leave unset if 4 + Shift already opens it.</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_open">not set</span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="open">Calibrate</button></div>'
+        '</div>'
         '<div class="calactions">'
         '<button type="button" id="savepixels" class="btn">Save calibration</button>'
         '<button type="button" id="exportcal" class="btn2">Export\u2026</button>'
@@ -943,6 +982,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   height:calc(100vh - 320px);overflow-y:auto;white-space:pre-wrap;font:12px ui-monospace,
   Menlo,monospace;color:#c2c8ba;margin:0}
  .calrows{max-width:720px}
+ .frstat{font-size:12px;opacity:.75;margin-right:8px}
  .calrow{display:flex;align-items:center;gap:14px;background:var(--panel);
   border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:8px}
  .calinfo{flex:1} .calname{font-weight:600;color:var(--txt)}
@@ -1192,6 +1232,35 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const cc=document.getElementById('cc_'+key); if(cc)cc.value=hex;
    const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=hex;
    toast(key+' set to ('+r.x+', '+r.y+')');});
+ let fr={text:null,top:null,bottom:null,open:null};
+ function setFR(f){if(!f)return;
+   if(f.FR_SCAN_X){fr.text={scan_x:f.FR_SCAN_X,rgb:f.FR_TEXT_RGB};
+     const s=document.getElementById('frstat_text');if(s)s.textContent='x='+f.FR_SCAN_X;
+     const sw=document.getElementById('frsw_text');if(sw&&f.FR_TEXT_RGB)sw.style.background='rgb('+f.FR_TEXT_RGB.join(',')+')';}
+   if(f.FR_BOX_TOP){fr.top=f.FR_BOX_TOP;const s=document.getElementById('frstat_top');if(s)s.textContent='y='+f.FR_BOX_TOP;}
+   if(f.FR_BOX_BOTTOM){fr.bottom=f.FR_BOX_BOTTOM;const s=document.getElementById('frstat_bottom');if(s)s.textContent='y='+f.FR_BOX_BOTTOM;}
+   if(f.FR_OPEN_PIXEL&&(f.FR_OPEN_PIXEL[0]||f.FR_OPEN_PIXEL[1])){fr.open=f.FR_OPEN_PIXEL;
+     const s=document.getElementById('frstat_open');if(s)s.textContent='('+f.FR_OPEN_PIXEL[0]+', '+f.FR_OPEN_PIXEL[1]+')';}}
+ $$('.frbtn').forEach(btn=>btn.onclick=async()=>{
+   if(capturing)return;capturing=true;const k=btn.dataset.frk;
+   btn.classList.add('armed');btn.textContent='Click or press Enter\u2026';
+   const r=await window.pywebview.api.calibrate_capture();
+   btn.classList.remove('armed');btn.textContent='Calibrate';capturing=false;
+   if(r.cancelled){toast('Cancelled');return;}
+   if(r.error){toast('Calibrate failed: '+r.error);return;}
+   if(k==='text'){fr.text={scan_x:r.x,rgb:[r.r,r.g,r.b]};
+     document.getElementById('frstat_text').textContent='x='+r.x;
+     document.getElementById('frsw_text').style.background='rgb('+r.r+','+r.g+','+r.b+')';
+     toast('Fortune River pink set');}
+   else if(k==='top'){fr.top=r.y;document.getElementById('frstat_top').textContent='y='+r.y;toast('Top edge set');}
+   else if(k==='bottom'){fr.bottom=r.y;document.getElementById('frstat_bottom').textContent='y='+r.y;toast('Bottom edge set');}
+   else if(k==='open'){fr.open=[r.x,r.y];document.getElementById('frstat_open').textContent='('+r.x+', '+r.y+')';toast('Open button set');}});
+ function collectFR(){const o={};
+   if(fr.text){o.FR_SCAN_X=fr.text.scan_x;o.FR_TEXT_RGB=fr.text.rgb;}
+   if(fr.top!=null)o.FR_BOX_TOP=fr.top;
+   if(fr.bottom!=null)o.FR_BOX_BOTTOM=fr.bottom;
+   if(fr.open)o.FR_OPEN_PIXEL=fr.open;
+   return o;}
  $('#detectwin').onclick=async()=>{const w=await window.pywebview.api.detect_roblox();showWin(w);};
  $('#autocal').onclick=async()=>{const b=$('#autocal');const old=b.textContent;
    b.disabled=true;b.textContent='Detecting…';
@@ -1207,7 +1276,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const k=row.dataset.pkey,c=(row.querySelector('.chex').value||'').trim();if(c)o[k]=c;});return o;}
  document.querySelectorAll('.chex').forEach(inp=>inp.addEventListener('input',()=>{
    const cs=inp.closest('.calrow').querySelector('.calsw2');if(cs)cs.style.background=inp.value;}));
- $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(collectPixels(),collectColors());toast('Calibration saved');};
+ $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(collectPixels(),collectColors(),collectFR());toast('Calibration saved');};
  let _detT=null;
  function _sw(c){return c?('rgb('+c.r+','+c.g+','+c.b+')'):'#000';}
  function _drow(label,c,verdict){return '<div class="detrow"><span class="detsw" style="background:'+_sw(c)+'"></span>'
@@ -1290,7 +1359,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});
    checkUpdate();loadHistory();
    try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
  window.addEventListener('pywebviewready',boot);

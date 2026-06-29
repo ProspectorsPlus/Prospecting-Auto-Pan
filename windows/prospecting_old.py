@@ -474,12 +474,34 @@ PIXEL_RATIOS        = {}
 # --- Detection sampling ------------------------------------------------------
 SAMPLE_BOX        = 6     # NxN px box averaged around a watched pixel
 
+# --- Fortune River recovery (Smart): on a SOFT stop, fast-travel back to
+#     Fortune River, walk into the water, and resume. Pixels/colour below are
+#     set in the app's Calibrate tab. -----------------------------------------
+FR_RECOVERY        = False        # master toggle
+FR_OPEN_SLOT       = 4            # hotbar slot that equips the fast-travel item
+FR_PAN_SLOT        = 1            # hotbar slot for the pan (return to it after)
+FR_OPEN_PIXEL      = [0, 0]       # optional click to open Fast Travel (0,0 = skip)
+FR_OPEN_MS         = 600          # wait for the menu to appear (ms)
+FR_TEXT_RGB        = [232, 120, 200]  # Fortune River row colour (pink, calibrate)
+FR_TEXT_TOL        = 55           # colour match tolerance (per channel)
+FR_SCAN_X          = 0            # x column to scan for the pink text
+FR_BOX_TOP         = 0            # y of the top of the list box
+FR_BOX_BOTTOM      = 0            # y of the bottom of the list box
+FR_SCAN_STEP       = 3            # vertical scan step (px)
+FR_FIND_TRIES      = 8            # scroll passes before giving up
+FR_SCROLL_STEPS    = 3            # wheel notches per scroll-down
+FR_SCROLL_WAIT_MS  = 250          # settle after each scroll (ms)
+FR_WARP_MS         = 2500         # wait after clicking for the teleport/load (ms)
+FR_STRAFE_MS       = 10           # tiny D strafe after returning to the pan (ms)
+FR_WALK_MAX_MS     = 6000         # max W walk to reach the water/dig spot (ms)
+
 # --- Keys (WINDOWS hardware SCANCODES -- used with SendInput SCANCODE flag, the
 #     most reliable way to drive Roblox on Windows). --------------------------
 KEY_W = 0x11            # W
 KEY_S = 0x1F            # S
 KEY_A = 0x1E            # A
 KEY_D = 0x20            # D
+KEY_SHIFT = 0x2A        # left Shift (open Fast Travel)
 # Hotbar slot number -> Windows scancode (digit row 1..0).
 SLOT_KEYCODES = {1: 0x02, 2: 0x03, 3: 0x04, 4: 0x05, 5: 0x06,
                  6: 0x07, 7: 0x08, 8: 0x09, 9: 0x0A, 0: 0x0B}
@@ -775,6 +797,38 @@ def _drag_alive():
     _send(inp)
 
 
+# ---- Cursor move / click-at / scroll / sample (Fortune River recovery) ------
+MOUSEEVENTF_WHEEL = 0x0800
+
+
+def move_cursor(x, y):
+    _user32.SetCursorPos(int(x), int(y))
+
+
+def click_at(x, y, ms=40):
+    move_cursor(x, y)
+    sleep_ms(30)
+    mouse_tap(ms)
+
+
+def scroll_down(steps=3):
+    data = (-120 * abs(int(steps))) & 0xFFFFFFFF
+    inp = _INPUT(type=INPUT_MOUSE,
+                 u=_INPUTunion(mi=_MOUSEINPUT(0, 0, data, MOUSEEVENTF_WHEEL, 0, 0)))
+    _send(inp)
+
+
+def rgb_at(sct, x, y):
+    """Mean (r,g,b) in a small box around a physical-pixel coord."""
+    reg = {"left": int(x) - 2, "top": int(y) - 2, "width": 5, "height": 5}
+    b, g, r = np.asarray(sct.grab(reg))[:, :, :3].reshape(-1, 3).mean(0)
+    return r, g, b
+
+
+def _rgb_match(rgb, target, tol):
+    return all(abs(float(c) - float(tt)) <= tol for c, tt in zip(rgb, target))
+
+
 def hold_mouse(ms, stop_fn=None, confirm=2, min_ms=200):
     """Hold LMB up to ms, keeping the press 'alive'. If stop_fn is given, release
     early once it returns True for `confirm` reads in a row (but never before
@@ -980,6 +1034,9 @@ class State:
     ad_land_dir = 1          # hill-climb direction for the land-reach knob
     ad_land_prev = None
     stats = None             # SessionStats while running
+    want_safe_stop = False   # manual soft-stop test keybind -> trip a safe stop
+    detector = None          # live Detector (for Fortune River recovery)
+    scale = 1.0              # screen scale (physical px / points) for cursor moves
 
 
 class SessionStats:
@@ -1055,6 +1112,61 @@ def release_all():
         pass
 
 
+def fortune_river_recover():
+    """SOFT-STOP recovery: fast-travel back to Fortune River, walk into the
+    water, and resume the normal loop. Returns True if it found the row and
+    reached the dig spot, False if the Fortune River entry was never located
+    (the caller then hard-stops)."""
+    det = State.detector
+    if det is None:
+        return False
+    sct = det.sct
+    log("FR-recover: opening Fast Travel ...")
+    release_all()
+    tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 60)      # equip the travel item
+    sleep_ms(220)
+    tap_key(KEY_SHIFT, 60)                            # open the menu
+    sleep_ms(FR_OPEN_MS)
+    if FR_OPEN_PIXEL and (FR_OPEN_PIXEL[0] or FR_OPEN_PIXEL[1]):
+        click_at(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1], 50)
+        sleep_ms(FR_OPEN_MS)
+    top = min(FR_BOX_TOP, FR_BOX_BOTTOM)
+    bot = max(FR_BOX_TOP, FR_BOX_BOTTOM)
+    found = False
+    for attempt in range(max(1, FR_FIND_TRIES)):
+        if not State.running:
+            return False
+        y = top
+        while y <= bot:
+            if _rgb_match(rgb_at(sct, FR_SCAN_X, y), FR_TEXT_RGB, FR_TEXT_TOL):
+                click_at(FR_SCAN_X, y, 60)
+                found = True
+                log("FR-recover: found Fortune River at y=%d (try %d)"
+                    % (y, attempt + 1))
+                break
+            y += max(1, FR_SCAN_STEP)
+        if found:
+            break
+        scroll_down(FR_SCROLL_STEPS)
+        sleep_ms(FR_SCROLL_WAIT_MS)
+    if not found:
+        log("FR-recover: Fortune River row NOT found -- hard stop")
+        return False
+    sleep_ms(FR_WARP_MS)                              # wait for teleport/load
+    tap_key(SLOT_KEYCODES.get(FR_PAN_SLOT), 60)       # back to the pan
+    sleep_ms(150)
+    tap_key(KEY_SHIFT, 60)
+    sleep_ms(80)
+    tap_key(KEY_D, max(1, FR_STRAFE_MS))              # tiny strafe to line up
+    sleep_ms(60)
+    key_down(KEY_W)                                   # walk forward to the water
+    wait_until(det.on_pan, FR_WALK_MAX_MS, confirm=1)
+    wait_until(det.on_deposit, FR_WALK_MAX_MS, confirm=1)
+    key_up(KEY_W)
+    log("FR-recover: reached the dig spot -- resuming")
+    return True
+
+
 def safe_stop(reason, hard=False):
     """A hazard/stuck was detected. By DEFAULT pause and retry shortly instead of
     hard-stopping (so an AFK run recovers itself); only hard-stop after
@@ -1063,6 +1175,21 @@ def safe_stop(reason, hard=False):
     State.empty_fails = State.shake_fails = State.land_fails = State.breakouts = 0
     if State.stats:
         State.stats.safe_stops += 1
+
+    if FR_RECOVERY and not hard:
+        try:
+            ok = fortune_river_recover()
+        except Exception as e:
+            log("FR-recover error: %s" % e)
+            ok = False
+        if ok:
+            State.safe_retries = 0
+            State.want_reset = True
+            print("\n*** FORTUNE RIVER RECOVERY: %s -> resumed ***" % reason)
+            post_webhook("safe_stop",
+                         "\U0001f9ed Fortune River recovery (%s) -> resumed" % reason,
+                         State.stats.as_dict() if State.stats else None)
+            return
 
     def _beep(hand=False):
         try:
@@ -1879,6 +2006,7 @@ class _HotkeyPoller:
 
     def _loop(self):
         prev_combo = False
+        prev_soft = False
         while State.alive:
             if _key_pressed(VK_ESC):
                 print("[QUIT]")
@@ -1893,6 +2021,11 @@ class _HotkeyPoller:
                 if not State.running:
                     release_all()
             prev_combo = combo
+            soft = _key_pressed(VK_CONTROL) and _key_pressed(0x4A)  # Ctrl+J
+            if soft and not prev_soft:
+                State.want_safe_stop = True
+                print("[MANUAL SOFT-STOP]")
+            prev_soft = soft
             time.sleep(0.03)
 
 
@@ -2034,6 +2167,8 @@ def main():
     gc.enable()   # keep GC ON: disabling it grew memory + slowed long runs
     with _MSS() as sct:
         detector = Detector(sct)
+        State.detector = detector
+        State.scale = get_scale(sct)
         for _ in range(5):                  # warm up capture path
             sct.grab(detector.dig_region)
         sup = Supervisor()
@@ -2054,6 +2189,9 @@ def main():
                         log("=== RUNNING (live trace below) ===")
                         post_webhook("start", "▶️ Macro started",
                                      State.stats.as_dict())
+                    if State.want_safe_stop:
+                        State.want_safe_stop = False
+                        safe_stop("manual soft-stop (test)")
                     relics.maybe_fire()     # timed relic use (no-op unless enabled)
                     if TREASURE_MODE:
                         treasure_tick(detector)

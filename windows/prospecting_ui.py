@@ -115,6 +115,14 @@ SECTIONS = [
         ("SMART_TIMING",   "Auto-tune timing by trial & error",          "bool", False),
         ("ADAPT_MISS_PCT", "Adjust when miss rate exceeds (%)",          "int", 20),
         ("X_PATTERN",      "X pattern: diagonal walk-backs",             "bool", False),
+        ("FR_RECOVERY",    "Fortune River recovery (fast-travel on soft stop)", "bool", False),
+        ("FR_TEXT_TOL",    "FR: colour match tolerance",                 "int", 55),
+        ("FR_FIND_TRIES",  "FR: scroll passes before giving up",         "int", 8),
+        ("FR_SCROLL_STEPS","FR: wheel notches per scroll",               "int", 3),
+        ("FR_OPEN_MS",     "FR: wait for menu to open (ms)",             "int", 600),
+        ("FR_WARP_MS",     "FR: wait after teleport to load (ms)",       "int", 2500),
+        ("FR_STRAFE_MS",   "FR: tiny D strafe after return (ms)",        "int", 10),
+        ("FR_WALK_MAX_MS", "FR: max W walk to reach water (ms)",         "int", 6000),
     ]),
 ]
 
@@ -273,6 +281,14 @@ HELP = {
                     "the change only if the miss rate drops. Experimental — watch the log.",
     "ADAPT_MISS_PCT": "Smart timing only kicks in once the miss rate is above this "
                       "percentage over a short window.",
+    "FR_RECOVERY": "When a SOFT stop happens, fast-travel back to Fortune River and resume automatically. Press 4, Shift, find the pink Fortune River row in the Fast Travel list (scrolling if needed), click it, then switch to the pan and walk into the water. Calibrate the FR spots in the Calibrate tab. Test it with Ctrl+J (manual soft-stop).",
+    "FR_TEXT_TOL": "How close a pixel's colour must be to the calibrated Fortune River pink to count as a match (per channel). Raise it if it never finds the row, lower it if it clicks the wrong one.",
+    "FR_FIND_TRIES": "How many times to scroll down and re-scan the list looking for Fortune River before giving up and hard-stopping.",
+    "FR_SCROLL_STEPS": "How many mouse-wheel notches to scroll each time Fortune River is not visible in the box.",
+    "FR_OPEN_MS": "How long to wait for the Fast Travel menu to appear after pressing the open keys.",
+    "FR_WARP_MS": "How long to wait after clicking Fortune River for the teleport and world to finish loading.",
+    "FR_STRAFE_MS": "Length of the small D tap used to line up after returning to the pan.",
+    "FR_WALK_MAX_MS": "Maximum time to hold W walking forward to reach the water / dig spot before giving up.",
     "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
                  "straight back, so each pass covers new ground. Helps when you keep "
                  "falling short on a straight line. Forward to land stays straight.",
