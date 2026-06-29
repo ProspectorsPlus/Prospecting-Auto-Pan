@@ -1958,21 +1958,32 @@ def hyper_tick(det):
     rapid-click to shake -- and the INSTANT the bar drains to the first segment we
     bail and go straight into the next dig (skipping the empty/refill animation).
     Straight movement only (no X pattern)."""
-    # 1) dig exactly N times -- explicit quick CLICKS (never the perfect-poll hold,
-    #    which can fire a 0ms no-op). Each click is a real dig; THEN we hold S.
+    # 1) Do REAL perfect digs (honours PERFECT). The speed trick: on the LAST dig,
+    #    start holding S the instant it BEGINS -- you can glide back during the
+    #    final dig's animation, so you don't wait for it to finish.
     phase("Digging")
-    hold = max(20, DIG_CLICK_MS)
-    for _i in range(max(1, HYPER_DIGS)):
+    n_digs = max(1, HYPER_DIGS)
+    s_held = False
+    for i in range(n_digs):
         if not State.running:
+            if s_held:
+                key_up(KEY_S)
             return
-        mouse_tap(hold)                       # one dig click
-        if HYPER_DIG_GAP_MS > 0:
+        if i == n_digs - 1:
+            phase("Walking to water")
+            key_down(KEY_S)                   # glide back as the last dig starts
+            s_held = True
+        dig_once(det)                         # a real (perfect) dig
+        if i < n_digs - 1 and HYPER_DIG_GAP_MS > 0:
             sleep_ms(HYPER_DIG_GAP_MS)
-    # 2) ONLY NOW hold S back to water (glitch: moves even mid-animation)
+    # 2) keep holding S until we reach the water
     if not State.running:
+        if s_held:
+            key_up(KEY_S)
         return
-    phase("Walking to water")
-    key_down(KEY_S)
+    if not s_held:
+        key_down(KEY_S)
+        s_held = True
     wait_until(det.on_pan, HYPER_WATER_MAX_MS, confirm=1)
     if WATER_EXTRA_BACK_MS > 0:
         sleep_ms(WATER_EXTRA_BACK_MS)
