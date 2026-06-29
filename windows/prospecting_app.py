@@ -230,6 +230,7 @@ class Api:
         self._last_stats = None   # latest stats from the macro (for history)
         self._run_active = False  # a run is in progress (write history once)
         self._macro_status = "off"  # off/idle/running/paused/safe-pause/recovering/stopped
+        self._macro_phase = ""      # fine-grained macro phase for the pill
 
     # ---- settings ----
     def get_state(self):
@@ -749,6 +750,7 @@ class Api:
         self._run_active = True
         self._last_stats = None
         self._macro_status = "idle"
+        self._macro_phase = ""
         return "launched"
 
     def _save_history(self, reason=None):
@@ -788,6 +790,7 @@ class Api:
                     pass
             self.proc = None
         self._macro_status = "off"
+        self._macro_phase = ""
         return "stopped"
 
     def is_running(self):
@@ -796,6 +799,7 @@ class Api:
     def pill_state(self):
         return {"alive": self.proc is not None,
                 "status": getattr(self, "_macro_status", "off"),
+                "phase": getattr(self, "_macro_phase", ""),
                 "stats": self._last_stats or {}}
 
     def popout(self):
@@ -1134,6 +1138,9 @@ class Api:
                 if self._macro_status in ("off", "idle"):
                     self._macro_status = "running"
                 continue
+            if line.startswith("__PHASE__ "):
+                self._macro_phase = line[10:].strip()
+                continue
             if line.strip() == "__POPOUT__":
                 try:
                     self.toggle_popout()
@@ -1156,6 +1163,7 @@ class Api:
         _emit_log(f"[macro exited, code {rc}]")
         self.proc = None
         self._macro_status = "off"
+        self._macro_phase = ""
         self._save_history()              # macro ended on its own (Esc / self-stop)
         _emit_state(False)
 
@@ -1203,7 +1211,9 @@ PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  function fmt(s){s=s||0;return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
  async function poll(){let r;try{r=await api().pill_state();}catch(e){return;}
    alive=r.alive;const sm=SM[r.status||"off"]||["","—"];
-   $("dot").className="dot "+sm[0];$("status").innerHTML=sm[1];
+   let label=sm[1];
+   if(r.alive && (r.status==="running"||r.status==="recovering") && r.phase) label=r.phase;
+   $("dot").className="dot "+sm[0];$("status").innerHTML=label;
    const s=r.stats||{};$("rt").textContent=fmt(s.runtime_s);$("pans").textContent=s.cycles||0;$("rate").textContent=s.pans_per_hr||0;$("rec").textContent=s.recoveries||0;
    const b=$("toggle");b.textContent=alive?"Stop":"Start";b.className="go"+(alive?" stop":"");}
  $("toggle").onclick=async()=>{try{if(alive){await api().stop();}else{await api().launch();}}catch(e){}poll();};
@@ -1404,6 +1414,7 @@ def build_html():
         + "".join(f'<label class="abf"><span>{lbl}</span>'
                   f'<input type="number" id="{fid}" placeholder="\u2014"></label>' for fid, lbl in _abf)
         + '</div>'
+        '<label class="abcheck"><input type="checkbox" id="ab_perfect"><span>Perfect dig &mdash; use the precise calculated dig hold. Off = fast 10&nbsp;ms spam (shards / speed builds).</span></label>'
         '<div class="calactions"><button type="button" class="btn" id="abgen">\u2728 Generate &amp; apply build</button></div>'
         '<div class="abreadout" id="abreadout"></div></section>')
 
@@ -1536,6 +1547,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .abreadout table{width:100%;border-collapse:collapse;margin-top:10px}
  .abreadout td{padding:4px 8px;border-top:1px solid var(--line)}
  .abreadout td:first-child{color:var(--mut)} .abreadout td:last-child{text-align:right;color:var(--txt)}
+ .abcheck{display:flex;align-items:center;gap:9px;margin-top:14px;max-width:560px;color:var(--txt);font-size:13px;cursor:pointer} .abcheck input{width:16px;height:16px;flex:0 0 auto}
  .tab.active .ti{opacity:1}
  .tab.active:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
@@ -1958,12 +1970,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        wsR=gv('ab_ws'),ws=wsR>0?wsR:16,nOv=gv('ab_n');
      const r=rOf(ss);
      const n=nOv>0?Math.round(nOv):Math.max(1,Math.ceil(C/(1.5*DS)));
-     const shToEmpty=C/s, shakeClicks=Math.max(1,Math.ceil(shToEmpty));
-     const cyc=1000/Math.max(0.1,r);
-     const clickMs=cl(cyc*0.55,10,140), gapMs=cl(cyc*0.45,6,140);
+     const perfect=!!((document.getElementById('ab_perfect')||{}).checked);
+     const shToEmpty=C/s;                 // info only -- the macro shakes until empty
+     const clickMs=18, gapMs=14;          // fast rattle (proven shake defaults)
      const shDur=C/(r*s);
-     const holdMs=cl(Math.max(shDur*1000,shakeClicks*(clickMs+gapMs))+350,300,6000);
-     const digHold=cl(55000/d,8,600);
+     const holdMs=cl(Math.max(1500, shDur*1000*6), 1200, 4500);
+     const digHold=perfect?cl(55000/d,8,600):10;
      const digPer=190/d, fillMs=cl(digPer*1000+90,120,1500);
      const wf=Math.max(0.45,Math.min(1.4,16/Math.max(8,ws)));
      const panBack=cl(220*wf,90,420), depMax=cl(1300*wf,500,2500),
@@ -1972,12 +1984,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const settings={PERFECT:false,DIG_CLICK_MS:digHold,DIG_SPEED:Math.round(d),
        MAX_DIGS_TO_FILL:n+1,DIG_FILL_MS:fillMs,PRE_DIG_SETTLE_MS:60,
        PAN_BACK_MAX_MS:panBack,WATER_EXTRA_BACK_MS:0,SHAKE_MOMENTUM_W:true,
-       SHAKE_CLICKS:shakeClicks,SHAKE_CLICK_MS:clickMs,SHAKE_CLICK_GAP_MS:gapMs,
+       SHAKE_CLICKS:0,SHAKE_CLICK_MS:clickMs,SHAKE_CLICK_GAP_MS:gapMs,
        SHAKE_HOLD_MS:holdMs,SHAKE_BAIL_MS:500,SHAKE_START_DELAY_MS:0,POST_SHAKE_SETTLE_MS:150,
        DEPOSIT_MAX_MS:depMax,LAND_SETTLE_MS:landSet,DIG_PROBE_MS:320,PROBE_GAP_MS:80,
        LAND_PROBE_NUDGE_MS:landNudge,LAND_DIG_TRIES:5};
-     const metrics={r:r,shToEmpty:shToEmpty,shakeClicks:shakeClicks,n:n,shDur:shDur,
-       digPer:digPer,cycleSec:cycleSec,ppm:ppm,rolls:L*Math.sqrt(C)};
+     const metrics={r:r,shToEmpty:shToEmpty,n:n,shDur:shDur,
+       digPer:digPer,cycleSec:cycleSec,ppm:ppm,rolls:L*Math.sqrt(C),perfect:perfect};
      return {settings:settings,metrics:metrics};
    }
    function render(b){const m=b.metrics,S=b.settings,f=(x,p)=>Number(x).toFixed(p===undefined?2:p);
@@ -1985,11 +1997,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code></div>';
      const rows=[
        ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
-       ['Dig hold', S.DIG_CLICK_MS+' ms  (55000 ÷ dig speed)'],
+       ['Dig mode', m.perfect?('Perfect — '+S.DIG_CLICK_MS+' ms hold (55000 ÷ dig speed)'):('Fast spam — '+S.DIG_CLICK_MS+' ms')],
        ['Wait for fill after dig', S.DIG_FILL_MS+' ms  (190÷speed/dig)'],
-       ['Shakes to empty pan', m.shakeClicks+'  (capacity ÷ shake strength = '+f(m.shToEmpty)+')'],
-       ['Each shake click', S.SHAKE_CLICK_MS+' ms + '+S.SHAKE_CLICK_GAP_MS+' ms gap  (1000 ÷ '+f(m.r)+'/s)'],
-       ['Shake hold timeout', S.SHAKE_HOLD_MS+' ms'],
+       ['Shake', 'rapid-clicks until the bar empties · '+S.SHAKE_CLICK_MS+'+'+S.SHAKE_CLICK_GAP_MS+' ms each'],
+       ['Shake timeout', S.SHAKE_HOLD_MS+' ms  (~'+f(m.shToEmpty,1)+' shakes needed)'],
        ['Walk back into water', S.PAN_BACK_MAX_MS+' ms  (scaled by walk speed)'],
        ['Walk forward to land', S.DEPOSIT_MAX_MS+' ms'],
        ['Settle after landing', S.LAND_SETTLE_MS+' ms'],
@@ -1997,7 +2008,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      h+='<table>';for(let i=0;i<rows.length;i++)h+='<tr><td>'+rows[i][0]+'</td><td>'+rows[i][1]+'</td></tr>';h+='</table>';
      const el=document.getElementById('abreadout');if(el){el.innerHTML=h;el.classList.add('show');}
    }
-   window.setAutobuild=function(a){if(!a)return;for(const k in a){const el=document.getElementById(k);if(el&&a[k])el.value=a[k];}};
+   window.setAutobuild=function(a){if(!a)return;for(const k in a){const el=document.getElementById(k);if(!el)continue;if(el.type==='checkbox')el.checked=!!a[k];else if(a[k]!==''&&a[k]!=null)el.value=a[k];}};
    const gen=document.getElementById('abgen');
    if(gen)gen.onclick=async()=>{
      const b=build();
@@ -2005,7 +2016,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      try{await window.pywebview.api.save_config(collect());}catch(e){}
      try{await window.pywebview.api.save_autobuild({ab_luck:gv('ab_luck'),ab_cap:gv('ab_cap'),
        ab_ds:gv('ab_ds'),ab_dspeed:gv('ab_dspeed'),ab_ss:gv('ab_ss'),ab_sspeed:gv('ab_sspeed'),
-       ab_ws:gv('ab_ws'),ab_n:gv('ab_n')});}catch(e){}
+       ab_ws:gv('ab_ws'),ab_n:gv('ab_n'),ab_perfect:!!((document.getElementById('ab_perfect')||{}).checked)});}catch(e){}
      render(b);
      toast('Build generated & applied ✓ — Save settings keeps it');
    };

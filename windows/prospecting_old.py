@@ -718,6 +718,16 @@ def log(msg):
     print(f"[{now - _log_t0:7.2f}s] {msg}", flush=True)
 
 
+_phase_last = [None]
+
+
+def phase(name):
+    """Emit a one-word state for the pop-out pill (deduped)."""
+    if _phase_last[0] != name:
+        _phase_last[0] = name
+        print("__PHASE__ " + name, flush=True)
+
+
 # ---- Input engine (Windows SendInput) ---------------------------------------
 # Keys are sent as hardware SCANCODES (KEYEVENTF_SCANCODE) and mouse via
 # MOUSEEVENTF_* -- the most reliable way to drive Roblox on Windows.
@@ -1650,6 +1660,7 @@ def go_water(det):
     """HOLD S until the PAN cue (in the water), then keep holding a touch longer
     (WATER_EXTRA_BACK_MS) to walk a little FARTHER in before the shake -- the cue
     can fire right at the edge, where the shake sometimes misses."""
+    phase("Walking to water")
     t0 = time.perf_counter()
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
@@ -1687,6 +1698,7 @@ def do_shake(det):
     onto land WHILE the pan drains; we drop W when the Collect Deposit cue shows.
     Stop when the CAPACITY reads empty (capacity is the truth; the Shake cue
     sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
+    phase("Shaking")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
@@ -1742,6 +1754,7 @@ def go_land(det):
     """HOLD W forward (smooth) until the COLLECT DEPOSIT cue shows, then hold a
     touch longer (LAND_SETTLE_MS) to sit FIRMLY on the dirt. No S brake -- braking
     back toward the water is what made it bounce land<->water instead of digging."""
+    phase("Walking to land")
     t0 = time.perf_counter()
     key_down(KEY_W)
     reached = wait_until(det.on_deposit, DEPOSIT_MAX_MS, confirm=1)
@@ -1757,6 +1770,7 @@ def fill_to_full(det):
     NOT assume a dig count -- we watch the bar, so builds that need 2, 3, ... digs
     all work. The probe already did dig #1; we wait for it to fill, then top up
     with more PERFECT digs as needed (capped by MAX_DIGS_TO_FILL)."""
+    phase("Digging")
     digs = 1                                  # the probe dig already happened
     for i in range(MAX_DIGS_TO_FILL):
         if det.capacity_full():
@@ -1778,6 +1792,7 @@ def return_and_dig(det):
     fills on dirt, so the CAPACITY tells us the truth. A dig registers if the bar
     FILL RISES. We re-dig IN PLACE a few times before assuming we're off-land and
     nudging W (so a single non-registering dig can't cause a jittery nudge)."""
+    phase("Finding land")
     State.no_full += 1
     if State.no_full >= NO_FULL_LIMIT:
         # We keep digging/nudging but the capacity bar NEVER reads full -- almost
@@ -1841,6 +1856,7 @@ def recover(det, s):
     """Stronger corrective when stuck on the SAME situation for STUCK_TICKS.
     Recovery moves are JITTERED (short taps) so they can't sail past the target,
     even though the normal legs hold smoothly."""
+    phase("Recovering")
     if State.stats:
         State.stats.recoveries += 1
         post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
