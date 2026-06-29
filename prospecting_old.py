@@ -483,6 +483,7 @@ FR_SCAN_X          = 0            # x column to scan for the pink text
 FR_BOX_TOP         = 0            # y of the top of the list box
 FR_BOX_BOTTOM      = 0            # y of the bottom of the list box
 FR_SCAN_STEP       = 3            # vertical scan step (px)
+FR_SCAN_HOVER_MS   = 12           # dwell at each step as the cursor sweeps (ms)
 FR_FIND_TRIES      = 8            # scroll passes before giving up
 FR_SCROLL_STEPS    = 3            # wheel notches per scroll-down
 FR_SCROLL_WAIT_MS  = 250          # settle after each scroll (ms)
@@ -1085,10 +1086,13 @@ def fortune_river_recover():
     for attempt in range(max(1, FR_FIND_TRIES)):
         if not State.running:
             return False
+        move_cursor(FR_SCAN_X, top)                  # go to the x column, top of box
+        sleep_ms(FR_CLICK_SETTLE_MS)
         y = top
-        while y <= bot:
+        while y <= bot:                              # sweep the cursor DOWN the column
+            move_cursor(FR_SCAN_X, y)
+            sleep_ms(FR_SCAN_HOVER_MS)
             if _rgb_match(rgb_at(sct, FR_SCAN_X, y), FR_TEXT_RGB, FR_TEXT_TOL):
-                move_cursor(FR_SCAN_X, y)
                 sleep_ms(FR_CLICK_SETTLE_MS)
                 mouse_tap(60)
                 sleep_ms(FR_CLICK_SETTLE_MS)
@@ -1099,7 +1103,7 @@ def fortune_river_recover():
             y += max(1, FR_SCAN_STEP)
         if found:
             break
-        scroll_down(FR_SCROLL_STEPS)
+        scroll_down(FR_SCROLL_STEPS)                 # only scroll after a full sweep finds nothing
         sleep_ms(FR_SCROLL_WAIT_MS)
     if not found:
         log("FR-recover: Fortune River row NOT found -- hard stop")
