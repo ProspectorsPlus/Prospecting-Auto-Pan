@@ -117,7 +117,7 @@
   "SAFE_STOP_MAX_RETRIES": 3,
   "SMART_TIMING": false,
   "ADAPT_MISS_PCT": 0,
-  "X_PATTERN": true,
+  "X_PATTERN": false,
   "EASY_WATER_BACK_MS": 10,
   "EASY_LAND_FWD_MS": 0,
   "EASY_SHAKE_DELAY_MS": 0,
@@ -196,7 +196,8 @@
     "ab_sspeed": 1518,
     "ab_ws": 28,
     "ab_n": 3,
-    "ab_perfect": true
+    "ab_perfect": true,
+    "autopan_pph": 1241
   },
   "SHAKE_HOLD_DELAY_MS": 150
 }

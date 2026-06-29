@@ -1417,7 +1417,9 @@ def build_html():
         + '</div>'
         '<label class="abcheck"><input type="checkbox" id="ab_perfect" checked><span>Perfect dig &mdash; use the precise calculated dig hold. Off = fast 10&nbsp;ms spam (shards / speed builds).</span></label>'
         '<div class="calactions"><button type="button" class="btn" id="abgen">\u2728 Generate &amp; apply build</button></div>'
-        '<div class="abreadout" id="abreadout"></div></section>')
+        '<div class="abreadout" id="abreadout"></div>'
+        '<div class="abhead">Live build analysis</div>'
+        '<div class="abanalysis" id="abanalysis"><div class="abmut">Start the macro to collect timing and a tuning report here.</div></div></section>')
 
     # Settings tabs
     for title, items in SECTIONS:
@@ -1549,6 +1551,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .abreadout td{padding:4px 8px;border-top:1px solid var(--line)}
  .abreadout td:first-child{color:var(--mut)} .abreadout td:last-child{text-align:right;color:var(--txt)}
  .abcheck{display:flex;align-items:center;gap:9px;margin-top:14px;max-width:560px;color:var(--txt);font-size:13px;cursor:pointer} .abcheck input{width:16px;height:16px;flex:0 0 auto}
+ .abhead{margin-top:16px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-size:11px;font-weight:700}
+ .abanalysis{margin-top:8px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:14px;line-height:1.6;font-size:13px;max-width:560px}
+ .abanalysis table{width:100%;border-collapse:collapse} .abanalysis td{padding:4px 8px;border-top:1px solid var(--line)}
+ .abanalysis td:first-child{color:var(--mut)} .abanalysis td:last-child{text-align:right;color:var(--txt);font-variant:tabular-nums}
+ .abanalysis h4{margin:.1em 0 .4em;color:var(--accent-lit)} .abtips{margin:6px 0 0;padding-left:18px} .abtips li{margin:4px 0;color:var(--txt)} .abmut{color:var(--mut)}
  .tab.active .ti{opacity:1}
  .tab.active:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
@@ -1794,7 +1801,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);
    const _ap=window.AUTOPAN_PPH||0;
    if(_ap>0){const pct=((s.pans_per_hr||0)/_ap-1)*100;_set('st_vs',(pct>=0?'+':'')+Math.round(pct)+'%');}
-   else _set('st_vs','\u2014');};
+   else _set('st_vs','\u2014');
+   window._lastStats=s;if(window.__renderAnalysis)window.__renderAnalysis();};
  async function loadHistory(){let list=[];try{list=await window.pywebview.api.run_history();}catch(e){}
    const box=document.getElementById('histbox');if(!box)return;
    if(!list||!list.length){box.innerHTML='<div class="hempty">No runs yet \u2014 finish a session and it shows up here.</div>';return;}
@@ -2025,6 +2033,34 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      window.AUTOPAN_PPH=b.metrics.ppm*60;
      render(b);
      toast('Build generated & applied ✓ — Save settings keeps it');
+   };
+   function _row(a,b){return '<tr><td>'+a+'</td><td>'+b+'</td></tr>';}
+   function _ft(s){s=s||0;return Math.floor(s/60)+'m '+(s%60)+'s';}
+   window.__renderAnalysis=function(){
+     const s=window._lastStats;const el=document.getElementById('abanalysis');if(!el)return;
+     if(!s){el.innerHTML='<div class="abmut">Start the macro to collect timing and a tuning report here.</div>';return;}
+     const ap=window.AUTOPAN_PPH||0,pph=s.pans_per_hr||0,cyc=s.cycle_avg_ms||0;
+     const cycles=s.cycles||0,miss=s.shake_misses||0,nud=s.nudges||0,rec=s.recoveries||0,bo=s.breakouts||0,ssp=s.safe_stops||0,hs=s.hard_stops||0;
+     const att=cycles+miss,missR=att>0?miss/att*100:0,nudP=cycles>0?nud/cycles:0,recP=cycles>0?rec/cycles:0;
+     let h='<table>';
+     h+=_row('Runtime',_ft(s.runtime_s));
+     h+=_row('Pans',cycles+'  ('+pph+'/hr'+(ap>0?(' · '+(pph>=ap?'+':'')+Math.round((pph/ap-1)*100)+'% vs auto-pan'):'')+')');
+     h+=_row('Cycle time',cyc?(cyc+' ms avg · '+(s.cycle_min_ms||0)+'-'+(s.cycle_max_ms||0)+' ms · n='+(s.cycle_n||0)):'—');
+     h+=_row('Shake misses',miss+'  ('+missR.toFixed(0)+'% of attempts)');
+     h+=_row('Nudges',nud+'  ('+nudP.toFixed(2)+'/pan)');
+     h+=_row('Recoveries',rec+'  ('+recP.toFixed(2)+'/pan)');
+     h+=_row('Break-outs / safe / hard',bo+' / '+ssp+' / '+hs);
+     if(s.stop_reason)h+=_row('Last stop',s.stop_reason);
+     h+='</table>';
+     const tips=[];
+     if(missR>=12)tips.push('Shakes miss ~'+missR.toFixed(0)+'%. Raise <b>Wait after start-click before holding</b> by ~50 ms and/or <b>Shake overall timeout</b>. Make sure each pan starts IN the water.');
+     if(nudP>=1.0)tips.push('High nudging ('+nudP.toFixed(1)+'/pan). Increase <b>Max S walk-back</b> / <b>Extra back</b> and <b>Max W to land</b>, or re-run Guided calibration.');
+     if(recP>=0.5)tips.push('Frequent recoveries ('+recP.toFixed(2)+'/pan) usually mean a cue is mis-read - re-run Guided calibration and use Test detection.');
+     if(hs>0)tips.push('Hard-stopped '+hs+'x'+(s.stop_reason?(' ('+s.stop_reason+')'):'')+'. Check capacity calibration and the stop reason.');
+     if(ap>0&&cycles>=8){const pct=(pph/ap-1)*100;if(pct<-5)tips.push('Running '+Math.round(-pct)+'% slower than auto-pan. Biggest sinks: shake hold + walk-back - trim <b>Shake overall timeout</b> toward your real shake time and reduce walk-back if you overshoot.');else tips.push('Throughput healthy: '+(pct>=0?'+':'')+Math.round(pct)+'% vs auto-pan.');}
+     if(!tips.length)tips.push('No issues detected yet - let it run longer for a fuller picture.');
+     h+='<h4 style="margin-top:12px">Suggestions</h4><ul class="abtips">'+tips.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ul>';
+     el.innerHTML=h;
    };
  })();
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};

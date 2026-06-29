@@ -314,7 +314,7 @@ SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
 # now (so it reads not-full and is safe from this bail) -- only a shake that never
 # started stays full. So this can be fairly short to react FAST when a shake fails
 # to initiate (e.g. you clicked on land), without killing a real in-progress shake.
-SHAKE_BAIL_MS      = 500
+SHAKE_BAIL_MS      = 350
 # SMART BREAK-OUT: when the watchdog has recovered RECOVER_LIMIT times in a row and
 # we're still stuck, escalate -- a shake is probably ACTIVE and locking movement
 # (you can't walk mid-shake, but CLICKS still finish it). So click to finish it,
@@ -1046,7 +1046,20 @@ class SessionStats:
         self.hard_stops = 0
         self.relics_used = 0
         self.nudges = 0
+        self.shake_misses = 0      # shakes that did not empty the pan
+        self.breakouts = 0
+        self.cycle_times = []      # ms per completed pan cycle
+        self._last_cycle_t = self.start
         self.stop_reason = ""
+
+    def mark_cycle(self):
+        now = time.perf_counter()
+        dt = (now - self._last_cycle_t) * 1000.0
+        self._last_cycle_t = now
+        if 120 < dt < 60000:
+            self.cycle_times.append(dt)
+            if len(self.cycle_times) > 400:
+                self.cycle_times.pop(0)
 
     def runtime(self):
         return time.perf_counter() - self.start
@@ -1059,6 +1072,11 @@ class SessionStats:
                 "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0,
                 "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
                 "relics_used": self.relics_used, "nudges": self.nudges,
+                "shake_misses": self.shake_misses, "breakouts": self.breakouts,
+                "cycle_avg_ms": round(sum(self.cycle_times) / len(self.cycle_times)) if self.cycle_times else 0,
+                "cycle_min_ms": round(min(self.cycle_times)) if self.cycle_times else 0,
+                "cycle_max_ms": round(max(self.cycle_times)) if self.cycle_times else 0,
+                "cycle_n": len(self.cycle_times),
                 "stop_reason": self.stop_reason}
 
 
@@ -1630,40 +1648,68 @@ def go_water(det):
         f"budget {budget}ms) ({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
+def _hold_keepalive():
+    try:
+        _post(Quartz.CGEventCreateMouseEvent(
+            None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
+            Quartz.kCGMouseButtonLeft))
+    except Exception:
+        pass
+
+
 def do_shake(det):
-    """OLD HOLD METHOD (reliable): one click to TRIGGER the shake animation, a
-    short pause, then HOLD the mouse down to shake the pan out. Rapid multi-click
-    shaking dragged into dig mode / didn't finish, so we hold instead -- the hold
-    is kept alive with periodic drag events (a plain static press gets dropped in
-    Roblox). W-momentum glides us toward land during the hold; we drop W when the
-    Collect Deposit cue shows. Stops when the CAPACITY reads empty, or on timeout."""
+    """HOLD METHOD with fast-miss detection. One (or two) clicks to TRIGGER the
+    shake animation, a short pause, then HOLD LMB (drag-kept-alive) to shake the
+    pan out. The CAPACITY draining is the truth that the shake started; if it is
+    NOT draining well into the hold, we BAIL fast so the supervisor retries
+    immediately instead of holding the whole timeout. W glides us to land."""
     phase("Shaking")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)
-    w_state = [False]
+    w_down = False
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W)
-        w_state[0] = True
-    # 1) ONE click to start the shake animation
-    mouse_tap(max(8, SHAKE_CLICK_MS))
-    # 2) brief wait for the animation to engage before holding
-    sleep_ms(SHAKE_HOLD_DELAY_MS)
-    started = [False]
-
-    def _stop():
-        # side effects each poll: note when shaking begins, drop W on landing
-        if not started[0] and det.on_shake():
-            started[0] = True
-        if w_state[0] and det.on_deposit():
+        w_down = True
+    base = det.cap_fill()
+    started = False
+    # 1) initiate -- click; if it didn't catch (no drain), click once more
+    for _ in range(2):
+        if not State.running:
+            break
+        mouse_tap(max(8, SHAKE_CLICK_MS))
+        sleep_ms(SHAKE_HOLD_DELAY_MS)
+        if det.on_shake() or det.cap_fill() < base - 0.03 or det.pan_empty():
+            started = True
+            break
+    # 2) HOLD to drain the pan
+    mouse_down()
+    hold_start = time.perf_counter()
+    emptied = bailed = False
+    hits = 0
+    end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
+    while State.running and time.perf_counter() < end:
+        _hold_keepalive()
+        cf = det.cap_fill()
+        if not started and cf < base - 0.03:
+            started = True
+        if w_down and det.on_deposit():
             key_up(KEY_W)
-            w_state[0] = False
-        return det.pan_empty()
-
-    # 3) HOLD LMB to shake until the pan empties (or SHAKE_HOLD_MS times out)
-    min_hold = min(SHAKE_HOLD_MS, 100)   # release promptly once empty (don't re-fill)
-    emptied = hold_mouse(SHAKE_HOLD_MS, stop_fn=_stop, confirm=2, min_ms=min_hold)
-    if w_state[0]:
+            w_down = False
+        if cf < CAP_EMPTY_FRAC:
+            hits += 1
+            if hits >= 2:
+                emptied = True
+                break
+        else:
+            hits = 0
+        # FAST BAIL: no drain well into the hold -> the shake didn't take, retry
+        if not started and (time.perf_counter() - hold_start) * 1000 > SHAKE_BAIL_MS:
+            bailed = True
+            break
+        sleep_ms(12)
+    mouse_up()
+    if w_down:
         key_up(KEY_W)
     if not emptied:
         emptied = det.pan_empty()
@@ -1674,11 +1720,14 @@ def do_shake(det):
         State.water_fails = 0
         if State.stats:
             State.stats.cycles += 1
+            State.stats.mark_cycle()
         sleep_ms(POST_SHAKE_SETTLE_MS)
     else:
         State.shake_fails += 1
+        if State.stats:
+            State.stats.shake_misses += 1
     _adapt_shake(emptied)
-    log(f"    shake done: started={started[0]} emptied={emptied} "
+    log(f"    shake done: started={started} emptied={emptied} bail={bailed} "
         f"fails={State.shake_fails} ({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
@@ -1814,6 +1863,8 @@ def break_out(det, s):
     forward to get off the water edge. After this we reset the counters and let
     normal logic try again ('do as if it was normal'). Returns True if it emptied."""
     log("    ** BREAK-OUT: click to finish any active shake, then reposition **")
+    if State.stats:
+        State.stats.breakouts += 1
     if s.full:
         end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
         while time.perf_counter() < end and State.running:
