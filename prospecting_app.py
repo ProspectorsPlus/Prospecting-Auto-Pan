@@ -814,6 +814,73 @@ class Api:
             except Exception:
                 pass
             _overlay = None
+
+    def _grab_full(self):
+        import mss
+        import numpy as np
+        with mss.mss() as sct:
+            raw = sct.grab(sct.monitors[1])
+        return np.asarray(raw)            # (h, w, 4) BGRA
+
+    def wizard_detect_capacity(self):
+        """Find the FULL (yellow) capacity bar by scanning the whole screen for
+        the longest horizontal run of yellow, and save its left/right ends."""
+        try:
+            import numpy as np
+            arr = self._grab_full()
+            b = arr[:, :, 0].astype(np.int16)
+            g = arr[:, :, 1].astype(np.int16)
+            r = arr[:, :, 2].astype(np.int16)
+            yellow = (r >= 140) & (g >= 140) & (b <= np.minimum(r, g) - 45)
+            counts = yellow.sum(axis=1)
+            y = int(counts.argmax())
+            if int(counts[y]) < 60:
+                return {"ok": False, "error": "No full yellow bar found. Dig until the "
+                        "capacity bar is COMPLETELY full, then Detect again (or pick manually)."}
+            xs = np.where(yellow[y])[0]
+            breaks = np.where(np.diff(xs) > 4)[0]
+            segs = np.split(xs, breaks + 1)
+            seg = max(segs, key=len)
+            left, right = int(seg[0]), int(seg[-1])
+            if right - left < 60:
+                return {"ok": False, "error": "Bar looks too short — pick manually instead."}
+            hexv = "#%02x%02x%02x" % (int(r[y, right]), int(g[y, right]), int(b[y, right]))
+            self.save_pixels({"CAP_FULL_PIXEL": [right, y], "CAP_LEFT_PIXEL": [left, y]},
+                             {"CAP_FULL_PIXEL": hexv})
+            return {"ok": True, "left": [left, y], "right": [right, y], "width": right - left}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def wizard_detect_cue(self, which):
+        """Find the white HUD prompt (Pan / Shake / Collect Deposit) in the lower
+        centre of the screen and save its pixel. Snaps to an actual white pixel."""
+        try:
+            import numpy as np
+            arr = self._grab_full()
+            H, W = arr.shape[0], arr.shape[1]
+            b = arr[:, :, 0].astype(np.int16)
+            g = arr[:, :, 1].astype(np.int16)
+            r = arr[:, :, 2].astype(np.int16)
+            lo = np.minimum(np.minimum(r, g), b)
+            hi = np.maximum(np.maximum(r, g), b)
+            white = (lo >= 200) & ((hi - lo) <= 22)
+            mask = np.zeros_like(white)
+            y0, y1 = int(H * 0.55), int(H * 0.98)
+            x0, x1 = int(W * 0.18), int(W * 0.82)
+            mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
+            ys, xs = np.where(mask)
+            if len(xs) < 25:
+                return {"ok": False, "error": "Could not see the prompt. Make sure only that "
+                        "one prompt is showing at the bottom, then Detect again (or pick manually)."}
+            cx, cy = float(xs.mean()), float(ys.mean())
+            k = int(((xs - cx) ** 2 + (ys - cy) ** 2).argmin())
+            px, py = int(xs[k]), int(ys[k])
+            if which not in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
+                return {"ok": False, "error": "Unknown cue."}
+            self.save_pixels({which: [px, py]}, {which: "#ffffff"})
+            return {"ok": True, "pixel": [px, py]}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
         try:
             _pill = webview.create_window(
                 "Prospectors Plus", html=PILL_HTML, js_api=self,
@@ -1010,7 +1077,8 @@ def build_html():
         '<b>Auto-calibrate</b> below — it finds the game window and places every '
         'spot for you. Manual calibration is only a fallback.</p></div>'
         '<div class="autocal">'
-        '  <button type="button" id="autocal" class="btn">⚡ Auto-calibrate (detect Roblox)</button>'
+        '  <button type="button" id="wizbtn" class="btn">✨ Guided calibration (recommended)</button>'
+        '  <button type="button" id="autocal" class="btn2">⚡ Auto-calibrate (detect Roblox)</button>'
         '  <button type="button" id="detectwin" class="btn2">Detect Roblox window</button>'
         '  <div class="winstat" id="winstat">Roblox window: not checked yet</div>'
         '  <button type="button" id="dettest" class="btn2">Test detection (live)</button>'
@@ -1124,6 +1192,16 @@ def build_html():
             f'<p class="chint">{hint}</p></div>'
             f'<div class="rows">{"".join(rows)}</div></section>')
 
+    panels.append(
+        '<div id="wizard" class="wizwrap"><div class="wiz">'
+        '<div class="wizhd"><span class="wizstep" id="wizstep"></span>'
+        '<button type="button" class="btn2" id="wizx">✕</button></div>'
+        '<h2 id="wiztitle"></h2><p class="chint" id="wizbody"></p>'
+        '<div class="wizres" id="wizresult"></div>'
+        '<div class="wizact"><button type="button" class="btn" id="wizdetect">Detect</button>'
+        '<button type="button" class="btn2" id="wizmanual">Pick manually</button>'
+        '<button type="button" class="btn2" id="wiznext">Skip ›</button></div>'
+        '<div class="wizdots" id="wizdots"></div></div></div>')
     nav_html = {n["id"]: n["html"] for n in navs}
     PINNED = ["run", "cal", "relics", "hist", "keys"]
     GROUPS = [
@@ -1199,6 +1277,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .navgroup.collapsed .groupkids{display:none}
  .tab.hidden,.navgroup.hidden{display:none}
  .kb{min-width:120px;text-align:center;font-variant:tabular-nums} .kb.armed{background:var(--accent);color:#241a02}
+ .wizwrap{position:fixed;inset:0;background:rgba(8,7,6,.62);display:none;align-items:center;justify-content:center;z-index:50}
+ .wiz{background:var(--panel);border:1px solid var(--line2);border-radius:16px;padding:22px;width:440px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+ .wizhd{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+ .wizstep{color:var(--accent-lit);font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+ .wiz h2{margin:.15em 0 .35em} .wiz .chint{font-size:14px;line-height:1.55}
+ .wizres{min-height:22px;margin:10px 0;font-weight:600}
+ .wizres .ok{color:var(--teal-lit)} .wizres .no{color:#e0a07a}
+ .wizact{display:flex;gap:8px;margin-top:6px} .wizact .btn{flex:1}
+ .wizdots{display:flex;gap:6px;justify-content:center;margin-top:14px}
+ .wizdots i{width:7px;height:7px;border-radius:50%;background:var(--line2)} .wizdots i.on{background:var(--accent-lit)}
  .tab.active .ti{opacity:1}
  .tab.active:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
@@ -1505,6 +1593,31 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    try{window.pywebview.api.start_overlay_calibrate(key,lab);}catch(e){toast('Overlay failed');}});
  window.__calRefresh=async()=>{try{const s=await window.pywebview.api.get_state();
    setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});toast('Calibrated ✓');}catch(e){}};
+ (function(){const A=()=>window.pywebview.api;
+   const WIZ=[
+    {t:'Guided calibration',b:'This sets up every detection spot for you. Keep Roblox open with the HUD visible, then click Detect to find the game window.',d:async()=>{const w=await A().detect_roblox();return (w&&w.found)?{ok:true,msg:'Found Roblox '+w.w+'×'+w.h}:{ok:false,error:'Roblox not found — open the game, then Detect.'};},m:null},
+    {t:'Capacity bar',b:'Dig until your capacity bar is <b>completely full</b> (all yellow). Then click Detect — it scans the screen for the bar.',d:()=>A().wizard_detect_capacity(),m:'CAP_FULL_PIXEL'},
+    {t:'\u201cPan\u201d prompt',b:'Stand in the <b>water</b> so the white \u201cPan\u201d prompt shows at the bottom. Then Detect.',d:()=>A().wizard_detect_cue('PAN_PIX'),m:'PAN_PIX'},
+    {t:'\u201cCollect Deposit\u201d prompt',b:'Step onto <b>land</b> so \u201cCollect Deposit\u201d shows. Then Detect.',d:()=>A().wizard_detect_cue('DEPOSIT_PIX'),m:'DEPOSIT_PIX'},
+    {t:'\u201cShake\u201d prompt',b:'Begin a <b>shake</b> so the \u201cShake\u201d prompt shows. Then Detect.',d:()=>A().wizard_detect_cue('SHAKE_PIX'),m:'SHAKE_PIX'},
+    {t:'All set \u2713',b:'Calibration saved. Re-run anytime, or fine-tune any single spot manually in the list below. Use <b>Test detection</b> to confirm.',d:null,m:null}];
+   let i=0;const wrap=document.getElementById('wizard');const W=id=>document.getElementById(id);
+   function render(){const s=WIZ[i];W('wizstep').textContent='Step '+(i+1)+' / '+WIZ.length;
+     W('wiztitle').textContent=s.t;W('wizbody').innerHTML=s.b;W('wizresult').innerHTML='';
+     W('wizdetect').style.display=s.d?'':'none';W('wizmanual').style.display=s.m?'':'none';
+     W('wiznext').textContent=(i===WIZ.length-1)?'Done':'Skip ›';
+     W('wizdots').innerHTML=WIZ.map((_,k)=>'<i class="'+(k===i?'on':'')+'"></i>').join('');}
+   function openW(){i=0;render();wrap.style.display='flex';}function closeW(){wrap.style.display='none';}
+   W('wizx').onclick=closeW;
+   W('wiznext').onclick=()=>{if(i>=WIZ.length-1){closeW();return;}i++;render();};
+   W('wizdetect').onclick=async()=>{const s=WIZ[i];const btn=W('wizdetect');btn.disabled=true;const o=btn.textContent;btn.textContent='Detecting…';
+     let r;try{r=await s.d();}catch(e){r={ok:false,error:String(e)};}btn.disabled=false;btn.textContent=o;
+     if(r&&r.ok){let d=r.msg||(r.pixel?('set ('+r.pixel.join(', ')+')'):(r.right?('bar '+r.left.join(',')+' \u2192 '+r.right.join(',')):'done'));
+       W('wizresult').innerHTML='<span class="ok">\u2713 '+d+'</span>';try{window.__calRefresh&&window.__calRefresh();}catch(e){}
+       W('wiznext').textContent=(i===WIZ.length-1)?'Done':'Next ›';}
+     else{W('wizresult').innerHTML='<span class="no">'+((r&&r.error)||'Could not detect')+'</span>';}};
+   W('wizmanual').onclick=()=>{const s=WIZ[i];if(s.m){try{A().start_overlay_calibrate(s.m,s.t);}catch(e){}}};
+   const wb=document.getElementById('wizbtn');if(wb)wb.onclick=openW;})();
  let fr={text:null,top:null,bottom:null,open:null,home:null};
  function setFR(f){if(!f)return;
    if(f.FR_SCAN_X){fr.text={scan_x:f.FR_SCAN_X,rgb:f.FR_TEXT_RGB};
