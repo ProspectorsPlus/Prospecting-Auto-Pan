@@ -41,64 +41,64 @@
   "RELICS": [],
   "RELICS_ENABLED": false,
   "CAP_FULL_PIXEL": [
-    1122,
-    894
+    1125,
+    878
   ],
   "DEPOSIT_PIX": [
-    768,
-    986
+    770,
+    987
   ],
   "PAN_PIX": [
-    844,
-    983
+    848,
+    981
   ],
   "SHAKE_PIX": [
     831,
-    985
+    986
   ],
   "DIG_TRIGGER_PIXEL": [
     1082,
     530
   ],
   "CAP_LEFT_PIXEL": [
-    678,
-    895
+    676,
+    878
   ],
-  "CAP_BAR_WIDTH": 444,
+  "CAP_BAR_WIDTH": 449,
   "CALIB_WINDOW_ORIGIN": [
     1,
     40
   ],
   "CALIB_WINDOW_RECT": [
-    0,
-    39,
+    1,
+    40,
     1800,
     1087
   ],
   "PIXEL_RATIOS": {
     "CAP_FULL_PIXEL": [
-      0.62333,
-      0.78657
+      0.62444,
+      0.77093
     ],
     "CAP_LEFT_PIXEL": [
-      0.37667,
-      0.78749
+      0.375,
+      0.77093
     ],
     "DEPOSIT_PIX": [
-      0.42667,
+      0.42722,
       0.87121
     ],
     "PAN_PIX": [
-      0.46889,
-      0.86845
+      0.47056,
+      0.86569
     ],
     "SHAKE_PIX": [
-      0.46167,
+      0.46111,
       0.87029
     ],
     "DIG_TRIGGER_PIXEL": [
-      0.60111,
-      0.4517
+      0.60056,
+      0.45078
     ]
   },
   "NOTIFY_START": false,
@@ -109,7 +109,9 @@
   "NOTIFY_ERRORS": true,
   "ACCESS_OK": true,
   "ACCESS_HASH": "71786532ffb0949f55898b91d3876a8793240baa9c466519c067fabb75c72dd7",
-  "PIXEL_COLORS": {},
+  "PIXEL_COLORS": {
+    "SHAKE_PIX": "#ffffff"
+  },
   "SAFE_STOP_RETRY": true,
   "SAFE_STOP_RETRY_SEC": 60,
   "SAFE_STOP_MAX_RETRIES": 3,
@@ -159,5 +161,6 @@
   "FR_END_A_MS": 600,
   "FR_OPEN_TRIES": 3,
   "FR_CROSS_CONFIRM": 3,
-  "NOTIFY_SCREENSHOT": true
+  "NOTIFY_SCREENSHOT": true,
+  "AUTO_CALIBRATE": false
 }

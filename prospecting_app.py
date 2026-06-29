@@ -353,6 +353,7 @@ class Api:
         # ratio profile at startup (that profile is the dev's screen and is what
         # made digs miss after a good calibration).
         cur["AUTO_CALIBRATE"] = False
+        cur["WINDOW_RELATIVE"] = False
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
@@ -805,10 +806,14 @@ class Api:
         key = getattr(self, "_overlay_key", None)
         if p and key:
             x, y, hexv = p["x"], p["y"], p["hex"]
-            if key == "CAP":
-                cl = getattr(self, "_overlay_cap_left", None) or [max(0, x - 200), y]
-                self.save_pixels({"CAP_FULL_PIXEL": [x, y], "CAP_LEFT_PIXEL": cl},
-                                 {"CAP_FULL_PIXEL": hexv})
+            if key in ("CAP", "CAP_RIGHT"):
+                px = {"CAP_FULL_PIXEL": [x, y]}
+                cl = getattr(self, "_overlay_cap_left", None)
+                if key == "CAP" and cl:
+                    px["CAP_LEFT_PIXEL"] = cl
+                self.save_pixels(px, {"CAP_FULL_PIXEL": hexv})
+            elif key == "CAP_LEFT":
+                self.save_pixels({"CAP_LEFT_PIXEL": [x, y]})
             elif key == "FR_TEXT":
                 self.save_pixels({}, None, {"FR_SCAN_X": x,
                                             "FR_TEXT_RGB": [p["r"], p["g"], p["b"]]})
@@ -949,7 +954,7 @@ class Api:
             arr = self._grab_full()
         except Exception as e:
             return {"error": str(e)}
-        if kind == "CAP":
+        if kind in ("CAP", "CAP_RIGHT", "CAP_LEFT"):
             det = self._detect_capacity_px(arr)
         elif kind in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
             det = self._detect_cue_px(arr, kind)
@@ -968,20 +973,17 @@ class Api:
         self._overlay_proposed = None
         self._overlay_cap_left = None
         if det.get("ok"):
-            if kind == "CAP":
-                lx, ly = det["left"]
-                rx, ry = det["right"]
-                px = arr[ry, rx]
-                self._overlay_cap_left = [lx, ly]
-                self._overlay_pending = {"x": rx, "y": ry, "r": int(px[2]),
-                                         "g": int(px[1]), "b": int(px[0]),
-                                         "hex": "#%02x%02x%02x" % (int(px[2]), int(px[1]), int(px[0]))}
+            if kind in ("CAP", "CAP_RIGHT"):
+                tx, ty = det["right"]
+                self._overlay_cap_left = det.get("left")
+            elif kind == "CAP_LEFT":
+                tx, ty = det["left"]
             else:
-                x, y = det["pixel"]
-                px = arr[y, x]
-                self._overlay_pending = {"x": x, "y": y, "r": int(px[2]),
-                                         "g": int(px[1]), "b": int(px[0]),
-                                         "hex": "#%02x%02x%02x" % (int(px[2]), int(px[1]), int(px[0]))}
+                tx, ty = det["pixel"]
+            px = arr[ty, tx]
+            self._overlay_pending = {"x": tx, "y": ty, "r": int(px[2]),
+                                     "g": int(px[1]), "b": int(px[0]),
+                                     "hex": "#%02x%02x%02x" % (int(px[2]), int(px[1]), int(px[0]))}
             self._overlay_proposed = dict(self._overlay_pending)
         try:
             if _overlay is not None:
@@ -1716,7 +1718,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  (function(){const A=()=>window.pywebview.api;
    const WIZ=[
     {t:'Guided calibration',b:'This sets up every detection spot for you. Keep Roblox open with the HUD visible, then click Detect to find the game window.',d:async()=>{const w=await A().detect_roblox();return (w&&w.found)?{ok:true,msg:'Found Roblox '+w.w+'×'+w.h}:{ok:false,error:'Roblox not found — open the game, then Detect.'};},m:null},
-    {t:'Capacity bar',b:'Dig until your capacity bar is <b>completely full</b> (all yellow). Then Detect — review the red ✕ on the bar and Confirm (or Redo).',d:()=>A().wizard_propose('CAP','Capacity bar'),m:null},
+    {t:'Capacity bar — RIGHT end',b:'Dig until your capacity bar is <b>completely full</b> (all yellow). Detect — the red ✕ should sit on the <b>right tip</b>. Confirm (or Redo).',d:()=>A().wizard_propose('CAP_RIGHT','Capacity right end'),m:null},
+    {t:'Capacity bar — LEFT end',b:'Keep the bar full. Detect — the red ✕ should sit on the <b>left tip</b> (where the bar starts). Confirm (or Redo). This sets the bar width the macro watches to register digs.',d:()=>A().wizard_propose('CAP_LEFT','Capacity left end'),m:null},
     {t:'\u201cPan\u201d prompt',b:'Stand in the <b>water</b> so the white \u201cPan\u201d prompt shows at the bottom. Then Detect.',d:()=>A().wizard_propose('PAN_PIX','Pan'),m:null},
     {t:'\u201cCollect Deposit\u201d prompt',b:'Step onto <b>land</b> so \u201cCollect Deposit\u201d shows. Then Detect.',d:()=>A().wizard_propose('DEPOSIT_PIX','Collect Deposit'),m:null},
     {t:'\u201cShake\u201d prompt',b:'Begin a <b>shake</b> so the \u201cShake\u201d prompt shows. Then Detect.',d:()=>A().wizard_propose('SHAKE_PIX','Shake'),m:null},
