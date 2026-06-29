@@ -1873,7 +1873,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        d=Math.max(1,gv('ab_dspeed')),s=Math.max(1,gv('ab_ss')),ss=gv('ab_sspeed'),
        wsR=gv('ab_ws'),ws=wsR>0?wsR:16,nOv=gv('ab_n');
      const r=rOf(ss);
-     const n=nOv>0?Math.round(nOv):Math.max(1,Math.ceil(C/DS));
+     const n=nOv>0?Math.round(nOv):Math.max(1,Math.ceil(C/(1.5*DS)));
      const shToEmpty=C/s, shakeClicks=Math.max(1,Math.ceil(shToEmpty));
      const cyc=1000/Math.max(0.1,r);
      const clickMs=cl(cyc*0.55,10,140), gapMs=cl(cyc*0.45,6,140);
@@ -1900,7 +1900,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      let h='<h4>Computed for your stats</h4>';
      h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code></div>';
      const rows=[
-       ['Digs to fill pan', m.n+'  (capacity ÷ dig strength)'],
+       ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
        ['Dig hold', S.DIG_CLICK_MS+' ms  (55000 ÷ dig speed)'],
        ['Wait for fill after dig', S.DIG_FILL_MS+' ms  (190÷speed/dig)'],
        ['Shakes to empty pan', m.shakeClicks+'  (capacity ÷ shake strength = '+f(m.shToEmpty)+')'],
