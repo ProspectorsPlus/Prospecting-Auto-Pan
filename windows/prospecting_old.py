@@ -346,7 +346,7 @@ NO_FULL_LIMIT       = 8      # if the pan never reads FULL this many cycles in a
 TREASURE_MODE        = False
 TREASURE_DIGS        = 1     # how many digs per chest before strafing on
 TREASURE_DIG_MS      = 8     # quick dig click length (5-10 ms)
-TREASURE_DIG_GAP_MS  = 60    # settle after the dig before strafing
+TREASURE_DIG_GAP_MS  = 12000 # delay between each dig click (slow chest dig animation)
 TREASURE_MOVE_MAX_MS = 2500  # safety cap on the strafe before moving on
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We

@@ -40,7 +40,7 @@ SECTIONS = [
         ("TREASURE_MODE",        "Treasure Chest mode (no shake, strafe L/R)", "bool", False),
         ("TREASURE_DIGS",        "Digs per chest before strafing",             "int", 1),
         ("TREASURE_DIG_MS",      "Quick dig click (ms)",                       "int", 8),
-        ("TREASURE_DIG_GAP_MS",  "Settle after dig before strafing (ms)",      "int", 60),
+        ("TREASURE_DIG_GAP_MS",  "Delay between dig clicks (ms)",               "int", 12000),
         ("TREASURE_MOVE_MAX_MS", "Max strafe before moving on (ms)",           "int", 2500),
     ]),
     ("Mode / Dig", [
@@ -175,7 +175,7 @@ HELP = {
                      "-- alternating sides. Uses the Deposit pixel as the Collect cue.",
     "TREASURE_DIGS": "How many digs to do at each chest before strafing on. Raise it if the dig animation is slow, so the dig finishes before it moves.",
     "TREASURE_DIG_MS": "Length of the quick dig click in Treasure mode (5-10 ms).",
-    "TREASURE_DIG_GAP_MS": "Pause after the dig before strafing to the next chest.",
+    "TREASURE_DIG_GAP_MS": "How long to wait between each dig click. The chest dig animation is slow, so this keeps clicks from stacking. About 12000 ms (12 s) is a good start.",
     "TREASURE_MOVE_MAX_MS": "Safety cap: stop strafing after this long even if the Collect cue "
                             "never appears, so it cannot run sideways forever.",
     "EASY_WATER_BACK_MS": "Walk back into the water this many ms further before shaking. "
