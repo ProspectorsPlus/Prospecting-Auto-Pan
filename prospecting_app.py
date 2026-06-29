@@ -1910,10 +1910,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const wf=Math.max(0.45,Math.min(1.4,16/Math.max(8,ws)));
      const panBack=cl(220*wf,90,420), depMax=cl(1300*wf,500,2500),
        landSet=cl(60*wf,20,160), landNudge=cl(95*wf,40,220);
-     // auto-pan also walks water<->sand each cycle; that time scales with walk
-     // speed (calibrated: ws 24 -> ~0.61s). The calculator's flat 1.5 misses it.
-     const walkT=14.6/ws;
-     const cycleSec=C/(r*s)+1.5+190*n/d+walkT, ppm=cycleSec>0?60/cycleSec:0;
+     // Real auto-pan adds a ~constant ~0.62s/cycle beyond the calculator's
+     // formula (pan reset / collect / transitions). Measured at two builds
+     // (ws 24 -> 25/min, ws 34 -> 19/min); walk speed had little effect in range.
+     const overhead=0.62;
+     const cycleSec=C/(r*s)+1.5+190*n/d+overhead, ppm=cycleSec>0?60/cycleSec:0;
      const settings={PERFECT:false,DIG_CLICK_MS:digHold,DIG_SPEED:Math.round(d),
        MAX_DIGS_TO_FILL:n+1,DIG_FILL_MS:fillMs,PRE_DIG_SETTLE_MS:60,
        PAN_BACK_MAX_MS:panBack,WATER_EXTRA_BACK_MS:0,SHAKE_MOMENTUM_W:true,
@@ -1929,7 +1930,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    }
    function render(b){const m=b.metrics,S=b.settings,f=(x,p)=>Number(x).toFixed(p===undefined?2:p);
      let h='<h4>Computed for your stats</h4>';
-     h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code> &middot; auto-pan <code>'+Math.round(m.ppm*60)+'/hr</code> <span style="color:var(--mut)">(incl. walk-speed travel)</span></div>';
+     h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code> &middot; auto-pan <code>'+Math.round(m.ppm*60)+'/hr</code> <span style="color:var(--mut)">(incl. measured ~0.62s/cycle overhead)</span></div>';
      const rows=[
        ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
        ['Mode', m.hyper?('⚡ Hyperspeed (exact '+m.n+' digs, animation-skip)'):'Standard'],
