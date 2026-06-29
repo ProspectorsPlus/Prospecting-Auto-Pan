@@ -698,6 +698,63 @@ class Api:
             self.proc = None
         return "stopped"
 
+    def is_running(self):
+        return self.proc is not None
+
+    def popout(self):
+        """Condense into a small always-on-top draggable pill; hide the main
+        window. Click the pill's restore button (or call restore) to come back."""
+        global _pill, _window
+        try:
+            import webview
+        except Exception:
+            return "no-webview"
+        if _pill is not None:
+            try:
+                _pill.show()
+                _pill.on_top = True
+            except Exception:
+                pass
+            return "ok"
+        try:
+            _pill = webview.create_window(
+                "Prospectors Plus", html=PILL_HTML, js_api=self,
+                width=224, height=58, frameless=True, on_top=True,
+                easy_drag=True, resizable=False, background_color="#1a1816")
+        except Exception as e:
+            print("[pill] create failed: %s" % e)
+            return "err"
+        try:
+            if _window is not None:
+                _window.hide()
+        except Exception:
+            pass
+        return "ok"
+
+    def restore(self):
+        """Show the main window again and close the pill."""
+        global _pill, _window
+        try:
+            if _window is not None:
+                _window.show()
+        except Exception:
+            pass
+        if _pill is not None:
+            try:
+                _pill.destroy()
+            except Exception:
+                pass
+            _pill = None
+        return "ok"
+
+    def toggle_popout(self):
+        """Flip between the pill and the full window (used by the hotkey)."""
+        if _pill is not None:
+            self.restore()
+        else:
+            self.popout()
+        return "ok"
+
     def _pump(self, proc):
         for line in iter(proc.stdout.readline, ""):
             line = line.rstrip("\n")
@@ -717,6 +774,35 @@ class Api:
 
 
 _window = None
+_pill = None
+
+PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
+ html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:600 13px/1 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
+ .pill{display:flex;align-items:center;gap:8px;height:54px;padding:0 8px 0 12px;border:1px solid #423d35;border-radius:14px;background:#1f1d1a;box-sizing:border-box}
+ .drag{flex:1;display:flex;align-items:center;gap:8px;cursor:move}
+ .dot{width:9px;height:9px;border-radius:50%;background:#6a6253}
+ .dot.on{background:#7faf5d;animation:pulse 1.6s infinite}
+ @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(127,175,93,.5)}70%{box-shadow:0 0 0 6px rgba(127,175,93,0)}100%{box-shadow:0 0 0 0 rgba(127,175,93,0)}}
+ .lab{font-weight:700;letter-spacing:-.01em} .lab b{color:#e0b873}
+ button{font:inherit;border:0;border-radius:9px;padding:8px 11px;cursor:pointer;color:#241a02}
+ .go{background:#7faf5d} .st{background:#c2924c} .ex{background:#2a2418;color:#e9e0cf;padding:8px 9px}
+</style></head><body>
+ <div class="pill">
+   <div class="drag"><span class="dot" id="dot"></span><span class="lab">Prospectors <b>Plus</b></span></div>
+   <button id="toggle" class="go">Start</button>
+   <button id="expand" class="ex" title="Back to app">&#9635;</button>
+ </div>
+<script>
+ const api=()=>window.pywebview&&window.pywebview.api;
+ let running=false;
+ function paint(){document.getElementById("dot").className="dot"+(running?" on":"");
+   const b=document.getElementById("toggle");b.textContent=running?"Stop":"Start";b.className=running?"st":"go";}
+ async function poll(){try{running=await api().is_running();}catch(e){}paint();}
+ document.getElementById("toggle").onclick=async()=>{
+   try{if(running){await api().stop();running=false;}else{await api().launch();running=true;}}catch(e){}paint();};
+ document.getElementById("expand").onclick=()=>{try{api().restore();}catch(e){}};
+ setInterval(poll,1000);poll();
+</script></body></html>'''
 
 
 def _emit_log(text):
@@ -1187,6 +1273,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <button class="btn2" id="savebuild">Save build</button>
    <select class="topfield sm" id="buildlist"><option value="">Load build…</option></select>
    <button class="btn2" id="delbuild" title="Delete selected build">✕</button>
+   <button class="btn2" id="popout" title="Pop out a floating control">⤢ Pop out</button>
    <button class="btn" id="savebtn">Save settings</button>
  </div>
  <div class="body">
@@ -1377,6 +1464,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  $('#pv1').onclick=()=>preset(V1); $('#pv2').onclick=()=>preset(V2); $('#pdef').onclick=()=>preset(DEF);
  // save / run
  $('#savebtn').onclick=async()=>{const n=await window.pywebview.api.save_config(collect());toast('Saved '+n+' settings');};
+ $('#popout').onclick=()=>{try{window.pywebview.api.popout();}catch(e){}};
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
