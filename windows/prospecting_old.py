@@ -161,10 +161,6 @@ YEL_BLUE_GAP      = 45             # ...and blue must be <= min(r,g) - this
 # so the shake-hold can stop the instant the pan is done, no dead pause.
 CAP_BAR_WIDTH     = 440
 CAP_EMPTY_FRAC    = 0.04           # yellow fraction below this -> pan is empty
-CAP_SEGMENTS      = 8             # split the capacity bar into this many slices
-SHAKE_STOP_SEGMENTS = 1           # stop shaking when this many (or fewer) slices remain
-                                 #   filled -> the last bit empties from the in-flight
-                                 #   click, so no extra click bleeds into a dig
 # "Cap STARTED filling" detector: the START (left end) of the bar goes from gray
 # to coloured the instant the dig registers. We move as soon as it STARTS (the
 # bar is a slider; no need to wait for it to finish). gray = flat (low spread),
@@ -277,7 +273,6 @@ SHAKE_CLICKS       = 0      # EXACT number of shake clicks (0 = auto: shake unti
                             # shake cleanly so no extra click bleeds into the dig.
 SHAKE_CLICK_GAP_MS = 14     # gap between shake clicks
 SHAKE_HOLD_MS      = 1500   # overall shake timeout (stops early when empty)
-SHAKE_HOLD_DELAY_MS = 150  # wait after the start-click before holding to shake
 SHAKE_INIT_GAP_MS    = 10   # (legacy) unused now
 SHAKE_PLAIN_HOLD     = False # (legacy) unused now
 SHAKE_PRESS_DELAY_MS = 25   # (legacy) unused now
@@ -723,16 +718,6 @@ def log(msg):
     print(f"[{now - _log_t0:7.2f}s] {msg}", flush=True)
 
 
-_phase_last = [None]
-
-
-def phase(name):
-    """Emit a one-word state for the pop-out pill (deduped)."""
-    if _phase_last[0] != name:
-        _phase_last[0] = name
-        print("__PHASE__ " + name, flush=True)
-
-
 # ---- Input engine (Windows SendInput) ---------------------------------------
 # Keys are sent as hardware SCANCODES (KEYEVENTF_SCANCODE) and mouse via
 # MOUSEEVENTF_* -- the most reliable way to drive Roblox on Windows.
@@ -1032,34 +1017,6 @@ class Detector:
         yellow = (r >= YEL_MIN) & (g >= YEL_MIN) & (b <= np.minimum(r, g) - YEL_BLUE_GAP)
         return float(yellow.mean())
 
-    def cap_segments(self, n=8):
-        """Yellow fraction in each of n equal slices across the capacity bar
-        (left -> right). Lets us see EXACTLY how far the bar has drained."""
-        x, y = CAP_FULL_PIXEL
-        region = {"left": x - CAP_BAR_WIDTH, "top": y - 10,
-                  "width": CAP_BAR_WIDTH, "height": 20}
-        img = np.asarray(self.sct.grab(region))[:, :, :3].astype(np.int16)
-        b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
-        yellow = (r >= YEL_MIN) & (g >= YEL_MIN) & (b <= np.minimum(r, g) - YEL_BLUE_GAP)
-        w = yellow.shape[1]
-        out = []
-        for i in range(n):
-            a = int(round(i * w / n))
-            c = int(round((i + 1) * w / n))
-            seg = yellow[:, a:c]
-            out.append(float(seg.mean()) if seg.size else 0.0)
-        return out
-
-    def cap_filled_segments(self, n=8, thresh=0.4):
-        """How many of the n bar segments still read yellow (>= thresh full)."""
-        return sum(1 for f in self.cap_segments(n) if f >= thresh)
-
-    def cap_about_empty(self):
-        """True once the bar has drained down to (at most) SHAKE_STOP_SEGMENTS of
-        CAP_SEGMENTS -- it is about to be empty, so we can stop shaking before an
-        extra click bleeds onto land as a dig."""
-        return self.cap_filled_segments(CAP_SEGMENTS) <= SHAKE_STOP_SEGMENTS
-
     def pan_empty(self):
         """True when the WHOLE capacity bar has essentially no yellow left."""
         return self.cap_fill() < CAP_EMPTY_FRAC
@@ -1141,20 +1098,7 @@ class SessionStats:
         self.hard_stops = 0
         self.relics_used = 0
         self.nudges = 0
-        self.shake_misses = 0      # shakes that did not empty the pan
-        self.breakouts = 0
-        self.cycle_times = []      # ms per completed pan cycle
-        self._last_cycle_t = self.start
         self.stop_reason = ""
-
-    def mark_cycle(self):
-        now = time.perf_counter()
-        dt = (now - self._last_cycle_t) * 1000.0
-        self._last_cycle_t = now
-        if 120 < dt < 60000:
-            self.cycle_times.append(dt)
-            if len(self.cycle_times) > 400:
-                self.cycle_times.pop(0)
 
     def runtime(self):
         return time.perf_counter() - self.start
@@ -1167,11 +1111,6 @@ class SessionStats:
                 "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0,
                 "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
                 "relics_used": self.relics_used, "nudges": self.nudges,
-                "shake_misses": self.shake_misses, "breakouts": self.breakouts,
-                "cycle_avg_ms": round(sum(self.cycle_times) / len(self.cycle_times)) if self.cycle_times else 0,
-                "cycle_min_ms": round(min(self.cycle_times)) if self.cycle_times else 0,
-                "cycle_max_ms": round(max(self.cycle_times)) if self.cycle_times else 0,
-                "cycle_n": len(self.cycle_times),
                 "stop_reason": self.stop_reason}
 
 
@@ -1711,7 +1650,6 @@ def go_water(det):
     """HOLD S until the PAN cue (in the water), then keep holding a touch longer
     (WATER_EXTRA_BACK_MS) to walk a little FARTHER in before the shake -- the cue
     can fire right at the edge, where the shake sometimes misses."""
-    phase("Walking to water")
     t0 = time.perf_counter()
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
@@ -1741,20 +1679,14 @@ def go_water(det):
         f"budget {budget}ms) ({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
-def _hold_keepalive():
-    _drag_alive()
-
-
 def do_shake(det):
     """THE MOMENTUM TECHNIQUE. Hold W (glide toward land) and rattle RAPID CLICKS
     to shake. macOS does NOT sustain a synthetic held press in Roblox, so a hold
     silently does nothing -- clicks DO register, so we click fast and keep going
     until the pan empties (a slower shake just takes more clicks). W carries you
-    onto land WHILE the pan drains; we drop W when the Collect Deposit cue shows
-    but KEEP clicking to finish. Stop when the CAPACITY reads empty (capacity is
-    the truth; the Shake cue sticks). Bails only if the pan stays FULL past
-    SHAKE_BAIL_MS."""
-    phase("Shaking")
+    onto land WHILE the pan drains; we drop W when the Collect Deposit cue shows.
+    Stop when the CAPACITY reads empty (capacity is the truth; the Shake cue
+    sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
@@ -1772,7 +1704,7 @@ def do_shake(det):
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
-        if not fixed and (det.cap_about_empty() or det.pan_empty()):  # near-empty -> stop (no overflow)
+        if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
             emptied = True
             break
         if w_down and det.on_deposit():      # reached land -> stop gliding...
@@ -1796,12 +1728,9 @@ def do_shake(det):
         State.water_fails = 0
         if State.stats:
             State.stats.cycles += 1      # a pan emptied = one completed cycle
-            State.stats.mark_cycle()
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
-        if State.stats:
-            State.stats.shake_misses += 1
     _adapt_shake(emptied)
     dur = (time.perf_counter() - t0) * 1000
     log(f"    shake done: started={started} emptied={emptied} "
@@ -1813,7 +1742,6 @@ def go_land(det):
     """HOLD W forward (smooth) until the COLLECT DEPOSIT cue shows, then hold a
     touch longer (LAND_SETTLE_MS) to sit FIRMLY on the dirt. No S brake -- braking
     back toward the water is what made it bounce land<->water instead of digging."""
-    phase("Walking to land")
     t0 = time.perf_counter()
     key_down(KEY_W)
     reached = wait_until(det.on_deposit, DEPOSIT_MAX_MS, confirm=1)
@@ -1829,7 +1757,6 @@ def fill_to_full(det):
     NOT assume a dig count -- we watch the bar, so builds that need 2, 3, ... digs
     all work. The probe already did dig #1; we wait for it to fill, then top up
     with more PERFECT digs as needed (capped by MAX_DIGS_TO_FILL)."""
-    phase("Digging")
     digs = 1                                  # the probe dig already happened
     for i in range(MAX_DIGS_TO_FILL):
         if det.capacity_full():
@@ -1851,7 +1778,6 @@ def return_and_dig(det):
     fills on dirt, so the CAPACITY tells us the truth. A dig registers if the bar
     FILL RISES. We re-dig IN PLACE a few times before assuming we're off-land and
     nudging W (so a single non-registering dig can't cause a jittery nudge)."""
-    phase("Finding land")
     State.no_full += 1
     if State.no_full >= NO_FULL_LIMIT:
         # We keep digging/nudging but the capacity bar NEVER reads full -- almost
@@ -1915,7 +1841,6 @@ def recover(det, s):
     """Stronger corrective when stuck on the SAME situation for STUCK_TICKS.
     Recovery moves are JITTERED (short taps) so they can't sail past the target,
     even though the normal legs hold smoothly."""
-    phase("Recovering")
     if State.stats:
         State.stats.recoveries += 1
         post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
@@ -1941,8 +1866,6 @@ def break_out(det, s):
     forward to get off the water edge. After this we reset the counters and let
     normal logic try again ('do as if it was normal'). Returns True if it emptied."""
     log("    ** BREAK-OUT: click to finish any active shake, then reposition **")
-    if State.stats:
-        State.stats.breakouts += 1
     if s.full:
         end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
         while time.perf_counter() < end and State.running:

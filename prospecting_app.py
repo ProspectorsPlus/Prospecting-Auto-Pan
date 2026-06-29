@@ -158,7 +158,6 @@ class Api:
         self._last_stats = None   # latest stats from the macro (for history)
         self._run_active = False  # a run is in progress (write history once)
         self._macro_status = "off"  # off/idle/running/paused/safe-pause/recovering/stopped
-        self._macro_phase = ""      # fine-grained macro phase for the pill
 
     # ---- settings ----
     def get_state(self):
@@ -177,7 +176,6 @@ class Api:
               "FR_HOME_PIXEL": list(saved.get("FR_HOME_PIXEL", [0, 0]))}
         hk = {k: saved.get(k, _HK_DEFAULTS[k]) for k in _HK_DEFAULTS}
         return {"values": merged, "running": self.proc is not None, "fr": fr, "hotkeys": hk,
-                "autobuild": saved.get("AUTOBUILD", {}),
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels,
@@ -671,7 +669,6 @@ class Api:
         self._run_active = True
         self._last_stats = None
         self._macro_status = "idle"
-        self._macro_phase = ""
         return "launched"
 
     def _save_history(self, reason=None):
@@ -709,7 +706,6 @@ class Api:
                     pass
             self.proc = None
         self._macro_status = "off"
-        self._macro_phase = ""
         return "stopped"
 
     def is_running(self):
@@ -718,7 +714,6 @@ class Api:
     def pill_state(self):
         return {"alive": self.proc is not None,
                 "status": getattr(self, "_macro_status", "off"),
-                "phase": getattr(self, "_macro_phase", ""),
                 "stats": self._last_stats or {}}
 
     def popout(self):
@@ -734,14 +729,6 @@ class Api:
             print("[pill] popout failed: %s" % e)
             return "err"
         return "ok"
-
-    def save_autobuild(self, stats):
-        cur = load_saved()
-        if isinstance(stats, dict):
-            cur["AUTOBUILD"] = {str(k): stats[k] for k in stats}
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cur, f, indent=2)
-        return "saved"
 
     def save_hotkeys(self, hk):
         cur = load_saved()
@@ -1057,9 +1044,6 @@ class Api:
                 if self._macro_status in ("off", "idle"):
                     self._macro_status = "running"
                 continue
-            if line.startswith("__PHASE__ "):
-                self._macro_phase = line[10:].strip()
-                continue
             if line.strip() == "__POPOUT__":
                 try:
                     self.toggle_popout()
@@ -1082,7 +1066,6 @@ class Api:
         _emit_log(f"[macro exited, code {rc}]")
         self.proc = None
         self._macro_status = "off"
-        self._macro_phase = ""
         self._save_history()              # macro ended on its own (Esc / self-stop)
         _emit_state(False)
 
@@ -1130,9 +1113,7 @@ PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  function fmt(s){s=s||0;return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
  async function poll(){let r;try{r=await api().pill_state();}catch(e){return;}
    alive=r.alive;const sm=SM[r.status||"off"]||["","—"];
-   let label=sm[1];
-   if(r.alive && (r.status==="running"||r.status==="recovering") && r.phase) label=r.phase;
-   $("dot").className="dot "+sm[0];$("status").innerHTML=label;
+   $("dot").className="dot "+sm[0];$("status").innerHTML=sm[1];
    const s=r.stats||{};$("rt").textContent=fmt(s.runtime_s);$("pans").textContent=s.cycles||0;$("rate").textContent=s.pans_per_hr||0;$("rec").textContent=s.recoveries||0;
    const b=$("toggle");b.textContent=alive?"Stop":"Start";b.className="go"+(alive?" stop":"");}
  $("toggle").onclick=async()=>{try{if(alive){await api().stop();}else{await api().launch();}}catch(e){}poll();};
@@ -1204,7 +1185,6 @@ def build_html():
         '<div class="stat"><div class="sv" id="st_run">0:00</div><div class="sl">runtime</div></div>'
         '<div class="stat"><div class="sv" id="st_cyc">0</div><div class="sl">pans</div></div>'
         '<div class="stat"><div class="sv" id="st_rate">0</div><div class="sl">pans/hr</div></div>'
-        '<div class="stat"><div class="sv" id="st_vs">\u2014</div><div class="sl">vs auto-pan</div></div>'
         '<div class="stat"><div class="sv" id="st_rec">0</div><div class="sl">recoveries</div></div>'
         '<div class="stat"><div class="sv" id="st_nud">0</div><div class="sl">nudges</div></div>'
         '<div class="stat"><div class="sv" id="st_rel">0</div><div class="sl">relics</div></div>'
@@ -1322,24 +1302,6 @@ def build_html():
                   for key, lbl in _kbrows)
         + '</div><div class="calactions"><button type="button" class="btn" id="savekeys">Save keybinds</button></div></section>')
 
-    nav("auto", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19l9-9"/><path d="M14 4l.8 1.7 1.7.8-1.7.8L14 9l-.8-1.7L11.5 6.5 13.2 5.7z"/><path d="M18.5 11l.6 1.3 1.3.6-1.3.6-.6 1.3-.6-1.3-1.3-.6 1.3-.6z"/></svg>', "Auto-build")
-    _abf = [("ab_luck", "Luck (in-game)"), ("ab_cap", "Pan Capacity"),
-            ("ab_ds", "Dig Strength"), ("ab_dspeed", "Dig Speed %"),
-            ("ab_ss", "Shake Strength"), ("ab_sspeed", "Shake Speed %"),
-            ("ab_ws", "Walk Speed (optional)"), ("ab_n", "Digs to fill (blank = auto)")]
-    panels.append(
-        '<section class="panel" id="pauto"><div class="phead"><h2>Auto-build</h2>'
-        '<p class="chint">Enter your in-game stats (Settings &rarr; Stats menu) and generate a build tuned to them. It works out how many digs fill your pan, the dig hold, how many shakes empty it, the shake click timing, the settles and walk-back &mdash; then applies them to your settings.</p></div>'
-        '<div class="abgrid">'
-        + "".join(f'<label class="abf"><span>{lbl}</span>'
-                  f'<input type="number" id="{fid}" placeholder="\u2014"></label>' for fid, lbl in _abf)
-        + '</div>'
-        '<label class="abcheck"><input type="checkbox" id="ab_perfect" checked><span>Perfect dig &mdash; use the precise calculated dig hold. Off = fast 10&nbsp;ms spam (shards / speed builds).</span></label>'
-        '<div class="calactions"><button type="button" class="btn" id="abgen">\u2728 Generate &amp; apply build</button></div>'
-        '<div class="abreadout" id="abreadout"></div>'
-        '<div class="abhead">Live build analysis</div>'
-        '<div class="abanalysis" id="abanalysis"><div class="abmut">Start the macro to collect timing and a tuning report here.</div></div></section>')
-
     # Settings tabs
     for title, items in SECTIONS:
         icon = TAB_ICON.get(title, "•")
@@ -1375,7 +1337,7 @@ def build_html():
         '<button type="button" class="btn2" id="wiznext">Skip ›</button></div>'
         '<div class="wizdots" id="wizdots"></div></div></div>')
     nav_html = {n["id"]: n["html"] for n in navs}
-    PINNED = ["run", "cal", "relics", "hist", "keys", "auto"]
+    PINNED = ["run", "cal", "relics", "hist", "keys"]
     GROUPS = [
         ("Setup", ["Easy tuning", "Window"]),
         ("Modes", ["Treasure chest"]),
@@ -1459,22 +1421,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .wizact{display:flex;gap:8px;margin-top:6px} .wizact .btn{flex:1}
  .wizdots{display:flex;gap:6px;justify-content:center;margin-top:14px}
  .wizdots i{width:7px;height:7px;border-radius:50%;background:var(--line2)} .wizdots i.on{background:var(--accent-lit)}
- .abgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:560px}
- .abf{display:flex;flex-direction:column;gap:5px} .abf span{color:var(--mut);font-size:12px}
- .abf input{background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:9px 10px;font:inherit}
- .abf input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--sand-dim)}
- .abreadout{margin-top:14px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:14px;display:none;line-height:1.6;font-size:13px;max-width:560px}
- .abreadout.show{display:block} .abreadout h4{margin:.1em 0 .5em;color:var(--accent-lit)}
- .abreadout code{color:var(--teal-lit);font-variant:tabular-nums}
- .abreadout table{width:100%;border-collapse:collapse;margin-top:10px}
- .abreadout td{padding:4px 8px;border-top:1px solid var(--line)}
- .abreadout td:first-child{color:var(--mut)} .abreadout td:last-child{text-align:right;color:var(--txt)}
- .abcheck{display:flex;align-items:center;gap:9px;margin-top:14px;max-width:560px;color:var(--txt);font-size:13px;cursor:pointer} .abcheck input{width:16px;height:16px;flex:0 0 auto}
- .abhead{margin-top:16px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-size:11px;font-weight:700}
- .abanalysis{margin-top:8px;background:var(--field);border:1px solid var(--line);border-radius:10px;padding:14px;line-height:1.6;font-size:13px;max-width:560px}
- .abanalysis table{width:100%;border-collapse:collapse} .abanalysis td{padding:4px 8px;border-top:1px solid var(--line)}
- .abanalysis td:first-child{color:var(--mut)} .abanalysis td:last-child{text-align:right;color:var(--txt);font-variant:tabular-nums}
- .abanalysis h4{margin:.1em 0 .4em;color:var(--accent-lit)} .abtips{margin:6px 0 0;padding-left:18px} .abtips li{margin:4px 0;color:var(--txt)} .abmut{color:var(--mut)}
  .tab.active .ti{opacity:1}
  .tab.active:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
@@ -1716,11 +1662,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;
    const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
    _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
-   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);
-   const _ap=window.AUTOPAN_PPH||0;
-   if(_ap>0){const pct=((s.pans_per_hr||0)/_ap-1)*100;_set('st_vs',(pct>=0?'+':'')+Math.round(pct)+'%');}
-   else _set('st_vs','\u2014');
-   window._lastStats=s;if(window.__renderAnalysis)window.__renderAnalysis();};
+   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);};
  async function loadHistory(){let list=[];try{list=await window.pywebview.api.run_history();}catch(e){}
    const box=document.getElementById('histbox');if(!box)return;
    if(!list||!list.length){box.innerHTML='<div class="hempty">No runs yet \u2014 finish a session and it shows up here.</div>';return;}
@@ -1751,7 +1693,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // tabs
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist'||id==='keys'||id==='auto')?('p'+id):('p_'+id);
+   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist'||id==='keys')?('p'+id):('p_'+id);
    document.getElementById(pid).classList.add('active');
    const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
    if(id==='hist')loadHistory();});
@@ -1888,101 +1830,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      window.removeEventListener('keydown',onk,true);};
    window.addEventListener('keydown',onk,true);};});
  $('#savekeys').onclick=async()=>{try{await window.pywebview.api.save_hotkeys(hotkeys);toast('Keybinds saved — Stop & Start the macro to apply');}catch(e){toast('Save failed');}};
- (function(){
-   function rOf(x){x=Math.max(0,x);return Math.max(0,4.03266e-9*x*x*x-1.68935e-5*x*x+0.0255557*x+0.206594);}
-   function cl(v,a,b){return Math.max(a,Math.min(b,Math.round(v)));}
-   function gv(id){const el=document.getElementById(id);return el?Math.max(0,Number(el.value)||0):0;}
-   function build(){
-     const L=gv('ab_luck'),C=Math.max(1,gv('ab_cap')),DS=Math.max(1,gv('ab_ds')),
-       d=Math.max(1,gv('ab_dspeed')),s=Math.max(1,gv('ab_ss')),ss=gv('ab_sspeed'),
-       wsR=gv('ab_ws'),ws=wsR>0?wsR:16,nOv=gv('ab_n');
-     const r=rOf(ss);
-     const n=nOv>0?Math.round(nOv):Math.max(1,Math.ceil(C/(1.5*DS)));
-     const perfect=!!((document.getElementById('ab_perfect')||{}).checked);
-     const shToEmpty=C/s;                 // info only -- the macro shakes until empty
-     const clickMs=18, gapMs=14;          // fast rattle (proven shake defaults)
-     const shDur=C/(r*s);
-     const holdMs=cl(Math.max(1500, shDur*1000*6), 1200, 4500);
-     const digHold=perfect?cl(55000/d,8,600):10;
-     const digPer=190/d, fillMs=cl(190000/d*0.5,60,900);  // spam: let go early, start next dig
-     const wf=Math.max(0.45,Math.min(1.4,16/Math.max(8,ws)));
-     const panBack=cl(220*wf,90,420), depMax=cl(1300*wf,500,2500),
-       landSet=cl(60*wf,20,160), landNudge=cl(95*wf,40,220);
-     // Real auto-pan adds a ~constant ~0.62s/cycle beyond the calculator's
-     // formula (pan reset / collect / transitions). Measured at two builds
-     // (ws 24 -> 25/min, ws 34 -> 19/min); walk speed had little effect in range.
-     const overhead=0.62;
-     const cycleSec=C/(r*s)+1.5+190*n/d+overhead, ppm=cycleSec>0?60/cycleSec:0;
-     const settings={PERFECT:false,DIG_CLICK_MS:digHold,DIG_SPEED:Math.round(d),
-       MAX_DIGS_TO_FILL:n+1,DIG_FILL_MS:fillMs,PRE_DIG_SETTLE_MS:60,
-       PAN_BACK_MAX_MS:panBack,WATER_EXTRA_BACK_MS:0,SHAKE_MOMENTUM_W:true,
-       SHAKE_CLICKS:0,SHAKE_CLICK_MS:clickMs,SHAKE_CLICK_GAP_MS:gapMs,
-       SHAKE_HOLD_MS:holdMs,SHAKE_BAIL_MS:500,SHAKE_START_DELAY_MS:0,POST_SHAKE_SETTLE_MS:150,
-       DEPOSIT_MAX_MS:depMax,LAND_SETTLE_MS:landSet,DIG_PROBE_MS:320,PROBE_GAP_MS:80,
-       LAND_PROBE_NUDGE_MS:landNudge,LAND_DIG_TRIES:5};
-     const metrics={r:r,shToEmpty:shToEmpty,n:n,shDur:shDur,
-       digPer:digPer,cycleSec:cycleSec,ppm:ppm,rolls:L*Math.sqrt(C),perfect:perfect};
-     return {settings:settings,metrics:metrics};
-   }
-   function render(b){const m=b.metrics,S=b.settings,f=(x,p)=>Number(x).toFixed(p===undefined?2:p);
-     let h='<h4>Computed for your stats</h4>';
-     h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code> &middot; auto-pan <code>'+Math.round(m.ppm*60)+'/hr</code> <span style="color:var(--mut)">(incl. measured ~0.62s/cycle overhead)</span></div>';
-     const rows=[
-       ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
-       ['Dig mode', m.perfect?('Perfect — '+S.DIG_CLICK_MS+' ms hold (55000 ÷ dig speed)'):('Fast spam — '+S.DIG_CLICK_MS+' ms')],
-       ['Re-dig gap (spam)', S.DIG_FILL_MS+' ms  (let go early, start next dig)'],
-       ['Shake', 'rapid-clicks until the bar empties · '+S.SHAKE_CLICK_MS+'+'+S.SHAKE_CLICK_GAP_MS+' ms each'],
-       ['Shake timeout', S.SHAKE_HOLD_MS+' ms  (~'+f(m.shToEmpty,1)+' shakes needed)'],
-       ['Walk back into water', S.PAN_BACK_MAX_MS+' ms  (scaled by walk speed)'],
-       ['Walk forward to land', S.DEPOSIT_MAX_MS+' ms'],
-       ['Settle after landing', S.LAND_SETTLE_MS+' ms'],
-     ];
-     h+='<table>';for(let i=0;i<rows.length;i++)h+='<tr><td>'+rows[i][0]+'</td><td>'+rows[i][1]+'</td></tr>';h+='</table>';
-     const el=document.getElementById('abreadout');if(el){el.innerHTML=h;el.classList.add('show');}
-   }
-   window.setAutobuild=function(a){if(!a)return;for(const k in a){const el=document.getElementById(k);if(!el)continue;if(el.type==='checkbox')el.checked=!!a[k];else if(a[k]!==''&&a[k]!=null)el.value=a[k];}};
-   const gen=document.getElementById('abgen');
-   if(gen)gen.onclick=async()=>{
-     const b=build();
-     preset(b.settings);
-     try{await window.pywebview.api.save_config(collect());}catch(e){}
-     try{await window.pywebview.api.save_autobuild({ab_luck:gv('ab_luck'),ab_cap:gv('ab_cap'),
-       ab_ds:gv('ab_ds'),ab_dspeed:gv('ab_dspeed'),ab_ss:gv('ab_ss'),ab_sspeed:gv('ab_sspeed'),
-       ab_ws:gv('ab_ws'),ab_n:gv('ab_n'),ab_perfect:!!((document.getElementById('ab_perfect')||{}).checked),
-       autopan_pph:Math.round(b.metrics.ppm*60)});}catch(e){}
-     window.AUTOPAN_PPH=b.metrics.ppm*60;
-     render(b);
-     toast('Build generated & applied ✓ — Save settings keeps it');
-   };
-   function _row(a,b){return '<tr><td>'+a+'</td><td>'+b+'</td></tr>';}
-   function _ft(s){s=s||0;return Math.floor(s/60)+'m '+(s%60)+'s';}
-   window.__renderAnalysis=function(){
-     const s=window._lastStats;const el=document.getElementById('abanalysis');if(!el)return;
-     if(!s){el.innerHTML='<div class="abmut">Start the macro to collect timing and a tuning report here.</div>';return;}
-     const ap=window.AUTOPAN_PPH||0,pph=s.pans_per_hr||0,cyc=s.cycle_avg_ms||0;
-     const cycles=s.cycles||0,miss=s.shake_misses||0,nud=s.nudges||0,rec=s.recoveries||0,bo=s.breakouts||0,ssp=s.safe_stops||0,hs=s.hard_stops||0;
-     const att=cycles+miss,missR=att>0?miss/att*100:0,nudP=cycles>0?nud/cycles:0,recP=cycles>0?rec/cycles:0;
-     let h='<table>';
-     h+=_row('Runtime',_ft(s.runtime_s));
-     h+=_row('Pans',cycles+'  ('+pph+'/hr'+(ap>0?(' · '+(pph>=ap?'+':'')+Math.round((pph/ap-1)*100)+'% vs auto-pan'):'')+')');
-     h+=_row('Cycle time',cyc?(cyc+' ms avg · '+(s.cycle_min_ms||0)+'-'+(s.cycle_max_ms||0)+' ms · n='+(s.cycle_n||0)):'—');
-     h+=_row('Shake misses',miss+'  ('+missR.toFixed(0)+'% of attempts)');
-     h+=_row('Nudges',nud+'  ('+nudP.toFixed(2)+'/pan)');
-     h+=_row('Recoveries',rec+'  ('+recP.toFixed(2)+'/pan)');
-     h+=_row('Break-outs / safe / hard',bo+' / '+ssp+' / '+hs);
-     if(s.stop_reason)h+=_row('Last stop',s.stop_reason);
-     h+='</table>';
-     const tips=[];
-     if(missR>=12)tips.push('Shakes miss ~'+missR.toFixed(0)+'%. Raise <b>Wait after start-click before holding</b> by ~50 ms and/or <b>Shake overall timeout</b>. Make sure each pan starts IN the water.');
-     if(nudP>=1.0)tips.push('High nudging ('+nudP.toFixed(1)+'/pan). Increase <b>Max S walk-back</b> / <b>Extra back</b> and <b>Max W to land</b>, or re-run Guided calibration.');
-     if(recP>=0.5)tips.push('Frequent recoveries ('+recP.toFixed(2)+'/pan) usually mean a cue is mis-read - re-run Guided calibration and use Test detection.');
-     if(hs>0)tips.push('Hard-stopped '+hs+'x'+(s.stop_reason?(' ('+s.stop_reason+')'):'')+'. Check capacity calibration and the stop reason.');
-     if(ap>0&&cycles>=8){const pct=(pph/ap-1)*100;if(pct<-5)tips.push('Running '+Math.round(-pct)+'% slower than auto-pan. Biggest sinks: shake hold + walk-back - trim <b>Shake overall timeout</b> toward your real shake time and reduce walk-back if you overshoot.');else tips.push('Throughput healthy: '+(pct>=0?'+':'')+Math.round(pct)+'% vs auto-pan.');}
-     if(!tips.length)tips.push('No issues detected yet - let it run longer for a fuller picture.');
-     h+='<h4 style="margin-top:12px">Suggestions</h4><ul class="abtips">'+tips.map(function(x){return '<li>'+x+'</li>';}).join('')+'</ul>';
-     el.innerHTML=h;
-   };
- })();
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
@@ -2035,7 +1882,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});setAutobuild(s.autobuild||{});window.AUTOPAN_PPH=(s.autobuild&&s.autobuild.autopan_pph)||0;
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});
    checkUpdate();loadHistory();
 }
  window.addEventListener('pywebviewready',boot);
