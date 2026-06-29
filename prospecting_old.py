@@ -1679,21 +1679,17 @@ def do_shake(det):
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while State.running and (clicks < SHAKE_CLICKS if fixed
                              else time.perf_counter() < end):
-        # Check BEFORE clicking: stop the instant the pan is empty OR we have
-        # reached land, so no shake click ever bleeds onto land as a dig (that
-        # is what cost the pan its quality).
-        if not fixed and det.pan_empty():
-            emptied = True
-            break
-        if w_down and clicks > 0 and det.on_deposit():
-            key_up(KEY_W); w_down = False     # reached land -> stop clicking
-            on_land = True
-            break
         mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
         clicks += 1
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
+        if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
+            emptied = True
+            break
+        if w_down and det.on_deposit():      # reached land -> stop gliding...
+            key_up(KEY_W); w_down = False     # ...but keep clicking to finish
+            on_land = True
         # CAPACITY-based bail (auto mode only): give up if the pan is STILL FULL
         # well past a real shake's duration (no drain at all = no shake).
         if (not fixed and time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
