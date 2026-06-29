@@ -161,5 +161,6 @@
     901,
     599
   ],
-  "FR_MOVE_STEP": 8
+  "FR_MOVE_STEP": 8,
+  "FR_END_A_MS": 300
 }

@@ -487,6 +487,7 @@ FR_BOX_BOTTOM      = 0            # y of the bottom of the list box
 FR_SCAN_STEP       = 3            # vertical scan step (px)
 FR_SCAN_HOVER_MS   = 12           # dwell at each step as the cursor sweeps (ms)
 FR_FIND_TRIES      = 8            # scroll passes before giving up
+FR_OPEN_TRIES      = 3            # times to re-open the warp device if nothing is found
 FR_SCROLL_STEPS    = 3            # wheel notches per scroll-down
 FR_SCROLL_WAIT_MS  = 250          # settle after each scroll (ms)
 FR_WARP_MS         = 2500         # wait after clicking for the teleport/load (ms)
@@ -1095,48 +1096,55 @@ def fortune_river_recover():
     if det is None:
         return False
     sct = det.sct
-    log("FR-recover: opening Fast Travel ...")
-    release_all()
-    # switch to the fast-travel hotbar slot, then DOUBLE-CLICK to open the menu
-    tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)      # switch to hotkey 4
-    sleep_ms(FR_ACTION_GAP_MS)
-    mouse_tap(40)                                     # double-click to open Fast Travel
-    sleep_ms(FR_DOUBLE_GAP_MS)
-    mouse_tap(40)
-    sleep_ms(FR_OPEN_MS)
-    tap_key(KEY_SHIFT, 60)                            # exit shift-lock so the mouse can move
-    sleep_ms(FR_ACTION_GAP_MS)
-    fr_reset_home()                                  # cursor is now at the screen centre
-    if FR_OPEN_PIXEL and (FR_OPEN_PIXEL[0] or FR_OPEN_PIXEL[1]):
-        fr_move_to(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1])
-        sleep_ms(FR_CLICK_SETTLE_MS)
-        mouse_tap(50)
-        sleep_ms(FR_OPEN_MS)
     top = min(FR_BOX_TOP, FR_BOX_BOTTOM)
     bot = max(FR_BOX_TOP, FR_BOX_BOTTOM)
     found = False
-    for attempt in range(max(1, FR_FIND_TRIES)):
+    for open_try in range(max(1, FR_OPEN_TRIES)):
         if not State.running:
             return False
-        fr_move_to(FR_SCAN_X, top)                   # go to the x column, top of box
-        sleep_ms(FR_CLICK_SETTLE_MS)
-        y = top
-        while y <= bot:                              # sweep the cursor DOWN the column
-            fr_move_to(FR_SCAN_X, y)
-            sleep_ms(FR_SCAN_HOVER_MS)
-            if _rgb_match(rgb_at(sct, FR_SCAN_X, y), FR_TEXT_RGB, FR_TEXT_TOL):
-                sleep_ms(FR_CLICK_SETTLE_MS)
-                mouse_tap(60)
-                sleep_ms(FR_CLICK_SETTLE_MS)
-                found = True
-                log("FR-recover: found Fortune River at y=%d (try %d)"
-                    % (y, attempt + 1))
+        log("FR-recover: opening Fast Travel (try %d) ..." % (open_try + 1))
+        release_all()
+        # switch to the fast-travel hotbar slot, then DOUBLE-CLICK to open the menu
+        tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)
+        sleep_ms(FR_ACTION_GAP_MS)
+        mouse_tap(40)
+        sleep_ms(FR_DOUBLE_GAP_MS)
+        mouse_tap(40)
+        sleep_ms(FR_OPEN_MS)
+        tap_key(KEY_SHIFT, 60)                        # exit shift-lock so the mouse can move
+        sleep_ms(FR_ACTION_GAP_MS)
+        fr_reset_home()                               # cursor is now at the screen centre
+        if FR_OPEN_PIXEL and (FR_OPEN_PIXEL[0] or FR_OPEN_PIXEL[1]):
+            fr_move_to(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1])
+            sleep_ms(FR_CLICK_SETTLE_MS)
+            mouse_tap(50)
+            sleep_ms(FR_OPEN_MS)
+        for attempt in range(max(1, FR_FIND_TRIES)):
+            if not State.running:
+                return False
+            fr_move_to(FR_SCAN_X, top)                # go to the x column, top of box
+            sleep_ms(FR_CLICK_SETTLE_MS)
+            y = top
+            while y <= bot:                           # sweep the cursor DOWN the column
+                fr_move_to(FR_SCAN_X, y)
+                sleep_ms(FR_SCAN_HOVER_MS)
+                if _rgb_match(rgb_at(sct, FR_SCAN_X, y), FR_TEXT_RGB, FR_TEXT_TOL):
+                    sleep_ms(FR_CLICK_SETTLE_MS)
+                    mouse_tap(60)
+                    sleep_ms(FR_CLICK_SETTLE_MS)
+                    found = True
+                    log("FR-recover: found Fortune River at y=%d" % y)
+                    break
+                y += max(1, FR_SCAN_STEP)
+            if found:
                 break
-            y += max(1, FR_SCAN_STEP)
+            scroll_down(FR_SCROLL_STEPS)              # only scroll after a full sweep finds nothing
+            sleep_ms(FR_SCROLL_WAIT_MS)
         if found:
             break
-        scroll_down(FR_SCROLL_STEPS)                 # only scroll after a full sweep finds nothing
-        sleep_ms(FR_SCROLL_WAIT_MS)
+        # nothing found in a full pass -> the menu probably did not open; re-lock and retry
+        tap_key(KEY_SHIFT, 60)
+        sleep_ms(FR_ACTION_GAP_MS)
     if not found:
         log("FR-recover: Fortune River row NOT found -- hard stop")
         return False
