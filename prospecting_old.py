@@ -337,6 +337,7 @@ NO_FULL_LIMIT       = 8      # if the pan never reads FULL this many cycles in a
 # A separate, simple loop: NO shake. Dig briefly, then strafe sideways (right,
 # then left, alternating) until the Collect/Deposit cue shows again, then dig.
 TREASURE_MODE        = False
+TREASURE_DIGS        = 1     # how many digs per chest before strafing on
 TREASURE_DIG_MS      = 8     # quick dig click length (5-10 ms)
 TREASURE_DIG_GAP_MS  = 60    # settle after the dig before strafing
 TREASURE_MOVE_MAX_MS = 2500  # safety cap on the strafe before moving on
@@ -1634,20 +1635,26 @@ def treasure_tick(det):
     then A, alternating -- until the Collect/Deposit cue appears again, then dig.
     Reuses the Deposit pixel (calibrate it on the 'Collect' prompt)."""
     release_all()
-    mouse_tap(TREASURE_DIG_MS)               # quick dig / open the chest
+    for _i in range(max(1, TREASURE_DIGS)):   # do N digs (let the slow dig finish)
+        if not State.running:
+            return
+        mouse_tap(TREASURE_DIG_MS)            # quick dig / open the chest
+        if TREASURE_DIG_GAP_MS > 0:
+            sleep_ms(TREASURE_DIG_GAP_MS)
     if State.stats:
         State.stats.cycles += 1
-    if TREASURE_DIG_GAP_MS > 0:
-        sleep_ms(TREASURE_DIG_GAP_MS)
     if not State.running:
         return
     side = KEY_D if State.t_side == 0 else KEY_A
     State.t_side ^= 1                         # alternate L/R each chest
+    # Hold the side key: first move OFF this spot (until the Pan cue), then KEEP
+    # holding until the next Collect cue -- so we can't re-trigger on the same spot.
     key_down(side)
+    left = wait_until(det.on_pan, TREASURE_MOVE_MAX_MS, confirm=1)
     reached = wait_until(det.on_deposit, TREASURE_MOVE_MAX_MS, confirm=1)
     key_up(side)
-    log(f"    treasure: dug, strafed {'D' if side == KEY_D else 'A'} "
-        f"-> collect cue={reached}")
+    log(f"    treasure: {TREASURE_DIGS} dig(s), held {'D' if side == KEY_D else 'A'} "
+        f"(pan={left} -> collect={reached})")
 
 
 class Supervisor:
