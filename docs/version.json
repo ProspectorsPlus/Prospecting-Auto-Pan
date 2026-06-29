@@ -1,7 +1,7 @@
 {
-  "version": "2.2.0",
+  "version": "2.2.3",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Easy-tuning tab, smoother drift-free X pattern, dig-overshoot fix, smart auto-timing, run history, Discord-notification fix"
+  "notes": "Treasure Chest mode: digs-per-chest count, two-stage strafe (hold until Pan then Collect), and a delay-between-dig-clicks setting (default 12s) for the slow chest animation"
 }
