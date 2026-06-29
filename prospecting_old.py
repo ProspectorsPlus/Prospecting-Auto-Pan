@@ -259,7 +259,7 @@ SHAKE_FWD_COMP_MS = 0
 # back ONTO THE LAND while the pan drains (the "special technique"). We stop
 # walking W when the Collect Deposit cue shows (we're on land) but keep clicking
 # until the CAPACITY reads empty (capacity is the truth; the Shake cue sticks).
-SHAKE_MOMENTUM_W   = True   # hold W during the shake -> glide onto land
+SHAKE_MOMENTUM_W   = False   # hold W during the shake -> glide onto land
 SHAKE_CLICK_MS     = 18     # length of each shake click (short, fast build)
 SHAKE_CLICKS       = 0      # EXACT number of shake clicks (0 = auto: shake until
                             # the pan reads empty). Set a fixed count to stop the
@@ -1658,46 +1658,43 @@ def _hold_keepalive():
 
 
 def do_shake(det):
-    """Click once to TRIGGER the shake, pause, then HOLD LMB (kept alive) to
-    drain the pan. 'Draining' = the capacity bar right end is no longer FULL (or
-    the fill fraction dropped) -- that flips `started`, so a working shake is
-    never bailed. We FAST-BAIL only when the pan stays COMPLETELY full (no drain
-    at all) past SHAKE_BAIL_MS, so a missed shake retries right away."""
+    """Shake IN PLACE in the water with rapid CLICKS until the capacity bar reads
+    empty. Rapid clicks register reliably in Roblox (a sustained hold does NOT).
+    We deliberately do NOT glide toward land during the shake -- gliding onto land
+    mid-shake is what turned shake clicks into DIGS ('drags into dig mode'). The
+    walk to land happens on the next tick, once the pan is empty. Auto count: as
+    many clicks as it takes, so multi-shake pans empty fully."""
     phase("Shaking")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)
+    # optional momentum glide (off by default now); only safe if it empties before
+    # reaching land, so we STOP the instant we hit the Collect cue.
     w_down = False
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W)
         w_down = True
     base = det.cap_fill()
-    mouse_tap(max(8, SHAKE_CLICK_MS))         # start the shake animation
-    sleep_ms(SHAKE_HOLD_DELAY_MS)
-    mouse_down()                              # HOLD to shake it out
-    hold_start = time.perf_counter()
     started = emptied = bailed = False
-    hits = 0
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while State.running and time.perf_counter() < end:
-        _hold_keepalive()
-        if not started and (not det.capacity_full() or det.cap_fill() < base - 0.05):
+        mouse_tap(max(8, SHAKE_CLICK_MS))      # one shake click (rattle)
+        if not started and (det.on_shake() or det.cap_fill() < base - 0.05
+                            or not det.capacity_full()):
             started = True
+        if det.pan_empty():
+            emptied = True
+            break
         if w_down and det.on_deposit():
+            # reached land before emptying -> stop so clicks don't become digs
             key_up(KEY_W)
             w_down = False
-        if det.pan_empty():
-            hits += 1
-            if hits >= 2:
-                emptied = True
-                break
-        else:
-            hits = 0
-        if not started and (time.perf_counter() - hold_start) * 1000 > SHAKE_BAIL_MS:
+            break
+        if (not started and (time.perf_counter() - t0) * 1000 > SHAKE_BAIL_MS
+                and det.capacity_full()):
             bailed = True
             break
-        sleep_ms(14)
-    mouse_up()
+        sleep_ms(SHAKE_CLICK_GAP_MS)
     if w_down:
         key_up(KEY_W)
     if not emptied:
