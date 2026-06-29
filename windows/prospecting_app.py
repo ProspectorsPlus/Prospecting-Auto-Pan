@@ -1285,6 +1285,7 @@ def build_html():
         '<div class="stat"><div class="sv" id="st_run">0:00</div><div class="sl">runtime</div></div>'
         '<div class="stat"><div class="sv" id="st_cyc">0</div><div class="sl">pans</div></div>'
         '<div class="stat"><div class="sv" id="st_rate">0</div><div class="sl">pans/hr</div></div>'
+        '<div class="stat"><div class="sv" id="st_vs">\u2014</div><div class="sl">vs auto-pan</div></div>'
         '<div class="stat"><div class="sv" id="st_rec">0</div><div class="sl">recoveries</div></div>'
         '<div class="stat"><div class="sv" id="st_nud">0</div><div class="sl">nudges</div></div>'
         '<div class="stat"><div class="sv" id="st_rel">0</div><div class="sl">relics</div></div>'
@@ -1414,7 +1415,7 @@ def build_html():
         + "".join(f'<label class="abf"><span>{lbl}</span>'
                   f'<input type="number" id="{fid}" placeholder="\u2014"></label>' for fid, lbl in _abf)
         + '</div>'
-        '<label class="abcheck"><input type="checkbox" id="ab_perfect"><span>Perfect dig &mdash; use the precise calculated dig hold. Off = fast 10&nbsp;ms spam (shards / speed builds).</span></label>'
+        '<label class="abcheck"><input type="checkbox" id="ab_perfect" checked><span>Perfect dig &mdash; use the precise calculated dig hold. Off = fast 10&nbsp;ms spam (shards / speed builds).</span></label>'
         '<div class="calactions"><button type="button" class="btn" id="abgen">\u2728 Generate &amp; apply build</button></div>'
         '<div class="abreadout" id="abreadout"></div></section>')
 
@@ -1790,7 +1791,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;
    const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
    _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
-   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);};
+   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);
+   const _ap=window.AUTOPAN_PPH||0;
+   if(_ap>0){const pct=((s.pans_per_hr||0)/_ap-1)*100;_set('st_vs',(pct>=0?'+':'')+Math.round(pct)+'%');}
+   else _set('st_vs','\u2014');};
  async function loadHistory(){let list=[];try{list=await window.pywebview.api.run_history();}catch(e){}
    const box=document.getElementById('histbox');if(!box)return;
    if(!list||!list.length){box.innerHTML='<div class="hempty">No runs yet \u2014 finish a session and it shows up here.</div>';return;}
@@ -1994,7 +1998,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    }
    function render(b){const m=b.metrics,S=b.settings,f=(x,p)=>Number(x).toFixed(p===undefined?2:p);
      let h='<h4>Computed for your stats</h4>';
-     h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code></div>';
+     h+='<div>Effective rolls/pan <code>'+Math.round(m.rolls)+'</code> &middot; shakes/sec <code>'+f(m.r)+'</code> &middot; cycle <code>'+f(m.cycleSec)+'s</code> &middot; pans/min <code>'+f(m.ppm)+'</code> &middot; auto-pan <code>'+Math.round(m.ppm*60)+'/hr</code></div>';
      const rows=[
        ['Digs to fill pan', m.n+'  (capacity ÷ 1.5×dig strength)'],
        ['Dig mode', m.perfect?('Perfect — '+S.DIG_CLICK_MS+' ms hold (55000 ÷ dig speed)'):('Fast spam — '+S.DIG_CLICK_MS+' ms')],
@@ -2016,7 +2020,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      try{await window.pywebview.api.save_config(collect());}catch(e){}
      try{await window.pywebview.api.save_autobuild({ab_luck:gv('ab_luck'),ab_cap:gv('ab_cap'),
        ab_ds:gv('ab_ds'),ab_dspeed:gv('ab_dspeed'),ab_ss:gv('ab_ss'),ab_sspeed:gv('ab_sspeed'),
-       ab_ws:gv('ab_ws'),ab_n:gv('ab_n'),ab_perfect:!!((document.getElementById('ab_perfect')||{}).checked)});}catch(e){}
+       ab_ws:gv('ab_ws'),ab_n:gv('ab_n'),ab_perfect:!!((document.getElementById('ab_perfect')||{}).checked),
+       autopan_pph:Math.round(b.metrics.ppm*60)});}catch(e){}
+     window.AUTOPAN_PPH=b.metrics.ppm*60;
      render(b);
      toast('Build generated & applied ✓ — Save settings keeps it');
    };
@@ -2074,7 +2080,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});setAutobuild(s.autobuild||{});
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});setAutobuild(s.autobuild||{});window.AUTOPAN_PPH=(s.autobuild&&s.autobuild.autopan_pph)||0;
    checkUpdate();loadHistory();
 }
  window.addEventListener('pywebviewready',boot);

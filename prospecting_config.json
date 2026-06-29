@@ -197,5 +197,6 @@
     "ab_ws": 28,
     "ab_n": 3,
     "ab_perfect": true
-  }
+  },
+  "SHAKE_HOLD_DELAY_MS": 150
 }
