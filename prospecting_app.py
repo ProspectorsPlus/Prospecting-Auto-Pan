@@ -852,22 +852,30 @@ class Api:
 
     def _detect_capacity_px(self, arr):
         import numpy as np
+        H, W = arr.shape[0], arr.shape[1]
         b = arr[:, :, 0].astype(np.int16)
         g = arr[:, :, 1].astype(np.int16)
         r = arr[:, :, 2].astype(np.int16)
-        yellow = (r >= 120) & (g >= 110) & (b <= np.minimum(r, g) - 30)
+        # bright, saturated GOLD (brighter than sandy beach, not pale)
+        gold = (r >= 150) & (g >= 135) & (b <= np.minimum(r, g) - 45)
+        # only look in the lower-centre band where the Pan Fill bar lives
+        region = np.zeros((H, W), dtype=bool)
+        y0, y1 = int(H * 0.70), int(H * 0.91)
+        x0, x1 = int(W * 0.20), int(W * 0.80)
+        region[y0:y1, x0:x1] = True
+        cand = gold & region
         emp = getattr(self, "_cap_empty", None)
         if emp is not None and emp.shape == arr.shape:
             diff = (np.abs(r - emp[:, :, 2]) + np.abs(g - emp[:, :, 1])
                     + np.abs(b - emp[:, :, 0]))
-            barmask = yellow & (diff > 45)
-        else:
-            barmask = yellow
-        counts = barmask.sum(axis=1)
+            changed = cand & (diff > 60)
+            if int(changed.sum(axis=1).max() if changed.any() else 0) >= 50:
+                cand = changed
+        counts = cand.sum(axis=1)
         y = int(counts.argmax())
         if int(counts[y]) < 50:
             return {"ok": False, "error": "no full bar found"}
-        xs = np.where(barmask[y])[0]
+        xs = np.where(cand[y])[0]
         seg = max(np.split(xs, np.where(np.diff(xs) > 6)[0] + 1), key=len)
         left, right = int(seg[0]), int(seg[-1])
         if right - left < 50:
@@ -882,12 +890,14 @@ class Api:
         r = arr[:, :, 2].astype(np.int16)
         lo = np.minimum(np.minimum(r, g), b)
         hi = np.maximum(np.maximum(r, g), b)
-        white = (lo >= 225) & ((hi - lo) <= 25)
+        white = (lo >= 230) & ((hi - lo) <= 22)
+        # the prompt (mouse icon + word) sits in a thin strip at the very bottom
+        # centre -- below the Pan Fill bar/numbers, above the hotbar
         mask = np.zeros((H, W), dtype=bool)
-        y0, y1 = int(H * 0.50), int(H * 0.96)
-        x0, x1 = int(W * 0.15), int(W * 0.85)
+        y0, y1 = int(H * 0.87), int(H * 0.955)
+        x0, x1 = int(W * 0.30), int(W * 0.70)
         mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
-        if int(mask.sum()) < 20:
+        if int(mask.sum()) < 12:
             return {"ok": False, "error": "prompt not visible"}
         yband = int(mask.sum(axis=1).argmax())
         yb0, yb1 = max(0, yband - 48), min(H, yband + 48)
