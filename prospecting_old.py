@@ -1658,31 +1658,19 @@ def _hold_keepalive():
 
 
 def do_shake(det):
-    """Shake IN PLACE in the water with rapid CLICKS until the capacity bar reads
-    empty. Rapid clicks register reliably in Roblox (a sustained hold does NOT).
-    We deliberately do NOT glide toward land during the shake -- gliding onto land
-    mid-shake is what turned shake clicks into DIGS ('drags into dig mode'). The
-    walk to land happens on the next tick, once the pan is empty. Auto count: as
-    many clicks as it takes, so multi-shake pans empty fully."""
+    """Shake IN PLACE with rapid CLICKS until the capacity bar empties (clicks
+    register in Roblox; a sustained hold does not). We do NOT glide during the
+    shake -- gliding turned shake clicks into digs and made shakes miss. Once the
+    pan is empty we walk SMOOTHLY to land (one W hold to the Collect cue) instead
+    of nudging our way there."""
     phase("Shaking")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)
-    # optional momentum glide (off by default now); only safe if it empties before
-    # reaching land, so we STOP the instant we hit the Collect cue.
-    w_down = False
-    if SHAKE_MOMENTUM_W:
-        key_down(KEY_W)
-        w_down = True
     base = det.cap_fill()
     started = emptied = bailed = False
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while State.running and time.perf_counter() < end:
-        # Reached land? Stop BEFORE clicking so a click can't become a dig.
-        if w_down and det.on_deposit():
-            key_up(KEY_W)
-            w_down = False
-            break
         mouse_tap(max(8, SHAKE_CLICK_MS))      # one shake click (rattle)
         if not started and (det.on_shake() or det.cap_fill() < base - 0.05
                             or not det.capacity_full()):
@@ -1695,8 +1683,6 @@ def do_shake(det):
             bailed = True
             break
         sleep_ms(SHAKE_CLICK_GAP_MS)
-    if w_down:
-        key_up(KEY_W)
     if not emptied:
         emptied = det.pan_empty()
     if emptied:
@@ -1707,6 +1693,7 @@ def do_shake(det):
         if State.stats:
             State.stats.cycles += 1
             State.stats.mark_cycle()
+        go_land(det)                           # smooth W to land (no nudging)
         sleep_ms(POST_SHAKE_SETTLE_MS)
     else:
         State.shake_fails += 1

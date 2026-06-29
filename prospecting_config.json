@@ -7,7 +7,7 @@
   "PRE_DIG_SETTLE_MS": 60,
   "PAN_BACK_MAX_MS": 251,
   "WATER_EXTRA_BACK_MS": 0,
-  "SHAKE_MOMENTUM_W": false,
+  "SHAKE_MOMENTUM_W": true,
   "SHAKE_CLICK_MS": 18,
   "SHAKE_CLICK_GAP_MS": 14,
   "SHAKE_HOLD_MS": 4500,
@@ -199,5 +199,5 @@
     "ab_perfect": true,
     "autopan_pph": 967
   },
-  "SHAKE_HOLD_DELAY_MS": 0
+  "SHAKE_HOLD_DELAY_MS": 50
 }
