@@ -165,6 +165,7 @@ CAP_SEGMENTS      = 8             # split the capacity bar into this many slices
 HYPERSPEED        = False         # animation-skip glitch mode (faster, less consistent)
 HYPER_DIGS        = 1             # exact digs per pan in hyperspeed (no fill-wait)
 HYPER_DIG_GAP_MS  = 80            # gap between the spam digs in hyperspeed
+HYPER_S_LEAD_MS   = 7             # start holding S this many ms before the last dig releases
 HYPER_WATER_MAX_MS = 600          # max S to reach water in hyperspeed
 SHAKE_STOP_SEGMENTS = 1           # stop shaking when this many (or fewer) slices remain
                                  #   filled -> the last bit empties from the in-flight
@@ -2025,13 +2026,25 @@ def hyper_tick(det):
             if s_held:
                 key_up(KEY_S)
             return
-        if i == n_digs - 1:
+        if i < n_digs - 1:
+            dig_once(det)                     # full (perfect) dig
+            if HYPER_DIG_GAP_MS > 0:
+                sleep_ms(HYPER_DIG_GAP_MS)
+        else:
+            # LAST dig: do the dig, but start S only NEAR THE END of its hold
+            # (HYPER_S_LEAD_MS before release) so the dig still lands while we
+            # begin gliding back.
             phase("Walking to water")
-            key_down(KEY_S)                   # glide back as the last dig starts
-            s_held = True
-        dig_once(det)                         # a real (perfect) dig
-        if i < n_digs - 1 and HYPER_DIG_GAP_MS > 0:
-            sleep_ms(HYPER_DIG_GAP_MS)
+            if PERFECT:
+                dig_once(det)                 # green-poll dig (release time unknown)
+                key_down(KEY_S); s_held = True
+            else:
+                mouse_down()
+                s_at = max(0, DIG_CLICK_MS - HYPER_S_LEAD_MS)
+                sleep_ms(s_at)
+                key_down(KEY_S); s_held = True   # glide back for the last few ms
+                sleep_ms(max(0, DIG_CLICK_MS - s_at))
+                mouse_up()
     # 2) keep holding S until we reach the water
     if not State.running:
         if s_held:

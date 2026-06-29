@@ -197,12 +197,12 @@
     "ab_ws": 34,
     "ab_n": 0,
     "ab_perfect": true,
-    "ab_hyper": true,
+    "ab_hyper": false,
     "autopan_pph": 1221
   },
   "SHAKE_HOLD_DELAY_MS": 0,
   "SHAKE_STOP_SEGMENTS": 1,
-  "HYPERSPEED": true,
+  "HYPERSPEED": false,
   "HYPER_DIGS": 2,
   "HYPER_DIG_GAP_MS": 45,
   "HYPER_WATER_MAX_MS": 300
