@@ -840,10 +840,12 @@ def _qm(key):
 def build_html():
     navs, panels = [], []
 
-    def nav(tabid, icon, label, active=False):
+    def nav(tabid, icon, label, active=False, search=""):
         a = " active" if active else ""
-        navs.append(f'<button type="button" class="tab{a}" data-tab="{tabid}">'
-                    f'<span class="ti">{icon}</span><span>{label}</span></button>')
+        ds = f' data-search="{search}"' if search else ""
+        navs.append({"id": tabid, "html": (
+            f'<button type="button" class="tab{a}" data-tab="{tabid}"{ds}>'
+            f'<span class="ti">{icon}</span><span>{label}</span></button>')})
 
     # Run
     nav("run", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 5l12 7l-12 7z"/></svg>', "Run", True)
@@ -968,7 +970,8 @@ def build_html():
     # Settings tabs
     for title, items in SECTIONS:
         icon = TAB_ICON.get(title, "•")
-        nav(title, icon, title)
+        _search = (title + " " + " ".join(l for _k, l, _t, _d in items)).lower().replace('"', "")
+        nav(title, icon, title, search=_search)
         rows = []
         for key, label, typ, default in items:
             if typ == "bool":
@@ -988,7 +991,39 @@ def build_html():
             f'<p class="chint">{hint}</p></div>'
             f'<div class="rows">{"".join(rows)}</div></section>')
 
-    return HTML.replace("{{NAV}}", "".join(navs)).replace("{{PANELS}}", "".join(panels))
+    nav_html = {n["id"]: n["html"] for n in navs}
+    PINNED = ["run", "cal", "relics", "hist"]
+    GROUPS = [
+        ("Setup", ["Easy tuning", "Window"]),
+        ("Modes", ["Treasure chest"]),
+        ("Engine tuning", ["Mode / Dig", "Walk back into water", "Shake",
+                           "Return to land (dig-probe)"]),
+        ("Recovery", ["Recovery / safety", "Recovery movement (jitter taps)",
+                      "Smart / experimental"]),
+        ("Alerts & limits", ["Notifications", "Auto-stop"]),
+    ]
+    side = ['<input id="navsearch" class="navsearch" type="text" '
+            'placeholder="Search settings…" spellcheck="false">']
+    side.append('<div class="navpinned">'
+                + "".join(nav_html.get(t, "") for t in PINNED) + '</div>')
+    used = set(PINNED)
+    for gname, titles in GROUPS:
+        kids = "".join(nav_html.get(t, "") for t in titles if t in nav_html)
+        used.update(titles)
+        if not kids:
+            continue
+        side.append(
+            f'<div class="navgroup collapsed" data-group="{gname}">'
+            f'<button type="button" class="grouphdr">'
+            f'<span>{gname}</span><span class="chev">›</span></button>'
+            f'<div class="groupkids">{kids}</div></div>')
+    leftover = "".join(n["html"] for n in navs if n["id"] not in used)
+    if leftover:
+        side.append('<div class="navgroup collapsed" data-group="Other">'
+                    '<button type="button" class="grouphdr"><span>Other</span>'
+                    '<span class="chev">›</span></button>'
+                    f'<div class="groupkids">{leftover}</div></div>')
+    return HTML.replace("{{NAV}}", "".join(side)).replace("{{PANELS}}", "".join(panels))
 
 
 HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
@@ -1019,6 +1054,17 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .tab .ti svg{width:16px;height:16px}
  .tab:hover{color:var(--txt)} .tab:hover .ti{opacity:1}
  .tab.active{background:var(--sand-dim);color:var(--accent-lit)}
+ .navsearch{width:100%;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:7px 10px;margin-bottom:12px;font:inherit}
+ .navsearch::placeholder{color:var(--dim)}
+ .navsearch:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--sand-dim)}
+ .navpinned{margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+ .navgroup{margin-bottom:1px}
+ .grouphdr{display:flex;align-items:center;justify-content:space-between;width:100%;background:transparent;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-size:10.5px;font-weight:700;padding:9px 11px 4px;border-radius:8px}
+ .grouphdr:hover{color:var(--mut)}
+ .grouphdr .chev{transition:transform .15s var(--ease);opacity:.55;font-size:15px;font-weight:400}
+ .navgroup:not(.collapsed) .grouphdr .chev{transform:rotate(90deg)}
+ .navgroup.collapsed .groupkids{display:none}
+ .tab.hidden,.navgroup.hidden{display:none}
  .tab.active .ti{opacity:1}
  .tab.active:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
@@ -1293,7 +1339,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
    const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist')?('p'+id):('p_'+id);
    document.getElementById(pid).classList.add('active');
+   const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
    if(id==='hist')loadHistory();});
+ document.querySelectorAll('.grouphdr').forEach(h=>h.onclick=()=>h.closest('.navgroup').classList.toggle('collapsed'));
+ (function(){const ns=document.getElementById('navsearch');if(!ns)return;
+   ns.addEventListener('input',()=>{const q=ns.value.trim().toLowerCase();
+     if(!q){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('hidden'));
+       document.querySelectorAll('.navgroup').forEach(g=>{g.classList.remove('hidden');g.classList.add('collapsed');});return;}
+     document.querySelectorAll('.navgroup').forEach(g=>{let any=false;
+       g.querySelectorAll('.tab').forEach(t=>{const hit=((t.dataset.search||'')+' '+t.textContent.toLowerCase()).includes(q);
+         t.classList.toggle('hidden',!hit);if(hit)any=true;});
+       g.classList.toggle('hidden',!any);g.classList.toggle('collapsed',!any);});
+     document.querySelectorAll('.navpinned .tab').forEach(t=>t.classList.toggle('hidden',!t.textContent.toLowerCase().includes(q)));});})();
  // calibrate: click a button, then click the spot in-game
  let pixels={};
  function setPixels(px){pixels=px||{};

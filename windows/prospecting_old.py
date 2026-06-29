@@ -419,6 +419,8 @@ NOTIFY_STATS       = True
 NOTIFY_SAFE_STOP   = True
 NOTIFY_RECOVERIES  = False
 NOTIFY_ERRORS      = True
+NOTIFY_SCREENSHOT  = True   # attach a screenshot to safe-stop / recover / hard-stop / stats DMs
+SHOT_TARGET_W      = 1280   # downscale screenshots to about this width before sending
 
 # --- AUTO-STOP TIMER ---------------------------------------------------------
 AUTOSTOP_ENABLED   = False
@@ -1116,7 +1118,27 @@ _EVENT_FLAG = {
 }
 
 
-def post_webhook(event, message, stats=None):
+def _grab_screenshot_b64():
+    """Grab the screen, downscale, and return a base64 PNG (or None). Used to
+    attach a picture to Discord alerts so you can see what happened remotely."""
+    try:
+        import base64
+        import mss.tools
+        with _MSS() as sct:
+            raw = sct.grab(sct.monitors[1])
+        arr = np.asarray(raw)                      # (h, w, 4) BGRA
+        h, w = arr.shape[0], arr.shape[1]
+        scale = max(1, int(round(w / float(SHOT_TARGET_W or w))))
+        small = arr[::scale, ::scale]
+        rgb = small[:, :, (2, 1, 0)].tobytes()     # BGR(A) -> RGB
+        png = mss.tools.to_png(rgb, (small.shape[1], small.shape[0]))
+        return base64.b64encode(png).decode("ascii")
+    except Exception as e:
+        print("[webhook] screenshot failed: %s" % e)
+        return None
+
+
+def post_webhook(event, message, stats=None, shot=False):
     """Fire a JSON notification to WEBHOOK_URL (non-blocking). Plain Discord
     webhooks render 'content'; a custom bot can read event/user/stats. Honours
     the per-event NOTIFY_* toggles so users get only the DMs they want."""
@@ -1127,6 +1149,11 @@ def post_webhook(event, message, stats=None):
         return
     payload = {"username": "Prospectors Plus", "content": message,
                "event": event, "user": WEBHOOK_USER, "stats": stats or {}}
+    if shot and NOTIFY_SCREENSHOT:
+        img = _grab_screenshot_b64()
+        if img:
+            payload["screenshot"] = img
+            payload["screenshot_format"] = "png"
 
     def _send():
         try:
@@ -1257,7 +1284,7 @@ def safe_stop(reason, hard=False):
             print("\n*** FORTUNE RIVER RECOVERY: %s -> resumed ***" % reason)
             post_webhook("safe_stop",
                          "\U0001f9ed Fortune River recovery (%s) -> resumed" % reason,
-                         State.stats.as_dict() if State.stats else None)
+                         State.stats.as_dict() if State.stats else None, shot=True)
             return
 
     def _beep(hand=False):
@@ -1277,7 +1304,7 @@ def safe_stop(reason, hard=False):
                f"(attempt {State.safe_retries}/{SAFE_STOP_MAX_RETRIES})")
         print(f"\n*** SAFE PAUSE: {msg} ***")
         post_webhook("safe_stop", f"⚠️ Safe-paused: {msg}",
-                     State.stats.as_dict() if State.stats else None)
+                     State.stats.as_dict() if State.stats else None, shot=True)
         _beep(False)
         end = time.perf_counter() + SAFE_STOP_RETRY_SEC
         while time.perf_counter() < end and State.running and State.alive:
@@ -1292,7 +1319,7 @@ def safe_stop(reason, hard=False):
         State.stats.stop_reason = "safe-stop"
     print(f"\n*** HARD STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
     post_webhook("stop", f"🛑 Hard-stopped: {reason}",
-                 State.stats.as_dict() if State.stats else None)
+                 State.stats.as_dict() if State.stats else None, shot=True)
     _beep(True)
 
 
@@ -1810,7 +1837,7 @@ def recover(det, s):
     if State.stats:
         State.stats.recoveries += 1
         post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
-                     State.stats.as_dict())
+                     State.stats.as_dict(), shot=True)
     if s.full and s.pan:
         if SHAKE_RETRY_ENABLED:
             do_shake(det)                # full in water, won't empty -> shake again
@@ -2279,7 +2306,7 @@ def main():
                         s = State.stats.as_dict()
                         post_webhook("stats",
                                      f"📊 {s['cycles']} pans · {s['pans_per_hr']}/hr "
-                                     f"· {s['runtime_s']//60} min", s)
+                                     f"· {s['runtime_s']//60} min", s, shot=True)
                     # auto-stop timer
                     if (AUTOSTOP_ENABLED and State.stats
                             and State.stats.runtime() >= AUTOSTOP_MINUTES * 60):

@@ -102,6 +102,7 @@ SECTIONS = [
         ("NOTIFY_SAFE_STOP",   "Notify: safe-stop (hit a hazard)",       "bool", True),
         ("NOTIFY_RECOVERIES",  "Notify: recoveries (can be frequent)",   "bool", False),
         ("NOTIFY_ERRORS",      "Notify: errors",                         "bool", True),
+        ("NOTIFY_SCREENSHOT",  "Attach a screenshot to alerts",          "bool", True),
     ]),
     ("Auto-stop", [
         ("AUTOSTOP_ENABLED",   "Auto-stop after a set time",             "bool", False),
@@ -256,6 +257,7 @@ HELP = {
     "BREAKOUT_REPOS_MS": "Forward reposition nudge during a break-out.",
     "BURST_ON_MS": "Recovery taps: how long each tap holds the key.",
     "BURST_OFF_MS": "Recovery taps: how long each tap releases before re-checking.",
+    "NOTIFY_SCREENSHOT": "Attach a picture of your screen to the safe-stop, recovery, hard-stop and stats DMs, so you can see what happened without going to your computer. Needs the Discord bot updated to forward images.",
     "WEBHOOK_ENABLED": "Get a Discord DM from the Prospectors bot on start, stop, "
                        "safe-stop, auto-stop, bag-full, and periodic stats.",
     "WEBHOOK_USER": "Your exact Discord username (the bot DMs this server member). "
