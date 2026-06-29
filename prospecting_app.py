@@ -828,32 +828,54 @@ class Api:
             raw = sct.grab(sct.monitors[1])
         return np.asarray(raw)            # (h, w, 4) BGRA
 
+    def wizard_capture_empty(self):
+        """Remember a snapshot of the screen with the capacity bar EMPTY. The
+        next step compares against it: whatever turns yellow is the bar."""
+        try:
+            import numpy as np
+            self._cap_empty = self._grab_full().astype(np.int16)
+            return {"ok": True, "msg": "Captured the empty bar"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def wizard_detect_capacity(self):
-        """Find the FULL (yellow) capacity bar by scanning the whole screen for
-        the longest horizontal run of yellow, and save its left/right ends."""
+        """Find the capacity bar. Best method: diff the FULL screen against the
+        EMPTY snapshot and keep the part that both CHANGED and is now yellow --
+        that is the bar. Falls back to plain yellow detection if no empty snap."""
         try:
             import numpy as np
             arr = self._grab_full()
             b = arr[:, :, 0].astype(np.int16)
             g = arr[:, :, 1].astype(np.int16)
             r = arr[:, :, 2].astype(np.int16)
-            yellow = (r >= 140) & (g >= 140) & (b <= np.minimum(r, g) - 45)
-            counts = yellow.sum(axis=1)
+            # a generous "yellow/gold" test (bar can be a muted gold)
+            yellow = (r >= 120) & (g >= 110) & (b <= np.minimum(r, g) - 30)
+            emp = getattr(self, "_cap_empty", None)
+            if emp is not None and emp.shape == arr.shape:
+                diff = (np.abs(r - emp[:, :, 2]) + np.abs(g - emp[:, :, 1])
+                        + np.abs(b - emp[:, :, 0]))
+                barmask = yellow & (diff > 45)
+                source = "empty/full diff"
+            else:
+                barmask = yellow
+                source = "yellow scan"
+            counts = barmask.sum(axis=1)
             y = int(counts.argmax())
-            if int(counts[y]) < 60:
-                return {"ok": False, "error": "No full yellow bar found. Dig until the "
-                        "capacity bar is COMPLETELY full, then Detect again (or pick manually)."}
-            xs = np.where(yellow[y])[0]
-            breaks = np.where(np.diff(xs) > 4)[0]
-            segs = np.split(xs, breaks + 1)
-            seg = max(segs, key=len)
+            if int(counts[y]) < 50:
+                return {"ok": False, "error": "Could not find the bar. Make sure it is "
+                        "COMPLETELY full (and that you captured the empty bar first), "
+                        "then Detect again -- or pick manually."}
+            xs = np.where(barmask[y])[0]
+            breaks = np.where(np.diff(xs) > 6)[0]
+            seg = max(np.split(xs, breaks + 1), key=len)
             left, right = int(seg[0]), int(seg[-1])
-            if right - left < 60:
-                return {"ok": False, "error": "Bar looks too short — pick manually instead."}
+            if right - left < 50:
+                return {"ok": False, "error": "Bar looks too short -- pick manually instead."}
             hexv = "#%02x%02x%02x" % (int(r[y, right]), int(g[y, right]), int(b[y, right]))
             self.save_pixels({"CAP_FULL_PIXEL": [right, y], "CAP_LEFT_PIXEL": [left, y]},
                              {"CAP_FULL_PIXEL": hexv})
-            return {"ok": True, "left": [left, y], "right": [right, y], "width": right - left}
+            return {"ok": True, "left": [left, y], "right": [right, y],
+                    "width": right - left, "via": source}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -1635,7 +1657,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  (function(){const A=()=>window.pywebview.api;
    const WIZ=[
     {t:'Guided calibration',b:'This sets up every detection spot for you. Keep Roblox open with the HUD visible, then click Detect to find the game window.',d:async()=>{const w=await A().detect_roblox();return (w&&w.found)?{ok:true,msg:'Found Roblox '+w.w+'×'+w.h}:{ok:false,error:'Roblox not found — open the game, then Detect.'};},m:null},
-    {t:'Capacity bar',b:'Dig until your capacity bar is <b>completely full</b> (all yellow). Then click Detect — it scans the screen for the bar.',d:()=>A().wizard_detect_capacity(),m:'CAP_FULL_PIXEL'},
+    {t:'Capacity bar — empty',b:'First make sure your capacity bar is <b>empty</b> (no yellow). Then click Detect to snapshot it.',d:()=>A().wizard_capture_empty(),m:null},
+    {t:'Capacity bar — full',b:'Now dig until the capacity bar is <b>completely full</b> (all yellow). Then Detect — it compares against the empty snapshot to find the bar.',d:()=>A().wizard_detect_capacity(),m:'CAP_FULL_PIXEL'},
     {t:'\u201cPan\u201d prompt',b:'Stand in the <b>water</b> so the white \u201cPan\u201d prompt shows at the bottom. Then Detect.',d:()=>A().wizard_detect_cue('PAN_PIX'),m:'PAN_PIX'},
     {t:'\u201cCollect Deposit\u201d prompt',b:'Step onto <b>land</b> so \u201cCollect Deposit\u201d shows. Then Detect.',d:()=>A().wizard_detect_cue('DEPOSIT_PIX'),m:'DEPOSIT_PIX'},
     {t:'\u201cShake\u201d prompt',b:'Begin a <b>shake</b> so the \u201cShake\u201d prompt shows. Then Detect.',d:()=>A().wizard_detect_cue('SHAKE_PIX'),m:'SHAKE_PIX'},

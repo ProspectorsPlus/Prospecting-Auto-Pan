@@ -41,30 +41,30 @@
   "RELICS": [],
   "RELICS_ENABLED": false,
   "CAP_FULL_PIXEL": [
-    1122,
-    894
+    1118,
+    891
   ],
   "DEPOSIT_PIX": [
-    768,
-    986
+    770,
+    985
   ],
   "PAN_PIX": [
-    844,
-    983
+    846,
+    987
   ],
   "SHAKE_PIX": [
-    831,
-    985
+    830,
+    988
   ],
   "DIG_TRIGGER_PIXEL": [
     1082,
     530
   ],
   "CAP_LEFT_PIXEL": [
-    678,
-    895
+    0,
+    455
   ],
-  "CAP_BAR_WIDTH": 444,
+  "CAP_BAR_WIDTH": 1118,
   "CALIB_WINDOW_ORIGIN": [
     0,
     39
@@ -77,24 +77,24 @@
   ],
   "PIXEL_RATIOS": {
     "CAP_FULL_PIXEL": [
-      0.62333,
-      0.78657
+      0.62111,
+      0.78381
     ],
     "CAP_LEFT_PIXEL": [
-      0.37667,
-      0.78749
+      0.0,
+      0.3827
     ],
     "DEPOSIT_PIX": [
-      0.42667,
-      0.87121
+      0.42778,
+      0.87029
     ],
     "PAN_PIX": [
-      0.46889,
-      0.86845
+      0.47,
+      0.87213
     ],
     "SHAKE_PIX": [
-      0.46167,
-      0.87029
+      0.46111,
+      0.87305
     ],
     "DIG_TRIGGER_PIXEL": [
       0.60111,
@@ -109,7 +109,9 @@
   "NOTIFY_ERRORS": true,
   "ACCESS_OK": true,
   "ACCESS_HASH": "71786532ffb0949f55898b91d3876a8793240baa9c466519c067fabb75c72dd7",
-  "PIXEL_COLORS": {},
+  "PIXEL_COLORS": {
+    "SHAKE_PIX": "#ffffff"
+  },
   "SAFE_STOP_RETRY": true,
   "SAFE_STOP_RETRY_SEC": 60,
   "SAFE_STOP_MAX_RETRIES": 3,
