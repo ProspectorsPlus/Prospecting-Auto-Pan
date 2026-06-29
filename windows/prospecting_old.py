@@ -481,7 +481,7 @@ FR_RECOVERY        = False        # master toggle
 FR_OPEN_SLOT       = 4            # hotbar slot that equips the fast-travel item
 FR_PAN_SLOT        = 1            # hotbar slot for the pan (return to it after)
 FR_OPEN_PIXEL      = [0, 0]       # optional click to open Fast Travel (0,0 = skip)
-FR_DOUBLE_GAP_MS   = 120          # gap between the two slot-4 presses (double-tap)
+FR_DOUBLE_GAP_MS   = 120          # gap between the two mouse clicks (double-click to open)
 FR_CLICK_SETTLE_MS = 300          # pause after a cursor move, before/after a click (ms)
 FR_ACTION_GAP_MS   = 500          # pause between each step of the sequence (ms)
 FR_OPEN_MS         = 600          # wait for the menu to appear (ms)
@@ -1126,10 +1126,12 @@ def fortune_river_recover():
     sct = det.sct
     log("FR-recover: opening Fast Travel ...")
     release_all()
-    # DOUBLE-press slot 4 to open the Fast Travel menu
-    tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)
+    # switch to the fast-travel hotbar slot, then DOUBLE-CLICK to open the menu
+    tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)      # switch to hotkey 4
+    sleep_ms(FR_ACTION_GAP_MS)
+    mouse_tap(40)                                     # double-click to open Fast Travel
     sleep_ms(FR_DOUBLE_GAP_MS)
-    tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)
+    mouse_tap(40)
     sleep_ms(FR_OPEN_MS)
     tap_key(KEY_SHIFT, 60)                            # exit shift-lock so the mouse can move
     sleep_ms(FR_ACTION_GAP_MS)
