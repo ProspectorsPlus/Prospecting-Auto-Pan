@@ -792,20 +792,18 @@ class Api:
                 "stats": self._last_stats or {}}
 
     def popout(self):
-        """Condense into a small always-on-top draggable pill; hide the main
-        window. Click the pill's restore button (or call restore) to come back."""
+        """Condense into the always-on-top pill; hide the main window."""
         global _pill, _window
         try:
-            import webview
-        except Exception:
-            return "no-webview"
-        if _pill is not None:
-            try:
+            if _pill is not None:
                 _pill.show()
-                _pill.on_top = True
-            except Exception:
-                pass
-            return "ok"
+            if _window is not None:
+                _window.hide()
+            self._popped = True
+        except Exception as e:
+            print("[pill] popout failed: %s" % e)
+            return "err"
+        return "ok"
 
     def save_hotkeys(self, hk):
         cur = load_saved()
@@ -824,7 +822,6 @@ class Api:
         target pixel, see a marker + colour + coords, Confirm to save."""
         global _overlay
         try:
-            import webview
             import mss
             import mss.tools
             import base64
@@ -836,7 +833,10 @@ class Api:
                 raw = sct.grab(sct.monitors[1])
             self._shot = np.asarray(raw)
             self._shot_h, self._shot_w = self._shot.shape[0], self._shot.shape[1]
-            png = mss.tools.to_png(raw.rgb, raw.size)
+            step = max(1, int(round(self._shot_w / 1600.0)))
+            disp = self._shot[::step, ::step]
+            rgb = disp[:, :, (2, 1, 0)].tobytes()
+            png = mss.tools.to_png(rgb, (disp.shape[1], disp.shape[0]))
             self._shot_b64 = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
         except Exception as e:
             return {"error": str(e)}
@@ -844,10 +844,9 @@ class Api:
         self._overlay_label = label or key
         self._overlay_pending = None
         try:
-            _overlay = webview.create_window(
-                "Calibrate", html=_OVERLAY_HTML, js_api=self,
-                frameless=True, on_top=True, fullscreen=True,
-                background_color="#000000")
+            if _overlay is not None:
+                _overlay.evaluate_js("window.__reload && window.__reload()")
+                _overlay.show()
         except Exception as e:
             return {"error": str(e)}
         return {"ok": True}
@@ -897,12 +896,11 @@ class Api:
 
     def _close_overlay(self):
         global _overlay
-        if _overlay is not None:
-            try:
-                _overlay.destroy()
-            except Exception:
-                pass
-            _overlay = None
+        try:
+            if _overlay is not None:
+                _overlay.hide()
+        except Exception:
+            pass
 
     def _grab_full(self):
         import mss
@@ -970,40 +968,26 @@ class Api:
             return {"ok": True, "pixel": [px, py]}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        try:
-            _pill = webview.create_window(
-                "Prospectors Plus", html=PILL_HTML, js_api=self,
-                width=272, height=132, frameless=True, on_top=True,
-                easy_drag=True, resizable=False, background_color="#1a1816")
-        except Exception as e:
-            print("[pill] create failed: %s" % e)
-            return "err"
-        try:
-            if _window is not None:
-                _window.hide()
-        except Exception:
-            pass
-        return "ok"
 
     def restore(self):
-        """Show the main window again and close the pill."""
+        """Show the main window again and hide the pill."""
         global _pill, _window
         try:
             if _window is not None:
                 _window.show()
         except Exception:
             pass
-        if _pill is not None:
-            try:
-                _pill.destroy()
-            except Exception:
-                pass
-            _pill = None
+        try:
+            if _pill is not None:
+                _pill.hide()
+        except Exception:
+            pass
+        self._popped = False
         return "ok"
 
     def toggle_popout(self):
         """Flip between the pill and the full window (used by the hotkey)."""
-        if _pill is not None:
+        if getattr(self, "_popped", False):
             self.restore()
         else:
             self.popout()
@@ -1136,7 +1120,7 @@ def _qm(key):
     return f'<span class="qm" data-tip="{tip}">?</span>'
 
 
-_OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:14px;height:14px;border:2px solid #e0b873;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #000,0 0 8px #000;display:none;z-index:8;pointer-events:none}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:196px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; click the pixel &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0;\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW)return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;\n   const f=frac(e);let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;picked=true;loupe.style.display=\'none\';\n   marker.style.display=\'block\';marker.style.left=e.clientX+\'px\';marker.style.top=e.clientY+\'px\';\n   document.getElementById(\'sw\').style.background=r.hex;document.getElementById(\'hex\').textContent=r.hex;\n   document.getElementById(\'xy\').textContent=r.x+\', \'+r.y;\n   let tx=e.clientX+20,ty=e.clientY+20;if(tx>innerWidth-230)tx=e.clientX-216;if(ty>innerHeight-160)ty=e.clientY-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';});\n document.getElementById(\'redo\').onclick=()=>{picked=false;tip.style.display=\'none\';marker.style.display=\'none\';};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n boot();\n</script></body></html>'
+_OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:14px;height:14px;border:2px solid #e0b873;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #000,0 0 8px #000;display:none;z-index:8;pointer-events:none}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:196px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; click the pixel &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0;\n function reset(){picked=false;marker.style.display=\'none\';tip.style.display=\'none\';loupe.style.display=\'none\';}\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW)return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;\n   const f=frac(e);let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;picked=true;loupe.style.display=\'none\';\n   marker.style.display=\'block\';marker.style.left=e.clientX+\'px\';marker.style.top=e.clientY+\'px\';\n   document.getElementById(\'sw\').style.background=r.hex;document.getElementById(\'hex\').textContent=r.hex;\n   document.getElementById(\'xy\').textContent=r.x+\', \'+r.y;\n   let tx=e.clientX+20,ty=e.clientY+20;if(tx>innerWidth-230)tx=e.clientX-216;if(ty>innerHeight-160)ty=e.clientY-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';});\n document.getElementById(\'redo\').onclick=()=>{reset();};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n window.__reload=function(){reset();boot();};\n window.addEventListener(\'pywebviewready\',boot);\n boot();\n</script></body></html>'
 
 
 def build_html():
@@ -1906,7 +1890,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
 
 
 def main():
-    global _window
+    global _window, _pill, _overlay
     # Frozen macro mode: the bundled exe re-invokes itself with --run-macro to
     # run the actual macro in-process (there is no separate python.exe).
     if FROZEN and "--run-macro" in sys.argv:
@@ -1925,6 +1909,27 @@ def main():
     _window = webview.create_window("Prospectors Plus", html=build_html(),
                                     js_api=api, width=980, height=880,
                                     min_size=(860, 660))
+    global _pill, _overlay
+    try:
+        import ctypes as _ct
+        _sw = int(_ct.windll.user32.GetSystemMetrics(0))
+        _sh = int(_ct.windll.user32.GetSystemMetrics(1))
+    except Exception:
+        _sw, _sh = 1920, 1080
+    try:
+        _pill = webview.create_window(
+            "Prospectors Plus", html=PILL_HTML, js_api=api,
+            width=272, height=132, frameless=True, on_top=True,
+            easy_drag=True, resizable=False, hidden=True)
+    except Exception as _e:
+        print("[pill] precreate failed: %s" % _e)
+    try:
+        _overlay = webview.create_window(
+            "Calibrate", html=_OVERLAY_HTML, js_api=api,
+            x=0, y=0, width=_sw, height=_sh,
+            frameless=True, on_top=True, hidden=True)
+    except Exception as _e:
+        print("[overlay] precreate failed: %s" % _e)
     webview.start()
     try:
         api._save_history()      # window closed while running -> log it
