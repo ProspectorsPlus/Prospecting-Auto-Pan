@@ -964,6 +964,10 @@ class Api:
         return {"ok": True, "left": [left, y], "right": [right, y]}
 
     def _detect_cue_px(self, arr, which):
+        """Locate the prompt by finding the BOTTOM-MOST block of centred white
+        text (the Pan / Shake / Collect Deposit word, which sits just below the
+        Pan Fill bar and above the hotbar), then take the LEFTMOST white blob on
+        that line -- the mouse icon to the left of the word."""
         import numpy as np
         H, W = arr.shape[0], arr.shape[1]
         b = arr[:, :, 0].astype(np.int16)
@@ -971,26 +975,29 @@ class Api:
         r = arr[:, :, 2].astype(np.int16)
         lo = np.minimum(np.minimum(r, g), b)
         hi = np.maximum(np.maximum(r, g), b)
-        white = (lo >= 230) & ((hi - lo) <= 22)
-        # the prompt (mouse icon + word) sits in a thin strip at the very bottom
-        # centre -- below the Pan Fill bar/numbers, above the hotbar
+        white = (lo >= 225) & ((hi - lo) <= 26)
+        # centre-bottom search zone: below the bar, above the hotbar; the right
+        # side is trimmed so "Auto Sell" never competes with the prompt
         mask = np.zeros((H, W), dtype=bool)
-        y0, y1 = int(H * 0.87), int(H * 0.955)
-        x0, x1 = int(W * 0.30), int(W * 0.70)
+        y0, y1 = int(H * 0.68), int(H * 0.86)
+        x0, x1 = int(W * 0.25), int(W * 0.62)
         mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
-        if int(mask.sum()) < 12:
+        rows = mask.sum(axis=1)
+        rws = np.where(rows >= 6)[0]
+        if len(rws) == 0:
             return {"ok": False, "error": "prompt not visible"}
-        yband = int(mask.sum(axis=1).argmax())
-        yb0, yb1 = max(0, yband - 48), min(H, yband + 48)
+        # the prompt is the LOWEST white text line in the zone
+        bottom = int(rws.max())
+        pb0 = max(0, bottom - 60)
         band = np.zeros((H, W), dtype=bool)
-        band[yb0:yb1] = mask[yb0:yb1]
+        band[pb0:bottom + 1] = mask[pb0:bottom + 1]
         cols = np.where(band.any(axis=0))[0]
         if len(cols) == 0:
             return {"ok": False, "error": "no prompt row"}
         min_x = int(cols[0])
         end = min_x
-        for c in cols:
-            if int(c) - end <= 10:
+        for c in cols:                       # first blob from the left = mouse icon
+            if int(c) - end <= 12:
                 end = int(c)
             else:
                 break
