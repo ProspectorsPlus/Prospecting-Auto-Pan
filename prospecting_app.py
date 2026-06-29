@@ -890,6 +890,21 @@ class Api:
         left, right = int(seg[0]), int(seg[-1])
         if right - left < 50:
             return {"ok": False, "error": "bar too short"}
+
+        # The macro's full-bar test (is_yellow) needs SOLID gold; the literal
+        # edge pixel is a pale anti-aliased blend that fails it. Walk both ends
+        # inward to a solidly-gold pixel, plus a small margin off the edge.
+        def _solid(x):
+            pr, pg, pb = int(r[y, x]), int(g[y, x]), int(b[y, x])
+            return pr >= 140 and pg >= 140 and pb <= min(pr, pg) - 55
+        xr = right
+        while xr > left and not _solid(xr):
+            xr -= 1
+        right = max(left + 4, xr - 6)
+        xl = left
+        while xl < right and not _solid(xl):
+            xl += 1
+        left = min(right - 4, xl + 6)
         return {"ok": True, "left": [left, y], "right": [right, y]}
 
     def _detect_cue_px(self, arr, which):
