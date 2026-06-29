@@ -516,6 +516,14 @@ TOGGLE_VK = 40          # 'K'  -> Ctrl+K toggles
 TOGGLE_NAME = "Ctrl+K"
 SOFTSTOP_VK = 38        # 'J' -> Ctrl+J = manual soft-stop (test)
 
+# Customisable hotkeys (set in the app Keybinds tab). Each is a combo dict:
+# {ctrl, alt, shift, code} where code is a JS KeyboardEvent.code (e.g. "KeyK").
+HOTKEY_TOGGLE   = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyK"}
+HOTKEY_SOFTSTOP = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyJ"}
+HOTKEY_QUIT     = {"ctrl": False, "alt": False, "shift": False, "code": "Escape"}
+HOTKEY_POPOUT   = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyP"}
+_CODE_VK_MAC = {"KeyA":0,"KeyB":11,"KeyC":8,"KeyD":2,"KeyE":14,"KeyF":3,"KeyG":5,"KeyH":4,"KeyI":34,"KeyJ":38,"KeyK":40,"KeyL":37,"KeyM":46,"KeyN":45,"KeyO":31,"KeyP":35,"KeyQ":12,"KeyR":15,"KeyS":1,"KeyT":17,"KeyU":32,"KeyV":9,"KeyW":13,"KeyX":7,"KeyY":16,"KeyZ":6,"Digit1":18,"Digit2":19,"Digit3":20,"Digit4":21,"Digit5":23,"Digit6":22,"Digit7":26,"Digit8":28,"Digit9":25,"Digit0":29,"Escape":53,"Space":49,"F1":122,"F2":120,"F3":99,"F4":118,"F5":96,"F6":97,"F7":98,"F8":100,"F9":101,"F10":109,"F11":103,"F12":111}
+
 # ============================================================================
 # Below here you normally don't need to edit.
 # ============================================================================
@@ -2027,34 +2035,83 @@ def loop_step(detector):
 # Toggle is a Ctrl chord so it never types into the game and avoids macOS
 # media-key F-keys. We track Ctrl state and match the second key by virtual
 # keycode (robust even though Ctrl turns the char into a control code).
+def _code_to_vk(code):
+    return _CODE_VK_MAC.get(code or "")
+
+
+def _hk_label(spec):
+    spec = spec or {}
+    p = []
+    if spec.get("ctrl"):
+        p.append("Ctrl")
+    if spec.get("alt"):
+        p.append("Alt")
+    if spec.get("shift"):
+        p.append("Shift")
+    c = spec.get("code", "")
+    if c.startswith("Key"):
+        p.append(c[3:])
+    elif c.startswith("Digit"):
+        p.append(c[5:])
+    else:
+        p.append(c)
+    return "+".join(p)
+
+
 def make_listener():
-    ctrl = {"down": False}
-    CTRL_KEYS = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
+    mods = {"ctrl": False, "alt": False, "shift": False}
+    CTRL = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
+    ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
+    SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
+    binds = [("toggle", HOTKEY_TOGGLE), ("soft", HOTKEY_SOFTSTOP),
+             ("quit", HOTKEY_QUIT), ("popout", HOTKEY_POPOUT)]
 
     def on_press(key):
-        if key in CTRL_KEYS:
-            ctrl["down"] = True
+        if key in CTRL:
+            mods["ctrl"] = True
             return
-        if key == keyboard.Key.esc:
-            print("[QUIT]")
-            State.running = False
-            State.alive = False
-            release_all()
-            return False
+        if key in ALT:
+            mods["alt"] = True
+            return
+        if key in SHIFT:
+            mods["shift"] = True
+            return
         vk = getattr(key, "vk", None)
-        if ctrl["down"] and vk == SOFTSTOP_VK:
-            State.want_safe_stop = True
-            print("[MANUAL SOFT-STOP]")
-            return
-        if ctrl["down"] and vk == TOGGLE_VK:
-            State.running = not State.running
-            print(f"[{'RUNNING' if State.running else 'PAUSED'}]")
-            if not State.running:
+        if key == keyboard.Key.esc and vk is None:
+            vk = 53
+        for name, spec in binds:
+            tv = _code_to_vk((spec or {}).get("code", ""))
+            if tv is None or vk != tv:
+                continue
+            if (bool(spec.get("ctrl")) != mods["ctrl"]
+                    or bool(spec.get("alt")) != mods["alt"]
+                    or bool(spec.get("shift")) != mods["shift"]):
+                continue
+            if name == "quit":
+                print("[QUIT]")
+                State.running = False
+                State.alive = False
                 release_all()
+                return False
+            if name == "toggle":
+                State.running = not State.running
+                print(f"[{'RUNNING' if State.running else 'PAUSED'}]")
+                if not State.running:
+                    release_all()
+            elif name == "soft":
+                State.want_safe_stop = True
+                print("[MANUAL SOFT-STOP]")
+            elif name == "popout":
+                print("__POPOUT__", flush=True)
+            return
 
     def on_release(key):
-        if key in CTRL_KEYS:
-            ctrl["down"] = False
+        if key in CTRL:
+            mods["ctrl"] = False
+        elif key in ALT:
+            mods["alt"] = False
+        elif key in SHIFT:
+            mods["shift"] = False
 
     return keyboard.Listener(on_press=on_press, on_release=on_release)
 
@@ -2192,7 +2249,7 @@ def main():
     print(__doc__.split("SETUP")[0])
     print(f"Dig trigger pixel {DIG_TRIGGER_PIXEL} (white-line release).")
     print(f"Capacity-full pixel {CAP_FULL_PIXEL} (yellow = full).")
-    print(f"Press {TOGGLE_NAME} to start/stop, Esc to quit.\n")
+    print(f"Press {_hk_label(HOTKEY_TOGGLE)} to start/stop, {_hk_label(HOTKEY_QUIT)} to quit.\n")
 
     listener = make_listener()
     listener.start()

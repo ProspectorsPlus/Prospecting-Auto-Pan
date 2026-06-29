@@ -245,7 +245,8 @@ class Api:
               "FR_BOX_TOP": int(saved.get("FR_BOX_TOP", 0)),
               "FR_BOX_BOTTOM": int(saved.get("FR_BOX_BOTTOM", 0)),
               "FR_HOME_PIXEL": list(saved.get("FR_HOME_PIXEL", [0, 0]))}
-        return {"values": merged, "running": self.proc is not None, "fr": fr,
+        hk = {k: saved.get(k, _HK_DEFAULTS[k]) for k in _HK_DEFAULTS}
+        return {"values": merged, "running": self.proc is not None, "fr": fr, "hotkeys": hk,
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels,
@@ -797,6 +798,103 @@ class Api:
             except Exception:
                 pass
             return "ok"
+
+    def save_hotkeys(self, hk):
+        cur = load_saved()
+        for k in _HK_DEFAULTS:
+            if isinstance(hk, dict) and isinstance(hk.get(k), dict):
+                cur[k] = {"ctrl": bool(hk[k].get("ctrl")),
+                          "alt": bool(hk[k].get("alt")),
+                          "shift": bool(hk[k].get("shift")),
+                          "code": str(hk[k].get("code", ""))}
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cur, f, indent=2)
+        return "saved"
+
+    def start_overlay_calibrate(self, key, label=""):
+        """Open a full-screen overlay (a snapshot of your screen). Click the
+        target pixel, see a marker + colour + coords, Confirm to save."""
+        global _overlay
+        try:
+            import webview
+            import mss
+            import mss.tools
+            import base64
+            import numpy as np
+        except Exception as e:
+            return {"error": str(e)}
+        try:
+            with mss.mss() as sct:
+                raw = sct.grab(sct.monitors[1])
+            self._shot = np.asarray(raw)
+            self._shot_h, self._shot_w = self._shot.shape[0], self._shot.shape[1]
+            png = mss.tools.to_png(raw.rgb, raw.size)
+            self._shot_b64 = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        except Exception as e:
+            return {"error": str(e)}
+        self._overlay_key = key
+        self._overlay_label = label or key
+        self._overlay_pending = None
+        try:
+            _overlay = webview.create_window(
+                "Calibrate", html=_OVERLAY_HTML, js_api=self,
+                frameless=True, on_top=True, fullscreen=True,
+                background_color="#000000")
+        except Exception as e:
+            return {"error": str(e)}
+        return {"ok": True}
+
+    def overlay_image(self):
+        return {"src": getattr(self, "_shot_b64", ""),
+                "label": getattr(self, "_overlay_label", "")}
+
+    def overlay_pick(self, fx, fy):
+        try:
+            w, h = self._shot_w, self._shot_h
+            x = max(0, min(w - 1, int(round(float(fx) * w))))
+            y = max(0, min(h - 1, int(round(float(fy) * h))))
+            px = self._shot[y, x]
+            b, g, r = int(px[0]), int(px[1]), int(px[2])
+            hexv = "#%02x%02x%02x" % (r, g, b)
+            self._overlay_pending = {"x": x, "y": y, "r": r, "g": g, "b": b, "hex": hexv}
+            return self._overlay_pending
+        except Exception as e:
+            return {"error": str(e)}
+
+    def overlay_confirm(self):
+        p = getattr(self, "_overlay_pending", None)
+        key = getattr(self, "_overlay_key", None)
+        if p and key:
+            x, y, hexv = p["x"], p["y"], p["hex"]
+            if key == "FR_TEXT":
+                self.save_pixels({}, None, {"FR_SCAN_X": x,
+                                            "FR_TEXT_RGB": [p["r"], p["g"], p["b"]]})
+            elif key in ("FR_BOX_TOP", "FR_BOX_BOTTOM"):
+                self.save_pixels({}, None, {key: y})
+            elif key in ("FR_OPEN_PIXEL", "FR_HOME_PIXEL"):
+                self.save_pixels({}, None, {key: [x, y]})
+            else:
+                self.save_pixels({key: [x, y]}, {key: hexv})
+        self._close_overlay()
+        try:
+            if _window is not None:
+                _window.evaluate_js("window.__calRefresh&&window.__calRefresh()")
+        except Exception:
+            pass
+        return {"ok": True}
+
+    def overlay_cancel(self):
+        self._close_overlay()
+        return {"ok": True}
+
+    def _close_overlay(self):
+        global _overlay
+        if _overlay is not None:
+            try:
+                _overlay.destroy()
+            except Exception:
+                pass
+            _overlay = None
         try:
             _pill = webview.create_window(
                 "Prospectors Plus", html=PILL_HTML, js_api=self,
@@ -846,6 +944,12 @@ class Api:
                 except Exception:
                     pass
                 continue
+            if line.strip() == "__POPOUT__":
+                try:
+                    self.toggle_popout()
+                except Exception:
+                    pass
+                continue
             _emit_log(line)
         rc = proc.wait()
         _emit_log(f"[macro exited, code {rc}]")
@@ -854,8 +958,17 @@ class Api:
         _emit_state(False)
 
 
+_HK_DEFAULTS = {
+    "HOTKEY_TOGGLE": {"ctrl": True, "alt": False, "shift": False, "code": "KeyK"},
+    "HOTKEY_SOFTSTOP": {"ctrl": True, "alt": False, "shift": False, "code": "KeyJ"},
+    "HOTKEY_QUIT": {"ctrl": False, "alt": False, "shift": False, "code": "Escape"},
+    "HOTKEY_POPOUT": {"ctrl": True, "alt": False, "shift": False, "code": "KeyP"},
+}
+
+
 _window = None
 _pill = None
+_overlay = None
 
 PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:600 13px/1 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
@@ -921,6 +1034,9 @@ def _qm(key):
         return ""
     tip = HELP[key].replace('"', "&quot;")
     return f'<span class="qm" data-tip="{tip}">?</span>'
+
+
+_OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:14px;height:14px;border:2px solid #e0b873;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 1px #000,0 0 8px #000;display:none;z-index:8;pointer-events:none}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:196px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; click the pixel &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0;\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW)return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;\n   const f=frac(e);let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;picked=true;loupe.style.display=\'none\';\n   marker.style.display=\'block\';marker.style.left=e.clientX+\'px\';marker.style.top=e.clientY+\'px\';\n   document.getElementById(\'sw\').style.background=r.hex;document.getElementById(\'hex\').textContent=r.hex;\n   document.getElementById(\'xy\').textContent=r.x+\', \'+r.y;\n   let tx=e.clientX+20,ty=e.clientY+20;if(tx>innerWidth-230)tx=e.clientX-216;if(ty>innerHeight-160)ty=e.clientY-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';});\n document.getElementById(\'redo\').onclick=()=>{picked=false;tip.style.display=\'none\';marker.style.display=\'none\';};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n boot();\n</script></body></html>'
 
 
 def build_html():
@@ -1053,6 +1169,18 @@ def build_html():
         '<button type="button" id="histrefresh" class="btn2" style="margin-bottom:12px">Refresh</button>'
         '<div id="histbox" class="histbox"></div></section>')
 
+    nav("keys", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 9.5h.01M9.5 9.5h.01M13 9.5h.01M16.5 9.5h.01M6.5 13.5h11"/></svg>', "Keybinds")
+    _kbrows = [("HOTKEY_TOGGLE", "Start / Stop"), ("HOTKEY_SOFTSTOP", "Soft-stop (test)"),
+               ("HOTKEY_QUIT", "Quit macro"), ("HOTKEY_POPOUT", "Toggle pop-out pill")]
+    panels.append(
+        '<section class="panel" id="pkeys"><div class="phead"><h2>Keybinds</h2>'
+        '<p class="chint">Click a box, then press the key combo you want. They work globally while the macro is running. Stop &amp; Start the macro to apply.</p></div>'
+        '<div class="rows">'
+        + "".join(f'<label class="row"><span class="lbl">{lbl}</span>'
+                  f'<button type="button" class="btn2 kb" data-kb="{key}" id="kb_{key}">…</button></label>'
+                  for key, lbl in _kbrows)
+        + '</div><div class="calactions"><button type="button" class="btn" id="savekeys">Save keybinds</button></div></section>')
+
     # Settings tabs
     for title, items in SECTIONS:
         icon = TAB_ICON.get(title, "•")
@@ -1078,7 +1206,7 @@ def build_html():
             f'<div class="rows">{"".join(rows)}</div></section>')
 
     nav_html = {n["id"]: n["html"] for n in navs}
-    PINNED = ["run", "cal", "relics", "hist"]
+    PINNED = ["run", "cal", "relics", "hist", "keys"]
     GROUPS = [
         ("Setup", ["Easy tuning", "Window"]),
         ("Modes", ["Treasure chest"]),
@@ -1151,6 +1279,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .navgroup:not(.collapsed) .grouphdr .chev{transform:rotate(90deg)}
  .navgroup.collapsed .groupkids{display:none}
  .tab.hidden,.navgroup.hidden{display:none}
+ .kb{min-width:120px;text-align:center;font-variant:tabular-nums} .kb.armed{background:var(--accent);color:#241a02}
  .tab.active .ti{opacity:1}
  .tab.active:before{content:"";position:absolute;left:0;top:7px;bottom:7px;width:2px;border-radius:2px;background:var(--accent)}
  .navsep{height:1px;background:var(--line);margin:10px 4px}
@@ -1452,20 +1581,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(w&&w.found){el.className='winstat ok';
      el.textContent='✓ Roblox found · '+w.w+'×'+w.h+' at ('+w.x+', '+w.y+')'+(w.title?(' · '+w.title):'');}
    else{el.className='winstat bad';el.textContent='✕ '+((w&&w.error)||'Roblox window not found');}}
- $$('.calbtn').forEach(btn=>btn.onclick=async()=>{
-   if(capturing)return; capturing=true;
-   const key=btn.dataset.pkey; btn.classList.add('armed'); btn.textContent='Click or press Enter…';
-   const r=await window.pywebview.api.calibrate_capture();
-   btn.classList.remove('armed'); btn.textContent='Calibrate'; capturing=false;
-   if(r.cancelled){toast('Cancelled');return;}
-   if(r.error){toast('Calibrate failed: '+r.error);return;}
-   pixels[key]=[r.x,r.y];
-   const cx=document.getElementById('cx_'+key); if(cx)cx.value=r.x;
-   const cy=document.getElementById('cy_'+key); if(cy)cy.value=r.y;
-   const hex='#'+[r.r,r.g,r.b].map(v=>v.toString(16).padStart(2,'0')).join('');
-   const cc=document.getElementById('cc_'+key); if(cc)cc.value=hex;
-   const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=hex;
-   toast(key+' set to ('+r.x+', '+r.y+')');});
+ $$('.calbtn').forEach(btn=>btn.onclick=()=>{
+   const key=btn.dataset.pkey;
+   const lab=((btn.closest('.calrow')||document).querySelector('.calname')||{}).textContent||key;
+   try{window.pywebview.api.start_overlay_calibrate(key,lab);}catch(e){toast('Overlay failed');}});
+ window.__calRefresh=async()=>{try{const s=await window.pywebview.api.get_state();
+   setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});toast('Calibrated ✓');}catch(e){}};
  let fr={text:null,top:null,bottom:null,open:null,home:null};
  function setFR(f){if(!f)return;
    if(f.FR_SCAN_X){fr.text={scan_x:f.FR_SCAN_X,rgb:f.FR_TEXT_RGB};
@@ -1477,22 +1598,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const s=document.getElementById('frstat_open');if(s)s.textContent='('+f.FR_OPEN_PIXEL[0]+', '+f.FR_OPEN_PIXEL[1]+')';}
    if(f.FR_HOME_PIXEL&&(f.FR_HOME_PIXEL[0]||f.FR_HOME_PIXEL[1])){fr.home=f.FR_HOME_PIXEL;
      const s=document.getElementById('frstat_home');if(s)s.textContent='('+f.FR_HOME_PIXEL[0]+', '+f.FR_HOME_PIXEL[1]+')';}}
- $$('.frbtn').forEach(btn=>btn.onclick=async()=>{
-   if(capturing)return;capturing=true;const k=btn.dataset.frk;
-   btn.classList.add('armed');btn.textContent='Click or press Enter\u2026';
-   const r=await window.pywebview.api.calibrate_capture();
-   btn.classList.remove('armed');btn.textContent='Calibrate';capturing=false;
-   if(r.cancelled){toast('Cancelled');return;}
-   if(r.error){toast('Calibrate failed: '+r.error);return;}
-   if(k==='text'){fr.text={scan_x:r.x,rgb:[r.r,r.g,r.b]};
-     document.getElementById('frstat_text').textContent='x='+r.x;
-     document.getElementById('frsw_text').style.background='rgb('+r.r+','+r.g+','+r.b+')';
-     toast('Fortune River pink set');}
-   else if(k==='top'){fr.top=r.y;document.getElementById('frstat_top').textContent='y='+r.y;toast('Top edge set');}
-   else if(k==='bottom'){fr.bottom=r.y;document.getElementById('frstat_bottom').textContent='y='+r.y;toast('Bottom edge set');}
-   else if(k==='open'){fr.open=[r.x,r.y];document.getElementById('frstat_open').textContent='('+r.x+', '+r.y+')';toast('Open button set');}
-   else if(k==='home'){fr.home=[r.x,r.y];document.getElementById('frstat_home').textContent='('+r.x+', '+r.y+')';toast('Home set');}
-   try{await window.pywebview.api.save_pixels({},null,collectFR());}catch(e){}});
+ const FRKEY={text:'FR_TEXT',top:'FR_BOX_TOP',bottom:'FR_BOX_BOTTOM',open:'FR_OPEN_PIXEL',home:'FR_HOME_PIXEL'};
+ $$('.frbtn').forEach(btn=>btn.onclick=()=>{
+   const key=FRKEY[btn.dataset.frk];
+   const lab=((btn.closest('.calrow')||document).querySelector('.calname')||{}).textContent||key;
+   try{window.pywebview.api.start_overlay_calibrate(key,lab);}catch(e){toast('Overlay failed');}});
  function collectFR(){const o={};
    if(fr.text){o.FR_SCAN_X=fr.text.scan_x;o.FR_TEXT_RGB=fr.text.rgb;}
    if(fr.top!=null)o.FR_BOX_TOP=fr.top;
@@ -1549,6 +1659,19 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // save / run
  $('#savebtn').onclick=async()=>{const n=await window.pywebview.api.save_config(collect());toast('Saved '+n+' settings');};
  $('#popout').onclick=()=>{try{window.pywebview.api.popout();}catch(e){}};
+ let hotkeys={};
+ function hkLabel(s){if(!s||!s.code)return 'unset';let p=[];if(s.ctrl)p.push('Ctrl');if(s.alt)p.push('Alt');if(s.shift)p.push('Shift');
+   let c=s.code;if(c.indexOf('Key')===0)p.push(c.slice(3));else if(c.indexOf('Digit')===0)p.push(c.slice(5));else p.push(c);return p.join('+');}
+ function setHotkeys(hk){hotkeys=hk||{};for(const k in hotkeys){const b=document.getElementById('kb_'+k);if(b)b.textContent=hkLabel(hotkeys[k]);}}
+ document.querySelectorAll('.kb').forEach(b=>{b.onclick=()=>{
+   if(b._arm){return;} b._arm=true; const prev=b.textContent; b.textContent='press keys…'; b.classList.add('armed');
+   const onk=(e)=>{e.preventDefault();e.stopPropagation();
+     if(['Control','Alt','Shift','Meta'].indexOf(e.key)>=0)return;
+     const spec={ctrl:e.ctrlKey,alt:e.altKey,shift:e.shiftKey,code:e.code};
+     hotkeys[b.dataset.kb]=spec;b.textContent=hkLabel(spec);b.classList.remove('armed');b._arm=false;
+     window.removeEventListener('keydown',onk,true);};
+   window.addEventListener('keydown',onk,true);};});
+ $('#savekeys').onclick=async()=>{try{await window.pywebview.api.save_hotkeys(hotkeys);toast('Keybinds saved — Stop & Start the macro to apply');}catch(e){toast('Save failed');}};
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
@@ -1602,7 +1725,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});
+   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});
    checkUpdate();loadHistory();
    try{window.pywebview.api.detect_roblox().then(showWin);}catch(e){}}
  window.addEventListener('pywebviewready',boot);
