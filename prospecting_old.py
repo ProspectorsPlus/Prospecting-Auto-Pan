@@ -473,6 +473,8 @@ FR_RECOVERY        = False        # master toggle
 FR_OPEN_SLOT       = 4            # hotbar slot that equips the fast-travel item
 FR_PAN_SLOT        = 1            # hotbar slot for the pan (return to it after)
 FR_OPEN_PIXEL      = [0, 0]       # optional click to open Fast Travel (0,0 = skip)
+FR_HOME_PIXEL      = [0, 0]       # cursor rest position (screen centre) with shift-lock OFF
+FR_MOVE_STEP       = 8            # max px per incremental relative mouse move
 FR_DOUBLE_GAP_MS   = 120          # gap between the two mouse clicks (double-click to open)
 FR_CLICK_SETTLE_MS = 300          # pause after a cursor move, before/after a click (ms)
 FR_ACTION_GAP_MS   = 500          # pause between each step of the sequence (ms)
@@ -767,6 +769,33 @@ def _rgb_match(rgb, target, tol):
     return all(abs(float(c) - float(tt)) <= tol for c, tt in zip(rgb, target))
 
 
+def fr_reset_home():
+    State.fr_cur = [int(FR_HOME_PIXEL[0]), int(FR_HOME_PIXEL[1])]
+
+
+def fr_move_to(x, y):
+    """Move the cursor toward (x, y) from the calibrated home (screen centre
+    where the cursor rests with shift-lock off), in small steps."""
+    if State.fr_cur is None:
+        fr_reset_home()
+    tx, ty = int(x), int(y)
+    cx, cy = State.fr_cur
+    step = max(1, FR_MOVE_STEP)
+    s = State.scale or 1.0
+    while cx != tx or cy != ty:
+        cx += max(-step, min(step, tx - cx))
+        cy += max(-step, min(step, ty - cy))
+        try:
+            Quartz.CGWarpMouseCursorPosition((cx / s, cy / s))
+            _post(Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventMouseMoved, (cx / s, cy / s),
+                Quartz.kCGMouseButtonLeft))
+        except Exception:
+            pass
+        sleep_ms(4)
+    State.fr_cur = [tx, ty]
+
+
 def hold_mouse(ms, stop_fn=None, confirm=2, min_ms=200):
     """Hold LMB up to ms, keeping the press 'alive' with periodic drag events so
     the game registers a sustained hold (a static down can get dropped).
@@ -980,6 +1009,7 @@ class State:
     want_safe_stop = False   # manual soft-stop test keybind -> trip a safe stop
     detector = None          # live Detector (for Fortune River recovery)
     scale = 1.0              # screen scale (physical px / points) for cursor moves
+    fr_cur = None            # tracked cursor pos during Fortune River recovery
 
 
 class SessionStats:
@@ -1075,8 +1105,9 @@ def fortune_river_recover():
     sleep_ms(FR_OPEN_MS)
     tap_key(KEY_SHIFT, 60)                            # exit shift-lock so the mouse can move
     sleep_ms(FR_ACTION_GAP_MS)
+    fr_reset_home()                                  # cursor is now at the screen centre
     if FR_OPEN_PIXEL and (FR_OPEN_PIXEL[0] or FR_OPEN_PIXEL[1]):
-        move_cursor(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1])
+        fr_move_to(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1])
         sleep_ms(FR_CLICK_SETTLE_MS)
         mouse_tap(50)
         sleep_ms(FR_OPEN_MS)
@@ -1086,11 +1117,11 @@ def fortune_river_recover():
     for attempt in range(max(1, FR_FIND_TRIES)):
         if not State.running:
             return False
-        move_cursor(FR_SCAN_X, top)                  # go to the x column, top of box
+        fr_move_to(FR_SCAN_X, top)                   # go to the x column, top of box
         sleep_ms(FR_CLICK_SETTLE_MS)
         y = top
         while y <= bot:                              # sweep the cursor DOWN the column
-            move_cursor(FR_SCAN_X, y)
+            fr_move_to(FR_SCAN_X, y)
             sleep_ms(FR_SCAN_HOVER_MS)
             if _rgb_match(rgb_at(sct, FR_SCAN_X, y), FR_TEXT_RGB, FR_TEXT_TOL):
                 sleep_ms(FR_CLICK_SETTLE_MS)

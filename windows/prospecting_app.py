@@ -243,7 +243,8 @@ class Api:
               "FR_SCAN_X": int(saved.get("FR_SCAN_X", 0)),
               "FR_TEXT_RGB": list(saved.get("FR_TEXT_RGB", [232, 120, 200])),
               "FR_BOX_TOP": int(saved.get("FR_BOX_TOP", 0)),
-              "FR_BOX_BOTTOM": int(saved.get("FR_BOX_BOTTOM", 0))}
+              "FR_BOX_BOTTOM": int(saved.get("FR_BOX_BOTTOM", 0)),
+              "FR_HOME_PIXEL": list(saved.get("FR_HOME_PIXEL", [0, 0]))}
         return {"values": merged, "running": self.proc is not None, "fr": fr,
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
@@ -418,6 +419,9 @@ class Api:
                 cur["FR_BOX_TOP"] = int(fr["FR_BOX_TOP"])
             if fr.get("FR_BOX_BOTTOM") is not None:
                 cur["FR_BOX_BOTTOM"] = int(fr["FR_BOX_BOTTOM"])
+            if fr.get("FR_HOME_PIXEL"):
+                cur["FR_HOME_PIXEL"] = [int(fr["FR_HOME_PIXEL"][0]),
+                                        int(fr["FR_HOME_PIXEL"][1])]
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
         return "saved"
@@ -915,6 +919,10 @@ def build_html():
         '<div class="caldesc">A spot to click to open the menu. Leave unset if 4 + Shift already opens it.</div></div>'
         '<div class="calval"><span class="frstat" id="frstat_open">not set</span></div>'
         '<button type="button" class="btn2 frbtn" data-frk="open">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">Screen centre / cursor home</div>'
+        '<div class="caldesc">With shift-lock OFF, where the cursor rests (middle of the screen). All FR mouse moves are measured from here.</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_home">not set</span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="home">Calibrate</button></div>'
         '</div>'
         '<div class="calactions">'
         '<button type="button" id="savepixels" class="btn">Save calibration</button>'
@@ -1314,7 +1322,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const cc=document.getElementById('cc_'+key); if(cc)cc.value=hex;
    const cs=document.getElementById('cs_'+key); if(cs)cs.style.background=hex;
    toast(key+' set to ('+r.x+', '+r.y+')');});
- let fr={text:null,top:null,bottom:null,open:null};
+ let fr={text:null,top:null,bottom:null,open:null,home:null};
  function setFR(f){if(!f)return;
    if(f.FR_SCAN_X){fr.text={scan_x:f.FR_SCAN_X,rgb:f.FR_TEXT_RGB};
      const s=document.getElementById('frstat_text');if(s)s.textContent='x='+f.FR_SCAN_X;
@@ -1322,7 +1330,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(f.FR_BOX_TOP){fr.top=f.FR_BOX_TOP;const s=document.getElementById('frstat_top');if(s)s.textContent='y='+f.FR_BOX_TOP;}
    if(f.FR_BOX_BOTTOM){fr.bottom=f.FR_BOX_BOTTOM;const s=document.getElementById('frstat_bottom');if(s)s.textContent='y='+f.FR_BOX_BOTTOM;}
    if(f.FR_OPEN_PIXEL&&(f.FR_OPEN_PIXEL[0]||f.FR_OPEN_PIXEL[1])){fr.open=f.FR_OPEN_PIXEL;
-     const s=document.getElementById('frstat_open');if(s)s.textContent='('+f.FR_OPEN_PIXEL[0]+', '+f.FR_OPEN_PIXEL[1]+')';}}
+     const s=document.getElementById('frstat_open');if(s)s.textContent='('+f.FR_OPEN_PIXEL[0]+', '+f.FR_OPEN_PIXEL[1]+')';}
+   if(f.FR_HOME_PIXEL&&(f.FR_HOME_PIXEL[0]||f.FR_HOME_PIXEL[1])){fr.home=f.FR_HOME_PIXEL;
+     const s=document.getElementById('frstat_home');if(s)s.textContent='('+f.FR_HOME_PIXEL[0]+', '+f.FR_HOME_PIXEL[1]+')';}}
  $$('.frbtn').forEach(btn=>btn.onclick=async()=>{
    if(capturing)return;capturing=true;const k=btn.dataset.frk;
    btn.classList.add('armed');btn.textContent='Click or press Enter\u2026';
@@ -1336,12 +1346,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      toast('Fortune River pink set');}
    else if(k==='top'){fr.top=r.y;document.getElementById('frstat_top').textContent='y='+r.y;toast('Top edge set');}
    else if(k==='bottom'){fr.bottom=r.y;document.getElementById('frstat_bottom').textContent='y='+r.y;toast('Bottom edge set');}
-   else if(k==='open'){fr.open=[r.x,r.y];document.getElementById('frstat_open').textContent='('+r.x+', '+r.y+')';toast('Open button set');}});
+   else if(k==='open'){fr.open=[r.x,r.y];document.getElementById('frstat_open').textContent='('+r.x+', '+r.y+')';toast('Open button set');}
+   else if(k==='home'){fr.home=[r.x,r.y];document.getElementById('frstat_home').textContent='('+r.x+', '+r.y+')';toast('Home set');}
+   try{await window.pywebview.api.save_pixels({},null,collectFR());}catch(e){}});
  function collectFR(){const o={};
    if(fr.text){o.FR_SCAN_X=fr.text.scan_x;o.FR_TEXT_RGB=fr.text.rgb;}
    if(fr.top!=null)o.FR_BOX_TOP=fr.top;
    if(fr.bottom!=null)o.FR_BOX_BOTTOM=fr.bottom;
    if(fr.open)o.FR_OPEN_PIXEL=fr.open;
+   if(fr.home)o.FR_HOME_PIXEL=fr.home;
    return o;}
  // detect window
  $('#detectwin').onclick=async()=>{const w=await window.pywebview.api.detect_roblox();showWin(w);};
