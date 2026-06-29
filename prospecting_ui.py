@@ -58,6 +58,7 @@ SECTIONS = [
     ("Shake", [
         ("SHAKE_MOMENTUM_W",   "Glide W onto land during shake (recommended)", "bool", True),
         ("SHAKE_CLICKS",       "Exact shake clicks (0 = auto until empty)", "int", 0),
+        ("SHAKE_STOP_SEGMENTS","Stop shaking at this many bar-eighths left", "int", 1),
         ("SHAKE_CLICK_MS",     "Each shake click length (ms)",            "int", 18),
         ("SHAKE_CLICK_GAP_MS", "Gap between shake clicks (ms)",           "int", 14),
         ("SHAKE_HOLD_MS",      "Shake overall timeout (ms)",              "int", 1500),
@@ -224,6 +225,7 @@ HELP = {
                            "so the shake doesn't start right at the edge.",
     "SHAKE_MOMENTUM_W": "Hold W while shaking so momentum carries you back onto "
                         "land as the pan drains.",
+    "SHAKE_STOP_SEGMENTS": "The capacity bar is read as 8 segments. Stop shaking once this many segments (or fewer) of yellow remain - the last bit empties from the in-flight click, so no extra shake click bleeds onto land as a dig (which hurts pan quality). 1 is a good value; 0 shakes until fully empty.",
     "SHAKE_CLICKS": "Do EXACTLY this many shake clicks then stop (0 = auto: shake until the pan reads empty). Use a fixed count if an extra auto-click bleeds into the next dig and ruins your perfect digs — set it to the number your build needs to empty.",
     "SHAKE_CLICK_MS": "Length of each shake click (the shake is a rapid click "
                       "stream, since a held press is dropped on macOS).",

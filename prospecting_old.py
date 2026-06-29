@@ -154,6 +154,10 @@ YEL_BLUE_GAP      = 45             # ...and blue must be <= min(r,g) - this
 # so the shake-hold can stop the instant the pan is done, no dead pause.
 CAP_BAR_WIDTH     = 440
 CAP_EMPTY_FRAC    = 0.04           # yellow fraction below this -> pan is empty
+CAP_SEGMENTS      = 8             # split the capacity bar into this many slices
+SHAKE_STOP_SEGMENTS = 1           # stop shaking when this many (or fewer) slices remain
+                                 #   filled -> the last bit empties from the in-flight
+                                 #   click, so no extra click bleeds into a dig
 # "Cap STARTED filling" detector: the START (left end) of the bar goes from gray
 # to coloured the instant the dig registers. We move as soon as it STARTS (the
 # bar is a slider; no need to wait for it to finish). gray = flat (low spread),
@@ -965,6 +969,34 @@ class Detector:
         yellow = (r >= YEL_MIN) & (g >= YEL_MIN) & (b <= np.minimum(r, g) - YEL_BLUE_GAP)
         return float(yellow.mean())
 
+    def cap_segments(self, n=8):
+        """Yellow fraction in each of n equal slices across the capacity bar
+        (left -> right). Lets us see EXACTLY how far the bar has drained."""
+        x, y = CAP_FULL_PIXEL
+        region = {"left": x - CAP_BAR_WIDTH, "top": y - 10,
+                  "width": CAP_BAR_WIDTH, "height": 20}
+        img = np.asarray(self.sct.grab(region))[:, :, :3].astype(np.int16)
+        b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+        yellow = (r >= YEL_MIN) & (g >= YEL_MIN) & (b <= np.minimum(r, g) - YEL_BLUE_GAP)
+        w = yellow.shape[1]
+        out = []
+        for i in range(n):
+            a = int(round(i * w / n))
+            c = int(round((i + 1) * w / n))
+            seg = yellow[:, a:c]
+            out.append(float(seg.mean()) if seg.size else 0.0)
+        return out
+
+    def cap_filled_segments(self, n=8, thresh=0.4):
+        """How many of the n bar segments still read yellow (>= thresh full)."""
+        return sum(1 for f in self.cap_segments(n) if f >= thresh)
+
+    def cap_about_empty(self):
+        """True once the bar has drained down to (at most) SHAKE_STOP_SEGMENTS of
+        CAP_SEGMENTS -- it is about to be empty, so we can stop shaking before an
+        extra click bleeds onto land as a dig."""
+        return self.cap_filled_segments(CAP_SEGMENTS) <= SHAKE_STOP_SEGMENTS
+
     def pan_empty(self):
         """True when the WHOLE capacity bar has essentially no yellow left."""
         return self.cap_fill() < CAP_EMPTY_FRAC
@@ -1684,7 +1716,7 @@ def do_shake(det):
         if not started and det.on_shake():
             started = True
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
-        if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
+        if not fixed and (det.cap_about_empty() or det.pan_empty()):  # near-empty -> stop (no overflow)
             emptied = True
             break
         if w_down and det.on_deposit():      # reached land -> stop gliding...
