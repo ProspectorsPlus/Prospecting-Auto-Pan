@@ -2014,15 +2014,17 @@ def hyper_tick(det):
     rapid-click to shake -- and the INSTANT the bar drains to the first segment we
     bail and go straight into the next dig (skipping the empty/refill animation).
     Straight movement only (no X pattern)."""
-    # 1) dig exactly N times, no waiting for the fill animation
+    # 1) dig exactly N times -- explicit quick CLICKS (never the perfect-poll hold,
+    #    which can fire a 0ms no-op). Each click is a real dig; THEN we hold S.
     phase("Digging")
+    hold = max(20, DIG_CLICK_MS)
     for _i in range(max(1, HYPER_DIGS)):
         if not State.running:
             return
-        dig_once(det)
+        mouse_tap(hold)                       # one dig click
         if HYPER_DIG_GAP_MS > 0:
             sleep_ms(HYPER_DIG_GAP_MS)
-    # 2) immediately hold S back to water (glitch: moves even mid-animation)
+    # 2) ONLY NOW hold S back to water (glitch: moves even mid-animation)
     if not State.running:
         return
     phase("Walking to water")
