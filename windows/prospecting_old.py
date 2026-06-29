@@ -273,6 +273,7 @@ SHAKE_CLICKS       = 0      # EXACT number of shake clicks (0 = auto: shake unti
                             # shake cleanly so no extra click bleeds into the dig.
 SHAKE_CLICK_GAP_MS = 14     # gap between shake clicks
 SHAKE_HOLD_MS      = 1500   # overall shake timeout (stops early when empty)
+SHAKE_HOLD_DELAY_MS = 150  # wait after the start-click before holding to shake
 SHAKE_INIT_GAP_MS    = 10   # (legacy) unused now
 SHAKE_PLAIN_HOLD     = False # (legacy) unused now
 SHAKE_PRESS_DELAY_MS = 25   # (legacy) unused now
@@ -1691,63 +1692,55 @@ def go_water(det):
 
 
 def do_shake(det):
-    """THE MOMENTUM TECHNIQUE. Hold W (glide toward land) and rattle RAPID CLICKS
-    to shake. macOS does NOT sustain a synthetic held press in Roblox, so a hold
-    silently does nothing -- clicks DO register, so we click fast and keep going
-    until the pan empties (a slower shake just takes more clicks). W carries you
-    onto land WHILE the pan drains; we drop W when the Collect Deposit cue shows.
-    Stop when the CAPACITY reads empty (capacity is the truth; the Shake cue
-    sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
+    """OLD HOLD METHOD (reliable): one click to TRIGGER the shake animation, a
+    short pause, then HOLD the mouse down to shake the pan out. Rapid multi-click
+    shaking dragged into dig mode / didn't finish, so we hold instead -- the hold
+    is kept alive with periodic drag events (a plain static press gets dropped in
+    Roblox). W-momentum glides us toward land during the hold; we drop W when the
+    Collect Deposit cue shows. Stops when the CAPACITY reads empty, or on timeout."""
     phase("Shaking")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
-        sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
-    w_down = False
+        sleep_ms(SHAKE_START_DELAY_MS)
+    w_state = [False]
     if SHAKE_MOMENTUM_W:
-        key_down(KEY_W); w_down = True       # momentum toward land
-    started = emptied = bailed = on_land = False
-    clicks = 0
-    fixed = SHAKE_CLICKS > 0                  # exact-count mode (no extra click)
-    end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
-    while State.running and (clicks < SHAKE_CLICKS if fixed
-                             else time.perf_counter() < end):
-        mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
-        clicks += 1
-        if not started and det.on_shake():
-            started = True
-            log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
-        if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
-            emptied = True
-            break
-        if w_down and det.on_deposit():      # reached land -> stop gliding...
-            key_up(KEY_W); w_down = False     # ...but keep clicking to finish
-            on_land = True
-        # CAPACITY-based bail (auto mode only): give up if the pan is STILL FULL
-        # well past a real shake's duration (no drain at all = no shake).
-        if (not fixed and time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
-                and det.capacity_full()):
-            bailed = True
-            break                            # truly not shaking
-        sleep_ms(SHAKE_CLICK_GAP_MS)
-    if fixed:
-        emptied = det.pan_empty()            # did exactly N clicks -> read result
-    if w_down:
+        key_down(KEY_W)
+        w_state[0] = True
+    # 1) ONE click to start the shake animation
+    mouse_tap(max(8, SHAKE_CLICK_MS))
+    # 2) brief wait for the animation to engage before holding
+    sleep_ms(SHAKE_HOLD_DELAY_MS)
+    started = [False]
+
+    def _stop():
+        # side effects each poll: note when shaking begins, drop W on landing
+        if not started[0] and det.on_shake():
+            started[0] = True
+        if w_state[0] and det.on_deposit():
+            key_up(KEY_W)
+            w_state[0] = False
+        return det.pan_empty()
+
+    # 3) HOLD LMB to shake until the pan empties (or SHAKE_HOLD_MS times out)
+    min_hold = min(SHAKE_HOLD_MS, 100)   # release promptly once empty (don't re-fill)
+    emptied = hold_mouse(SHAKE_HOLD_MS, stop_fn=_stop, confirm=2, min_ms=min_hold)
+    if w_state[0]:
         key_up(KEY_W)
+    if not emptied:
+        emptied = det.pan_empty()
     if emptied:
         State.shake_fails = 0
-        State.breakouts = 0              # healthy progress -> clear escalation
+        State.breakouts = 0
         State.safe_retries = 0
         State.water_fails = 0
         if State.stats:
-            State.stats.cycles += 1      # a pan emptied = one completed cycle
-        sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
+            State.stats.cycles += 1
+        sleep_ms(POST_SHAKE_SETTLE_MS)
     else:
         State.shake_fails += 1
     _adapt_shake(emptied)
-    dur = (time.perf_counter() - t0) * 1000
-    log(f"    shake done: started={started} emptied={emptied} "
-        f"reached_land={on_land} bail={bailed} fails={State.shake_fails} "
-        f"({dur:.0f}ms)")
+    log(f"    shake done: started={started[0]} emptied={emptied} "
+        f"fails={State.shake_fails} ({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
 def go_land(det):

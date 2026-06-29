@@ -61,6 +61,7 @@ SECTIONS = [
         ("SHAKE_CLICK_MS",     "Each shake click length (ms)",            "int", 18),
         ("SHAKE_CLICK_GAP_MS", "Gap between shake clicks (ms)",           "int", 14),
         ("SHAKE_HOLD_MS",      "Shake overall timeout (ms)",              "int", 1500),
+        ("SHAKE_HOLD_DELAY_MS","Wait after start-click before holding (ms)", "int", 150),
         ("SHAKE_BAIL_MS",      "Shake-failed detection (ms)",             "int", 500),
         ("SHAKE_START_DELAY_MS","Delay before shake starts (ms)",         "int", 0),
         ("POST_SHAKE_SETTLE_MS","Settle after pan empties (ms)",          "int", 150),
@@ -227,6 +228,7 @@ HELP = {
     "SHAKE_CLICK_MS": "Length of each shake click (the shake is a rapid click "
                       "stream, since a held press is dropped on macOS).",
     "SHAKE_CLICK_GAP_MS": "Gap between shake clicks. Lower = faster rattle.",
+    "SHAKE_HOLD_DELAY_MS": "After the single click that starts the shake animation, wait this long, then HOLD the mouse to shake the pan out. Raise it if the hold starts before the shake animation does.",
     "SHAKE_HOLD_MS": "Overall shake time limit; it stops early when the pan empties.",
     "SHAKE_BAIL_MS": "If the pan is STILL completely full after this long, the "
                      "shake didn't start — give up and retry. Keep above a real "
