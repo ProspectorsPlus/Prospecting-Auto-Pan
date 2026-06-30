@@ -216,5 +216,9 @@
   "HYPER_S_LEAD_MS": 0,
   "SHAKE_GLITCH_LIMIT": 2,
   "NO_PROGRESS_SEC": 5,
-  "SYNC_URL": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf"
+  "SYNC_URL": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf",
+  "COACH_MODE": "api",
+  "COACH_MODEL": "gpt-5.4-mini",
+  "COACH_BASE_URL": "",
+  "COACH_API_KEY": ""
 }

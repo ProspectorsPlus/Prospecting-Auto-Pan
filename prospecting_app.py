@@ -522,7 +522,7 @@ class Api:
             payload = {"model": model,
                        "messages": ([{"role": "system", "content": sysp}] + prior
                                     + [{"role": "user", "content": message or ""}]),
-                       "max_completion_tokens": 1024,
+                       "max_completion_tokens": 2048,
                        "response_format": {"type": "json_object"}}
             provname = "OpenAI" if not base else "API"
         body = json.dumps(payload).encode()
@@ -1705,17 +1705,20 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .cstats input{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:7px 8px;font:inherit;font-size:13px}
  .cstats input:focus{outline:0;border-color:var(--accent)}
  .cstats .cgo{grid-column:1/3;background:var(--accent2);color:#14260f;border:0;border-radius:8px;padding:9px;font-weight:700;cursor:pointer;margin-top:2px}
- .coach-cfg{display:none;flex-direction:column;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);background:#1c1b18}
+ .coach-cfg{display:none;flex-direction:column;gap:11px;padding:14px;border-bottom:1px solid var(--line);background:#1c1b18}
  body.coach-cfg-on .coach-cfg{display:flex}
- .ccfg-opt{display:flex;align-items:flex-start;gap:9px;cursor:pointer;font-size:12px;padding:7px 9px;border:1px solid var(--line2);border-radius:9px}
- .ccfg-opt input{margin-top:2px;accent-color:var(--accent)}
- .ccfg-opt span{display:flex;flex-direction:column} .ccfg-opt b{color:var(--txt)} .ccfg-opt i{color:var(--dim);font-style:normal;font-size:11px;margin-top:1px}
- .coach-cfg input[type=password],.coach-cfg input[type=text]{background:var(--bg2);border:1px solid var(--line2);border-radius:8px;color:var(--txt);padding:8px 10px;font:inherit;font-size:12px}
- .coach-cfg input:focus{outline:0;border-color:var(--accent)}
- .ccfg-act{display:flex;gap:8px}
- .ccfg-save{flex:1;background:var(--accent2);color:#14260f;border:0;border-radius:8px;padding:8px;font-weight:700;cursor:pointer}
- .ccfg-clear{background:#2a2418;color:#cdbfa5;border:0;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer}
- .ccfg-note{font-size:10.5px;color:var(--dim);line-height:1.45} .ccfg-note b{color:var(--mut)}
+ .ccfg-field{display:flex;flex-direction:column;gap:5px}
+ .ccfg-lab{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700}
+ .coach-cfg select,.coach-cfg input{background:var(--bg2);border:1px solid var(--line2);border-radius:9px;color:var(--txt);padding:9px 11px;font:inherit;font-size:13px;width:100%;box-sizing:border-box;-webkit-appearance:none;appearance:none}
+ .coach-cfg select{background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%239c9183' stroke-width='2'><path d='M2 4l4 4 4-4'/></svg>");background-repeat:no-repeat;background-position:right 11px center;padding-right:30px;cursor:pointer}
+ .coach-cfg select:focus,.coach-cfg input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.18)}
+ #ccfgcloud{display:flex;flex-direction:column;gap:10px}
+ .ccfg-act{display:flex;gap:8px;margin-top:2px}
+ .ccfg-save{flex:1;background:var(--accent2);color:#14260f;border:0;border-radius:9px;padding:9px;font-weight:700;cursor:pointer}
+ .ccfg-save:hover{filter:brightness(1.07)}
+ .ccfg-clear{background:#2a2418;color:#cdbfa5;border:0;border-radius:9px;padding:9px 12px;font-weight:700;cursor:pointer}
+ .ccfg-clear:hover{background:#352d1c}
+ .ccfg-note{font-size:10.5px;color:var(--dim);line-height:1.5} .ccfg-note b{color:var(--mut)}
  .panel{display:none} .panel.active{display:block}
  .phead{margin:0 0 18px} .phead h2{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em} .chint{margin:5px 0 0;color:var(--mut);font-size:13px;max-width:620px}
  .rows{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:2px 18px;max-width:580px}
@@ -1934,13 +1937,27 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        <button class="coach-x" id="coachclose" title="Close">✕</button>
      </div>
      <div class="coach-cfg" id="coachcfgpanel">
-       <label class="ccfg-opt"><input type="radio" name="cmode" value="offline"><span><b>Offline brain</b><i>Free · no internet · instant</i></span></label>
-       <label class="ccfg-opt"><input type="radio" name="cmode" value="api"><span><b>AI API (your key)</b><i>Claude, GPT, Gemini or DeepSeek · real conversation</i></span></label>
-       <input id="ckey" type="password" autocomplete="off" placeholder="API key (sk-… — saved on this PC only)">
-       <input id="cmodel" type="text" autocomplete="off" placeholder="model, e.g. gpt-5.4-mini  or  claude-haiku-4-5-20251001">
-       <input id="cbase" type="text" autocomplete="off" placeholder="(optional) base URL — blank = OpenAI / Claude auto">
+       <div class="ccfg-field"><span class="ccfg-lab">Engine</span>
+         <select id="cprovider">
+           <option value="offline">Offline brain — free, instant</option>
+           <option value="anthropic">Claude (Anthropic)</option>
+           <option value="openai">OpenAI (GPT)</option>
+           <option value="gemini">Google Gemini</option>
+           <option value="deepseek">DeepSeek</option>
+           <option value="custom">Custom / local</option>
+         </select></div>
+       <div id="ccfgcloud">
+         <div class="ccfg-field"><span class="ccfg-lab">Model</span>
+           <select id="cmodelsel"></select></div>
+         <div class="ccfg-field" id="ccfgmodelrow" style="display:none"><span class="ccfg-lab">Model id</span>
+           <input id="cmodel" type="text" autocomplete="off" placeholder="exact model id"></div>
+         <div class="ccfg-field" id="ccfgbaserow" style="display:none"><span class="ccfg-lab">Base URL</span>
+           <input id="cbase" type="text" autocomplete="off" placeholder="https://…/v1"></div>
+         <div class="ccfg-field"><span class="ccfg-lab">API key</span>
+           <input id="ckey" type="password" autocomplete="off" placeholder="paste key — stays on this PC"></div>
+       </div>
        <div class="ccfg-act"><button class="ccfg-save" id="ccfgsave">Save</button><button class="ccfg-clear" id="ccfgclear">Clear key</button></div>
-       <div class="ccfg-note">Your message + current settings go to the provider using <b>your own key</b> (it stays on this PC). A model starting with <b>claude</b> uses Anthropic; anything else uses <b>OpenAI</b>. For Gemini/DeepSeek/local, set a base URL (e.g. https://api.deepseek.com/v1, http://localhost:11434/v1). Offline needs nothing.</div>
+       <div class="ccfg-note" id="ccfgnote">Offline is free and needs nothing. Cloud engines use <b>your own key</b> (it stays on this PC) and cost a fraction of a cent per message.</div>
      </div>
      <div class="coach-msgs" id="coachmsgs"></div>
      <div class="coach-chips" id="coachchips"></div>
@@ -2295,29 +2312,55 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(clo)clo.onclick=closeCoach;
    // ---- Coach settings (offline / API) ----
    const sub=document.getElementById('coachsub'), cfgBtn=document.getElementById('coachcfg'),
-     cfgPanel=document.getElementById('coachcfgpanel'), keyIn=document.getElementById('ckey'),
-     modelIn=document.getElementById('cmodel'), baseIn=document.getElementById('cbase');
+     provSel=document.getElementById('cprovider'), modelSel=document.getElementById('cmodelsel'),
+     modelRow=document.getElementById('ccfgmodelrow'), modelIn=document.getElementById('cmodel'),
+     baseRow=document.getElementById('ccfgbaserow'), baseIn=document.getElementById('cbase'),
+     keyIn=document.getElementById('ckey'), cloud=document.getElementById('ccfgcloud');
+   const PROV={
+     anthropic:{base:'',models:[['claude-haiku-4-5-20251001','Haiku 4.5 — cheapest'],['claude-sonnet-5','Sonnet 5 — smartest']]},
+     openai:{base:'',models:[['gpt-5.4-mini','GPT-5.4-mini — cheap'],['gpt-5.4','GPT-5.4'],['gpt-4o-mini','GPT-4o-mini — safe fallback']]},
+     gemini:{base:'https://generativelanguage.googleapis.com/v1beta/openai',models:[['gemini-2.5-flash-lite','2.5 Flash-Lite — cheapest'],['gemini-2.5-flash','2.5 Flash']]},
+     deepseek:{base:'https://api.deepseek.com/v1',models:[['deepseek-chat','deepseek-chat']]},
+     custom:{base:'',models:[]}};
    function setSub(mode){if(sub)sub.textContent=(mode==='api')?'AI API mode':'offline tuning assistant';}
-   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'claude-haiku-4-5-20251001',base:''};}
-     (document.querySelector('input[name=cmode][value="'+(c.mode||'offline')+'"]')||{}).checked=true;
-     if(modelIn)modelIn.value=c.model||'claude-haiku-4-5-20251001';
+   function fillModels(prov,sel){
+     if(!modelSel)return; modelSel.innerHTML='';
+     ((PROV[prov]||{}).models||[]).forEach(m=>{const o=document.createElement('option');o.value=m[0];o.textContent=m[1];modelSel.appendChild(o);});
+     const oth=document.createElement('option');oth.value='__other__';oth.textContent='Other model id…';modelSel.appendChild(oth);
+     const has=((PROV[prov]||{}).models||[]).some(m=>m[0]===sel);
+     if(sel&&has)modelSel.value=sel;
+     else if(sel&&prov!=='custom'){modelSel.value='__other__';if(modelIn)modelIn.value=sel;}}
+   function applyProvUI(){const p=provSel.value;
+     if(cloud)cloud.style.display=(p==='offline')?'none':'flex';
+     if(baseRow)baseRow.style.display=(p==='custom')?'flex':'none';
+     if(modelRow)modelRow.style.display=(p!=='offline'&&(modelSel.value==='__other__'||p==='custom'))?'flex':'none';}
+   if(provSel)provSel.onchange=()=>{fillModels(provSel.value,'');applyProvUI();};
+   if(modelSel)modelSel.onchange=applyProvUI;
+   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'',base:''};}
+     let prov='offline';
+     if(c.mode==='api'){const b=(c.base||'');
+       if(/deepseek/.test(b))prov='deepseek'; else if(/googleapis/.test(b))prov='gemini';
+       else if(b)prov='custom'; else if(((c.model||'').toLowerCase()).indexOf('claude')===0)prov='anthropic'; else prov='openai';}
+     if(provSel)provSel.value=prov;
+     fillModels(prov,c.model||'');
      if(baseIn)baseIn.value=c.base||'';
-     if(keyIn)keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'API key (sk-… — saved on this PC only)';
-     setSub(c.mode);}
+     if(prov==='custom'&&modelIn)modelIn.value=c.model||'';
+     if(keyIn)keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'paste key — stays on this PC';
+     applyProvUI(); setSub(c.mode);}
    if(cfgBtn)cfgBtn.onclick=()=>{const on=body.classList.toggle('coach-cfg-on');if(on)loadCfg();};
    const saveBtn=document.getElementById('ccfgsave'), clrBtn=document.getElementById('ccfgclear');
    if(saveBtn)saveBtn.onclick=async()=>{
-     const mode=(document.querySelector('input[name=cmode]:checked')||{}).value||'offline';
+     const p=provSel.value, mode=(p==='offline')?'offline':'api';
+     let model='', base='';
+     if(mode==='api'){model=(modelSel.value==='__other__'||p==='custom')?(modelIn.value.trim()):modelSel.value;
+       base=(p==='custom')?baseIn.value.trim():((PROV[p]||{}).base||'');}
      const key=(keyIn&&keyIn.value.trim())?keyIn.value.trim():null;
-     const model=modelIn?modelIn.value.trim():'';
-     const base=baseIn?baseIn.value.trim():'';
-     try{await capi().save_coach_settings(mode,key,model,base);}catch(e){}
+     try{await capi().save_coach_settings(mode,key,model||null,base);}catch(e){}
      if(keyIn)keyIn.value='';
      setSub(mode);body.classList.remove('coach-cfg-on');
-     if(window.toast)toast(mode==='api'?'Coach: AI API mode':'Coach: offline mode');};
-   if(clrBtn)clrBtn.onclick=async()=>{const model=modelIn?modelIn.value.trim():'';const base=baseIn?baseIn.value.trim():'';
-     try{await capi().save_coach_settings('offline','__CLEAR__',model,base);}catch(e){}
-     if(keyIn){keyIn.value='';}loadCfg();if(window.toast)toast('API key cleared');};
+     if(window.toast)toast(mode==='api'?('Coach: '+p+(model?' · '+model:'')):'Coach: offline mode');};
+   if(clrBtn)clrBtn.onclick=async()=>{try{await capi().save_coach_settings('offline','__CLEAR__');}catch(e){}
+     if(keyIn)keyIn.value='';loadCfg();if(window.toast)toast('API key cleared — back to offline');};
    // open by default (don't steal focus from the access-code gate)
    body.classList.add('coach-on');tgl.classList.add('on');
    function boot(){greet();loadCfg();}
