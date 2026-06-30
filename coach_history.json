@@ -1,0 +1,11 @@
+[
+  {
+    "role": "bot",
+    "reply": "Hey! What\u2019s the issue you want to improve \u2014 slow cycles, missed shakes, landing short, or recovery/safe-stops?",
+    "changes": [],
+    "chips": [
+      "If you paste a short symptom, I\u2019ll suggest the smallest SETTINGS tweak.",
+      "I can also help optimize for higher pans/hr or fewer stalls."
+    ]
+  }
+]

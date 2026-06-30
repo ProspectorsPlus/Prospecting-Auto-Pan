@@ -505,6 +505,27 @@ class Api:
             pass
         return True
 
+    def open_coach_window(self):
+        """Show the standalone Coach window (pre-created hidden at startup)."""
+        global _coach_win
+        try:
+            if _coach_win is not None:
+                _coach_win.evaluate_js("window.__reload && window.__reload()")
+                _coach_win.show()
+                return "shown"
+        except Exception as e:
+            return "err:%s" % e
+        return "no-window"
+
+    def close_coach_window(self):
+        global _coach_win
+        try:
+            if _coach_win is not None:
+                _coach_win.hide()
+        except Exception:
+            pass
+        return "hidden"
+
     def _coach_api(self, message, ctx, convo):
         """Call the user's chosen LLM with their own key. Supports Anthropic and
         any OpenAI-compatible endpoint (OpenAI, Gemini, DeepSeek, local Ollama).
@@ -635,6 +656,12 @@ class Api:
             if k in TYPES and k in allowed:
                 data[k] = c.get("to")
         n = self.save_config(data) if data else 0
+        if n:                                  # keep the main window's fields in sync
+            try:
+                if _window is not None:
+                    _window.evaluate_js("window.refreshValues && window.refreshValues()")
+            except Exception:
+                pass
         return {"applied": n, "values": self.get_state().get("values", {})}
 
     # ---- window detection + auto-calibrate ----
@@ -1332,6 +1359,7 @@ _HK_DEFAULTS = {
 _window = None
 _pill = None
 _overlay = None
+_coach_win = None
 
 PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:13px/1.3 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
@@ -1963,7 +1991,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        <div class="coach-hbtns">
          <button id="coachnew" title="New chat">⊕</button>
          <button id="coachcfg" title="Settings (offline / API)">⚙</button>
-         <button id="coachexpand" title="Expand / collapse">⤢</button>
+         <button id="coachexpand" title="Open in a separate window">⤢</button>
          <button id="coachclose" title="Close">✕</button>
        </div>
      </div>
@@ -2012,6 +2040,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');
    clearTimeout(window._tt);window._tt=setTimeout(()=>e.classList.remove('show'),1800);}
  window.addLog=t=>{const l=$('#log');l.textContent+=t+"\n";l.scrollTop=l.scrollHeight;};
+ window.refreshValues=async function(){try{const s=await window.pywebview.api.get_state();setVals(s.values);}catch(e){}};
  window.setRunning=r=>{$('#startbtn').disabled=r;$('#stopbtn').disabled=!r;
    $('#rstate').textContent=r?'running':'stopped';};
  window.setStats=s=>{if(!s)return;const m=Math.floor((s.runtime_s||0)/60),
@@ -2355,7 +2384,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    tgl.onclick=()=>{body.classList.contains('coach-on')?closeCoach():openCoach();};
    if(clo)clo.onclick=closeCoach;
    if(newBtn)newBtn.onclick=newChat;
-   if(expBtn)expBtn.onclick=()=>{body.classList.toggle('coach-expand');setTimeout(scroll,30);if(inp)inp.focus();};
+   if(expBtn)expBtn.onclick=async()=>{let r='';try{r=await capi().open_coach_window();}catch(e){r='';}
+     if(r==='no-window'||r===''||(typeof r==='string'&&r.indexOf('err')===0)){body.classList.toggle('coach-expand');setTimeout(scroll,30);}};
    // ---- Coach settings (offline / API) ----
    const sub=document.getElementById('coachsub'), cfgBtn=document.getElementById('coachcfg'),
      provSel=document.getElementById('cprovider'), modelSel=document.getElementById('cmodelsel'),
@@ -2416,8 +2446,129 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
 </script></body></html>"""
 
 
+COACH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
+ :root{--bg2:#1f1d1a;--panel:#232120;--line:#332f2a;--line2:#423d35;--txt:#ece4d6;--mut:#9c9183;--dim:#6a6253;--accent:#c2924c;--accent-lit:#e0b873;--accent2:#7d9b63;--teal-lit:#9bc07e}
+ *{box-sizing:border-box}
+ html,body{margin:0;height:100%;background:var(--bg2);color:var(--txt);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;-webkit-user-select:none;user-select:none}
+ .wrap{display:flex;flex-direction:column;height:100%}
+ .head{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:13px 12px 12px 18px;border-bottom:1px solid var(--line)}
+ .mark{color:var(--accent-lit);font-size:17px}
+ .ttl{font-weight:700;font-size:15px;flex:1}.ttl span{display:block;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;font-weight:600;margin-top:1px}
+ .hb{display:flex;gap:3px}
+ .hb button{background:transparent;color:var(--mut);border:0;border-radius:8px;width:32px;height:32px;cursor:pointer;font-size:15px}
+ .hb button:hover{background:#2a2418;color:var(--txt)}
+ .cfg{display:none;flex-direction:column;gap:11px;padding:14px 18px;border-bottom:1px solid var(--line);background:#1c1b18;max-width:840px;margin:0 auto;width:100%}
+ body.cfgon .cfg{display:flex}
+ .fld{display:flex;flex-direction:column;gap:5px}.lab{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:700}
+ .cfg select,.cfg input{background:var(--bg2);border:1px solid var(--line2);border-radius:9px;color:var(--txt);padding:9px 11px;font:inherit;font-size:13px;width:100%;-webkit-appearance:none;appearance:none}
+ .cfg select:focus,.cfg input:focus{outline:0;border-color:var(--accent)}
+ .act{display:flex;gap:8px}.sv{flex:1;background:var(--accent2);color:#14260f;border:0;border-radius:9px;padding:9px;font-weight:700;cursor:pointer}.clr{background:#2a2418;color:#cdbfa5;border:0;border-radius:9px;padding:9px 12px;font-weight:700;cursor:pointer}
+ .note{font-size:11px;color:var(--dim);line-height:1.5}
+ .msgs{flex:1;overflow-y:auto;padding:22px 18px;display:flex;flex-direction:column;gap:13px}
+ .msgs>*{max-width:760px;width:100%;margin:0 auto}
+ .m{font-size:14px;line-height:1.55;word-wrap:break-word;overflow-wrap:anywhere}
+ .m.user{align-self:flex-end;background:var(--accent);color:#241a02;padding:10px 14px;border-radius:15px 15px 4px 15px;max-width:80%;font-weight:500;margin-right:0}
+ .m.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line);padding:12px 15px;border-radius:15px 15px 15px 4px;max-width:84%;margin-left:0}
+ .m.bot b{color:var(--accent-lit)}.m.bot i{color:var(--mut);font-style:normal}.m.bot code{background:#15140f;padding:1px 5px;border-radius:4px;font-size:12.5px;font-family:ui-monospace,Menlo,monospace}
+ .m.typing{color:var(--dim);font-style:italic}
+ .diff{margin-top:12px;border:1px solid var(--line2);border-radius:12px;overflow:hidden;background:#1b1a17}
+ .dh{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-lit);font-weight:700;padding:10px 13px 2px}
+ .dr{padding:5px 13px}.dr+.dr{border-top:1px solid var(--line)}
+ .dt{display:flex;align-items:baseline;gap:8px;font-size:13px}.dk{flex:1}.dv{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}.dv s{color:var(--dim);text-decoration:none;margin-right:6px}.dv b{color:var(--teal-lit)}
+ .dw{font-size:11.5px;color:var(--mut);margin-top:2px}
+ .da{display:flex;gap:8px;padding:11px 13px;background:#161512}.da button{flex:1;border:0;border-radius:8px;padding:10px;font-weight:700;cursor:pointer;font-size:13px}
+ .ap{background:var(--accent2);color:#14260f}.dm{background:#2a2418;color:#cdbfa5}
+ .diff.done{opacity:.7}.diff.done .da{display:none}
+ .ds{font-size:11.5px;font-weight:700;padding:10px 13px;display:none}.diff.applied .ds.ok{display:block;color:var(--accent2)}.diff.skipped .ds.no{display:block;color:var(--dim)}
+ .stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}.stats label{display:flex;flex-direction:column;font-size:10px;color:var(--mut);gap:3px;text-transform:uppercase}.stats input{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:7px 8px;font:inherit;font-size:13px}.stats .go{grid-column:1/3;background:var(--accent2);color:#14260f;border:0;border-radius:8px;padding:9px;font-weight:700;cursor:pointer}
+ .chips{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:7px;padding:0 18px 12px;max-width:760px;margin:0 auto;width:100%}
+ .chip{background:#2a2418;color:#d8cdb3;border:1px solid var(--line2);border-radius:15px;padding:6px 12px;font-size:12px;cursor:pointer}.chip:hover{background:#352d1c;color:#fff}
+ .inp{flex:0 0 auto;display:flex;gap:9px;padding:14px 18px;border-top:1px solid var(--line);max-width:840px;margin:0 auto;width:100%}
+ .inp textarea{flex:1;resize:none;background:var(--panel);border:1px solid var(--line2);border-radius:12px;color:var(--txt);padding:11px 13px;font:inherit;font-size:14px;max-height:160px;line-height:1.4}
+ .inp textarea:focus{outline:0;border-color:var(--accent)}
+ .inp button{background:var(--accent);color:#241a02;border:0;border-radius:12px;padding:0 18px;font-weight:700;cursor:pointer}.inp button:disabled{opacity:.5}
+ #toast{position:fixed;bottom:84px;left:50%;transform:translateX(-50%);background:#14130f;border:1px solid var(--line2);color:var(--txt);padding:9px 15px;border-radius:10px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}#toast.show{opacity:1}
+</style></head><body>
+ <div class="wrap">
+   <div class="head"><span class="mark">&#10022;</span>
+     <div class="ttl">Coach<span id="sub">offline tuning assistant</span></div>
+     <div class="hb"><button id="new" title="New chat">&#8853;</button><button id="cfgb" title="Settings">&#9881;</button><button id="cls" title="Close">&#10005;</button></div></div>
+   <div class="cfg" id="cfg">
+     <div class="fld"><span class="lab">Engine</span><select id="prov">
+       <option value="offline">Offline brain — free, instant</option><option value="anthropic">Claude (Anthropic)</option><option value="openai">OpenAI (GPT)</option><option value="gemini">Google Gemini</option><option value="deepseek">DeepSeek</option><option value="custom">Custom / local</option></select></div>
+     <div id="cloud"><div class="fld"><span class="lab">Model</span><select id="msel"></select></div>
+       <div class="fld" id="mrow" style="display:none"><span class="lab">Model id</span><input id="mid" type="text" placeholder="exact model id"></div>
+       <div class="fld" id="brow" style="display:none"><span class="lab">Base URL</span><input id="base" type="text" placeholder="https://…/v1"></div>
+       <div class="fld"><span class="lab">API key</span><input id="key" type="password" placeholder="paste key — stays on this PC"></div></div>
+     <div class="act"><button class="sv" id="save">Save</button><button class="clr" id="clr">Clear key</button></div>
+     <div class="note">Offline is free. Cloud engines use <b>your own key</b> (stays on this PC) and cost a fraction of a cent per message.</div>
+   </div>
+   <div class="msgs" id="msgs"></div>
+   <div class="chips" id="chips"></div>
+   <div class="inp"><textarea id="in" rows="1" placeholder="Describe a problem… e.g. it shakes late"></textarea><button id="send">Send</button></div>
+ </div>
+ <div id="toast"></div>
+<script>
+ const api=()=>window.pywebview&&window.pywebview.api;
+ const $=s=>document.getElementById(s);
+ const msgs=$('msgs'),chips=$('chips'),inp=$('in'),sendBtn=$('send'),sub=$('sub');
+ let prevTopic='',hist=[],sending=false,greeted=false;
+ const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+ function md(s){s=esc(s);s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+?)`/g,'<code>$1</code>').replace(/(^|[^*])\*(?!\*)([^*\n]+?)\*(?!\*)/g,'$1<i>$2</i>').replace(/^\s*[-•]\s+/gm,'• ');return s.replace(/\n/g,'<br>');}
+ const scroll=()=>{msgs.scrollTop=msgs.scrollHeight;};
+ const fmtVal=v=>(typeof v==='boolean')?(v?'on':'off'):v;
+ function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(window._t);window._t=setTimeout(()=>e.classList.remove('show'),1800);}
+ function persist(){try{api().save_coach_history(hist);}catch(e){}}
+ function addUser(t){const d=document.createElement('div');d.className='m user';d.textContent=t;msgs.appendChild(d);scroll();}
+ function diffCard(ch,live){const w=document.createElement('div');w.className='diff'+(live?'':' done');
+   const rows=ch.map(c=>`<div class="dr"><div class="dt"><span class="dk">${esc(c.label||c.key)}</span><span class="dv"><s>${esc(fmtVal(c.from))}</s><b>${esc(fmtVal(c.to))}</b></span></div>${c.reason?('<div class="dw">'+esc(c.reason)+'</div>'):''}</div>`).join('');
+   w.innerHTML='<div class="dh">Suggested change'+(ch.length>1?'s':'')+'</div>'+rows+'<div class="ds ok">✓ Applied — press Save settings in the app to keep</div><div class="ds no">Not applied</div>'+(live?('<div class="da"><button class="ap">Implement '+ch.length+' change'+(ch.length>1?'s':'')+'</button><button class="dm">Don’t apply</button></div>'):'');
+   if(live){w.querySelector('.ap').onclick=async()=>{let r={};try{r=await api().assistant_apply(ch);}catch(e){}w.classList.add('done','applied');toast('Applied '+((r&&r.applied)||ch.length)+' change(s)');};
+     w.querySelector('.dm').onclick=()=>w.classList.add('done','skipped');}
+   return w;}
+ function statsForm(){const fields=[['capacity','Capacity'],['dig_strength','Dig strength'],['dig_speed','Dig speed %'],['shake_strength','Shake strength'],['shake_speed','Shake speed'],['luck','Luck'],['walk_speed','Walk speed']];
+   const f=document.createElement('div');f.className='stats';f.innerHTML=fields.map(x=>`<label>${x[1]}<input type="number" data-st="${x[0]}" step="any"></label>`).join('')+'<button class="go">Analyze with these stats</button>';
+   f.querySelector('.go').onclick=()=>{const st={};f.querySelectorAll('input[data-st]').forEach(i=>{const v=parseFloat(i.value);if(!isNaN(v))st[i.dataset.st]=v;});if(!Object.keys(st).length){toast('Enter at least capacity & dig strength');return;}const lbl='My stats: '+Object.entries(st).map(e=>e[0]+'='+e[1]).join(', ');addUser(lbl);hist.push({role:'user',text:lbl});persist();ask('analyze my stats and make it faster',st);};return f;}
+ function addBot(res,live){const d=document.createElement('div');d.className='m bot';d.innerHTML=md(res.reply||'');if(res.changes&&res.changes.length)d.appendChild(diffCard(res.changes,live!==false));if(res.askStats&&live!==false)d.appendChild(statsForm());msgs.appendChild(d);scroll();if(live!==false)setChips(res.chips||[]);}
+ function setChips(ch){chips.innerHTML='';(ch||[]).forEach(c=>{const b=document.createElement('button');b.className='chip';b.textContent=c;b.onclick=()=>{inp.value=c;doSend();};chips.appendChild(b);});}
+ function buildConvo(){const out=[];hist.slice(-14).forEach(t=>{if(t.role==='user')out.push({role:'user',text:t.text});else if(t.role==='bot'&&t.reply)out.push({role:'assistant',text:t.reply});});return out;}
+ async function ask(text,stats){sending=true;sendBtn.disabled=true;const ty=document.createElement('div');ty.className='m bot typing';ty.textContent='Coach is thinking…';msgs.appendChild(ty);scroll();
+   let res;try{res=await api().assistant_chat(text,prevTopic,stats||null,buildConvo());}catch(e){res={reply:'I could not reach the engine.',changes:[],chips:[]};}
+   ty.remove();sending=false;sendBtn.disabled=false;prevTopic=(res&&res.topic)||'';addBot(res||{reply:'(no response)'},true);hist.push({role:'bot',reply:(res&&res.reply)||'',changes:(res&&res.changes)||[],chips:(res&&res.chips)||[]});persist();}
+ function doSend(){const t=(inp.value||'').trim();if(!t||sending)return;addUser(t);hist.push({role:'user',text:t});persist();inp.value='';inp.style.height='auto';ask(t);}
+ sendBtn.onclick=doSend;
+ inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doSend();}});
+ inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(160,inp.scrollHeight)+'px';});
+ async function loadHist(){let h=[];try{h=await api().coach_history();}catch(e){}msgs.innerHTML='';
+   if(Array.isArray(h)&&h.length){hist=h;h.forEach(t=>{if(t.role==='user')addUser(t.text);else if(t.role==='bot')addBot({reply:t.reply,changes:t.changes,chips:t.chips},false);});const lb=[...h].reverse().find(t=>t.role==='bot');setChips((lb&&lb.chips)||[]);scroll();}
+   else{hist=[];ask('hello');}}
+ $('new').onclick=()=>{hist=[];msgs.innerHTML='';chips.innerHTML='';persist();ask('hello');inp.focus();};
+ $('cls').onclick=()=>{try{api().close_coach_window();}catch(e){}};
+ // ---- settings ----
+ const provSel=$('prov'),msel=$('msel'),mrow=$('mrow'),mid=$('mid'),brow=$('brow'),base=$('base'),keyIn=$('key'),cloud=$('cloud');
+ const PROV={anthropic:{base:'',models:[['claude-haiku-4-5-20251001','Haiku 4.5 — cheapest'],['claude-sonnet-5','Sonnet 5 — smartest']]},
+   openai:{base:'',models:[['gpt-5.4-mini','GPT-5.4-mini — cheap'],['gpt-5.4','GPT-5.4'],['gpt-4o-mini','GPT-4o-mini — safe fallback']]},
+   gemini:{base:'https://generativelanguage.googleapis.com/v1beta/openai',models:[['gemini-2.5-flash-lite','2.5 Flash-Lite — cheapest'],['gemini-2.5-flash','2.5 Flash']]},
+   deepseek:{base:'https://api.deepseek.com/v1',models:[['deepseek-chat','deepseek-chat']]},custom:{base:'',models:[]}};
+ function setSub(m){sub.textContent=(m==='api')?'AI API mode':'offline tuning assistant';}
+ function fillModels(p,sel){msel.innerHTML='';((PROV[p]||{}).models||[]).forEach(m=>{const o=document.createElement('option');o.value=m[0];o.textContent=m[1];msel.appendChild(o);});const o=document.createElement('option');o.value='__other__';o.textContent='Other model id…';msel.appendChild(o);const has=((PROV[p]||{}).models||[]).some(m=>m[0]===sel);if(sel&&has)msel.value=sel;else if(sel&&p!=='custom'){msel.value='__other__';mid.value=sel;}}
+ function applyUI(){const p=provSel.value;cloud.style.display=(p==='offline')?'none':'block';brow.style.display=(p==='custom')?'flex':'none';mrow.style.display=(p!=='offline'&&(msel.value==='__other__'||p==='custom'))?'flex':'none';}
+ provSel.onchange=()=>{fillModels(provSel.value,'');applyUI();};msel.onchange=applyUI;
+ async function loadCfg(){let c={};try{c=await api().coach_settings();}catch(e){c={mode:'offline',model:'',base:''};}
+   let p='offline';if(c.mode==='api'){const b=(c.base||'');if(/deepseek/.test(b))p='deepseek';else if(/googleapis/.test(b))p='gemini';else if(b)p='custom';else if(((c.model||'').toLowerCase()).indexOf('claude')===0)p='anthropic';else p='openai';}
+   provSel.value=p;fillModels(p,c.model||'');base.value=c.base||'';if(p==='custom')mid.value=c.model||'';keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'paste key — stays on this PC';applyUI();setSub(c.mode);}
+ $('cfgb').onclick=()=>{const on=document.body.classList.toggle('cfgon');if(on)loadCfg();};
+ $('save').onclick=async()=>{const p=provSel.value,mode=(p==='offline')?'offline':'api';let model='',b='';if(mode==='api'){model=(msel.value==='__other__'||p==='custom')?mid.value.trim():msel.value;b=(p==='custom')?base.value.trim():((PROV[p]||{}).base||'');}const key=(keyIn.value.trim())?keyIn.value.trim():null;try{await api().save_coach_settings(mode,key,model||null,b);}catch(e){}keyIn.value='';setSub(mode);document.body.classList.remove('cfgon');toast(mode==='api'?('Coach: '+p):'Coach: offline');};
+ $('clr').onclick=async()=>{try{await api().save_coach_settings('offline','__CLEAR__');}catch(e){}keyIn.value='';loadCfg();toast('API key cleared');};
+ function boot(){loadHist();loadCfg();setTimeout(()=>inp.focus(),80);}
+ window.__reload=function(){boot();};
+ window.addEventListener('pywebviewready',boot);
+ if(window.pywebview&&window.pywebview.api)boot();
+</script></body></html>'''
+
+
 def main():
-    global _window, _pill, _overlay
+    global _window, _pill, _overlay, _coach_win
     try:
         import webview
     except ImportError:
@@ -2451,6 +2602,12 @@ def main():
             frameless=True, on_top=True, hidden=True)
     except Exception as _e:
         print("[overlay] precreate failed: %s" % _e)
+    try:
+        _coach_win = webview.create_window(
+            "Coach — Prospectors Plus", html=COACH_HTML, js_api=api,
+            width=900, height=820, min_size=(560, 560), hidden=True)
+    except Exception as _e:
+        print("[coach] precreate failed: %s" % _e)
     webview.start()
     try:
         api._save_history()      # window closed while running -> log it
