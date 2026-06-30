@@ -410,6 +410,7 @@ WEBHOOK_ENABLED    = False
 WEBHOOK_URL        = "http://159.203.22.31:3001/notify"  # baked default (config can override)
 WEBHOOK_SECRET     = "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13"  # baked default
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
+ACCESS_HASH        = ""     # analytics: which access code this user unlocked with
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
 # Per-event notification toggles (which DMs you actually get). Recoveries are
 # OFF by default because they can fire often; the rest are on.
@@ -1100,7 +1101,8 @@ def post_webhook(event, message, stats=None, shot=False):
     if flag and not globals().get(flag, True):
         return
     payload = {"username": "Prospectors Plus", "content": message,
-               "event": event, "user": WEBHOOK_USER, "stats": stats or {}}
+               "event": event, "user": WEBHOOK_USER, "code": ACCESS_HASH,
+               "stats": stats or {}}
     if shot and NOTIFY_SCREENSHOT:
         img = _grab_screenshot_b64()
         if img:
