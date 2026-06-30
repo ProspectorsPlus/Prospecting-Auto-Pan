@@ -468,7 +468,7 @@ class Api:
         """Current Coach mode for the UI. Never returns the API key itself."""
         s = load_saved()
         return {"mode": "api" if s.get("COACH_MODE") == "api" else "offline",
-                "model": s.get("COACH_MODEL", "claude-haiku-4-5"),
+                "model": s.get("COACH_MODEL", "claude-haiku-4-5-20251001"),
                 "has_key": bool((s.get("COACH_API_KEY") or "").strip())}
 
     def save_coach_settings(self, mode="offline", key=None, model=None):
@@ -476,7 +476,7 @@ class Api:
         s = load_saved()
         s["COACH_MODE"] = "api" if mode == "api" else "offline"
         if model is not None:
-            s["COACH_MODEL"] = (model or "").strip() or "claude-haiku-4-5"
+            s["COACH_MODEL"] = (model or "").strip() or "claude-haiku-4-5-20251001"
         if key == "__CLEAR__":
             s["COACH_API_KEY"] = ""
         elif key:
@@ -492,7 +492,7 @@ class Api:
         key = (saved.get("COACH_API_KEY") or "").strip()
         if not key:
             return None
-        model = (saved.get("COACH_MODEL") or "claude-haiku-4-5").strip() or "claude-haiku-4-5"
+        model = (saved.get("COACH_MODEL") or "claude-haiku-4-5-20251001").strip() or "claude-haiku-4-5-20251001"
         msgs = []
         for m in (convo or []):
             role = m.get("role"); txt = (m.get("text") or m.get("content") or "")
@@ -1908,7 +1908,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        <label class="ccfg-opt"><input type="radio" name="cmode" value="offline"><span><b>Offline brain</b><i>Free · no internet · instant</i></span></label>
        <label class="ccfg-opt"><input type="radio" name="cmode" value="api"><span><b>Claude API (your key)</b><i>Real conversation · ~a cent per message</i></span></label>
        <input id="ckey" type="password" autocomplete="off" placeholder="sk-ant-api03-…  (saved on this PC only)">
-       <input id="cmodel" type="text" autocomplete="off" placeholder="claude-haiku-4-5">
+       <input id="cmodel" type="text" autocomplete="off" placeholder="claude-haiku-4-5-20251001">
        <div class="ccfg-act"><button class="ccfg-save" id="ccfgsave">Save</button><button class="ccfg-clear" id="ccfgclear">Clear key</button></div>
        <div class="ccfg-note">API mode sends your message + current settings to Anthropic using <b>your own key</b> (get one at console.anthropic.com). The key stays on this computer. The offline brain needs nothing.</div>
      </div>
@@ -2268,9 +2268,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      cfgPanel=document.getElementById('coachcfgpanel'), keyIn=document.getElementById('ckey'),
      modelIn=document.getElementById('cmodel');
    function setSub(mode){if(sub)sub.textContent=(mode==='api')?'Claude API mode':'offline tuning assistant';}
-   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'claude-haiku-4-5'};}
+   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'claude-haiku-4-5-20251001'};}
      (document.querySelector('input[name=cmode][value="'+(c.mode||'offline')+'"]')||{}).checked=true;
-     if(modelIn)modelIn.value=c.model||'claude-haiku-4-5';
+     if(modelIn)modelIn.value=c.model||'claude-haiku-4-5-20251001';
      if(keyIn)keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'sk-ant-api03-…  (saved on this PC only)';
      setSub(c.mode);}
    if(cfgBtn)cfgBtn.onclick=()=>{const on=body.classList.toggle('coach-cfg-on');if(on)loadCfg();};
