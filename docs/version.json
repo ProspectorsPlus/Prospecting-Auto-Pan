@@ -1,7 +1,7 @@
 {
-  "version": "2.3.0",
+  "version": "2.3.1",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": true,
-  "notes": "Faster recovery when a shake doesn't register (no more long stalls), more reliable guided calibration and dig detection, Keybinds tab fix, and general stability improvements."
+  "notes": "Critical fix: resolves a startup loop where the macro could instantly break-out and jump to Fortune River recovery (caused by a 0 recovery-threshold). Recovery thresholds of 0 now correctly mean 'disabled'. Restores normal behaviour for all builds."
 }
