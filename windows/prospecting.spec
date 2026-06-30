@@ -25,10 +25,11 @@ for pkg in ("webview", "clr_loader", "pythonnet", "mss", "numpy"):
 datas += [
     ("prospecting_old.py", "."),
     ("prospecting_ui.py", "."),
+    ("prospecting_assistant.py", "."),
     ("prospecting_config.json", "."),
     ("icon.png", "."),
 ]
-hiddenimports += ["clr", "prospecting_ui", "mss.windows"]
+hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant", "mss.windows"]
 
 block_cipher = None
 

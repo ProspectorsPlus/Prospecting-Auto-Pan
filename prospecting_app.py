@@ -67,6 +67,13 @@ except Exception:
     PIXEL_FIELDS = []
     PIXEL_DEFAULTS = {}
 
+# Local tuning assistant (offline expert system). Optional: if it fails to load,
+# the rest of the app keeps working and the Coach panel just reports it's offline.
+try:
+    import prospecting_assistant as _coach
+except Exception:
+    _coach = None
+
 # Built-in calibration profile: each pixel as a fraction of the Roblox game
 # window. When populated, users Auto-calibrate with zero clicking. Seeded by
 # calibrating once with Roblox open, then baking the result into the config.
@@ -439,6 +446,63 @@ class Api:
         path = os.path.join(os.path.dirname(CONFIG_FILE), "run_history.json")
         data = _read_json(path, [])
         return list(reversed(data)) if isinstance(data, list) else []
+
+    # ---- local tuning assistant ("Coach") ---------------------------------
+    def _coach_context(self, stats=None):
+        """Assemble everything the offline assistant reasons over."""
+        saved = load_saved()
+        merged = dict(DEFAULTS)
+        merged.update({k: v for k, v in saved.items() if k in DEFAULTS})
+        path = os.path.join(os.path.dirname(CONFIG_FILE), "run_history.json")
+        hist = _read_json(path, [])
+        hist = list(reversed(hist)) if isinstance(hist, list) else []
+        return {
+            "settings": merged,
+            "builds": _read_json(BUILDS_FILE, {}),
+            "build_name": saved.get("_ACTIVE_BUILD", ""),
+            "history": hist,
+            "stats": stats or saved.get("COACH_STATS", {}) or {},
+        }
+
+    def assistant_chat(self, message, prev_topic="", stats=None):
+        """Return the assistant's reply + proposed changes for a user message."""
+        if _coach is None:
+            return {"reply": "The tuning coach module didn't load on this install. "
+                             "Everything else still works — you can tune settings "
+                             "manually in the tabs.", "changes": [], "topic": "",
+                    "askStats": False, "chips": []}
+        if stats:                              # remember stats the user gives us
+            try:
+                cur = load_saved()
+                cur["COACH_STATS"] = {k: stats[k] for k in stats}
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(cur, f, indent=2)
+            except Exception:
+                pass
+        ctx = self._coach_context(stats)
+        ctx["prev_topic"] = prev_topic or ""
+        try:
+            return _coach.respond(message or "", ctx)
+        except Exception as e:
+            return {"reply": "Sorry — I hit an error working that out (%s). Try "
+                             "rephrasing the symptom." % e, "changes": [], "topic": "",
+                    "askStats": False, "chips": []}
+
+    def assistant_apply(self, changes):
+        """Apply ONLY validated schema keys from a confirmed proposal. Never code."""
+        if not isinstance(changes, list):
+            return {"applied": 0}
+        allowed = _coach.allowed_keys() if _coach else set(TYPES.keys())
+        data = {}
+        for c in changes:
+            try:
+                k = c.get("key")
+            except AttributeError:
+                continue
+            if k in TYPES and k in allowed:
+                data[k] = c.get("to")
+        n = self.save_config(data) if data else 0
+        return {"applied": n, "values": self.get_state().get("values", {})}
 
     # ---- window detection + auto-calibrate ----
     def detect_roblox(self):
@@ -1484,6 +1548,47 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   transition:border-color .15s,color .15s}
  .chip:hover{border-color:var(--line2);color:var(--txt)}
  .content{flex:1;overflow-y:auto;padding:28px 32px}
+ /* ---- Coach (offline tuning assistant) ---- */
+ .coach{flex:0 0 340px;display:none;flex-direction:column;min-height:0;background:var(--bg2);border-right:1px solid var(--line)}
+ body.coach-on .coach{display:flex}
+ #coachtoggle.on{background:var(--accent);color:#241a02}
+ .coach-head{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:14px 14px 11px;border-bottom:1px solid var(--line)}
+ .coach-head .ic{color:var(--accent-lit);display:flex} .coach-head .ic svg{width:20px;height:20px}
+ .coach-title{font-weight:700;font-size:14px;line-height:1.1}
+ .coach-sub{display:block;font-weight:600;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
+ .coach-x{margin-left:auto;background:#2a2418;color:#e9e0cf;border:0;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:13px}
+ .coach-x:hover{background:#352d1c}
+ .coach-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px}
+ .cmsg{font-size:13px;line-height:1.5;word-wrap:break-word}
+ .cmsg.user{align-self:flex-end;background:var(--accent);color:#241a02;padding:8px 12px;border-radius:13px 13px 4px 13px;max-width:86%;font-weight:500}
+ .cmsg.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line);color:var(--txt);padding:10px 13px;border-radius:13px 13px 13px 4px;max-width:92%}
+ .cmsg.bot b{color:var(--accent-lit)} .cmsg.bot i{color:var(--mut)}
+ .cmsg.bot code{background:#15140f;padding:1px 5px;border-radius:4px;font-size:12px;font-family:ui-monospace,Menlo,monospace}
+ .cdiff{margin-top:11px;border:1px solid var(--line2);border-radius:10px;overflow:hidden}
+ .cdiff-row{padding:8px 11px 3px} .cdiff-row+.cdiff-row{border-top:1px solid var(--line);margin-top:3px;padding-top:8px}
+ .cdiff-top{display:flex;align-items:center;gap:8px;font-size:12px}
+ .cdiff-k{flex:1;color:var(--mut)} .cdiff-v{font-variant:tabular-nums;font-weight:700;white-space:nowrap}
+ .cdiff-v s{color:var(--dim);text-decoration:none;margin-right:6px} .cdiff-v b{color:var(--teal-lit)}
+ .cdiff-why{font-size:11px;color:var(--dim);margin-top:3px;line-height:1.4}
+ .cdiff-act{display:flex;gap:8px;padding:10px 11px;background:#1c1b18;margin-top:5px}
+ .cdiff-act button{flex:1;border:0;border-radius:8px;padding:8px;font-weight:700;cursor:pointer;font-size:12px}
+ .capply{background:var(--accent2);color:#14260f} .capply:hover{filter:brightness(1.07)}
+ .cdismiss{background:#2a2418;color:#cdbfa5} .cdismiss:hover{background:#352d1c}
+ .cdiff.done{opacity:.55} .cdiff.done .cdiff-act{display:none}
+ .cdiff-state{font-size:11px;color:var(--accent2);padding:8px 11px;display:none} .cdiff.done .cdiff-state{display:block}
+ .coach-chips{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 10px}
+ .cchip{background:#2a2418;color:#d8cdb3;border:1px solid var(--line2);border-radius:14px;padding:5px 11px;font-size:11.5px;cursor:pointer}
+ .cchip:hover{background:#352d1c;color:#fff}
+ .coach-input{flex:0 0 auto;display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line)}
+ .coach-input textarea{flex:1;resize:none;background:var(--panel);border:1px solid var(--line2);border-radius:10px;color:var(--txt);padding:9px 11px;font:inherit;font-size:13px;max-height:120px;line-height:1.4}
+ .coach-input textarea:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.2)}
+ .coach-input button{background:var(--accent);color:#241a02;border:0;border-radius:10px;padding:0 15px;font-weight:700;cursor:pointer}
+ .coach-input button:hover{filter:brightness(1.06)}
+ .cstats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}
+ .cstats label{display:flex;flex-direction:column;font-size:10px;color:var(--mut);gap:3px;text-transform:uppercase;letter-spacing:.04em}
+ .cstats input{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:7px 8px;font:inherit;font-size:13px}
+ .cstats input:focus{outline:0;border-color:var(--accent)}
+ .cstats .cgo{grid-column:1/3;background:var(--accent2);color:#14260f;border:0;border-radius:8px;padding:9px;font-weight:700;cursor:pointer;margin-top:2px}
  .panel{display:none} .panel.active{display:block}
  .phead{margin:0 0 18px} .phead h2{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em} .chint{margin:5px 0 0;color:var(--mut);font-size:13px;max-width:620px}
  .rows{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:2px 18px;max-width:580px}
@@ -1678,10 +1783,24 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <button class="btn2" id="savebuild">Save build</button>
    <select class="topfield sm" id="buildlist"><option value="">Load build…</option></select>
    <button class="btn2" id="delbuild" title="Delete selected build">✕</button>
+   <button class="btn2" id="coachtoggle" title="Open the offline tuning coach">✦ Coach</button>
    <button class="btn2" id="popout" title="Pop out a floating control">⤢ Pop out</button>
    <button class="btn" id="savebtn">Save settings</button>
  </div>
  <div class="body">
+   <aside class="coach" id="coach">
+     <div class="coach-head">
+       <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.8 2 .2.0M5 16l.7 1.7"/></svg></span>
+       <div><div class="coach-title">Coach</div><span class="coach-sub">offline tuning assistant</span></div>
+       <button class="coach-x" id="coachclose" title="Close">✕</button>
+     </div>
+     <div class="coach-msgs" id="coachmsgs"></div>
+     <div class="coach-chips" id="coachchips"></div>
+     <div class="coach-input">
+       <textarea id="coachin" rows="1" placeholder="Describe a problem… e.g. it shakes late"></textarea>
+       <button id="coachsend">Send</button>
+     </div>
+   </aside>
    <nav class="side">
      {{NAV}}
      <div class="navsep"></div>
@@ -1967,6 +2086,73 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      let r={};try{r=await _api().verify_access(code);}catch(e){r={ok:false,error:'Something went wrong. Try again.'};}
      btn.disabled=false;btn.textContent='Unlock';
      if(r&&r.ok){gateHide();init();}else{err.textContent=(r&&r.error)||'That code did not work.';inp.select();}});})();
+
+ // ---- Coach: offline tuning assistant ----
+ (function(){
+   const body=document.body, tgl=document.getElementById('coachtoggle'),
+     clo=document.getElementById('coachclose'), msgs=document.getElementById('coachmsgs'),
+     chipsEl=document.getElementById('coachchips'), inp=document.getElementById('coachin'),
+     sendBtn=document.getElementById('coachsend');
+   if(!tgl||!msgs) return;
+   let prevTopic='', greeted=false;
+   const capi=()=>window.pywebview&&window.pywebview.api;
+   const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+   function md(s){s=esc(s);
+     s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
+     s=s.replace(/`([^`]+?)`/g,'<code>$1</code>');
+     s=s.replace(/(^|[^*])\*(?!\*)([^*]+?)\*(?!\*)/g,'$1<i>$2</i>');
+     return s.replace(/\n/g,'<br>');}
+   const scroll=()=>{msgs.scrollTop=msgs.scrollHeight;};
+   const fmtVal=v=>(typeof v==='boolean')?(v?'on':'off'):v;
+   function addUser(t){const d=document.createElement('div');d.className='cmsg user';d.textContent=t;msgs.appendChild(d);scroll();}
+   function diffHTML(ch){
+     const rows=ch.map(c=>`<div class="cdiff-row"><div class="cdiff-top"><span class="cdiff-k">${esc(c.label||c.key)}</span><span class="cdiff-v"><s>${esc(fmtVal(c.from))}</s><b>${esc(fmtVal(c.to))}</b></span></div><div class="cdiff-why">${esc(c.reason||'')}</div></div>`).join('');
+     return `<div class="cdiff"><div class="cdiff-state">&#10003; Applied</div>${rows}<div class="cdiff-act"><button class="capply">Apply ${ch.length} change${ch.length>1?'s':''}</button><button class="cdismiss">Dismiss</button></div></div>`;
+   }
+   function statsForm(){
+     const fields=[['capacity','Capacity'],['dig_strength','Dig strength'],['dig_speed','Dig speed %'],['shake_strength','Shake strength'],['shake_speed','Shake speed'],['luck','Luck'],['walk_speed','Walk speed']];
+     const f=document.createElement('div');f.className='cstats';
+     f.innerHTML=fields.map(x=>`<label>${x[1]}<input type="number" data-st="${x[0]}" step="any"></label>`).join('')+'<button class="cgo">Analyze with these stats</button>';
+     f.querySelector('.cgo').onclick=()=>{
+       const st={};f.querySelectorAll('input[data-st]').forEach(i=>{const v=parseFloat(i.value);if(!isNaN(v))st[i.dataset.st]=v;});
+       if(!Object.keys(st).length){if(window.toast)toast('Enter at least your capacity & dig strength');return;}
+       addUser('My stats: '+Object.entries(st).map(e=>e[0]+'='+e[1]).join(', '));
+       ask('analyze my stats and make it faster', st);
+     };
+     return f;
+   }
+   function addBot(res){
+     const d=document.createElement('div');d.className='cmsg bot';d.innerHTML=md(res.reply||'');
+     if(res.changes&&res.changes.length){
+       const wrap=document.createElement('div');wrap.innerHTML=diffHTML(res.changes);
+       const card=wrap.firstElementChild;
+       card.querySelector('.capply').onclick=async()=>{
+         let r={};try{r=await capi().assistant_apply(res.changes);}catch(e){r={};}
+         card.classList.add('done');
+         if(r&&r.values&&window.setVals)setVals(r.values);
+         if(window.toast)toast('Applied '+((r&&r.applied)||res.changes.length)+' change(s) — Save settings to keep');
+       };
+       card.querySelector('.cdismiss').onclick=()=>card.remove();
+       d.appendChild(card);
+     }
+     if(res.askStats)d.appendChild(statsForm());
+     msgs.appendChild(d);scroll();
+     setChips(res.chips||[]);
+   }
+   function setChips(ch){chipsEl.innerHTML='';(ch||[]).forEach(c=>{const b=document.createElement('button');b.className='cchip';b.textContent=c;b.onclick=()=>{inp.value=c;doSend();};chipsEl.appendChild(b);});}
+   async function ask(text,stats){
+     let res;try{res=await capi().assistant_chat(text, prevTopic, stats||null);}catch(e){res={reply:'I could not reach the local engine — try reopening the app.',changes:[],chips:[]};}
+     prevTopic=(res&&res.topic)||'';addBot(res||{reply:'(no response)'});
+   }
+   function doSend(){const t=(inp.value||'').trim();if(!t)return;addUser(t);inp.value='';inp.style.height='auto';ask(t);}
+   sendBtn.onclick=doSend;
+   inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doSend();}});
+   inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(120,inp.scrollHeight)+'px';});
+   function openCoach(){body.classList.add('coach-on');tgl.classList.add('on');if(!greeted){greeted=true;ask('hello');}setTimeout(()=>inp.focus(),60);}
+   function closeCoach(){body.classList.remove('coach-on');tgl.classList.remove('on');}
+   tgl.onclick=()=>{body.classList.contains('coach-on')?closeCoach():openCoach();};
+   if(clo)clo.onclick=closeCoach;
+ })();
 </script></body></html>"""
 
 
