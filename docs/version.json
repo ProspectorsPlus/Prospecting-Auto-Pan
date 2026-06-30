@@ -1,7 +1,7 @@
 {
-  "version": "2.3.1",
+  "version": "3.0.0",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": true,
-  "notes": "Critical fix: resolves a startup loop where the macro could instantly break-out and jump to Fortune River recovery (caused by a 0 recovery-threshold). Recovery thresholds of 0 now correctly mean 'disabled'. Restores normal behaviour for all builds."
+  "notes": "Coach \u2014 a built-in offline tuning assistant. Open it from the top bar (it opens automatically), describe any problem in plain English (\"it shakes late\", \"lands in water\", \"Fortune River keeps triggering\"), and it proposes exact setting changes you apply with one click. It can analyze your recent runs and compute your ideal cycle time from your stats. Also includes a critical recovery fix: a 0 recovery-threshold no longer causes an instant break-out / Fortune River loop. No account or internet needed."
 }
