@@ -81,6 +81,7 @@ SECTIONS = [
         ("RECOVER_LIMIT",      "Recoveries before break-out",             "int", 3),
         ("RECOVER_BACK_MS",    "Recovery nudge budget (ms)",              "int", 160),
         ("SHAKE_FAIL_LIMIT",   "Failed shakes before STOP",               "int", 5),
+        ("SHAKE_GLITCH_LIMIT", "Failed shakes before quick click-to-empty", "int", 2),
         ("BREAKOUT_LIMIT",     "Break-outs before STOP",                  "int", 2),
         ("BREAKOUT_SHAKE_MS",  "Break-out click-to-finish (ms)",          "int", 700),
         ("BREAKOUT_REPOS_MS",  "Break-out reposition W (ms)",             "int", 160),
@@ -249,6 +250,7 @@ HELP = {
     "RECOVER_LIMIT": "How many recoveries on the same spot before the smart "
                      "break-out kicks in.",
     "RECOVER_BACK_MS": "Budget for a recovery nudge (pulsed taps).",
+    "SHAKE_GLITCH_LIMIT": "When the game fails to register a shake (the shake-glitch), the macro keeps trying to dig/move and wastes time. After this many failed shakes it immediately does a quick click-to-empty (break-out) instead, which usually clears the glitch and is low-risk. Lower = reacts faster.",
     "SHAKE_FAIL_LIMIT": "Shakes that don't empty (even while moving) before it "
                         "SAFE STOPs.",
     "BREAKOUT_LIMIT": "Break-out attempts before SAFE STOP.",

@@ -308,6 +308,10 @@ RECOVER_LIMIT      = 3    # recovery attempts on a deadlock before SAFE STOP
 SHAKE_FAIL_LIMIT   = 5    # shakes that didn't empty (even if you keep MOVING
                           # between water/land) before SAFE STOP -- catches the
                           # case where the shake silently never works
+SHAKE_GLITCH_LIMIT = 2    # after THIS many failed shakes, immediately try a quick
+                          # click-to-empty break-out (the game's shake-glitch often
+                          # just didn't register; clicking is low-risk and usually
+                          # fixes it). Much faster than waiting for SHAKE_FAIL_LIMIT.
 # Shake bail is CAPACITY-based: give up on a shake only if the pan is STILL
 # COMPLETELY FULL after this long. A REAL shake has already drained to PARTIAL by
 # now (so it reads not-full and is safe from this bail) -- only a shake that never
@@ -1923,9 +1927,24 @@ class Supervisor:
             self.same, self.last_sig, self.recoveries = 0, sig, 0
         cue = f"{'D' if s.dep else '-'}{'P' if s.pan else '-'}{'S' if s.shk else '-'}"
         cap = f"{'F' if s.full else '-'}{'E' if s.empty else '-'}"
-        # oscillation guard: if shakes keep failing even while we move around
-        # (so the per-situation watchdog never trips), stop after a hard cap.
-        if State.shake_fails > SHAKE_FAIL_LIMIT:
+        # SHAKE-GLITCH FAST PATH: the game sometimes fails to register a shake and
+        # the normal stuck-watchdog misses it (we bounce water<->land, so the
+        # signature keeps changing and `same` never builds up). After just a few
+        # failed shakes, do a quick CLICK-TO-EMPTY break-out right away -- it's
+        # low-risk (worst case it just starts a shake/dig) and usually clears the
+        # glitch. Only SAFE STOP if even the break-out keeps failing.
+        if State.shake_fails >= SHAKE_GLITCH_LIMIT:
+            if BREAKOUT_ENABLED and State.breakouts < BREAKOUT_LIMIT:
+                State.breakouts += 1
+                log(f"** shake not registering x{State.shake_fails} "
+                    f"-> quick break-out #{State.breakouts} **")
+                if break_out(det, s):
+                    State.breakouts = 0
+                State.shake_fails = 0
+                self.same = 0
+                self.recoveries = 0
+                self.last_sig = None
+                return
             safe_stop(f"shake not emptying after {State.shake_fails} tries")
             return
         if self.same < STUCK_TICKS:
