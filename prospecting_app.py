@@ -691,12 +691,19 @@ class Api:
                 ]}
                 body = json.dumps({"username": "PP Analytics",
                                    "embeds": [embed]}).encode("utf-8")
+                req = urllib.request.Request(
+                    hook, data=body, headers={"Content-Type": "application/json"})
                 try:
-                    req = urllib.request.Request(
-                        hook, data=body, headers={"Content-Type": "application/json"})
                     urllib.request.urlopen(req, timeout=8)
                 except Exception:
-                    pass
+                    # macOS Python often lacks SSL certs -> verified HTTPS fails.
+                    # Retry without verification (fine for a one-way analytics post).
+                    try:
+                        import ssl as _ssl
+                        urllib.request.urlopen(
+                            req, timeout=8, context=_ssl._create_unverified_context())
+                    except Exception:
+                        pass
             threading.Thread(target=_send, daemon=True).start()
         except Exception:
             pass
