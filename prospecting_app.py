@@ -654,30 +654,33 @@ class Api:
             return {"error": str(e)}
 
     # ---- run control ----
-    def _access_check(self):
-        """Analytics + access enforcement: report this run to the server and ask
-        if this device is allowed. Never blocks on a network error (fail-open)."""
+    def _report_usage(self):
+        """Analytics: report this run to the private endpoint (ANALYTICS_URL in the
+        config). Fire-and-forget, never blocks the launch."""
         try:
-            import urllib.request
             cur = load_saved()
-            base = (cur.get("WEBHOOK_URL") or "").strip()
-            if not base:
-                return True
-            url = base.rsplit("/notify", 1)[0].rstrip("/") + "/macro/check"
+            url = (cur.get("ANALYTICS_URL") or "").strip()
+            if not url:
+                return
+            import urllib.request
             payload = {"user": cur.get("WEBHOOK_USER", ""),
                        "code": cur.get("ACCESS_HASH", ""),
-                       "version": VERSION}
+                       "version": VERSION, "event": "launch"}
             headers = {"Content-Type": "application/json"}
-            sec = cur.get("WEBHOOK_SECRET", "")
+            sec = cur.get("ANALYTICS_SECRET", "")
             if sec:
-                headers["x-macro-secret"] = sec
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as r:
-                d = json.loads(r.read().decode("utf-8"))
-            return bool(d.get("allowed", True))
+                headers["x-analytics-key"] = sec
+            data = json.dumps(payload).encode("utf-8")
+
+            def _send():
+                try:
+                    req = urllib.request.Request(url, data=data, headers=headers)
+                    urllib.request.urlopen(req, timeout=6)
+                except Exception:
+                    pass
+            threading.Thread(target=_send, daemon=True).start()
         except Exception:
-            return True
+            pass
 
     def launch(self, data=None, relics=None, enabled=None):
         if data is not None:
@@ -686,8 +689,7 @@ class Api:
             self.save_relics(relics, enabled)
         if self.proc is not None:
             return "already running"
-        if not self._access_check():
-            return "blocked"
+        self._report_usage()
         py = sys.executable or "python3"
         self.proc = subprocess.Popen(
             [py, MACRO_FILE], cwd=HERE, stdout=subprocess.PIPE,
@@ -1858,7 +1860,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    window.addEventListener('keydown',onk,true);};});
  $('#savekeys').onclick=async()=>{try{await window.pywebview.api.save_hotkeys(hotkeys);toast('Keybinds saved — Stop & Start the macro to apply');}catch(e){toast('Save failed');}};
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
- $('#startbtn').onclick=async()=>{const _r=await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);if(_r==='blocked'){toast('Access denied for this device');return;}setRunning(true);toast('Launched — Ctrl+K to start');};
+ $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
  // builds — a build saves ALL settings + relics; loading applies them all
  async function loadBuild(name){if(!name)return;
