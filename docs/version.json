@@ -1,7 +1,7 @@
 {
-  "version": "2.2.3",
+  "version": "2.3.0",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
-  "critical": false,
-  "notes": "Treasure Chest mode (digs-per-chest, delay-between-digs); Fortune River recovery (auto fast-travel back on a soft stop, with calibratable pink-text find + scroll); manual soft-stop test key (Ctrl+J)"
+  "critical": true,
+  "notes": "Faster recovery when a shake doesn't register (no more long stalls), more reliable guided calibration and dig detection, Keybinds tab fix, and general stability improvements."
 }
