@@ -1940,7 +1940,7 @@ class Supervisor:
         # failed shakes, do a quick CLICK-TO-EMPTY break-out right away -- it's
         # low-risk (worst case it just starts a shake/dig) and usually clears the
         # glitch. Only SAFE STOP if even the break-out keeps failing.
-        if State.shake_fails >= SHAKE_GLITCH_LIMIT:
+        if SHAKE_GLITCH_LIMIT > 0 and State.shake_fails >= SHAKE_GLITCH_LIMIT:
             if BREAKOUT_ENABLED and State.breakouts < BREAKOUT_LIMIT:
                 State.breakouts += 1
                 log(f"** shake not registering x{State.shake_fails} "
@@ -1959,7 +1959,7 @@ class Supervisor:
         # If nothing has worked (no pan emptied AND no dig registered) for
         # NO_PROGRESS_SEC, do a quick click-to-empty break-out -- low risk, usually
         # clears it. Safe-stop only if break-out keeps failing.
-        if (BREAKOUT_ENABLED and State.last_progress
+        if (BREAKOUT_ENABLED and NO_PROGRESS_SEC > 0 and State.last_progress
                 and time.perf_counter() - State.last_progress > NO_PROGRESS_SEC):
             State.breakouts += 1
             log(f"** no progress for {NO_PROGRESS_SEC}s -> break-out #{State.breakouts} (click to empty) **")
