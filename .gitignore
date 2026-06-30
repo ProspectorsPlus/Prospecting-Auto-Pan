@@ -8,3 +8,5 @@ windows/run_history.json
 windows/prospecting_builds.json
 
 # private analytics endpoint (host yourself)
+
+ANALYTICS_SETUP.md

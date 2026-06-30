@@ -74,5 +74,5 @@
       0.4517
     ]
   },
-  "ANALYTICS_WEBHOOK": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf"
+  "SYNC_URL": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf"
 }

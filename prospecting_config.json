@@ -32,7 +32,7 @@
   "WEBHOOK_ENABLED": true,
   "WEBHOOK_URL": "",
   "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
-  "WEBHOOK_USER": "Tedtheidot",
+  "WEBHOOK_USER": "",
   "WEBHOOK_STATS_MIN": 10,
   "AUTOSTOP_ENABLED": false,
   "AUTOSTOP_MINUTES": 60,
@@ -216,5 +216,5 @@
   "HYPER_S_LEAD_MS": 0,
   "SHAKE_GLITCH_LIMIT": 2,
   "NO_PROGRESS_SEC": 5,
-  "ANALYTICS_WEBHOOK": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf"
+  "SYNC_URL": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf"
 }
