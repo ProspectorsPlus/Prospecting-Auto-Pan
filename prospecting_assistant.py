@@ -927,20 +927,46 @@ def system_prompt(ctx):
 
 
 def parse_json(text):
-    """Pull the JSON object out of a model reply (tolerating code fences/prose)."""
+    """Pull the FIRST complete JSON object out of a model reply, tolerating code
+    fences, leading prose, or several objects concatenated together (which broke
+    the old first-{ .. last-} approach and leaked raw JSON into the chat)."""
     if not text:
         return None
+    import json as _json
     t = text.strip()
     if "```" in t:
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", t, re.S)
         if m:
             t = m.group(1)
-    a, b = t.find("{"), t.rfind("}")
-    if a == -1 or b == -1 or b <= a:
+    start = t.find("{")
+    if start == -1:
         return None
-    import json as _json
+    depth = 0
+    instr = False
+    esc = False
+    for i in range(start, len(t)):
+        ch = t[i]
+        if instr:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                instr = False
+        else:
+            if ch == '"':
+                instr = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return _json.loads(t[start:i + 1])
+                    except Exception:
+                        return None
     try:
-        return _json.loads(t[a:b + 1])
+        return _json.loads(t[start:])
     except Exception:
         return None
 

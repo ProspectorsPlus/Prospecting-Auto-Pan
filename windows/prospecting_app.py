@@ -564,6 +564,23 @@ class Api:
             json.dump(s, f, indent=2)
         return self.coach_settings()
 
+    def coach_history(self):
+        """Saved Coach chat transcript (list of {role, text/reply/changes/chips})."""
+        path = os.path.join(os.path.dirname(CONFIG_FILE), "coach_history.json")
+        data = _read_json(path, [])
+        return data if isinstance(data, list) else []
+
+    def save_coach_history(self, messages):
+        """Persist the chat transcript so it survives restarts (cap the size)."""
+        path = os.path.join(os.path.dirname(CONFIG_FILE), "coach_history.json")
+        try:
+            msgs = messages if isinstance(messages, list) else []
+            with open(path, "w") as f:
+                json.dump(msgs[-120:], f, indent=2)
+        except Exception:
+            pass
+        return True
+
     def _coach_api(self, message, ctx, convo):
         """Call the user's chosen LLM with their own key. Supports Anthropic and
         any OpenAI-compatible endpoint (OpenAI, Gemini, DeepSeek, local Ollama).
@@ -1745,42 +1762,52 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   transition:border-color .15s,color .15s}
  .chip:hover{border-color:var(--line2);color:var(--txt)}
  .content{flex:1;overflow-y:auto;padding:28px 32px}
- /* ---- Coach (offline tuning assistant) ---- */
- .coach{flex:0 0 340px;display:none;flex-direction:column;min-height:0;background:var(--bg2);border-left:1px solid var(--line)}
+ /* ---- Coach (tuning assistant) ---- */
+ .coach{flex:0 0 360px;display:none;flex-direction:column;min-height:0;background:var(--bg2);border-left:1px solid var(--line);position:relative}
  body.coach-on .coach{display:flex}
+ body.coach-expand .coach{position:fixed;left:0;right:0;bottom:0;top:53px;z-index:60;flex:none;border-left:0;box-shadow:0 0 40px rgba(0,0,0,.4)}
  #coachtoggle.on{background:var(--accent);color:#241a02}
- .coach-head{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:14px 14px 11px;border-bottom:1px solid var(--line)}
- .coach-head .ic{color:var(--accent-lit);display:flex} .coach-head .ic svg{width:20px;height:20px}
+ .coach-head{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:12px 10px 11px 14px;border-bottom:1px solid var(--line)}
+ .coach-mark{color:var(--accent-lit);font-size:15px;line-height:1;flex:0 0 auto}
+ .coach-titlewrap{min-width:0;flex:1}
  .coach-title{font-weight:700;font-size:14px;line-height:1.1}
- .coach-sub{display:block;font-weight:600;font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-top:2px}
- .coach-x{margin-left:auto;background:#2a2418;color:#e9e0cf;border:0;border-radius:8px;width:28px;height:28px;cursor:pointer;font-size:13px}
- .coach-x:hover{background:#352d1c}
- .coach-msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px}
- .cmsg{font-size:13px;line-height:1.5;word-wrap:break-word}
- .cmsg.user{align-self:flex-end;background:var(--accent);color:#241a02;padding:8px 12px;border-radius:13px 13px 4px 13px;max-width:86%;font-weight:500}
- .cmsg.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line);color:var(--txt);padding:10px 13px;border-radius:13px 13px 13px 4px;max-width:92%}
- .cmsg.bot b{color:var(--accent-lit)} .cmsg.bot i{color:var(--mut)}
+ .coach-sub{display:block;font-weight:600;font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .coach-hbtns{display:flex;gap:2px;flex:0 0 auto}
+ .coach-hbtns button{background:transparent;color:var(--mut);border:0;border-radius:7px;width:28px;height:28px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;padding:0;line-height:1}
+ .coach-hbtns button:hover{background:#2a2418;color:var(--txt)}
+ body.coach-expand #coachexpand{background:var(--accent);color:#241a02}
+ .coach-msgs{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:12px;width:100%;box-sizing:border-box}
+ body.coach-expand .coach-msgs{padding:22px 16px}
+ body.coach-expand .coach-msgs,body.coach-expand .coach-chips,body.coach-expand .coach-input,body.coach-expand .coach-cfg{max-width:840px;margin-left:auto;margin-right:auto}
+ .cmsg{font-size:13.5px;line-height:1.55;max-width:100%;word-wrap:break-word;overflow-wrap:anywhere}
+ .cmsg.user{align-self:flex-end;background:var(--accent);color:#241a02;padding:9px 13px;border-radius:14px 14px 4px 14px;max-width:85%;font-weight:500}
+ .cmsg.bot{align-self:flex-start;background:var(--panel);border:1px solid var(--line);color:var(--txt);padding:11px 14px;border-radius:14px 14px 14px 4px;max-width:90%}
+ .cmsg.bot b{color:var(--accent-lit);font-weight:600} .cmsg.bot i{color:var(--mut);font-style:normal}
  .cmsg.bot code{background:#15140f;padding:1px 5px;border-radius:4px;font-size:12px;font-family:ui-monospace,Menlo,monospace}
- .cdiff{margin-top:11px;border:1px solid var(--line2);border-radius:10px;overflow:hidden}
- .cdiff-row{padding:8px 11px 3px} .cdiff-row+.cdiff-row{border-top:1px solid var(--line);margin-top:3px;padding-top:8px}
- .cdiff-top{display:flex;align-items:center;gap:8px;font-size:12px}
- .cdiff-k{flex:1;color:var(--mut)} .cdiff-v{font-variant:tabular-nums;font-weight:700;white-space:nowrap}
+ .cmsg.typing{color:var(--dim);font-style:italic;animation:cpulse 1.2s ease-in-out infinite}
+ @keyframes cpulse{0%,100%{opacity:.55}50%{opacity:1}}
+ .cdiff{margin-top:11px;border:1px solid var(--line2);border-radius:11px;overflow:hidden;background:#1b1a17}
+ .cdiff-h{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent-lit);font-weight:700;padding:9px 12px 2px}
+ .cdiff-row{padding:5px 12px} .cdiff-row+.cdiff-row{border-top:1px solid var(--line)}
+ .cdiff-top{display:flex;align-items:baseline;gap:8px;font-size:12.5px}
+ .cdiff-k{flex:1;color:var(--txt);min-width:0;word-wrap:break-word} .cdiff-v{font-variant:tabular-nums;font-weight:700;white-space:nowrap;flex:0 0 auto}
  .cdiff-v s{color:var(--dim);text-decoration:none;margin-right:6px} .cdiff-v b{color:var(--teal-lit)}
- .cdiff-why{font-size:11px;color:var(--dim);margin-top:3px;line-height:1.4}
- .cdiff-act{display:flex;gap:8px;padding:10px 11px;background:#1c1b18;margin-top:5px}
- .cdiff-act button{flex:1;border:0;border-radius:8px;padding:8px;font-weight:700;cursor:pointer;font-size:12px}
- .capply{background:var(--accent2);color:#14260f} .capply:hover{filter:brightness(1.07)}
+ .cdiff-why{font-size:11px;color:var(--mut);margin-top:2px;line-height:1.4}
+ .cdiff-act{display:flex;gap:8px;padding:10px 12px;background:#161512;margin-top:4px}
+ .cdiff-act button{flex:1;border:0;border-radius:8px;padding:9px;font-weight:700;cursor:pointer;font-size:12.5px}
+ .capply{background:var(--accent2);color:#14260f} .capply:hover{filter:brightness(1.08)}
  .cdismiss{background:#2a2418;color:#cdbfa5} .cdismiss:hover{background:#352d1c}
- .cdiff.done{opacity:.55} .cdiff.done .cdiff-act{display:none}
- .cdiff-state{font-size:11px;color:var(--accent2);padding:8px 11px;display:none} .cdiff.done .cdiff-state{display:block}
- .coach-chips{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 10px}
+ .cdiff.done{opacity:.7} .cdiff.done .cdiff-act{display:none}
+ .cdiff-state{font-size:11px;font-weight:700;padding:9px 12px;display:none}
+ .cdiff.applied .cdiff-state.ok{display:block;color:var(--accent2)} .cdiff.skipped .cdiff-state.no{display:block;color:var(--dim)}
+ .coach-chips{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:6px;padding:0 14px 10px;width:100%;box-sizing:border-box}
  .cchip{background:#2a2418;color:#d8cdb3;border:1px solid var(--line2);border-radius:14px;padding:5px 11px;font-size:11.5px;cursor:pointer}
  .cchip:hover{background:#352d1c;color:#fff}
- .coach-input{flex:0 0 auto;display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line)}
- .coach-input textarea{flex:1;resize:none;background:var(--panel);border:1px solid var(--line2);border-radius:10px;color:var(--txt);padding:9px 11px;font:inherit;font-size:13px;max-height:120px;line-height:1.4}
- .coach-input textarea:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.2)}
- .coach-input button{background:var(--accent);color:#241a02;border:0;border-radius:10px;padding:0 15px;font-weight:700;cursor:pointer}
- .coach-input button:hover{filter:brightness(1.06)}
+ .coach-input{flex:0 0 auto;display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line);width:100%;box-sizing:border-box}
+ .coach-input textarea{flex:1;resize:none;background:var(--panel);border:1px solid var(--line2);border-radius:11px;color:var(--txt);padding:10px 12px;font:inherit;font-size:13.5px;max-height:140px;line-height:1.4}
+ .coach-input textarea:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.18)}
+ .coach-input button{background:var(--accent);color:#241a02;border:0;border-radius:11px;padding:0 16px;font-weight:700;cursor:pointer}
+ .coach-input button:hover{filter:brightness(1.06)} .coach-input button:disabled{opacity:.5;cursor:default}
  .cstats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:11px}
  .cstats label{display:flex;flex-direction:column;font-size:10px;color:var(--mut);gap:3px;text-transform:uppercase;letter-spacing:.04em}
  .cstats input{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:7px 8px;font:inherit;font-size:13px}
@@ -2013,10 +2040,14 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <div class="content">{{PANELS}}</div>
    <aside class="coach" id="coach">
      <div class="coach-head">
-       <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.8 2 .2.0M5 16l.7 1.7"/></svg></span>
-       <div><div class="coach-title">Coach</div><span class="coach-sub" id="coachsub">offline tuning assistant</span></div>
-       <button class="coach-x" id="coachcfg" title="Coach settings (offline / API)">⚙</button>
-       <button class="coach-x" id="coachclose" title="Close">✕</button>
+       <span class="coach-mark">✦</span>
+       <div class="coach-titlewrap"><div class="coach-title">Coach</div><span class="coach-sub" id="coachsub">offline</span></div>
+       <div class="coach-hbtns">
+         <button id="coachnew" title="New chat">⊕</button>
+         <button id="coachcfg" title="Settings (offline / API)">⚙</button>
+         <button id="coachexpand" title="Expand / collapse">⤢</button>
+         <button id="coachclose" title="Close">✕</button>
+       </div>
      </div>
      <div class="coach-cfg" id="coachcfgpanel">
        <div class="ccfg-field"><span class="ccfg-lab">Engine</span>
@@ -2331,22 +2362,36 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const body=document.body, tgl=document.getElementById('coachtoggle'),
      clo=document.getElementById('coachclose'), msgs=document.getElementById('coachmsgs'),
      chipsEl=document.getElementById('coachchips'), inp=document.getElementById('coachin'),
-     sendBtn=document.getElementById('coachsend');
+     sendBtn=document.getElementById('coachsend'),
+     newBtn=document.getElementById('coachnew'), expBtn=document.getElementById('coachexpand');
    if(!tgl||!msgs) return;
-   let prevTopic='', greeted=false, convo=[];
+   let prevTopic='', greeted=false, sending=false, hist=[];
    const capi=()=>window.pywebview&&window.pywebview.api;
    const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
    function md(s){s=esc(s);
-     s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>');
-     s=s.replace(/`([^`]+?)`/g,'<code>$1</code>');
-     s=s.replace(/(^|[^*])\*(?!\*)([^*]+?)\*(?!\*)/g,'$1<i>$2</i>');
+     s=s.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+?)`/g,'<code>$1</code>');
+     s=s.replace(/(^|[^*])\*(?!\*)([^*\n]+?)\*(?!\*)/g,'$1<i>$2</i>');
+     s=s.replace(/^\s*[-•]\s+/gm,'• ');
      return s.replace(/\n/g,'<br>');}
    const scroll=()=>{msgs.scrollTop=msgs.scrollHeight;};
    const fmtVal=v=>(typeof v==='boolean')?(v?'on':'off'):v;
+   function persist(){try{capi().save_coach_history(hist);}catch(e){}}
    function addUser(t){const d=document.createElement('div');d.className='cmsg user';d.textContent=t;msgs.appendChild(d);scroll();}
-   function diffHTML(ch){
-     const rows=ch.map(c=>`<div class="cdiff-row"><div class="cdiff-top"><span class="cdiff-k">${esc(c.label||c.key)}</span><span class="cdiff-v"><s>${esc(fmtVal(c.from))}</s><b>${esc(fmtVal(c.to))}</b></span></div><div class="cdiff-why">${esc(c.reason||'')}</div></div>`).join('');
-     return `<div class="cdiff"><div class="cdiff-state">&#10003; Applied</div>${rows}<div class="cdiff-act"><button class="capply">Apply ${ch.length} change${ch.length>1?'s':''}</button><button class="cdismiss">Dismiss</button></div></div>`;
+   function diffCard(ch, live){
+     const wrap=document.createElement('div');wrap.className='cdiff'+(live?'':' done');
+     const rows=ch.map(c=>`<div class="cdiff-row"><div class="cdiff-top"><span class="cdiff-k">${esc(c.label||c.key)}</span><span class="cdiff-v"><s>${esc(fmtVal(c.from))}</s><b>${esc(fmtVal(c.to))}</b></span></div>${c.reason?('<div class="cdiff-why">'+esc(c.reason)+'</div>'):''}</div>`).join('');
+     wrap.innerHTML='<div class="cdiff-h">Suggested change'+(ch.length>1?'s':'')+'</div>'+rows
+       +'<div class="cdiff-state ok">✓ Applied — press Save settings to keep</div><div class="cdiff-state no">Not applied</div>'
+       +(live?('<div class="cdiff-act"><button class="capply">Implement '+ch.length+' change'+(ch.length>1?'s':'')+'</button><button class="cdismiss">Don’t apply</button></div>'):'');
+     if(live){
+       wrap.querySelector('.capply').onclick=async()=>{
+         let r={};try{r=await capi().assistant_apply(ch);}catch(e){r={};}
+         wrap.classList.add('done','applied');
+         if(r&&r.values&&window.setVals)setVals(r.values);
+         if(window.toast)toast('Applied '+((r&&r.applied)||ch.length)+' change(s)');};
+       wrap.querySelector('.cdismiss').onclick=()=>wrap.classList.add('done','skipped');
+     }
+     return wrap;
    }
    function statsForm(){
      const fields=[['capacity','Capacity'],['dig_strength','Dig strength'],['dig_speed','Dig speed %'],['shake_strength','Shake strength'],['shake_speed','Shake speed'],['luck','Luck'],['walk_speed','Walk speed']];
@@ -2355,46 +2400,47 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      f.querySelector('.cgo').onclick=()=>{
        const st={};f.querySelectorAll('input[data-st]').forEach(i=>{const v=parseFloat(i.value);if(!isNaN(v))st[i.dataset.st]=v;});
        if(!Object.keys(st).length){if(window.toast)toast('Enter at least your capacity & dig strength');return;}
-       addUser('My stats: '+Object.entries(st).map(e=>e[0]+'='+e[1]).join(', '));
-       ask('analyze my stats and make it faster', st);
-     };
+       const lbl='My stats: '+Object.entries(st).map(e=>e[0]+'='+e[1]).join(', ');
+       addUser(lbl);hist.push({role:'user',text:lbl});persist();ask('analyze my stats and make it faster', st);};
      return f;
    }
-   function addBot(res){
+   function addBot(res, live){
      const d=document.createElement('div');d.className='cmsg bot';d.innerHTML=md(res.reply||'');
-     if(res.changes&&res.changes.length){
-       const wrap=document.createElement('div');wrap.innerHTML=diffHTML(res.changes);
-       const card=wrap.firstElementChild;
-       card.querySelector('.capply').onclick=async()=>{
-         let r={};try{r=await capi().assistant_apply(res.changes);}catch(e){r={};}
-         card.classList.add('done');
-         if(r&&r.values&&window.setVals)setVals(r.values);
-         if(window.toast)toast('Applied '+((r&&r.applied)||res.changes.length)+' change(s) — Save settings to keep');
-       };
-       card.querySelector('.cdismiss').onclick=()=>card.remove();
-       d.appendChild(card);
-     }
-     if(res.askStats)d.appendChild(statsForm());
+     if(res.changes&&res.changes.length)d.appendChild(diffCard(res.changes, live!==false));
+     if(res.askStats&&live!==false)d.appendChild(statsForm());
      msgs.appendChild(d);scroll();
-     setChips(res.chips||[]);
+     if(live!==false)setChips(res.chips||[]);
    }
    function setChips(ch){chipsEl.innerHTML='';(ch||[]).forEach(c=>{const b=document.createElement('button');b.className='cchip';b.textContent=c;b.onclick=()=>{inp.value=c;doSend();};chipsEl.appendChild(b);});}
+   function buildConvo(){const out=[];hist.slice(-14).forEach(t=>{if(t.role==='user')out.push({role:'user',text:t.text});else if(t.role==='bot'&&t.reply)out.push({role:'assistant',text:t.reply});});return out;}
    async function ask(text,stats){
-     let res;try{res=await capi().assistant_chat(text, prevTopic, stats||null, convo.slice(-10));}catch(e){res={reply:'I could not reach the engine — try reopening the app.',changes:[],chips:[]};}
+     sending=true;if(sendBtn)sendBtn.disabled=true;
+     const typing=document.createElement('div');typing.className='cmsg bot typing';typing.textContent='Coach is thinking…';msgs.appendChild(typing);scroll();
+     let res;try{res=await capi().assistant_chat(text, prevTopic, stats||null, buildConvo());}catch(e){res={reply:'I could not reach the engine — try reopening the app.',changes:[],chips:[]};}
+     typing.remove();sending=false;if(sendBtn)sendBtn.disabled=false;
      prevTopic=(res&&res.topic)||'';
-     convo.push({role:'user',text:text});
-     if(res&&res.reply)convo.push({role:'assistant',text:res.reply});
-     addBot(res||{reply:'(no response)'});
+     addBot(res||{reply:'(no response)'}, true);
+     hist.push({role:'bot',reply:(res&&res.reply)||'',changes:(res&&res.changes)||[],chips:(res&&res.chips)||[]});persist();
    }
-   function doSend(){const t=(inp.value||'').trim();if(!t)return;addUser(t);inp.value='';inp.style.height='auto';ask(t);}
+   function doSend(){const t=(inp.value||'').trim();if(!t||sending)return;
+     addUser(t);hist.push({role:'user',text:t});persist();
+     inp.value='';inp.style.height='auto';ask(t);}
    sendBtn.onclick=doSend;
    inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doSend();}});
-   inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(120,inp.scrollHeight)+'px';});
-   function greet(){if(!greeted){greeted=true;ask('hello');}}
+   inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(140,inp.scrollHeight)+'px';});
+   function greet(){if(greeted)return;greeted=true;
+     (async()=>{let h=[];try{h=await capi().coach_history();}catch(e){}
+       if(Array.isArray(h)&&h.length){hist=h;
+         h.forEach(t=>{if(t.role==='user')addUser(t.text);else if(t.role==='bot')addBot({reply:t.reply,changes:t.changes,chips:t.chips},false);});
+         const lb=[...h].reverse().find(t=>t.role==='bot');setChips((lb&&lb.chips)||[]);scroll();
+       }else{ask('hello');}})();}
+   function newChat(){hist=[];msgs.innerHTML='';chipsEl.innerHTML='';persist();greeted=true;ask('hello');if(inp)inp.focus();}
    function openCoach(){body.classList.add('coach-on');tgl.classList.add('on');greet();setTimeout(()=>inp.focus(),60);}
-   function closeCoach(){body.classList.remove('coach-on');tgl.classList.remove('on');}
+   function closeCoach(){body.classList.remove('coach-on');body.classList.remove('coach-expand');tgl.classList.remove('on');}
    tgl.onclick=()=>{body.classList.contains('coach-on')?closeCoach():openCoach();};
    if(clo)clo.onclick=closeCoach;
+   if(newBtn)newBtn.onclick=newChat;
+   if(expBtn)expBtn.onclick=()=>{body.classList.toggle('coach-expand');setTimeout(scroll,30);if(inp)inp.focus();};
    // ---- Coach settings (offline / API) ----
    const sub=document.getElementById('coachsub'), cfgBtn=document.getElementById('coachcfg'),
      provSel=document.getElementById('cprovider'), modelSel=document.getElementById('cmodelsel'),
