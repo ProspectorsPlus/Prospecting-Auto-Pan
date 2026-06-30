@@ -1630,7 +1630,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .chip:hover{border-color:var(--line2);color:var(--txt)}
  .content{flex:1;overflow-y:auto;padding:28px 32px}
  /* ---- Coach (offline tuning assistant) ---- */
- .coach{flex:0 0 340px;display:none;flex-direction:column;min-height:0;background:var(--bg2);border-right:1px solid var(--line)}
+ .coach{flex:0 0 340px;display:none;flex-direction:column;min-height:0;background:var(--bg2);border-left:1px solid var(--line)}
  body.coach-on .coach{display:flex}
  #coachtoggle.on{background:var(--accent);color:#241a02}
  .coach-head{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:14px 14px 11px;border-bottom:1px solid var(--line)}
@@ -1870,6 +1870,17 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <button class="btn" id="savebtn">Save settings</button>
  </div>
  <div class="body">
+   <nav class="side">
+     {{NAV}}
+     <div class="navsep"></div>
+     <div class="pretitle">Quick presets</div>
+     <button type="button" class="chip" id="pv1">v1 · fast 1-dig</button>
+     <button type="button" class="chip" id="pv2">v2 · multi-dig</button>
+     <button type="button" class="chip" id="pdef">Reset defaults</button>
+     <div class="pretitle" style="margin-top:10px">My builds (full)</div>
+     <div id="buildchips"></div>
+   </nav>
+   <div class="content">{{PANELS}}</div>
    <aside class="coach" id="coach">
      <div class="coach-head">
        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.8 2 .2.0M5 16l.7 1.7"/></svg></span>
@@ -1883,17 +1894,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        <button id="coachsend">Send</button>
      </div>
    </aside>
-   <nav class="side">
-     {{NAV}}
-     <div class="navsep"></div>
-     <div class="pretitle">Quick presets</div>
-     <button type="button" class="chip" id="pv1">v1 · fast 1-dig</button>
-     <button type="button" class="chip" id="pv2">v2 · multi-dig</button>
-     <button type="button" class="chip" id="pdef">Reset defaults</button>
-     <div class="pretitle" style="margin-top:10px">My builds (full)</div>
-     <div id="buildchips"></div>
-   </nav>
-   <div class="content">{{PANELS}}</div>
  </div>
  <div class="ok" id="toast"></div>
 <script>
@@ -2259,8 +2259,8 @@ def main():
         return
     api = Api()
     _window = webview.create_window("Prospectors Plus", html=build_html(),
-                                    js_api=api, width=980, height=880,
-                                    min_size=(860, 660))
+                                    js_api=api, width=1340, height=900,
+                                    min_size=(980, 680))
     global _pill, _overlay
     try:
         import ctypes as _ct
