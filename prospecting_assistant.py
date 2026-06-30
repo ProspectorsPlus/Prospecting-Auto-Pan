@@ -847,3 +847,120 @@ def _wrap(reply, changes, topic, chips, ask_stats=False):
 # validate an apply request.
 def allowed_keys():
     return set(k for k in _TYPES if k not in ("WEBHOOK_USER",))
+
+
+# --------------------------------------------------------------------------- #
+#  OPTIONAL: Claude API mode.                                                  #
+#  The offline brain above is the default. If the user switches to API mode    #
+#  and supplies their own key, the app calls Claude with this system prompt    #
+#  and feeds the JSON reply back through finalize_api() -- so the chat UI,      #
+#  the change-diff cards, the one-click apply and the schema validation are     #
+#  all IDENTICAL to offline mode. The model can only ever PROPOSE setting keys; #
+#  it never sees or touches code, and every change is re-validated on apply.   #
+# --------------------------------------------------------------------------- #
+def system_prompt(ctx):
+    ctx = ctx or {}
+    s = dict(ctx.get("settings") or {})
+    stats = ctx.get("stats") or {}
+    builds = ctx.get("builds") or {}
+    hist = ctx.get("history") or []
+    lines = [
+        "You are Coach, a tuning assistant built into the Prospectors Plus macro "
+        "(a Roblox auto-pan tool). You help the user fix problems and improve "
+        "efficiency by adjusting SETTINGS only. You cannot change code, and you must "
+        "never propose calibration pixels or the Discord username.",
+        "",
+        "Respond with EXACTLY ONE JSON object and no other text:",
+        '{"reply": "<short friendly markdown>", '
+        '"changes": [{"key":"EXACT_SETTING_KEY","to":<number|true|false>,"reason":"<short why>"}], '
+        '"chips": ["<short follow-up suggestion>", "..."]}',
+        "",
+        "Rules:",
+        "- Only use keys from the SETTINGS list below. Match the type (int or bool) and "
+        "keep numbers within the given [min..max].",
+        "- Be conservative and relative to the CURRENT value. Only include settings you "
+        "actually want to change; use an empty changes list for questions or chit-chat.",
+        "- Prefer the smallest change that fixes the issue. Explain briefly in each reason.",
+        "- For efficiency, use the FORMULAS. Treat computed timings as estimates.",
+        "- Never invent keys. Never output anything outside the JSON object.",
+        "",
+        "SETTINGS (key | type | range | current | what it does):",
+    ]
+    for key in _TYPES:
+        if key in ("WEBHOOK_USER",):
+            continue
+        t = _TYPES[key]
+        lo, hi, _ = RANGES.get(key, (None, None, 1))
+        rng = "%s..%s" % (lo, hi) if lo is not None else ("true/false" if t == "bool" else "-")
+        cur = s.get(key, _DEFAULTS.get(key))
+        helptxt = (_HELP.get(key, "") or "").replace("\n", " ")
+        if len(helptxt) > 180:
+            helptxt = helptxt[:177] + "..."
+        lines.append("- %s | %s | %s | now=%s | %s" % (key, t, rng, cur, helptxt))
+    lines += [
+        "",
+        "FORMULAS (for efficiency estimates):",
+        "- rolls/sec r = 4.03266e-9*ss^3 - 1.68935e-5*ss^2 + 0.0255557*ss + 0.206594  (ss = shake speed stat)",
+        "- digs to fill n = ceil(Capacity / (1.5 * DigStrength))",
+        "- dig hold ms = 55000 / DigSpeed%   ;   per-dig seconds = 190 / DigSpeed%",
+        "- cycle seconds = Capacity/(r*ShakeStrength) + 1.5 + 190*n/DigSpeed% + 0.62  (0.62 = measured overhead)",
+        "- pans/hr = 3600 / cycle seconds",
+    ]
+    if stats:
+        lines.append("")
+        lines.append("USER STATS: " + ", ".join("%s=%s" % (k, v) for k, v in stats.items()))
+    if builds:
+        lines.append("")
+        lines.append("SAVED BUILDS: " + ", ".join(list(builds.keys())[:20]))
+    htxt, _ = _history_summary(hist)
+    if htxt:
+        lines.append("")
+        lines.append("RECENT RUNS: " + re.sub(r"\*\*", "", htxt))
+    return "\n".join(lines)
+
+
+def parse_json(text):
+    """Pull the JSON object out of a model reply (tolerating code fences/prose)."""
+    if not text:
+        return None
+    t = text.strip()
+    if "```" in t:
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", t, re.S)
+        if m:
+            t = m.group(1)
+    a, b = t.find("{"), t.rfind("}")
+    if a == -1 or b == -1 or b <= a:
+        return None
+    import json as _json
+    try:
+        return _json.loads(t[a:b + 1])
+    except Exception:
+        return None
+
+
+def finalize_api(obj, settings):
+    """Normalize a model JSON object into the same shape respond() returns,
+    validating + clamping every proposed change against the schema."""
+    s = dict(settings or {})
+    reply = (obj.get("reply") if isinstance(obj, dict) else "") or ""
+    chips = (obj.get("chips") if isinstance(obj, dict) else None) or []
+    raw = (obj.get("changes") if isinstance(obj, dict) else None) or []
+    changes = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        k = c.get("key")
+        if k not in _TYPES or k == "WEBHOOK_USER":
+            continue
+        to = c.get("to")
+        t = _TYPES[k]
+        if t == "int":
+            try:
+                to = float(to)
+            except (TypeError, ValueError):
+                continue
+        elif t == "bool":
+            to = to in (True, "true", "True", 1, "1", "on", "yes")
+        _set(changes, s, k, to, c.get("reason") or "suggested")
+    return {"reply": reply, "changes": changes, "topic": "api",
+            "askStats": False, "chips": chips or DEFAULT_CHIPS}

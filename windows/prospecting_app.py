@@ -540,8 +540,87 @@ class Api:
             "stats": stats or saved.get("COACH_STATS", {}) or {},
         }
 
-    def assistant_chat(self, message, prev_topic="", stats=None):
-        """Return the assistant's reply + proposed changes for a user message."""
+    def coach_settings(self):
+        """Current Coach mode for the UI. Never returns the API key itself."""
+        s = load_saved()
+        return {"mode": "api" if s.get("COACH_MODE") == "api" else "offline",
+                "model": s.get("COACH_MODEL", "claude-sonnet-4-6"),
+                "has_key": bool((s.get("COACH_API_KEY") or "").strip())}
+
+    def save_coach_settings(self, mode="offline", key=None, model=None):
+        """Persist Coach mode/model/key. key=None leaves it; key='__CLEAR__' wipes it."""
+        s = load_saved()
+        s["COACH_MODE"] = "api" if mode == "api" else "offline"
+        if model is not None:
+            s["COACH_MODEL"] = (model or "").strip() or "claude-sonnet-4-6"
+        if key == "__CLEAR__":
+            s["COACH_API_KEY"] = ""
+        elif key:
+            s["COACH_API_KEY"] = key.strip()
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(s, f, indent=2)
+        return self.coach_settings()
+
+    def _coach_api(self, message, ctx, convo):
+        """Call Claude with the user's own API key. Returns a normalized reply
+        dict, or None to signal 'no key -> fall back to the offline brain'."""
+        saved = load_saved()
+        key = (saved.get("COACH_API_KEY") or "").strip()
+        if not key:
+            return None
+        model = (saved.get("COACH_MODEL") or "claude-sonnet-4-6").strip() or "claude-sonnet-4-6"
+        msgs = []
+        for m in (convo or []):
+            role = m.get("role"); txt = (m.get("text") or m.get("content") or "")
+            if role in ("user", "assistant") and txt:
+                msgs.append({"role": role, "content": txt})
+        msgs.append({"role": "user", "content": message or ""})
+        body = json.dumps({"model": model, "max_tokens": 1024,
+                           "system": _coach.system_prompt(ctx), "messages": msgs}).encode()
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages", data=body, method="POST",
+            headers={"content-type": "application/json", "x-api-key": key,
+                     "anthropic-version": "2023-06-01"})
+
+        def _do(ctxssl=None):
+            with urllib.request.urlopen(req, timeout=40, context=ctxssl) as r:
+                return json.loads(r.read().decode("utf-8", "replace"))
+        try:
+            data = _do()
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = json.loads(e.read().decode()).get("error", {}).get("message", "")
+            except Exception:
+                pass
+            hint = ""
+            if e.code == 401:
+                hint = " — that API key was rejected. Check it in Coach settings (⚙)."
+            elif e.code == 404:
+                hint = " — that model name isn't available on your key. Try another in ⚙."
+            elif e.code == 429:
+                hint = " — rate/credit limit hit on your Anthropic account."
+            return {"reply": "Claude API error %d%s %s" % (e.code, hint, detail),
+                    "changes": [], "topic": "api", "askStats": False, "chips": []}
+        except Exception:
+            try:
+                import ssl as _ssl
+                data = _do(_ssl._create_unverified_context())
+            except Exception as e2:
+                return {"reply": "Couldn't reach the Claude API (%s). You can switch back "
+                                 "to the offline brain in Coach settings (⚙)." % e2,
+                        "changes": [], "topic": "api", "askStats": False, "chips": []}
+        txt = "".join(b.get("text", "") for b in data.get("content", [])
+                      if isinstance(b, dict) and b.get("type") == "text")
+        obj = _coach.parse_json(txt)
+        if obj is None:
+            return {"reply": txt or "(no reply from Claude)", "changes": [],
+                    "topic": "api", "askStats": False, "chips": []}
+        return _coach.finalize_api(obj, ctx.get("settings") or {})
+
+    def assistant_chat(self, message, prev_topic="", stats=None, convo=None):
+        """Return the assistant's reply + proposed changes for a user message.
+        Uses the offline brain by default; Claude API if the user enabled it."""
         if _coach is None:
             return {"reply": "The tuning coach module didn't load on this install. "
                              "Everything else still works — you can tune settings "
@@ -557,6 +636,14 @@ class Api:
                 pass
         ctx = self._coach_context(stats)
         ctx["prev_topic"] = prev_topic or ""
+        if load_saved().get("COACH_MODE") == "api":
+            try:
+                res = self._coach_api(message or "", ctx, convo)
+            except Exception as e:
+                res = {"reply": "API mode error (%s) — using the offline brain." % e,
+                       "changes": [], "topic": "", "askStats": False, "chips": []}
+            if res is not None:                # None means: no key set -> fall through
+                return res
         try:
             return _coach.respond(message or "", ctx)
         except Exception as e:
@@ -1670,6 +1757,17 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .cstats input{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:7px 8px;font:inherit;font-size:13px}
  .cstats input:focus{outline:0;border-color:var(--accent)}
  .cstats .cgo{grid-column:1/3;background:var(--accent2);color:#14260f;border:0;border-radius:8px;padding:9px;font-weight:700;cursor:pointer;margin-top:2px}
+ .coach-cfg{display:none;flex-direction:column;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);background:#1c1b18}
+ body.coach-cfg-on .coach-cfg{display:flex}
+ .ccfg-opt{display:flex;align-items:flex-start;gap:9px;cursor:pointer;font-size:12px;padding:7px 9px;border:1px solid var(--line2);border-radius:9px}
+ .ccfg-opt input{margin-top:2px;accent-color:var(--accent)}
+ .ccfg-opt span{display:flex;flex-direction:column} .ccfg-opt b{color:var(--txt)} .ccfg-opt i{color:var(--dim);font-style:normal;font-size:11px;margin-top:1px}
+ .coach-cfg input[type=password],.coach-cfg input[type=text]{background:var(--bg2);border:1px solid var(--line2);border-radius:8px;color:var(--txt);padding:8px 10px;font:inherit;font-size:12px}
+ .coach-cfg input:focus{outline:0;border-color:var(--accent)}
+ .ccfg-act{display:flex;gap:8px}
+ .ccfg-save{flex:1;background:var(--accent2);color:#14260f;border:0;border-radius:8px;padding:8px;font-weight:700;cursor:pointer}
+ .ccfg-clear{background:#2a2418;color:#cdbfa5;border:0;border-radius:8px;padding:8px 11px;font-weight:700;cursor:pointer}
+ .ccfg-note{font-size:10.5px;color:var(--dim);line-height:1.45} .ccfg-note b{color:var(--mut)}
  .panel{display:none} .panel.active{display:block}
  .phead{margin:0 0 18px} .phead h2{margin:0;font-size:19px;font-weight:600;letter-spacing:-.01em} .chint{margin:5px 0 0;color:var(--mut);font-size:13px;max-width:620px}
  .rows{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:2px 18px;max-width:580px}
@@ -1884,8 +1982,17 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <aside class="coach" id="coach">
      <div class="coach-head">
        <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"/><path d="M19 14l.8 2 .2.0M5 16l.7 1.7"/></svg></span>
-       <div><div class="coach-title">Coach</div><span class="coach-sub">offline tuning assistant</span></div>
+       <div><div class="coach-title">Coach</div><span class="coach-sub" id="coachsub">offline tuning assistant</span></div>
+       <button class="coach-x" id="coachcfg" title="Coach settings (offline / API)">⚙</button>
        <button class="coach-x" id="coachclose" title="Close">✕</button>
+     </div>
+     <div class="coach-cfg" id="coachcfgpanel">
+       <label class="ccfg-opt"><input type="radio" name="cmode" value="offline"><span><b>Offline brain</b><i>Free · no internet · instant</i></span></label>
+       <label class="ccfg-opt"><input type="radio" name="cmode" value="api"><span><b>Claude API (your key)</b><i>Real conversation · ~a cent per message</i></span></label>
+       <input id="ckey" type="password" autocomplete="off" placeholder="sk-ant-api03-…  (saved on this PC only)">
+       <input id="cmodel" type="text" autocomplete="off" placeholder="claude-sonnet-4-6">
+       <div class="ccfg-act"><button class="ccfg-save" id="ccfgsave">Save</button><button class="ccfg-clear" id="ccfgclear">Clear key</button></div>
+       <div class="ccfg-note">API mode sends your message + current settings to Anthropic using <b>your own key</b> (get one at console.anthropic.com). The key stays on this computer. The offline brain needs nothing.</div>
      </div>
      <div class="coach-msgs" id="coachmsgs"></div>
      <div class="coach-chips" id="coachchips"></div>
@@ -2179,7 +2286,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      chipsEl=document.getElementById('coachchips'), inp=document.getElementById('coachin'),
      sendBtn=document.getElementById('coachsend');
    if(!tgl||!msgs) return;
-   let prevTopic='', greeted=false;
+   let prevTopic='', greeted=false, convo=[];
    const capi=()=>window.pywebview&&window.pywebview.api;
    const esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
    function md(s){s=esc(s);
@@ -2226,8 +2333,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    }
    function setChips(ch){chipsEl.innerHTML='';(ch||[]).forEach(c=>{const b=document.createElement('button');b.className='cchip';b.textContent=c;b.onclick=()=>{inp.value=c;doSend();};chipsEl.appendChild(b);});}
    async function ask(text,stats){
-     let res;try{res=await capi().assistant_chat(text, prevTopic, stats||null);}catch(e){res={reply:'I could not reach the local engine — try reopening the app.',changes:[],chips:[]};}
-     prevTopic=(res&&res.topic)||'';addBot(res||{reply:'(no response)'});
+     let res;try{res=await capi().assistant_chat(text, prevTopic, stats||null, convo.slice(-10));}catch(e){res={reply:'I could not reach the engine — try reopening the app.',changes:[],chips:[]};}
+     prevTopic=(res&&res.topic)||'';
+     convo.push({role:'user',text:text});
+     if(res&&res.reply)convo.push({role:'assistant',text:res.reply});
+     addBot(res||{reply:'(no response)'});
    }
    function doSend(){const t=(inp.value||'').trim();if(!t)return;addUser(t);inp.value='';inp.style.height='auto';ask(t);}
    sendBtn.onclick=doSend;
@@ -2238,10 +2348,34 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    function closeCoach(){body.classList.remove('coach-on');tgl.classList.remove('on');}
    tgl.onclick=()=>{body.classList.contains('coach-on')?closeCoach():openCoach();};
    if(clo)clo.onclick=closeCoach;
+   // ---- Coach settings (offline / API) ----
+   const sub=document.getElementById('coachsub'), cfgBtn=document.getElementById('coachcfg'),
+     cfgPanel=document.getElementById('coachcfgpanel'), keyIn=document.getElementById('ckey'),
+     modelIn=document.getElementById('cmodel');
+   function setSub(mode){if(sub)sub.textContent=(mode==='api')?'Claude API mode':'offline tuning assistant';}
+   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'claude-sonnet-4-6'};}
+     (document.querySelector('input[name=cmode][value="'+(c.mode||'offline')+'"]')||{}).checked=true;
+     if(modelIn)modelIn.value=c.model||'claude-sonnet-4-6';
+     if(keyIn)keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'sk-ant-api03-…  (saved on this PC only)';
+     setSub(c.mode);}
+   if(cfgBtn)cfgBtn.onclick=()=>{const on=body.classList.toggle('coach-cfg-on');if(on)loadCfg();};
+   const saveBtn=document.getElementById('ccfgsave'), clrBtn=document.getElementById('ccfgclear');
+   if(saveBtn)saveBtn.onclick=async()=>{
+     const mode=(document.querySelector('input[name=cmode]:checked')||{}).value||'offline';
+     const key=(keyIn&&keyIn.value.trim())?keyIn.value.trim():null;
+     const model=modelIn?modelIn.value.trim():'';
+     try{await capi().save_coach_settings(mode,key,model);}catch(e){}
+     if(keyIn)keyIn.value='';
+     setSub(mode);body.classList.remove('coach-cfg-on');
+     if(window.toast)toast(mode==='api'?'Coach: Claude API mode':'Coach: offline mode');};
+   if(clrBtn)clrBtn.onclick=async()=>{const model=modelIn?modelIn.value.trim():'';
+     try{await capi().save_coach_settings('offline','__CLEAR__',model);}catch(e){}
+     if(keyIn){keyIn.value='';}loadCfg();if(window.toast)toast('API key cleared');};
    // open by default (don't steal focus from the access-code gate)
    body.classList.add('coach-on');tgl.classList.add('on');
-   if(window.pywebview&&window.pywebview.api)greet();
-   else window.addEventListener('pywebviewready',greet);
+   function boot(){greet();loadCfg();}
+   if(window.pywebview&&window.pywebview.api)boot();
+   else window.addEventListener('pywebviewready',boot);
  })();
 </script></body></html>"""
 

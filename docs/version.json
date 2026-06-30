@@ -3,5 +3,5 @@
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": true,
-  "notes": "Coach \u2014 a built-in offline tuning assistant. Open it from the top bar (it opens automatically), describe any problem in plain English (\"it shakes late\", \"lands in water\", \"Fortune River keeps triggering\"), and it proposes exact setting changes you apply with one click. It can analyze your recent runs and compute your ideal cycle time from your stats. Also includes a critical recovery fix: a 0 recovery-threshold no longer causes an instant break-out / Fortune River loop. No account or internet needed."
+  "notes": "Coach \u2014 a built-in tuning assistant. It opens automatically on the right; describe any problem in plain English (\"it shakes late\", \"lands in water\", \"Fortune River keeps triggering\") and it proposes exact setting changes you apply with one click, analyzes your recent runs, and estimates your ideal cycle time from your stats. Runs fully offline by default, with an optional Claude API mode (bring your own key) for free-form conversation \u2014 switch in the Coach \u2699 menu. Also includes a critical recovery fix: a 0 recovery-threshold no longer causes an instant break-out / Fortune River loop."
 }
