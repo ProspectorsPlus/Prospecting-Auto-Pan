@@ -319,6 +319,9 @@ SHAKE_GLITCH_LIMIT = 2    # after THIS many failed shakes, immediately try a qui
                           # click-to-empty break-out (the game's shake-glitch often
                           # just didn't register; clicking is low-risk and usually
                           # fixes it). Much faster than waiting for SHAKE_FAIL_LIMIT.
+NO_PROGRESS_SEC    = 5    # if NOTHING works for this long (no pan emptied AND no dig
+                          # registering -- e.g. the shake-glitch leaves us walking
+                          # back and forth) -> quick click-to-empty break-out.
 # Shake bail is CAPACITY-based: give up on a shake only if the pan is STILL
 # COMPLETELY FULL after this long. A REAL shake has already drained to PARTIAL by
 # now (so it reads not-full and is safe from this bail) -- only a shake that never
@@ -1086,6 +1089,7 @@ class State:
     ad_land_dir = 1          # hill-climb direction for the land-reach knob
     ad_land_prev = None
     stats = None             # SessionStats while running
+    last_progress = 0.0      # perf_counter of the last real progress (pan emptied / dig hit)
     want_safe_stop = False   # manual soft-stop test keybind -> trip a safe stop
     detector = None          # live Detector (for Fortune River recovery)
     scale = 1.0              # screen scale (physical px / points) for cursor moves
@@ -1732,6 +1736,7 @@ def do_shake(det):
         State.water_fails = 0
         if State.stats:
             State.stats.cycles += 1      # a pan emptied = one completed cycle
+        State.last_progress = time.perf_counter()
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
@@ -1809,6 +1814,7 @@ def return_and_dig(det):
                 State.breakouts = 0          # healthy progress -> clear escalation
                 State.safe_retries = 0
                 log(f"    dig-probe HIT (round {rnd+1}.{t+1}) -> on land, filling")
+                State.last_progress = time.perf_counter()
                 _adapt_land(rnd > 0)         # needed nudges to land = a miss
                 fill_to_full(det)            # dig until FULL (dynamic # of digs)
                 return True
@@ -1972,6 +1978,7 @@ class Supervisor:
         State.breakouts = 0
         State.x_balance = 0.0
         State.no_full = 0
+        State.last_progress = time.perf_counter()
 
     def tick(self, det):
         if State.want_reset:           # fresh slate after a safe-pause
@@ -2007,6 +2014,25 @@ class Supervisor:
                 self.last_sig = None
                 return
             safe_stop(f"shake not emptying after {State.shake_fails} tries")
+            return
+        # NO-PROGRESS fast path: the shake-glitch can leave the macro THINKING all
+        # is well while it just walks back and forth (nothing actually completing).
+        # If nothing has worked (no pan emptied AND no dig registered) for
+        # NO_PROGRESS_SEC, do a quick click-to-empty break-out -- low risk, usually
+        # clears it. Safe-stop only if break-out keeps failing.
+        if (BREAKOUT_ENABLED and State.last_progress
+                and time.perf_counter() - State.last_progress > NO_PROGRESS_SEC):
+            State.breakouts += 1
+            log(f"** no progress for {NO_PROGRESS_SEC}s -> break-out #{State.breakouts} (click to empty) **")
+            if State.breakouts > BREAKOUT_LIMIT:
+                safe_stop("no progress -- stuck (shake glitch?)")
+                return
+            break_out(det, s)
+            State.last_progress = time.perf_counter()
+            State.shake_fails = 0
+            self.same = 0
+            self.recoveries = 0
+            self.last_sig = None
             return
         if self.same < STUCK_TICKS:
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
