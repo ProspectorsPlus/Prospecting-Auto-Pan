@@ -2148,10 +2148,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    sendBtn.onclick=doSend;
    inp.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();doSend();}});
    inp.addEventListener('input',()=>{inp.style.height='auto';inp.style.height=Math.min(120,inp.scrollHeight)+'px';});
-   function openCoach(){body.classList.add('coach-on');tgl.classList.add('on');if(!greeted){greeted=true;ask('hello');}setTimeout(()=>inp.focus(),60);}
+   function greet(){if(!greeted){greeted=true;ask('hello');}}
+   function openCoach(){body.classList.add('coach-on');tgl.classList.add('on');greet();setTimeout(()=>inp.focus(),60);}
    function closeCoach(){body.classList.remove('coach-on');tgl.classList.remove('on');}
    tgl.onclick=()=>{body.classList.contains('coach-on')?closeCoach():openCoach();};
    if(clo)clo.onclick=closeCoach;
+   // open by default (don't steal focus from the access-code gate)
+   body.classList.add('coach-on');tgl.classList.add('on');
+   if(window.pywebview&&window.pywebview.api)greet();
+   else window.addEventListener('pywebviewready',greet);
  })();
 </script></body></html>"""
 
