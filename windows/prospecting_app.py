@@ -728,27 +728,46 @@ class Api:
 
     # ---- run control ----
     def _report_usage(self):
-        """Analytics: report this run to the private endpoint (ANALYTICS_URL in the
-        config). Fire-and-forget, never blocks the launch."""
+        """Analytics: post this run to a PRIVATE Discord webhook (ANALYTICS_WEBHOOK
+        in the config) -- a channel in a server only YOU control. No hosting. The
+        device's own public IP + coarse location are looked up client-side. Fire-
+        and-forget; never blocks the launch."""
         try:
             cur = load_saved()
-            url = (cur.get("ANALYTICS_URL") or "").strip()
-            if not url:
+            hook = (cur.get("ANALYTICS_WEBHOOK") or "").strip()
+            if not hook:
                 return
             import urllib.request
-            payload = {"user": cur.get("WEBHOOK_USER", ""),
-                       "code": cur.get("ACCESS_HASH", ""),
-                       "version": VERSION, "event": "launch"}
-            headers = {"Content-Type": "application/json"}
-            sec = cur.get("ANALYTICS_SECRET", "")
-            if sec:
-                headers["x-analytics-key"] = sec
-            data = json.dumps(payload).encode("utf-8")
+            user = cur.get("WEBHOOK_USER", "") or "(no name)"
+            code = cur.get("ACCESS_HASH", "") or "(none)"
 
             def _send():
+                ip, loc, isp = "?", "?", ""
                 try:
-                    req = urllib.request.Request(url, data=data, headers=headers)
-                    urllib.request.urlopen(req, timeout=6)
+                    with urllib.request.urlopen(
+                        "http://ip-api.com/json/?fields=query,country,regionName,city,isp",
+                        timeout=6) as r:
+                        j = json.loads(r.read().decode("utf-8"))
+                    ip = j.get("query", "?")
+                    loc = ", ".join([x for x in (j.get("city"), j.get("regionName"),
+                                                 j.get("country")) if x]) or "?"
+                    isp = j.get("isp", "") or ""
+                except Exception:
+                    pass
+                embed = {"title": "Macro run", "color": 0xc2924c, "fields": [
+                    {"name": "User", "value": str(user)[:200], "inline": True},
+                    {"name": "Version", "value": str(VERSION), "inline": True},
+                    {"name": "IP", "value": str(ip), "inline": True},
+                    {"name": "Location", "value": str(loc), "inline": True},
+                    {"name": "ISP", "value": str(isp or "?"), "inline": True},
+                    {"name": "Access code (hash)", "value": str(code)[:120], "inline": False},
+                ]}
+                body = json.dumps({"username": "PP Analytics",
+                                   "embeds": [embed]}).encode("utf-8")
+                try:
+                    req = urllib.request.Request(
+                        hook, data=body, headers={"Content-Type": "application/json"})
+                    urllib.request.urlopen(req, timeout=8)
                 except Exception:
                     pass
             threading.Thread(target=_send, daemon=True).start()
