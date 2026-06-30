@@ -727,6 +727,30 @@ class Api:
             return {"error": str(e)}
 
     # ---- run control ----
+    def test_analytics(self):
+        """Synchronously post a test card to the analytics webhook and return the
+        exact result so we can see why a normal report would fail."""
+        cur = load_saved()
+        hook = (cur.get("ANALYTICS_WEBHOOK") or "").strip()
+        if not hook:
+            return {"ok": False, "detail": "No ANALYTICS_WEBHOOK set in prospecting_config.json"}
+        import urllib.request
+        body = json.dumps({"username": "PP Analytics",
+                           "content": "\u2705 test from the app"}).encode("utf-8")
+        req = urllib.request.Request(
+            hook, data=body, headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=8) as r:
+                return {"ok": True, "detail": "posted (HTTP %s)" % r.status}
+        except Exception as e1:
+            try:
+                import ssl as _ssl
+                with urllib.request.urlopen(
+                        req, timeout=8, context=_ssl._create_unverified_context()) as r:
+                    return {"ok": True, "detail": "posted (HTTP %s, unverified SSL)" % r.status}
+            except Exception as e2:
+                return {"ok": False, "detail": "%s || %s" % (e1, e2)}
+
     def _report_usage(self):
         """Analytics: post this run to a PRIVATE Discord webhook (ANALYTICS_WEBHOOK
         in the config) -- a channel in a server only YOU control. No hosting. The
@@ -1762,6 +1786,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <select class="topfield sm" id="buildlist"><option value="">Load build…</option></select>
    <button class="btn2" id="delbuild" title="Delete selected build">✕</button>
    <button class="btn2" id="popout" title="Pop out a floating control">⤢ Pop out</button>
+   <button class="btn2" id="testanalytics" title="Send a test analytics ping">Test analytics</button>
    <button class="btn" id="savebtn">Save settings</button>
  </div>
  <div class="body">
@@ -1956,6 +1981,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // save / run
  $('#savebtn').onclick=async()=>{const n=await window.pywebview.api.save_config(collect());toast('Saved '+n+' settings');};
  $('#popout').onclick=()=>{try{window.pywebview.api.popout();}catch(e){}};
+ $('#testanalytics').onclick=async()=>{let r;try{r=await window.pywebview.api.test_analytics();}catch(e){r={ok:false,detail:String(e)};}toast(r.ok?('Analytics ✓ '+r.detail):('Analytics ✗ '+r.detail));};
  let hotkeys={};
  function hkLabel(s){if(!s||!s.code)return 'unset';let p=[];if(s.ctrl)p.push('Ctrl');if(s.alt)p.push('Alt');if(s.shift)p.push('Shift');
    let c=s.code;if(c.indexOf('Key')===0)p.push(c.slice(3));else if(c.indexOf('Digit')===0)p.push(c.slice(5));else p.push(c);return p.join('+');}
