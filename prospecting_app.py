@@ -665,7 +665,9 @@ class Api:
         body = json.dumps({"username": "PP Analytics",
                            "content": "\u2705 test from the app"}).encode("utf-8")
         req = urllib.request.Request(
-            hook, data=body, headers={"Content-Type": "application/json"})
+            hook, data=body,
+            headers={"Content-Type": "application/json",
+                     "User-Agent": "ProspectorsPlus/1.0"})
         try:
             with urllib.request.urlopen(req, timeout=8) as r:
                 return {"ok": True, "detail": "posted (HTTP %s)" % r.status}
@@ -716,7 +718,9 @@ class Api:
                 body = json.dumps({"username": "PP Analytics",
                                    "embeds": [embed]}).encode("utf-8")
                 req = urllib.request.Request(
-                    hook, data=body, headers={"Content-Type": "application/json"})
+                    hook, data=body,
+                    headers={"Content-Type": "application/json",
+                             "User-Agent": "ProspectorsPlus/1.0"})
                 try:
                     urllib.request.urlopen(req, timeout=8)
                 except Exception:
