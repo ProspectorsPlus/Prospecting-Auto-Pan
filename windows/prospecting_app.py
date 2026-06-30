@@ -545,14 +545,17 @@ class Api:
         s = load_saved()
         return {"mode": "api" if s.get("COACH_MODE") == "api" else "offline",
                 "model": s.get("COACH_MODEL", "claude-haiku-4-5-20251001"),
+                "base": s.get("COACH_BASE_URL", ""),
                 "has_key": bool((s.get("COACH_API_KEY") or "").strip())}
 
-    def save_coach_settings(self, mode="offline", key=None, model=None):
-        """Persist Coach mode/model/key. key=None leaves it; key='__CLEAR__' wipes it."""
+    def save_coach_settings(self, mode="offline", key=None, model=None, base=None):
+        """Persist Coach mode/model/key/base. key=None leaves it; '__CLEAR__' wipes it."""
         s = load_saved()
         s["COACH_MODE"] = "api" if mode == "api" else "offline"
         if model is not None:
             s["COACH_MODEL"] = (model or "").strip() or "claude-haiku-4-5-20251001"
+        if base is not None:
+            s["COACH_BASE_URL"] = (base or "").strip()
         if key == "__CLEAR__":
             s["COACH_API_KEY"] = ""
         elif key:
@@ -562,25 +565,44 @@ class Api:
         return self.coach_settings()
 
     def _coach_api(self, message, ctx, convo):
-        """Call Claude with the user's own API key. Returns a normalized reply
-        dict, or None to signal 'no key -> fall back to the offline brain'."""
+        """Call the user's chosen LLM with their own key. Supports Anthropic and
+        any OpenAI-compatible endpoint (OpenAI, Gemini, DeepSeek, local Ollama).
+        Returns a normalized reply dict, or None to fall back to the offline brain.
+        Provider = Anthropic if the model starts with 'claude' and no base URL is
+        set; otherwise OpenAI-compatible (at the base URL, or api.openai.com)."""
         saved = load_saved()
         key = (saved.get("COACH_API_KEY") or "").strip()
         if not key:
             return None
-        model = (saved.get("COACH_MODEL") or "claude-haiku-4-5-20251001").strip() or "claude-haiku-4-5-20251001"
-        msgs = []
+        model = (saved.get("COACH_MODEL") or "claude-haiku-4-5-20251001").strip() \
+            or "claude-haiku-4-5-20251001"
+        base = (saved.get("COACH_BASE_URL") or "").strip().rstrip("/")
+        sysp = _coach.system_prompt(ctx)
+        prior = []
         for m in (convo or []):
             role = m.get("role"); txt = (m.get("text") or m.get("content") or "")
             if role in ("user", "assistant") and txt:
-                msgs.append({"role": role, "content": txt})
-        msgs.append({"role": "user", "content": message or ""})
-        body = json.dumps({"model": model, "max_tokens": 1024,
-                           "system": _coach.system_prompt(ctx), "messages": msgs}).encode()
-        req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages", data=body, method="POST",
-            headers={"content-type": "application/json", "x-api-key": key,
-                     "anthropic-version": "2023-06-01"})
+                prior.append({"role": role, "content": txt})
+        anthropic = (not base) and model.lower().startswith("claude")
+        if anthropic:
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {"content-type": "application/json", "x-api-key": key,
+                       "anthropic-version": "2023-06-01"}
+            payload = {"model": model, "max_tokens": 1024, "system": sysp,
+                       "messages": prior + [{"role": "user", "content": message or ""}]}
+            provname = "Claude"
+        else:
+            url = (base or "https://api.openai.com/v1") + "/chat/completions"
+            headers = {"content-type": "application/json",
+                       "authorization": "Bearer " + key}
+            payload = {"model": model,
+                       "messages": ([{"role": "system", "content": sysp}] + prior
+                                    + [{"role": "user", "content": message or ""}]),
+                       "max_completion_tokens": 1024,
+                       "response_format": {"type": "json_object"}}
+            provname = "OpenAI" if not base else "API"
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(url, data=body, method="POST", headers=headers)
 
         def _do(ctxssl=None):
             with urllib.request.urlopen(req, timeout=40, context=ctxssl) as r:
@@ -590,31 +612,38 @@ class Api:
         except urllib.error.HTTPError as e:
             detail = ""
             try:
-                detail = json.loads(e.read().decode()).get("error", {}).get("message", "")
+                err = json.loads(e.read().decode()).get("error")
+                detail = err.get("message", "") if isinstance(err, dict) else str(err or "")
             except Exception:
                 pass
             hint = ""
-            if e.code == 401:
-                hint = " — that API key was rejected. Check it in Coach settings (⚙)."
+            if e.code in (401, 403):
+                hint = " — the API key was rejected. Check it in Coach settings (⚙)."
             elif e.code == 404:
-                hint = " — that model name isn't available on your key. Try another in ⚙."
+                hint = " — that model name isn't on your key. Try another in ⚙."
             elif e.code == 429:
-                hint = " — rate/credit limit hit on your Anthropic account."
-            return {"reply": "Claude API error %d%s %s" % (e.code, hint, detail),
+                hint = " — rate/credit limit hit on your account."
+            return {"reply": "%s API error %d%s %s" % (provname, e.code, hint, detail),
                     "changes": [], "topic": "api", "askStats": False, "chips": []}
         except Exception:
             try:
                 import ssl as _ssl
                 data = _do(_ssl._create_unverified_context())
             except Exception as e2:
-                return {"reply": "Couldn't reach the Claude API (%s). You can switch back "
-                                 "to the offline brain in Coach settings (⚙)." % e2,
+                return {"reply": "Couldn't reach the %s API (%s). You can switch back to "
+                                 "the offline brain in Coach settings (⚙)." % (provname, e2),
                         "changes": [], "topic": "api", "askStats": False, "chips": []}
-        txt = "".join(b.get("text", "") for b in data.get("content", [])
-                      if isinstance(b, dict) and b.get("type") == "text")
+        if anthropic:
+            txt = "".join(b.get("text", "") for b in data.get("content", [])
+                          if isinstance(b, dict) and b.get("type") == "text")
+        else:
+            try:
+                txt = data["choices"][0]["message"]["content"] or ""
+            except Exception:
+                txt = ""
         obj = _coach.parse_json(txt)
         if obj is None:
-            return {"reply": txt or "(no reply from Claude)", "changes": [],
+            return {"reply": txt or "(no reply)", "changes": [],
                     "topic": "api", "askStats": False, "chips": []}
         return _coach.finalize_api(obj, ctx.get("settings") or {})
 
@@ -1988,11 +2017,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      </div>
      <div class="coach-cfg" id="coachcfgpanel">
        <label class="ccfg-opt"><input type="radio" name="cmode" value="offline"><span><b>Offline brain</b><i>Free · no internet · instant</i></span></label>
-       <label class="ccfg-opt"><input type="radio" name="cmode" value="api"><span><b>Claude API (your key)</b><i>Real conversation · ~a cent per message</i></span></label>
-       <input id="ckey" type="password" autocomplete="off" placeholder="sk-ant-api03-…  (saved on this PC only)">
-       <input id="cmodel" type="text" autocomplete="off" placeholder="claude-haiku-4-5-20251001">
+       <label class="ccfg-opt"><input type="radio" name="cmode" value="api"><span><b>AI API (your key)</b><i>Claude, GPT, Gemini or DeepSeek · real conversation</i></span></label>
+       <input id="ckey" type="password" autocomplete="off" placeholder="API key (sk-… — saved on this PC only)">
+       <input id="cmodel" type="text" autocomplete="off" placeholder="model, e.g. gpt-5.4-mini  or  claude-haiku-4-5-20251001">
+       <input id="cbase" type="text" autocomplete="off" placeholder="(optional) base URL — blank = OpenAI / Claude auto">
        <div class="ccfg-act"><button class="ccfg-save" id="ccfgsave">Save</button><button class="ccfg-clear" id="ccfgclear">Clear key</button></div>
-       <div class="ccfg-note">API mode sends your message + current settings to Anthropic using <b>your own key</b> (get one at console.anthropic.com). The key stays on this computer. The offline brain needs nothing.</div>
+       <div class="ccfg-note">Your message + current settings go to the provider using <b>your own key</b> (it stays on this PC). A model starting with <b>claude</b> uses Anthropic; anything else uses <b>OpenAI</b>. For Gemini/DeepSeek/local, set a base URL (e.g. https://api.deepseek.com/v1, http://localhost:11434/v1). Offline needs nothing.</div>
      </div>
      <div class="coach-msgs" id="coachmsgs"></div>
      <div class="coach-chips" id="coachchips"></div>
@@ -2351,12 +2381,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    // ---- Coach settings (offline / API) ----
    const sub=document.getElementById('coachsub'), cfgBtn=document.getElementById('coachcfg'),
      cfgPanel=document.getElementById('coachcfgpanel'), keyIn=document.getElementById('ckey'),
-     modelIn=document.getElementById('cmodel');
-   function setSub(mode){if(sub)sub.textContent=(mode==='api')?'Claude API mode':'offline tuning assistant';}
-   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'claude-haiku-4-5-20251001'};}
+     modelIn=document.getElementById('cmodel'), baseIn=document.getElementById('cbase');
+   function setSub(mode){if(sub)sub.textContent=(mode==='api')?'AI API mode':'offline tuning assistant';}
+   async function loadCfg(){let c={};try{c=await capi().coach_settings();}catch(e){c={mode:'offline',model:'claude-haiku-4-5-20251001',base:''};}
      (document.querySelector('input[name=cmode][value="'+(c.mode||'offline')+'"]')||{}).checked=true;
      if(modelIn)modelIn.value=c.model||'claude-haiku-4-5-20251001';
-     if(keyIn)keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'sk-ant-api03-…  (saved on this PC only)';
+     if(baseIn)baseIn.value=c.base||'';
+     if(keyIn)keyIn.placeholder=c.has_key?'•••••• key saved — type to replace':'API key (sk-… — saved on this PC only)';
      setSub(c.mode);}
    if(cfgBtn)cfgBtn.onclick=()=>{const on=body.classList.toggle('coach-cfg-on');if(on)loadCfg();};
    const saveBtn=document.getElementById('ccfgsave'), clrBtn=document.getElementById('ccfgclear');
@@ -2364,12 +2395,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const mode=(document.querySelector('input[name=cmode]:checked')||{}).value||'offline';
      const key=(keyIn&&keyIn.value.trim())?keyIn.value.trim():null;
      const model=modelIn?modelIn.value.trim():'';
-     try{await capi().save_coach_settings(mode,key,model);}catch(e){}
+     const base=baseIn?baseIn.value.trim():'';
+     try{await capi().save_coach_settings(mode,key,model,base);}catch(e){}
      if(keyIn)keyIn.value='';
      setSub(mode);body.classList.remove('coach-cfg-on');
-     if(window.toast)toast(mode==='api'?'Coach: Claude API mode':'Coach: offline mode');};
-   if(clrBtn)clrBtn.onclick=async()=>{const model=modelIn?modelIn.value.trim():'';
-     try{await capi().save_coach_settings('offline','__CLEAR__',model);}catch(e){}
+     if(window.toast)toast(mode==='api'?'Coach: AI API mode':'Coach: offline mode');};
+   if(clrBtn)clrBtn.onclick=async()=>{const model=modelIn?modelIn.value.trim():'';const base=baseIn?baseIn.value.trim():'';
+     try{await capi().save_coach_settings('offline','__CLEAR__',model,base);}catch(e){}
      if(keyIn){keyIn.value='';}loadCfg();if(window.toast)toast('API key cleared');};
    // open by default (don't steal focus from the access-code gate)
    body.classList.add('coach-on');tgl.classList.add('on');
