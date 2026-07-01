@@ -448,6 +448,11 @@ ADAPT_STEP_MS      = 25     # how far to nudge a timing each step
 # instead of straight S, so each pass covers new ground -- helps when you keep
 # falling short of the water on a straight line. Forward (to land) stays straight.
 X_PATTERN          = False
+X_STRAFE_MS        = 220   # X: hold the diagonal only THIS long each pass, then
+                           #    finish STRAIGHT back (keeps depth + landing consistent
+                           #    and drift small). 0 = old full-length diagonal.
+X_RECENTER_MS      = 400   # X: once sideways drift exceeds this budget, strafe
+                           #    straight back toward centre first. 0 = never recenter.
 
 # --- Easy tuning (plain-language offsets; 0 = no change). The backend maps each
 #     of these onto the real timing knobs in load_config(), so users can tune by
@@ -1620,25 +1625,49 @@ def go_water(det):
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
     budget = PAN_BACK_MAX_MS * (1 + min(State.water_fails, 4))
+
+    # X-pattern AUTO-RECENTER: if past diagonal passes have drifted us too far to
+    # one side, strafe STRAIGHT back toward centre first (pure A/D, no S -> corrects
+    # sideways without changing depth). Keeps us on the good dig strip.
+    if X_PATTERN and X_RECENTER_MS > 0 and abs(State.x_balance) > X_RECENTER_MS:
+        corr = KEY_A if State.x_balance > 0 else KEY_D
+        applied = min(abs(State.x_balance), X_RECENTER_MS * 2.0)   # cap one correction
+        tap_key(corr, max(1, int(applied * 0.7)))   # pure strafe ~faster than diagonal
+        State.x_balance += (-applied if State.x_balance > 0 else applied)
+        emit_event("recenter", "drifted %dms off centre -> strafe back" % int(applied))
+        log(f"    X-recenter: strafe {'A' if corr == KEY_A else 'D'} "
+            f"{int(applied*0.7)}ms (balance now {State.x_balance:.0f})")
+
+    # pick this pass's diagonal side (bias toward the side that reduces drift)
     side = sgn = None
-    if X_PATTERN:                        # ONE smooth diagonal (S+side held together);
-        if State.x_balance > 0:          # pick the side that corrects drift to centre
+    if X_PATTERN:
+        if State.x_balance > 0:
             side, sgn = KEY_A, -1
         elif State.x_balance < 0:
             side, sgn = KEY_D, +1
         else:
             side, sgn = (KEY_D, +1) if State.x_dir == 0 else (KEY_A, -1)
             State.x_dir ^= 1
+
     tb = time.perf_counter()
     key_down(KEY_S)
+    reached = False
     if side is not None:
+        # Hold the diagonal only BRIEFLY (X_STRAFE_MS), then release the side key and
+        # finish the walk-back STRAIGHT. A short diagonal covers a little new ground
+        # without throwing off the straight-W forward leg (which was landing us in
+        # the water) or the depth (which the PAN cue + WATER_EXTRA_BACK_MS govern).
         key_down(side)
-    reached = wait_until(det.on_pan, budget, confirm=WALK_BACK_CONFIRM)
+        diag_ms = min(X_STRAFE_MS, budget) if X_STRAFE_MS > 0 else budget
+        reached = wait_until(det.on_pan, diag_ms, confirm=WALK_BACK_CONFIRM)
+        key_up(side)                     # released -> no mid-walk kink
+        State.x_balance += sgn * (time.perf_counter() - tb) * 1000.0
+    if not reached:                      # continue STRAIGHT back for the remainder
+        rem = budget - (time.perf_counter() - tb) * 1000.0
+        if rem > 0:
+            reached = wait_until(det.on_pan, rem, confirm=WALK_BACK_CONFIRM)
     if reached and WATER_EXTRA_BACK_MS > 0:
         sleep_ms(WATER_EXTRA_BACK_MS)    # keep holding S -> a bit deeper in
-    if side is not None:
-        key_up(side)                     # released WITH S -> no mid-walk kink
-        State.x_balance += sgn * (time.perf_counter() - tb) * 1000.0
     key_up(KEY_S)
     State.water_fails = 0 if reached else State.water_fails + 1
     log(f"    S back: reached_PAN={reached} (+{WATER_EXTRA_BACK_MS}ms deeper, "

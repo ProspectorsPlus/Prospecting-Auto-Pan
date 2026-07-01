@@ -118,6 +118,8 @@ SECTIONS = [
         ("SMART_TIMING",   "Auto-tune timing by trial & error",          "bool", False),
         ("ADAPT_MISS_PCT", "Adjust when miss rate exceeds (%)",          "int", 20),
         ("X_PATTERN",      "X pattern: diagonal walk-backs",             "bool", False),
+        ("X_STRAFE_MS",    "X: diagonal length per pass (ms)",           "int", 220),
+        ("X_RECENTER_MS",  "X: drift before auto-recenter (ms)",         "int", 400),
         ("FR_RECOVERY",    "Fortune River recovery (fast-travel on soft stop)", "bool", False),
         ("FR_TEXT_TOL",    "FR: colour match tolerance",                 "int", 55),
         ("FR_SCAN_HOVER_MS","FR: dwell per step while sweeping (ms)",     "int", 12),
@@ -313,7 +315,16 @@ HELP = {
     "FR_CROSS_CONFIRM": "How many cue reads in a row are needed to count as truly in the water, and then truly on the next shore. Higher = it must really cross the water before restarting (stops it from restarting on the shore it spawned on). Lower if it is too slow to commit.",
     "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
                  "straight back, so each pass covers new ground. Helps when you keep "
-                 "falling short on a straight line. Forward to land stays straight.",
+                 "falling short on a straight line. Forward to land stays straight. The "
+                 "diagonal is now a short burst (see below) and auto-recenters so it "
+                 "doesn't drift off the strip.",
+    "X_STRAFE_MS": "How long the diagonal (sideways) part of the back-walk is held each "
+                   "pass before it finishes STRAIGHT back. Lower = straighter, tighter, "
+                   "less drift and more consistent depth/landing; higher = covers more "
+                   "new ground sideways. 0 = old behaviour (diagonal the whole way).",
+    "X_RECENTER_MS": "Once the X pattern has drifted this many ms of sideways travel off "
+                     "centre, it strafes straight back toward the middle before the next "
+                     "pass — so it can't wander off the good dig strip. 0 = never recenter.",
 }
 
 # Calibratable on-screen pixels: (key, label, description, default [x, y]).

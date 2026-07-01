@@ -2084,8 +2084,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
    _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
    _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);};
- const EVLBL={safe_stop:'Safe-stops',hard_stop:'Hard-stops',nudge:'Nudges',recover:'Recoveries',break_out:'Break-outs',shake_fail:'Failed shakes',shake_glitch:'Shake-glitch',no_progress:'No-progress',fr_recover:'FR recovery',relic:'Relics'};
- const EVORDER=['safe_stop','hard_stop','no_progress','shake_fail','shake_glitch','recover','break_out','nudge','fr_recover','relic'];
+ const EVLBL={safe_stop:'Safe-stops',hard_stop:'Hard-stops',nudge:'Nudges',recover:'Recoveries',break_out:'Break-outs',shake_fail:'Failed shakes',shake_glitch:'Shake-glitch',no_progress:'No-progress',fr_recover:'FR recovery',recenter:'X recenter',relic:'Relics'};
+ const EVORDER=['safe_stop','hard_stop','no_progress','shake_fail','shake_glitch','recover','break_out','nudge','recenter','fr_recover','relic'];
  const _esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
  function _whyLine(r){const rc=r.reason_counts||{};const g={};
    Object.keys(rc).forEach(k=>{const i=k.indexOf(': ');const t=i<0?k:k.slice(0,i);const w=i<0?'':k.slice(i+2);(g[t]=g[t]||[]).push([w,rc[k]]);});

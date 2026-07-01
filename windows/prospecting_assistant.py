@@ -79,6 +79,7 @@ RANGES = {
     "FR_WARP_MS": (800, 6000, 400), "FR_STRAFE_MS": (0, 80, 8),
     "FR_WALK_MAX_MS": (2000, 12000, 500), "FR_END_A_MS": (0, 1200, 80),
     "FR_CROSS_CONFIRM": (1, 10, 1),
+    "X_STRAFE_MS": (0, 800, 60), "X_RECENTER_MS": (0, 1500, 100),
 }
 
 
@@ -423,6 +424,20 @@ def _fix_fr_jumpy(s, ch, m):
             "a longer dwell so the sweep is smooth and accurate.")
 
 
+def _fix_x_drift(s, ch, m):
+    if not s.get("X_PATTERN", False):
+        return ("This is about the **X pattern** (diagonal walk-backs), but it's currently "
+                "off — turn on **X pattern** first, then I can tune the drift.")
+    _bump(ch, s, "X_STRAFE_MS", -1, "shorter diagonal each pass — straighter, less sideways drift", m)
+    cur = int(s.get("X_RECENTER_MS", 400))
+    if cur == 0 or cur > 300:
+        _set(ch, s, "X_RECENTER_MS", 300, "recenter sooner so it can't wander off the strip")
+    return ("The **X pattern is drifting off position**. I'm shortening the diagonal part "
+            "of each back-walk (so most of it is straight — keeps depth and landing "
+            "consistent) and making it **auto-recenter sooner**. If it still ends in the "
+            "water, say “X pattern lands me in water” and I'll shorten the diagonal more.")
+
+
 def _fix_capacity(s, ch, m):
     return ("This sounds like a **capacity-bar calibration** issue, not a timing one — "
             "so I won't change timings. If it walks forward and never digs, or thinks "
@@ -580,6 +595,12 @@ SYMPTOMS = [
      [("cursor too fast", 5), ("mouse too fast", 5), ("cursor jumpy", 5), ("mouse jumpy", 5),
       ("flies off", 4), ("cursor flies", 5), ("mouse flies", 5), ("jumps around", 4)],
      [], _fix_fr_jumpy),
+    ("x_drift", "X pattern drifts off position",
+     [("x pattern", 4), ("x shake", 4), ("x drift", 5), ("diagonal", 3),
+      ("drifts sideways", 5), ("drifts off", 5), ("gets off position", 5),
+      ("off position", 4), ("wanders", 4), ("drifting", 4), ("off the strip", 5),
+      ("x pattern lands", 5), ("diagonal walk", 4), ("recenter", 3)],
+     [], _fix_x_drift),
     ("capacity", "Capacity / calibration",
      [("never digs", 4), ("walks forever", 4), ("walks back and forth", 4),
       ("thinks it's full", 5), ("thinks its full", 5), ("reads full when empty", 5),
@@ -655,6 +676,7 @@ _EVENT_LABEL = {
     "break_out": "break-out", "nudge": "nudge", "shake_fail": "failed shake",
     "shake_glitch": "shake-glitch recovery", "no_progress": "no-progress recovery",
     "fr_recover": "Fortune River recovery", "relic": "relic use",
+    "recenter": "X-pattern recenter",
 }
 
 
