@@ -725,6 +725,22 @@ def log(msg):
     print(f"[{now - _log_t0:7.2f}s] {msg}", flush=True)
 
 
+def emit_event(etype, reason="", where="", contents=""):
+    """Emit a structured telemetry event (__EVENT__ <json>) the app collects into
+    the run record: WHAT happened and WHY, so the analytics + Coach can explain
+    each safe-stop / nudge / recovery. Best-effort; never affects the macro."""
+    try:
+        rec = {"type": etype, "reason": reason or "",
+               "t": round(State.stats.runtime(), 1) if State.stats else 0.0}
+        if where:
+            rec["where"] = where
+        if contents:
+            rec["contents"] = contents
+        print("__EVENT__ " + json.dumps(rec), flush=True)
+    except Exception:
+        pass
+
+
 # ---- Input engine (Windows SendInput) ---------------------------------------
 # Keys are sent as hardware SCANCODES (KEYEVENTF_SCANCODE) and mouse via
 # MOUSEEVENTF_* -- the most reliable way to drive Roblox on Windows.
@@ -1286,6 +1302,7 @@ def safe_stop(reason, hard=False):
     State.empty_fails = State.shake_fails = State.land_fails = State.breakouts = 0
     if State.stats:
         State.stats.safe_stops += 1
+    emit_event("hard_stop" if hard else "safe_stop", reason)
 
     if FR_RECOVERY and not hard:
         try:
@@ -1296,11 +1313,13 @@ def safe_stop(reason, hard=False):
         if ok:
             State.safe_retries = 0
             State.want_reset = True
+            emit_event("fr_recover", "success after: %s" % reason)
             print("\n*** FORTUNE RIVER RECOVERY: %s -> resumed ***" % reason)
             post_webhook("safe_stop",
                          "\U0001f9ed Fortune River recovery (%s) -> resumed" % reason,
                          State.stats.as_dict() if State.stats else None, shot=True)
             return
+        emit_event("fr_recover", "failed after: %s" % reason)
 
     def _beep(hand=False):
         try:
@@ -1740,6 +1759,8 @@ def do_shake(det):
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
+        emit_event("shake_fail", ("shake never started (glitch)" if not started
+                                  else "shake ran but pan didn't empty"))
     _adapt_shake(emptied)
     dur = (time.perf_counter() - t0) * 1000
     log(f"    shake done: started={started} emptied={emptied} "
@@ -1820,6 +1841,7 @@ def return_and_dig(det):
                 return True
         # none of the in-place digs registered -> probably off land -> nudge fwd
         log(f"    no dig registered (round {rnd+1}) -> nudge W fwd")
+        emit_event("nudge", "no dig registered — nudging forward to find land")
         if State.stats: State.stats.nudges += 1
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
         sleep_ms(PROBE_GAP_MS)               # settle before the next round
@@ -1856,14 +1878,18 @@ def recover(det, s):
         post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
                      State.stats.as_dict(), shot=True)
     if s.full and s.pan:
+        emit_event("recover", "full & in water — pan won't empty, re-shaking",
+                   s.where, s.contents)
         if SHAKE_RETRY_ENABLED:
             do_shake(det)                # full in water, won't empty -> shake again
     elif s.full:
         # full but not in water -> jitter S back toward the water
+        emit_event("recover", "full on land — jitter back to the water", s.where, s.contents)
         if State.stats: State.stats.nudges += 1
         pulse_until(KEY_S, det.on_pan, RECOVER_BACK_MS)
     else:
         # empty, can't land -> jitter forward, then re-probe with a dig next tick
+        emit_event("recover", "empty — can't find land, jitter forward", s.where, s.contents)
         if State.stats: State.stats.nudges += 1
         pulse_until(KEY_W, det.capacity_full, RECOVER_BACK_MS)
 
@@ -1876,6 +1902,8 @@ def break_out(det, s):
     forward to get off the water edge. After this we reset the counters and let
     normal logic try again ('do as if it was normal'). Returns True if it emptied."""
     log("    ** BREAK-OUT: click to finish any active shake, then reposition **")
+    emit_event("break_out", "stuck at %s/%s — forcing an escape" % (s.where, s.contents),
+               s.where, s.contents)
     if s.full:
         end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
         while time.perf_counter() < end and State.running:
@@ -2004,6 +2032,8 @@ class Supervisor:
         if SHAKE_GLITCH_LIMIT > 0 and State.shake_fails >= SHAKE_GLITCH_LIMIT:
             if BREAKOUT_ENABLED and State.breakouts < BREAKOUT_LIMIT:
                 State.breakouts += 1
+                emit_event("shake_glitch", "shake didn't register x%d — quick recovery"
+                           % State.shake_fails)
                 log(f"** shake not registering x{State.shake_fails} "
                     f"-> quick break-out #{State.breakouts} **")
                 if break_out(det, s):
@@ -2023,6 +2053,8 @@ class Supervisor:
         if (BREAKOUT_ENABLED and NO_PROGRESS_SEC > 0 and State.last_progress
                 and time.perf_counter() - State.last_progress > NO_PROGRESS_SEC):
             State.breakouts += 1
+            emit_event("no_progress", "nothing completed for %ds — click-to-empty recovery"
+                       % NO_PROGRESS_SEC)
             log(f"** no progress for {NO_PROGRESS_SEC}s -> break-out #{State.breakouts} (click to empty) **")
             if State.breakouts > BREAKOUT_LIMIT:
                 safe_stop("no progress -- stuck (shake glitch?)")

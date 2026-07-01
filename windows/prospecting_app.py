@@ -1025,6 +1025,7 @@ class Api:
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         self._run_active = True
         self._last_stats = None
+        self._events = []                     # detailed telemetry for this run
         self._macro_status = "idle"
         return "launched"
 
@@ -1042,6 +1043,21 @@ class Api:
         entry = dict(st)
         entry["reason"] = reason or st.get("stop_reason") or "manual"
         entry["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        # ---- detailed analytics: aggregate the telemetry events for this run ----
+        evs = getattr(self, "_events", None) or []
+        type_counts, reason_counts = {}, {}
+        first_t = {}
+        for e in evs:
+            if not isinstance(e, dict):
+                continue
+            et = e.get("type", "?")
+            type_counts[et] = type_counts.get(et, 0) + 1
+            rk = "%s: %s" % (et, (e.get("reason") or "").strip())
+            reason_counts[rk] = reason_counts.get(rk, 0) + 1
+            first_t.setdefault(rk, e.get("t", 0))
+        entry["event_counts"] = type_counts
+        entry["reason_counts"] = reason_counts
+        entry["events"] = evs[-250:]          # capped detailed timeline
         path = os.path.join(os.path.dirname(CONFIG_FILE), "run_history.json")
         hist = _read_json(path, [])
         if not isinstance(hist, list):
@@ -1402,6 +1418,17 @@ class Api:
                     pass
                 if self._macro_status in ("off", "idle"):
                     self._macro_status = "running"
+                continue
+            if line.startswith("__EVENT__ "):
+                try:
+                    ev = json.loads(line[10:])
+                    if not hasattr(self, "_events") or self._events is None:
+                        self._events = []
+                    self._events.append(ev)
+                    if len(self._events) > 2000:
+                        self._events = self._events[-2000:]
+                except Exception:
+                    pass
                 continue
             if line.strip() == "__POPOUT__":
                 try:
@@ -1889,6 +1916,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .hr-reason{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent-lit);
   background:var(--sand-dim);border:1px solid var(--sand-glow);border-radius:999px;padding:2px 9px}
  .hr-stats{color:var(--mut);font-size:12.5px;font-family:ui-monospace,Menlo,monospace}
+ .hr-why{font-size:11.5px;color:var(--mut);margin-top:7px;line-height:1.55} .hr-why b{color:var(--accent-lit);font-weight:600}
+ .hr-det{margin-top:8px;font-size:11.5px}
+ .hr-det summary{cursor:pointer;color:var(--accent-lit);font-weight:600;list-style:none;user-select:none}
+ .hr-det summary::-webkit-details-marker{display:none} .hr-det summary:before{content:"\25B8 "} .hr-det[open] summary:before{content:"\25BE "}
+ .hr-det .ev{font:11.5px ui-monospace,Menlo,monospace;color:var(--mut);padding:3px 0;border-top:1px solid var(--line)}
+ .hr-det .ev:first-of-type{margin-top:5px}
+ .hr-det .evt{color:var(--dim);display:inline-block;min-width:46px} .hr-det .evk{color:var(--teal-lit)}
  .hempty{color:var(--mut);font-size:13px}
  .stat{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:10px 12px;text-align:center}
@@ -2132,15 +2166,26 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
    _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
    _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);};
+ const EVLBL={safe_stop:'Safe-stops',hard_stop:'Hard-stops',nudge:'Nudges',recover:'Recoveries',break_out:'Break-outs',shake_fail:'Failed shakes',shake_glitch:'Shake-glitch',no_progress:'No-progress',fr_recover:'FR recovery',relic:'Relics'};
+ const EVORDER=['safe_stop','hard_stop','no_progress','shake_fail','shake_glitch','recover','break_out','nudge','fr_recover','relic'];
+ const _esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+ function _whyLine(r){const rc=r.reason_counts||{};const g={};
+   Object.keys(rc).forEach(k=>{const i=k.indexOf(': ');const t=i<0?k:k.slice(0,i);const w=i<0?'':k.slice(i+2);(g[t]=g[t]||[]).push([w,rc[k]]);});
+   const parts=[];EVORDER.forEach(t=>{if(!g[t])return;g[t].sort((a,b)=>b[1]-a[1]);
+     const top=g[t].slice(0,3).map(x=>x[1]+'\u00d7 '+_esc(x[0])).join(', ');parts.push('<b>'+(EVLBL[t]||t)+':</b> '+top);});
+   return parts.length?('<div class="hr-why">'+parts.join(' \u00b7 ')+'</div>'):'';}
+ function _timeline(r){const ev=r.events||[];if(!ev.length)return '';
+   const rows=ev.slice(-150).map(e=>'<div class="ev"><span class="evt">'+(e.t||0)+'s</span> <span class="evk">'+(EVLBL[e.type]||e.type)+'</span> '+_esc(e.reason||'')+'</div>').join('');
+   return '<details class="hr-det"><summary>Detailed timeline ('+ev.length+' events)</summary>'+rows+'</details>';}
  async function loadHistory(){let list=[];try{list=await window.pywebview.api.run_history();}catch(e){}
    const box=document.getElementById('histbox');if(!box)return;
    if(!list||!list.length){box.innerHTML='<div class="hempty">No runs yet \u2014 finish a session and it shows up here.</div>';return;}
    box.innerHTML=list.map(r=>{const m=Math.floor((r.runtime_s||0)/60);
      return '<div class="hrow"><div class="hr-top"><b>'+(r.ended||'run')+'</b>'+
-       '<span class="hr-reason">'+(r.reason||r.stop_reason||'')+'</span></div>'+
+       '<span class="hr-reason">'+_esc(r.reason||r.stop_reason||'')+'</span></div>'+
        '<div class="hr-stats">'+(r.cycles||0)+' pans \u00b7 '+(r.pans_per_hr||0)+'/hr \u00b7 '+m+' min \u00b7 '+
        (r.recoveries||0)+' rec \u00b7 '+(r.nudges||0)+' nudges \u00b7 '+(r.relics_used||0)+' relics \u00b7 '+
-       (r.safe_stops||0)+' safe \u00b7 '+(r.hard_stops||0)+' hard</div></div>';}).join('');}
+       (r.safe_stops||0)+' safe \u00b7 '+(r.hard_stops||0)+' hard</div>'+_whyLine(r)+_timeline(r)+'</div>';}).join('');}
  (function(){const b=document.getElementById('histrefresh');if(b)b.onclick=loadHistory;})();
  // relics
  function relicRows(){return $$('.rrow');}

@@ -649,6 +649,79 @@ def _history_summary(hist):
     return txt, flags
 
 
+# Friendly names for the telemetry event types the engine emits.
+_EVENT_LABEL = {
+    "safe_stop": "safe-stop", "hard_stop": "hard-stop", "recover": "recovery",
+    "break_out": "break-out", "nudge": "nudge", "shake_fail": "failed shake",
+    "shake_glitch": "shake-glitch recovery", "no_progress": "no-progress recovery",
+    "fr_recover": "Fortune River recovery", "relic": "relic use",
+}
+
+
+def _aggregate_events(hist, limit_runs=6):
+    """Merge the detailed event telemetry across recent runs -> totals per type and
+    a ranked 'why' breakdown per type. Returns {'types':{...}, 'reasons':{type:[(why,n)...]}}."""
+    runs = [h for h in (hist or []) if isinstance(h, dict)][:limit_runs]
+    types, reasons = {}, {}
+    for h in runs:
+        for et, c in (h.get("event_counts") or {}).items():
+            types[et] = types.get(et, 0) + int(c or 0)
+        for rk, c in (h.get("reason_counts") or {}).items():
+            et, _, why = rk.partition(": ")
+            reasons.setdefault(et, {})
+            reasons[et][why] = reasons[et].get(why, 0) + int(c or 0)
+    ranked = {et: sorted(d.items(), key=lambda x: -x[1]) for et, d in reasons.items()}
+    return {"types": types, "reasons": ranked}
+
+
+def _why_text(hist, focus=None):
+    """Plain-English 'why did X happen' from the aggregated telemetry. focus can be
+    one of the event types (e.g. 'safe_stop','nudge','recover') or None for all."""
+    agg = _aggregate_events(hist)
+    types, reasons = agg["types"], agg["reasons"]
+    if not types:
+        return ("I don't have detailed run telemetry yet — run the macro once (this "
+                "version records the reason behind every safe-stop, nudge and recovery) "
+                "and then ask me again.")
+    order = [focus] if focus else ["safe_stop", "hard_stop", "no_progress", "shake_fail",
+                                    "shake_glitch", "recover", "break_out", "nudge",
+                                    "fr_recover"]
+    out = []
+    for et in order:
+        if not types.get(et):
+            continue
+        label = _EVENT_LABEL.get(et, et)
+        causes = reasons.get(et, [])[:4]
+        if causes:
+            bits = ", ".join("%d× %s" % (n, why) for why, n in causes if why)
+            out.append("**%s** (%d): %s" % (label.capitalize(), types[et], bits or "—"))
+        else:
+            out.append("**%s**: %d" % (label.capitalize(), types[et]))
+    if not out:
+        return "No events of that kind in your recent runs — that part's running clean."
+    head = ("Here's why those happened across your recent runs (most common first):\n\n- "
+            if not focus else "Breakdown of %s across recent runs:\n\n- "
+            % _EVENT_LABEL.get(focus, focus))
+    return head + "\n- ".join(out)
+
+
+def _run_detail_for_prompt(hist):
+    """Compact detailed-telemetry block for the API system prompt."""
+    agg = _aggregate_events(hist, limit_runs=4)
+    types, reasons = agg["types"], agg["reasons"]
+    if not types:
+        return ""
+    lines = ["RECENT RUN TELEMETRY (why events happened, last few runs):"]
+    for et in ("safe_stop", "hard_stop", "no_progress", "shake_fail", "shake_glitch",
+               "recover", "break_out", "nudge", "fr_recover"):
+        if not types.get(et):
+            continue
+        causes = reasons.get(et, [])[:4]
+        bits = "; ".join("%dx %s" % (n, why) for why, n in causes if why) or str(types[et])
+        lines.append("- %s (%d): %s" % (_EVENT_LABEL.get(et, et), types[et], bits))
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- #
 #  Intent: explicit "set X to N"                                               #
 # --------------------------------------------------------------------------- #
@@ -744,6 +817,30 @@ def respond(message, ctx):
                                  ["Change it", "Something's wrong with it"])
         # fall through if no match
 
+    # 2b) "why did it ... (safe-stop / nudge / recover / stop)" -> telemetry breakdown
+    if _has(text, "why", "what caused", "what happened", "reason", "reasons", "explain why",
+            "how come"):
+        focus = None
+        if _has(text, "safe stop", "safe-stop", "safe stops", "safe-stops", "safestop"):
+            focus = "safe_stop"
+        elif _has(text, "hard stop", "hard-stop", "hard stops"):
+            focus = "hard_stop"
+        elif _has(text, "nudge", "nudges", "nudging"):
+            focus = "nudge"
+        elif _has(text, "recover", "recovery", "recoveries", "recovering"):
+            focus = "recover"
+        elif _has(text, "break out", "break-out", "breakout", "break outs"):
+            focus = "break_out"
+        elif _has(text, "fortune river", "fr recover", "fast travel"):
+            focus = "fr_recover"
+        elif _has(text, "shake", "shakes"):
+            focus = "shake_fail"
+        if focus or _has(text, "stop", "stopped", "stopping", "happen", "happened",
+                         "go wrong", "went wrong", "fail", "failed"):
+            return _wrap(_why_text(hist, focus), [], "why",
+                         ["Fix the top cause", "Analyze my last runs",
+                          "Make it more reliable"])
+
     # 3) analyze runs / efficiency / stats
     wants_eff = _has(text, "faster", "more efficient", "efficiency", "optimi", "speed up",
                      "more pans", "improve", "tune my build", "best settings")
@@ -756,6 +853,10 @@ def respond(message, ctx):
         bits = []
         if htxt:
             bits.append(htxt)
+        if wants_hist:
+            wt = _why_text(hist)
+            if wt and "don't have detailed" not in wt:
+                bits.append(wt)
         # reliability-driven suggestions
         if flags:
             if flags.get("safe", 0) >= 2 or flags.get("hard", 0) >= 1:
@@ -923,6 +1024,10 @@ def system_prompt(ctx):
     if htxt:
         lines.append("")
         lines.append("RECENT RUNS: " + re.sub(r"\*\*", "", htxt))
+    detail = _run_detail_for_prompt(hist)
+    if detail:
+        lines.append("")
+        lines.append(detail)
     return "\n".join(lines)
 
 

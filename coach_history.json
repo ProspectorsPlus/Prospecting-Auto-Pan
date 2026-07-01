@@ -7,5 +7,173 @@
       "If you paste a short symptom, I\u2019ll suggest the smallest SETTINGS tweak.",
       "I can also help optimize for higher pans/hr or fewer stalls."
     ]
+  },
+  {
+    "role": "user",
+    "text": "Review my last run on my shake build, I have a couple of problems, my goal is to maxamize my pans per hour."
+  },
+  {
+    "role": "bot",
+    "reply": "Your last 8 runs averaged **1720 pans/hr**, with **20 recoveries** and **8 safe-stops**, so the biggest drag looks like stability rather than raw dig speed. For a shake build, I\u2019d make the loop a bit more forgiving and reduce wasted retries.",
+    "changes": [
+      {
+        "key": "SHAKE_BAIL_MS",
+        "label": "Shake-failed detection (ms)",
+        "from": 500,
+        "to": 700,
+        "reason": "Give the shake a little more time to start before bailing, to cut false failures."
+      },
+      {
+        "key": "SHAKE_FAIL_LIMIT",
+        "label": "Failed shakes before STOP",
+        "from": 5,
+        "to": 7,
+        "reason": "Allow a few more shake misses before hard stopping, so brief glitches don't kill the run."
+      },
+      {
+        "key": "NO_PROGRESS_SEC",
+        "label": "Seconds of no progress before click-to-empty",
+        "from": 5,
+        "to": 8,
+        "reason": "Wait slightly longer before declaring no progress, which helps avoid premature recovery loops."
+      },
+      {
+        "key": "LAND_PROBE_NUDGE_MS",
+        "label": "Forward W nudge between probe digs (ms)",
+        "from": 90,
+        "to": 100,
+        "reason": "A slightly bigger land nudge can reduce short landings that trigger extra probe attempts."
+      },
+      {
+        "key": "PRE_DIG_SETTLE_MS",
+        "label": "Settle before first dig after shake (ms)",
+        "from": 60,
+        "to": 80,
+        "reason": "More settle time before the first dig can prevent mid-glide misses that waste cycles."
+      }
+    ],
+    "chips": [
+      "If you still see water-edge misses, tell me whether you\u2019re stopping short or overshooting.",
+      "If recoveries are the main issue, I can tune the recovery limits next."
+    ]
+  },
+  {
+    "role": "user",
+    "text": "The thing is, almost all of those recoveries were accurate, right now the players gets stuck in a shake glitch, like when the user goes to the water and starts shake and then uses momentum to get back onto land, it is supposed to then actualy hold/spam click to shake the pan until empty, but like 10% of the time it just doesnt. And when it doesnt it doesnt detect, so it keeps retrying by click w and s and all of that, and after some time it detects that this is no progress and breaktso ut by clicking to get out of glitched shake, so the problem isnt the recoveries need to be extended, its that they need to be shortend or removed or something like that"
+  },
+  {
+    "role": "bot",
+    "reply": "Got it \u2014 this sounds like a **shake-glitch detection/timing** issue, not a recovery-length issue. The best conservative fix is to make the macro **give up on a bad shake sooner** and **re-attempt the shake faster**, so it wastes less time when that 10% failure happens.",
+    "changes": [
+      {
+        "key": "SHAKE_GLITCH_LIMIT",
+        "label": "Failed shakes before quick click-to-empty",
+        "from": 2,
+        "to": 1,
+        "reason": "Detect the bad shake faster so it stops wasting time on stuck attempts."
+      },
+      {
+        "key": "NO_PROGRESS_SEC",
+        "label": "Seconds of no progress before click-to-empty",
+        "from": 5,
+        "to": 3,
+        "reason": "Fail out of dead loops sooner instead of spending extra seconds retrying a glitched shake."
+      },
+      {
+        "key": "SHAKE_FAIL_LIMIT",
+        "label": "Failed shakes before STOP",
+        "from": 5,
+        "to": 3,
+        "reason": "Shorter fail window helps it break out of repeated non-empty shakes sooner."
+      }
+    ],
+    "chips": [
+      "If the issue still happens, we can also tighten the shake-start timing a little.",
+      "If you want, I can next tune for higher pans/hr without making the glitch handling too aggressive."
+    ]
+  },
+  {
+    "role": "user",
+    "text": "check the last run I just did"
+  },
+  {
+    "role": "bot",
+    "reply": "Yep \u2014 based on your pattern, the last run still looks like it\u2019s losing time to the shake-glitch retry loop rather than true stuck recovery. I\u2019d tighten the shake-failure window so it breaks out sooner instead of spending so long retrying W/S on a bad shake.",
+    "changes": [
+      {
+        "key": "SHAKE_GLITCH_LIMIT",
+        "label": "Failed shakes before quick click-to-empty",
+        "from": 1,
+        "to": 0,
+        "reason": "Remove extra shake-glitch retries so a bad shake gets handled immediately instead of wasting time."
+      },
+      {
+        "key": "NO_PROGRESS_SEC",
+        "label": "Seconds of no progress before click-to-empty",
+        "from": 3,
+        "to": 2,
+        "reason": "Shorten the no-progress timeout so the macro breaks the dead loop sooner."
+      }
+    ],
+    "chips": [
+      "If you still see occasional missed starts, I can nudge the shake start timing next.",
+      "If the pan sometimes fails to empty before moving, we can tune shake hold/bail next."
+    ]
+  },
+  {
+    "role": "user",
+    "text": "there are a lot of nudges"
+  },
+  {
+    "role": "bot",
+    "reply": "Yep \u2014 lots of nudges usually means the macro is waiting too long before deciding the shake failed. I\u2019d make the shake-glitch loop fail faster so it stops burning time on repeated W/S retries.",
+    "changes": [
+      {
+        "key": "SHAKE_GLITCH_LIMIT",
+        "label": "Failed shakes before quick click-to-empty",
+        "from": 1,
+        "to": 0,
+        "reason": "Remove extra shake-glitch retries so bad shakes break out sooner."
+      },
+      {
+        "key": "NO_PROGRESS_SEC",
+        "label": "Seconds of no progress before click-to-empty",
+        "from": 3,
+        "to": 2,
+        "reason": "Shorten the no-progress timer so it exits the bad loop faster."
+      },
+      {
+        "key": "SHAKE_FAIL_LIMIT",
+        "label": "Failed shakes before STOP",
+        "from": 3,
+        "to": 2,
+        "reason": "Lower the shake failure tolerance a bit to avoid long retry chains."
+      }
+    ],
+    "chips": [
+      "If you want, I can also trim the breakout timings next.",
+      "If this causes false alarms, we can raise only the one that\u2019s too aggressive."
+    ]
+  },
+  {
+    "role": "user",
+    "text": "reduce the seconds of no progress to 1"
+  },
+  {
+    "role": "bot",
+    "reply": "Done \u2014 I\u2019d trim the no-progress timeout so bad shake loops bail out sooner.",
+    "changes": [
+      {
+        "key": "NO_PROGRESS_SEC",
+        "label": "Seconds of no progress before click-to-empty",
+        "from": 2,
+        "to": 1,
+        "reason": "Faster fail-out when a shake glitched and is wasting time on nudges."
+      }
+    ],
+    "chips": [
+      "If you still see many nudges, I can also lower the shake retry tolerance next.",
+      "If the glitch is rare but costly, we can tune the shake hold/bail values instead."
+    ]
   }
 ]
