@@ -22,3 +22,6 @@ zi0waoYL
 # private analytics endpoint (host yourself)
 
 ANALYTICS_SETUP.md
+
+# local-only: old version extracted from tag v1.0.0 for A/B testing (regenerable)
+Prospectors_Old_v1.0.0/
