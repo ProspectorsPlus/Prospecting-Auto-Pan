@@ -1,22 +1,22 @@
 {
   "PERFECT": false,
-  "DIG_CLICK_MS": 10,
-  "DIG_SPEED": 1474,
-  "MAX_DIGS_TO_FILL": 1,
+  "DIG_CLICK_MS": 34,
+  "DIG_SPEED": 1598,
+  "MAX_DIGS_TO_FILL": 2,
   "DIG_FILL_MS": 250,
   "PRE_DIG_SETTLE_MS": 60,
-  "PAN_BACK_MAX_MS": 200,
+  "PAN_BACK_MAX_MS": 160,
   "WATER_EXTRA_BACK_MS": 0,
   "SHAKE_MOMENTUM_W": true,
-  "SHAKE_CLICK_MS": 18,
-  "SHAKE_CLICK_GAP_MS": 14,
+  "SHAKE_CLICK_MS": 34,
+  "SHAKE_CLICK_GAP_MS": 5,
   "SHAKE_HOLD_MS": 1500,
   "SHAKE_BAIL_MS": 500,
   "SHAKE_START_DELAY_MS": 0,
-  "POST_SHAKE_SETTLE_MS": 150,
-  "DEPOSIT_MAX_MS": 1200,
-  "LAND_SETTLE_MS": 0,
-  "DIG_PROBE_MS": 320,
+  "POST_SHAKE_SETTLE_MS": 120,
+  "DEPOSIT_MAX_MS": 1100,
+  "LAND_SETTLE_MS": 45,
+  "DIG_PROBE_MS": 150,
   "PROBE_GAP_MS": 80,
   "LAND_PROBE_NUDGE_MS": 90,
   "LAND_DIG_TRIES": 5,
@@ -40,9 +40,9 @@
   "WINDOW_RELATIVE": true,
   "RELICS": [
     {
-      "name": "Spirit Orb",
-      "minutes": 14,
-      "slot": 6,
+      "name": "Solar Magnifier",
+      "minutes": 10,
+      "slot": 5,
       "clicks": 2
     }
   ],
@@ -73,39 +73,55 @@
   ],
   "CAP_BAR_WIDTH": 437,
   "CALIB_WINDOW_ORIGIN": [
-    1,
-    40
+    0,
+    39
   ],
   "CALIB_WINDOW_RECT": [
-    1,
-    40,
+    0,
+    39,
     1800,
     1087
   ],
   "PIXEL_RATIOS": {
     "CAP_FULL_PIXEL": [
-      0.62111,
-      0.77093
+      0.62167,
+      0.77185
     ],
     "CAP_LEFT_PIXEL": [
-      0.37833,
-      0.77093
+      0.37889,
+      0.77185
     ],
     "DEPOSIT_PIX": [
-      0.42722,
-      0.87121
+      0.42778,
+      0.87213
     ],
     "PAN_PIX": [
-      0.47056,
-      0.86569
+      0.47111,
+      0.86661
     ],
     "SHAKE_PIX": [
-      0.46111,
-      0.87029
+      0.46167,
+      0.87121
     ],
     "DIG_TRIGGER_PIXEL": [
-      0.60056,
-      0.45078
+      0.60111,
+      0.4517
+    ],
+    "MONEY_TL_PIXEL": [
+      0.85889,
+      0.95492
+    ],
+    "MONEY_BR_PIXEL": [
+      0.99667,
+      0.9816
+    ],
+    "SHARDS_TL_PIXEL": [
+      0.93889,
+      0.90708
+    ],
+    "SHARDS_BR_PIXEL": [
+      0.99333,
+      0.93836
     ]
   },
   "NOTIFY_START": false,
@@ -117,22 +133,22 @@
   "ACCESS_OK": true,
   "ACCESS_HASH": "71786532ffb0949f55898b91d3876a8793240baa9c466519c067fabb75c72dd7",
   "PIXEL_COLORS": {
-    "SHAKE_PIX": "#ffffff"
+    "SHARDS_BR_PIXEL": "#373746"
   },
   "SAFE_STOP_RETRY": true,
   "SAFE_STOP_RETRY_SEC": 60,
   "SAFE_STOP_MAX_RETRIES": 3,
   "SMART_TIMING": false,
   "ADAPT_MISS_PCT": 0,
-  "X_PATTERN": true,
-  "EASY_WATER_BACK_MS": 10,
+  "X_PATTERN": false,
+  "EASY_WATER_BACK_MS": 0,
   "EASY_LAND_FWD_MS": 0,
   "EASY_SHAKE_DELAY_MS": 0,
   "EASY_FIRST_DIG_DELAY_MS": 0,
   "EASY_WATER_RETURN_DELAY_MS": 0,
-  "X_STRAFE_MS": 120,
-  "RECOVER_ENABLED": true,
-  "SHAKE_RETRY_ENABLED": true,
+  "X_STRAFE_MS": 0,
+  "RECOVER_ENABLED": false,
+  "SHAKE_RETRY_ENABLED": false,
   "BREAKOUT_ENABLED": true,
   "TREASURE_MODE": false,
   "TREASURE_DIG_MS": 0,
@@ -140,18 +156,18 @@
   "TREASURE_MOVE_MAX_MS": 0,
   "SHAKE_CLICKS": 0,
   "TREASURE_DIGS": 0,
-  "FR_RECOVERY": true,
-  "FR_TEXT_TOL": 20,
-  "FR_FIND_TRIES": 8,
-  "FR_SCROLL_STEPS": 3,
-  "FR_OPEN_MS": 600,
-  "FR_WARP_MS": 2500,
-  "FR_STRAFE_MS": 50,
-  "FR_WALK_MAX_MS": 6000,
-  "FR_DOUBLE_GAP_MS": 120,
-  "FR_CLICK_SETTLE_MS": 300,
-  "FR_ACTION_GAP_MS": 500,
-  "FR_SCAN_HOVER_MS": 12,
+  "FR_RECOVERY": false,
+  "FR_TEXT_TOL": 0,
+  "FR_FIND_TRIES": 0,
+  "FR_SCROLL_STEPS": 0,
+  "FR_OPEN_MS": 0,
+  "FR_WARP_MS": 0,
+  "FR_STRAFE_MS": 0,
+  "FR_WALK_MAX_MS": 0,
+  "FR_DOUBLE_GAP_MS": 0,
+  "FR_CLICK_SETTLE_MS": 0,
+  "FR_ACTION_GAP_MS": 0,
+  "FR_SCAN_HOVER_MS": 0,
   "FR_SCAN_X": 811,
   "FR_TEXT_RGB": [
     172,
@@ -164,10 +180,10 @@
     901,
     599
   ],
-  "FR_MOVE_STEP": 8,
-  "FR_END_A_MS": 600,
-  "FR_OPEN_TRIES": 3,
-  "FR_CROSS_CONFIRM": 3,
+  "FR_MOVE_STEP": 0,
+  "FR_END_A_MS": 0,
+  "FR_OPEN_TRIES": 0,
+  "FR_CROSS_CONFIRM": 0,
   "NOTIFY_SCREENSHOT": true,
   "AUTO_CALIBRATE": false,
   "HOTKEY_TOGGLE": {
@@ -183,10 +199,10 @@
     "code": "KeyJ"
   },
   "HOTKEY_QUIT": {
-    "ctrl": false,
+    "ctrl": true,
     "alt": false,
     "shift": false,
-    "code": "Escape"
+    "code": "Quote"
   },
   "HOTKEY_POPOUT": {
     "ctrl": true,
@@ -214,11 +230,91 @@
   "HYPER_DIG_GAP_MS": 0,
   "HYPER_WATER_MAX_MS": 0,
   "HYPER_S_LEAD_MS": 0,
-  "SHAKE_GLITCH_LIMIT": 0,
-  "NO_PROGRESS_SEC": 0,
+  "SHAKE_GLITCH_LIMIT": 2,
+  "NO_PROGRESS_SEC": 5,
   "SYNC_URL": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf",
   "COACH_MODE": "api",
   "COACH_MODEL": "gpt-5.4-mini",
   "COACH_BASE_URL": "",
-  "COACH_API_KEY": ""
+  "COACH_API_KEY": "",
+  "X_RECENTER_MS": 0,
+  "SHAKE_START_CONFIRM_MS": 300,
+  "SHAKE_START_RETRIES": 2,
+  "SHAKE_RETRY_DEEPER_MS": 70,
+  "DIG_FILL_SMART": false,
+  "DIG_PLATEAU_MS": 120,
+  "DIG_SMART_CAP_MS": 900,
+  "LAND_CUE_ASSIST": false,
+  "LAND_ASSIST_MAX_MS": 400,
+  "SHAKE_STALL_MS": 600,
+  "DIG_PIPELINE": false,
+  "DIG_PIPELINE_GAP_MS": 20,
+  "TRACKER_MODE": false,
+  "TRACKER_POLL_MS": 30,
+  "EARN_TRACK": true,
+  "EARN_OCR_SEC": 1,
+  "MONEY_TL_PIXEL": [
+    1546,
+    1077
+  ],
+  "MONEY_BR_PIXEL": [
+    1794,
+    1106
+  ],
+  "SHARDS_TL_PIXEL": [
+    1690,
+    1025
+  ],
+  "SHARDS_BR_PIXEL": [
+    1788,
+    1059
+  ],
+  "SR_RECOVERY": false,
+  "SR_TEXT_RGB": [
+    236,
+    94,
+    190
+  ],
+  "SR_TEXT_TOL": 55,
+  "SR_S_MAX_MS": 4000,
+  "SR_A_MAX_MS": 6000,
+  "SR_D_PCT": 70,
+  "TRACKER_RELICS": true,
+  "AUTOPAN_BTN_PIXEL": [
+    759,
+    858
+  ],
+  "AUTOPAN_ON_RGB": [
+    108,
+    189,
+    68
+  ],
+  "AUTOPAN_OFF_RGB": [
+    170,
+    48,
+    39
+  ],
+  "AUTOPAN_TOL": 60,
+  "AUTOPAN_SETTLE_MS": 1000,
+  "AUTOPAN_GUARD": true,
+  "AUTOPAN_GUARD_SEC": 5,
+  "AUTOPAN_SHIFTLOCK": true,
+  "AUTOPAN_FAST_RELOCK": false,
+  "AUTOPAN_STALL_SEC": 5,
+  "AUTOPAN_RELOCK_DELAY_MS": 150,
+  "TEST_DIGS": 4,
+  "TEST_DIG_GAP_MS": 35,
+  "TEST_S_DELAY_MS": 25,
+  "TEST_DIG_HOLD_MS": 34,
+  "EARLY_S_PCT": 60,
+  "EARLY_S_CONFIRM_MS": 300,
+  "HOTKEY_PAUSE": {
+    "ctrl": true,
+    "alt": false,
+    "shift": false,
+    "code": "KeyL"
+  },
+  "RELIC_ON_LAND": false,
+  "RELIC_LAND_MAX_S": 45,
+  "RELIC_RELATIVE": true
 }

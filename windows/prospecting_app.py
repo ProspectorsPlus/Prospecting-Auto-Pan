@@ -12,6 +12,7 @@ If pywebview isn't installed it falls back to the browser settings UI.
 
 import os
 import sys
+import time
 import json
 import shutil
 import signal
@@ -140,6 +141,37 @@ def load_saved():
     return _read_json(CONFIG_FILE, {})
 
 
+# --- Secrets: the personal API key lives in a gitignored, NON-bundled file so it
+#     never lands in git or a shipped build. Config keeps only non-secret settings.
+SECRETS_FILE = os.path.join(HERE, "prospecting_secrets.json")
+
+
+def _load_secrets():
+    return _read_json(SECRETS_FILE, {}) or {}
+
+
+def _coach_key():
+    """The Coach API key: secrets file first, then legacy config fallback."""
+    k = (_load_secrets().get("COACH_API_KEY") or "").strip()
+    if k:
+        return k
+    return (load_saved().get("COACH_API_KEY") or "").strip()
+
+
+def _save_coach_key(key):
+    """Write the API key ONLY to the gitignored secrets file (never the config)."""
+    sec = _load_secrets()
+    if key == "__CLEAR__":
+        sec.pop("COACH_API_KEY", None)
+    elif key:
+        sec["COACH_API_KEY"] = key.strip()
+    try:
+        with open(SECRETS_FILE, "w") as f:
+            json.dump(sec, f, indent=2)
+    except OSError:
+        pass
+
+
 def _coerce(t, v):
     if t == "bool":
         return bool(v)
@@ -252,7 +284,11 @@ class Api:
               "FR_TEXT_RGB": list(saved.get("FR_TEXT_RGB", [232, 120, 200])),
               "FR_BOX_TOP": int(saved.get("FR_BOX_TOP", 0)),
               "FR_BOX_BOTTOM": int(saved.get("FR_BOX_BOTTOM", 0)),
-              "FR_HOME_PIXEL": list(saved.get("FR_HOME_PIXEL", [0, 0]))}
+              "FR_HOME_PIXEL": list(saved.get("FR_HOME_PIXEL", [0, 0])),
+              "SR_TEXT_RGB": list(saved.get("SR_TEXT_RGB", [0, 0, 0])),
+              "AUTOPAN_BTN_PIXEL": list(saved.get("AUTOPAN_BTN_PIXEL", [0, 0])),
+              "AUTOPAN_ON_RGB": list(saved.get("AUTOPAN_ON_RGB", [0, 0, 0])),
+              "AUTOPAN_OFF_RGB": list(saved.get("AUTOPAN_OFF_RGB", [0, 0, 0]))}
         hk = {k: saved.get(k, _HK_DEFAULTS[k]) for k in _HK_DEFAULTS}
         return {"values": merged, "running": self.proc is not None, "fr": fr, "hotkeys": hk,
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
@@ -385,9 +421,14 @@ class Api:
         ends. Only the real macro pixel keys are written (CAP_LEFT_PIXEL is a
         helper used just to compute the width)."""
         cur = load_saved()
-        for key in ("CAP_FULL_PIXEL", "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX",
-                    "DIG_TRIGGER_PIXEL"):
-            if key in pixels:
+        # save EVERY schema pixel key (PIXEL_FIELDS is the source of truth) --
+        # a hardcoded list here silently dropped newly added pixels (the
+        # money/shards corners saved only their COLOR, never their position)
+        _schema_keys = [k for (k, _l, _d, _def) in PIXEL_FIELDS] or [
+            "CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
+            "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
+        for key in _schema_keys:
+            if key != "CAP_LEFT_PIXEL" and key in pixels:
                 cur[key] = [int(pixels[key][0]), int(pixels[key][1])]
         # remember the left end (for the UI) and compute the bar width
         if "CAP_LEFT_PIXEL" in pixels:
@@ -405,8 +446,7 @@ class Api:
             cur["CALIB_WINDOW_ORIGIN"] = [rect["x"], rect["y"]]
             cur["CALIB_WINDOW_RECT"] = [rect["x"], rect["y"], rect["w"], rect["h"]]
             ratios = cur.get("PIXEL_RATIOS", {}) or {}
-            for key in ("CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX",
-                        "PAN_PIX", "SHAKE_PIX", "DIG_TRIGGER_PIXEL"):
+            for key in _schema_keys:
                 if key in cur and isinstance(cur[key], (list, tuple)):
                     fx = (cur[key][0] - rect["x"]) / float(rect["w"])
                     fy = (cur[key][1] - rect["y"]) / float(rect["h"])
@@ -424,6 +464,15 @@ class Api:
                 cur["FR_SCAN_X"] = int(fr["FR_SCAN_X"])
             if fr.get("FR_TEXT_RGB"):
                 cur["FR_TEXT_RGB"] = [int(c) for c in fr["FR_TEXT_RGB"][:3]]
+            if fr.get("SR_TEXT_RGB"):
+                cur["SR_TEXT_RGB"] = [int(c) for c in fr["SR_TEXT_RGB"][:3]]
+            if fr.get("AUTOPAN_BTN_PIXEL"):
+                cur["AUTOPAN_BTN_PIXEL"] = [int(fr["AUTOPAN_BTN_PIXEL"][0]),
+                                            int(fr["AUTOPAN_BTN_PIXEL"][1])]
+            if fr.get("AUTOPAN_ON_RGB"):
+                cur["AUTOPAN_ON_RGB"] = [int(c) for c in fr["AUTOPAN_ON_RGB"][:3]]
+            if fr.get("AUTOPAN_OFF_RGB"):
+                cur["AUTOPAN_OFF_RGB"] = [int(c) for c in fr["AUTOPAN_OFF_RGB"][:3]]
             if fr.get("FR_BOX_TOP") is not None:
                 cur["FR_BOX_TOP"] = int(fr["FR_BOX_TOP"])
             if fr.get("FR_BOX_BOTTOM") is not None:
@@ -546,20 +595,20 @@ class Api:
         return {"mode": "api" if s.get("COACH_MODE") == "api" else "offline",
                 "model": s.get("COACH_MODEL", "claude-haiku-4-5-20251001"),
                 "base": s.get("COACH_BASE_URL", ""),
-                "has_key": bool((s.get("COACH_API_KEY") or "").strip())}
+                "has_key": bool(_coach_key())}
 
     def save_coach_settings(self, mode="offline", key=None, model=None, base=None):
-        """Persist Coach mode/model/key/base. key=None leaves it; '__CLEAR__' wipes it."""
+        """Persist Coach mode/model/base to config; the API key goes ONLY to the
+        gitignored secrets file. key=None leaves it; '__CLEAR__' wipes it."""
         s = load_saved()
         s["COACH_MODE"] = "api" if mode == "api" else "offline"
         if model is not None:
             s["COACH_MODEL"] = (model or "").strip() or "claude-haiku-4-5-20251001"
         if base is not None:
             s["COACH_BASE_URL"] = (base or "").strip()
-        if key == "__CLEAR__":
-            s["COACH_API_KEY"] = ""
-        elif key:
-            s["COACH_API_KEY"] = key.strip()
+        s["COACH_API_KEY"] = ""                       # never store the key in config
+        if key is not None:
+            _save_coach_key(key)                      # secrets file only
         with open(CONFIG_FILE, "w") as f:
             json.dump(s, f, indent=2)
         return self.coach_settings()
@@ -609,7 +658,7 @@ class Api:
         Provider = Anthropic if the model starts with 'claude' and no base URL is
         set; otherwise OpenAI-compatible (at the base URL, or api.openai.com)."""
         saved = load_saved()
-        key = (saved.get("COACH_API_KEY") or "").strip()
+        key = _coach_key()
         if not key:
             return None
         model = (saved.get("COACH_MODEL") or "claude-haiku-4-5-20251001").strip() \
@@ -815,6 +864,72 @@ class Api:
                 res[k + "_white"] = white(out[k])
         return res
 
+    def test_earn_read(self):
+        """Run the earnings OCR ONCE on the calibrated money/shards regions
+        and return what it sees -- instant verification, no run needed."""
+        cur = load_saved()
+        out = {}
+        for name, tlk, brk in (("money", "MONEY_TL_PIXEL", "MONEY_BR_PIXEL"),
+                               ("shards", "SHARDS_TL_PIXEL", "SHARDS_BR_PIXEL")):
+            tl, br = cur.get(tlk) or [0, 0], cur.get(brk) or [0, 0]
+            try:
+                x0, y0, x1, y1 = int(tl[0]), int(tl[1]), int(br[0]), int(br[1])
+            except Exception:
+                out[name] = "bad corners"
+                continue
+            if x1 - x0 < 12 or y1 - y0 < 8:
+                out[name] = "region not calibrated (pick both corners)"
+                continue
+            try:
+                import mss, mss.tools
+                import numpy as np
+                with mss.mss() as sct:
+                    img = sct.grab({"left": x0, "top": y0,
+                                    "width": x1 - x0, "height": y1 - y0})
+                arr = np.frombuffer(img.rgb, dtype=np.uint8).reshape(
+                    img.height, img.width, 3)
+                big = arr.repeat(3, axis=0).repeat(3, axis=1)
+                png = mss.tools.to_png(big.tobytes(),
+                                       (img.width * 3, img.height * 3))
+                from Foundation import NSData
+                import Vision
+                data = NSData.dataWithBytes_length_(png, len(png))
+                handler = Vision.VNImageRequestHandler.alloc(
+                    ).initWithData_options_(data, None)
+                req = Vision.VNRecognizeTextRequest.alloc().init()
+                try:
+                    req.setRecognitionLevel_(0)
+                    req.setUsesLanguageCorrection_(False)
+                except Exception:
+                    pass
+                handler.performRequests_error_([req], None)
+                seen, best, best_y = [], None, None
+                for obs in (req.results() or []):
+                    try:
+                        s = str(obs.topCandidates_(1)[0].string())
+                    except Exception:
+                        continue
+                    seen.append(s)
+                    if "+" in s:
+                        continue
+                    digs = "".join(c for c in s if c.isdigit())
+                    if not digs:
+                        continue
+                    y = float(obs.boundingBox().origin.y)
+                    if best is None or y < best_y:
+                        best, best_y = int(digs), y
+                if best is not None:
+                    out[name] = "{:,}".format(best)
+                elif seen:
+                    out[name] = "saw text but no number: " + " | ".join(seen[:3])
+                else:
+                    out[name] = "no text found -- widen the region"
+            except ImportError as e:
+                out[name] = "missing package: %s" % e
+            except Exception as e:
+                out[name] = "error: %r" % (e,)
+        return out
+
     def save_config(self, data):
         """Write scalar settings, PRESERVING relic keys already in the file."""
         cur = load_saved()
@@ -1019,13 +1134,15 @@ class Api:
         else:
             cmd = [sys.executable or "python", MACRO_FILE]
         self.proc = subprocess.Popen(
-            cmd, cwd=DATA_DIR, stdout=subprocess.PIPE,
+            cmd, cwd=DATA_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         self._run_active = True
         self._last_stats = None
         self._events = []                     # detailed telemetry for this run
+        self._phase_samples = {}              # per-phase durations (ms)
+        self._phase_last = None
         self._macro_status = "idle"
         return "launched"
 
@@ -1058,6 +1175,18 @@ class Api:
         entry["event_counts"] = type_counts
         entry["reason_counts"] = reason_counts
         entry["events"] = evs[-250:]          # capped detailed timeline
+        _ps = getattr(self, "_phase_samples", None) or {}
+        _pt = {}
+        for _name, _arr in _ps.items():
+            if not _arr:
+                continue
+            _s = sorted(_arr)
+            _pt[_name] = {"n": len(_arr),
+                          "mean_ms": int(sum(_arr) / len(_arr)),
+                          "p95_ms": int(_s[min(len(_s) - 1,
+                                               int(0.95 * (len(_s) - 1)))])}
+        if _pt:
+            entry["phase_timings"] = _pt
         path = os.path.join(os.path.dirname(CONFIG_FILE), "run_history.json")
         hist = _read_json(path, [])
         if not isinstance(hist, list):
@@ -1068,6 +1197,32 @@ class Api:
                 json.dump(hist[-100:], f, indent=2)
         except OSError:
             pass
+
+    def _engine_cmd(self, cmd):
+        p = self.proc
+        if p is None or p.stdin is None:
+            return "not running"
+        try:
+            p.stdin.write(cmd + "\n")
+            p.stdin.flush()
+            return "ok"
+        except Exception as e:
+            return "error: %r" % (e,)
+
+    def pause_toggle(self):
+        """Session pause/resume -- keeps stats, relic timers and earnings."""
+        return self._engine_cmd("PAUSE_TOGGLE")
+
+    def relic_reset(self):
+        """Restart every relic timer at full (someone else placed one)."""
+        return self._engine_cmd("RELIC_RESET")
+
+    def relic_reset_one(self, idx):
+        return self._engine_cmd("RELIC_RESET_ONE %d" % int(idx))
+
+    def relic_set(self, idx, secs):
+        """Set one relic's remaining time exactly (works while paused too)."""
+        return self._engine_cmd("RELIC_SET %d %d" % (int(idx), int(secs)))
 
     def stop(self):
         self._save_history()
@@ -1192,6 +1347,13 @@ class Api:
             elif key == "FR_TEXT":
                 self.save_pixels({}, None, {"FR_SCAN_X": x,
                                             "FR_TEXT_RGB": [p["r"], p["g"], p["b"]]})
+            elif key == "SR_TEXT":
+                self.save_pixels({}, None, {"SR_TEXT_RGB": [p["r"], p["g"], p["b"]]})
+            elif key == "AUTOPAN_ON":
+                self.save_pixels({}, None, {"AUTOPAN_BTN_PIXEL": [x, y],
+                                            "AUTOPAN_ON_RGB": [p["r"], p["g"], p["b"]]})
+            elif key == "AUTOPAN_OFF":
+                self.save_pixels({}, None, {"AUTOPAN_OFF_RGB": [p["r"], p["g"], p["b"]]})
             elif key in ("FR_BOX_TOP", "FR_BOX_BOTTOM"):
                 self.save_pixels({}, None, {key: y})
             elif key in ("FR_OPEN_PIXEL", "FR_HOME_PIXEL"):
@@ -1430,6 +1592,23 @@ class Api:
                 except Exception:
                     pass
                 continue
+            if line.startswith("__PHASE__ "):
+                _now = time.time()
+                _name = line[10:].strip() or "?"
+                _last = getattr(self, "_phase_last", None)
+                if _last:
+                    _pn, _pt = _last
+                    _d = (_now - _pt) * 1000.0
+                    if 0 < _d < 120000:
+                        _ps = getattr(self, "_phase_samples", None)
+                        if _ps is None:
+                            _ps = self._phase_samples = {}
+                        _arr = _ps.setdefault(_pn, [])
+                        _arr.append(_d)
+                        if len(_arr) > 500:
+                            del _arr[:len(_arr) - 500]
+                self._phase_last = (_name, _now)
+                continue
             if line.strip() == "__POPOUT__":
                 try:
                     self.toggle_popout()
@@ -1439,8 +1618,13 @@ class Api:
             _s = line.strip()
             if _s.startswith("[RUNNING]"):
                 self._macro_status = "running"
+                _emit_paused(False)
+            elif _s.startswith("[STOPPED]"):
+                self._macro_status = "stopped"
+                _emit_paused(False)
             elif _s.startswith("[PAUSED]"):
                 self._macro_status = "paused"
+                _emit_paused(True)
             elif "SAFE PAUSE" in _s:
                 self._macro_status = "safe-pause"
             elif "FR-recover" in _s or "RECOVERY" in _s:
@@ -1461,6 +1645,8 @@ _HK_DEFAULTS = {
     "HOTKEY_SOFTSTOP": {"ctrl": True, "alt": False, "shift": False, "code": "KeyJ"},
     "HOTKEY_QUIT": {"ctrl": False, "alt": False, "shift": False, "code": "Escape"},
     "HOTKEY_POPOUT": {"ctrl": True, "alt": False, "shift": False, "code": "KeyP"},
+    "HOTKEY_PAUSE": {"ctrl": True, "alt": False, "shift": False, "code": "KeyL"},
+    "HOTKEY_RELIC_RESET": {"ctrl": True, "alt": False, "shift": False, "code": "KeyU"},
 }
 
 
@@ -1488,23 +1674,41 @@ PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  <div class="card">
    <div class="top">
      <div class="drag"><span class="dot" id="dot"></span><span class="st" id="status">Off</span></div>
+     <button class="ex" id="pausebt" title="Pause / Resume (keeps session)">&#9208;</button>
      <button class="ex" id="expand" title="Back to app">&#9635;</button>
    </div>
-   <div class="stats"><span><b id="rt">0:00</b> run</span><span><b id="pans">0</b> pans</span><span><b id="rate">0</b>/hr</span><span><b id="rec">0</b> rec</span></div>
+   <div class="stats"><span><b id="rt">0:00</b> run</span><span><b id="pans">0</b> pans</span><span><b id="rate">0</b>/hr</span><span><b id="clean">\u2014</b> clean</span><span><b id="rec">0</b> rec</span></div>
+   <div class="stats"><span><b id="mph">\u2014</b> $/hr</span><span><b id="sph">\u2014</b> sh/hr</span><span><b id="pdigs">0</b> digs</span></div>
+   <div class="stats" id="relrow" style="opacity:.85"></div>
    <button class="go" id="toggle">Start</button>
  </div>
 <script>
  const api=()=>window.pywebview&&window.pywebview.api;
  let alive=false;const $=id=>document.getElementById(id);
  const SM={running:["on","Running"],paused:["warn","Paused"],"safe-pause":["warn","Safe-pause"],recovering:["busy","Recovering"],stopped:["warn","Stopped"],idle:["warn","Ready · press start key"],off:["","Off"]};
+ function fmtBig(n){n=Number(n)||0;const a=Math.abs(n);
+   if(a>=1e15)return (n/1e15).toFixed(2)+'Q';
+   if(a>=1e12)return (n/1e12).toFixed(2)+'T';
+   if(a>=1e9)return (n/1e9).toFixed(2)+'B';
+   if(a>=1e6)return (n/1e6).toFixed(2)+'M';
+   if(a>=1e3)return (n/1e3).toFixed(1)+'K';
+   return String(Math.round(n));}
  function fmt(s){s=s||0;return Math.floor(s/60)+":"+String(s%60).padStart(2,"0");}
  async function poll(){let r;try{r=await api().pill_state();}catch(e){return;}
    alive=r.alive;const sm=SM[r.status||"off"]||["","—"];
    $("dot").className="dot "+sm[0];$("status").innerHTML=sm[1];
    const s=r.stats||{};$("rt").textContent=fmt(s.runtime_s);$("pans").textContent=s.cycles||0;$("rate").textContent=s.pans_per_hr||0;$("rec").textContent=s.recoveries||0;
+   $("clean").textContent=(s.cycles&&s.clean_pct!=null)?(s.clean_pct+"%"):"\u2014";
+   $("mph").textContent=(s.money_earned?("$"+fmtBig(s.money_per_hr||0)):"\u2014");
+   $("sph").textContent=(s.shards_earned?fmtBig(s.shards_per_hr||0):"\u2014");
+   $("pdigs").textContent=s.digs||0;
+   const rr=$("relrow");
+   if(rr){const R=s.relics||[];
+     rr.innerHTML=R.map(r=>'<span><b>'+r.name.split(' ')[0]+'</b> '+Math.floor(r.left_s/60)+':'+String(r.left_s%60).padStart(2,'0')+'</span>').join('');}
    const b=$("toggle");b.textContent=alive?"Stop":"Start";b.className="go"+(alive?" stop":"");}
  $("toggle").onclick=async()=>{try{if(alive){await api().stop();}else{await api().launch();}}catch(e){}poll();};
  $("expand").onclick=()=>{try{api().restore();}catch(e){}};
+ $("pausebt").onclick=async()=>{try{await api().pause_toggle();}catch(e){}};
  setInterval(poll,1000);poll();
 </script></body></html>'''
 
@@ -1523,6 +1727,16 @@ def _emit_stats(json_str):
         return
     try:
         _window.evaluate_js(f"window.setStats && setStats({json_str})")
+    except Exception:
+        pass
+
+
+def _emit_paused(p):
+    if _window is None:
+        return
+    try:
+        _window.evaluate_js("window.setPaused && setPaused(%s)"
+                            % ("true" if p else "false"))
     except Exception:
         pass
 
@@ -1566,18 +1780,26 @@ def build_html():
         '<p class="chint">Start the macro, tab into Roblox. Ctrl+K also '
         'starts/stops; Esc quits.</p></div>'
         '<div class="runbtns"><button type="button" id="startbtn" class="big go">'
-        'Start macro</button><button type="button" id="stopbtn" class="big stop" '
+        'Start macro</button><button type="button" id="pausebtn" class="big pause">'
+        'Pause</button>'
+        '<button type="button" id="stopbtn" class="big stop" '
         'disabled>Stop</button><span id="rstate" class="rstate">stopped</span></div>'
         '<div class="statsbar">'
         '<div class="stat"><div class="sv" id="st_run">0:00</div><div class="sl">runtime</div></div>'
         '<div class="stat"><div class="sv" id="st_cyc">0</div><div class="sl">pans</div></div>'
+        '<div class="stat"><div class="sv" id="st_digs">0</div><div class="sl">digs</div></div>'
         '<div class="stat"><div class="sv" id="st_rate">0</div><div class="sl">pans/hr</div></div>'
+        '<div class="stat"><div class="sv" id="st_clean">\u2014</div><div class="sl">clean %</div></div>'
         '<div class="stat"><div class="sv" id="st_rec">0</div><div class="sl">recoveries</div></div>'
         '<div class="stat"><div class="sv" id="st_nud">0</div><div class="sl">nudges</div></div>'
         '<div class="stat"><div class="sv" id="st_rel">0</div><div class="sl">relics</div></div>'
+        '<div class="stat"><div class="sv" id="st_mph">\u2014</div><div class="sl">$/hr</div></div>'
+        '<div class="stat"><div class="sv" id="st_sph">\u2014</div><div class="sl">shards/hr</div></div>'
         '<div class="stat"><div class="sv" id="st_safe">0</div><div class="sl">safe-stops</div></div>'
         '<div class="stat"><div class="sv" id="st_hard">0</div><div class="sl">hard-stops</div></div>'
         '</div>'
+        '<div id="relicline" class="relbar"></div>'
+        '<div id="relicset" class="relbar"></div>'
         '<pre id="log" class="log"></pre></section>')
 
     # Calibrate
@@ -1603,7 +1825,9 @@ def build_html():
         '<div class="autocal">'
         '  <button type="button" id="wizbtn" class="btn">✨ Guided calibration (recommended)</button>'
         '  <button type="button" id="dettest" class="btn2">Test detection (live)</button>'
+        '  <button type="button" id="earntest" class="btn2">Test money/shards read</button>'
         '  <div class="detout" id="detout"></div>'
+        '  <div class="detout" id="earnout"></div>'
         '</div>'
         '<div class="caldiv"><span>or calibrate manually</span></div>'
         '<p class="chint" style="margin:0 0 10px">Click a <b>Calibrate</b> button, then '
@@ -1619,6 +1843,23 @@ def build_html():
         '<div class="calval"><span class="frstat" id="frstat_text">not set</span>'
         '<span class="calsw2" id="frsw_text"></span></div>'
         '<button type="button" class="btn2 frbtn" data-frk="text">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">Starfall River row colour</div>'
+        '<div class="caldesc">Click the Starfall River text in the travel list. Sets only its colour '
+        '(the scan column and list box are shared with Fortune River above).</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_srtext">not set</span>'
+        '<span class="calsw2" id="frsw_srtext"></span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="srtext">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">Auto Pan button — ON state</div>'
+        '<div class="caldesc">With the game\'s Auto Pan turned ON (green), click the button. '
+        'Saves its position and ON colour (used by Tracker + relics).</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_apon">not set</span>'
+        '<span class="calsw2" id="frsw_apon"></span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="apon">Calibrate</button></div>'
+        '<div class="calrow"><div class="calinfo"><div class="calname">Auto Pan button — OFF state</div>'
+        '<div class="caldesc">Turn Auto Pan OFF in-game, then click the button again. Saves its OFF colour.</div></div>'
+        '<div class="calval"><span class="frstat" id="frstat_apoff">not set</span>'
+        '<span class="calsw2" id="frsw_apoff"></span></div>'
+        '<button type="button" class="btn2 frbtn" data-frk="apoff">Calibrate</button></div>'
         '<div class="calrow"><div class="calinfo"><div class="calname">List - TOP edge</div>'
         '<div class="caldesc">Click just inside the top of the travel list box.</div></div>'
         '<div class="calval"><span class="frstat" id="frstat_top">not set</span></div>'
@@ -1678,7 +1919,9 @@ def build_html():
         '<div id="histbox" class="histbox"></div></section>')
 
     nav("keys", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 9.5h.01M9.5 9.5h.01M13 9.5h.01M16.5 9.5h.01M6.5 13.5h11"/></svg>', "Keybinds")
-    _kbrows = [("HOTKEY_TOGGLE", "Start / Stop"), ("HOTKEY_SOFTSTOP", "Soft-stop (test)"),
+    _kbrows = [("HOTKEY_TOGGLE", "Start / Stop"), ("HOTKEY_PAUSE", "Pause / Resume (keeps session)"),
+               ("HOTKEY_RELIC_RESET", "Reset relic timers to full"),
+               ("HOTKEY_SOFTSTOP", "Soft-stop (test)"),
                ("HOTKEY_QUIT", "Quit macro"), ("HOTKEY_POPOUT", "Toggle pop-out pill")]
     panels.append(
         '<section class="panel" id="pkeys"><div class="phead"><h2>Keybinds</h2>'
@@ -1773,6 +2016,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:9px 14px;cursor:pointer;transition:transform .12s var(--ease),filter .15s,background .15s}
  .btn{background:var(--accent);color:#241a02} .btn:hover{filter:brightness(1.06);transform:translateY(-1px)}
  .btn2{background:#2a2418;color:#e9e0cf} .btn2:hover{background:#352d1c}
+ .big.pause{background:#6d5836;color:#f4ead6} .big.pause:hover{filter:brightness(1.08)}
+ .big.pause.on{background:var(--accent);color:#241a02}
+ .relbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 2px 0;min-height:0}
+ .relbar:empty{display:none}
+ .relbar .lblx{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+ .relchip{display:inline-flex;gap:7px;align-items:center;background:var(--panel);
+   border:1px solid var(--line2);border-radius:9px;padding:5px 11px;font-size:12px;
+   color:var(--mut);font-weight:600}
+ .relchip b{color:var(--accent-lit);font-variant:tabular-nums;font-weight:700}
+ .relbar select,.relbar input{background:var(--bg2);border:1px solid var(--line2);
+   border-radius:7px;color:var(--txt);padding:6px 9px;font:inherit;font-size:12px}
+ .relbar select:focus,.relbar input:focus{outline:none;border-color:var(--accent)}
  input,select{font:inherit}
  .topfield{background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:8px;
   padding:8px 10px;transition:border-color .15s,box-shadow .15s} .topfield.sm{width:140px}
@@ -2148,6 +2403,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
  const fields=()=>$$('[data-key]');
  function setVals(v){fields().forEach(el=>{const k=el.dataset.key;
+   if(!(k in v))return; // key not in the loaded build/config -> KEEP the current
+   // value (old builds must never zero settings added after they were saved)
    if(el.dataset.type==='bool')el.checked=!!v[k]; else el.value=(v[k]??'');});}
  function collect(){const o={};fields().forEach(el=>{const k=el.dataset.key,t=el.dataset.type;
    o[k]=(t==='bool')?el.checked:(t==='str')?el.value:parseInt(el.value||'0',10);});return o;}
@@ -2159,13 +2416,63 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  window.refreshValues=async function(){try{const s=await window.pywebview.api.get_state();setVals(s.values);}catch(e){}};
  window.setRunning=r=>{$('#startbtn').disabled=r;$('#stopbtn').disabled=!r;
    $('#rstate').textContent=r?'running':'stopped';};
+ window.fmtBig=window.fmtBig||function(n){n=Number(n)||0;const a=Math.abs(n);
+   if(a>=1e15)return (n/1e15).toFixed(2)+'Q';
+   if(a>=1e12)return (n/1e12).toFixed(2)+'T';
+   if(a>=1e9)return (n/1e9).toFixed(2)+'B';
+   if(a>=1e6)return (n/1e6).toFixed(2)+'M';
+   if(a>=1e3)return (n/1e3).toFixed(1)+'K';
+   return String(Math.round(n));};
+ const fmtBig=window.fmtBig;
+ window.setPaused=p=>{const b=$('#pausebtn');
+   if(b){b.textContent=p?'Resume':'Pause';b.classList.toggle('on',!!p);}
+   const r=$('#rstate');if(r&&p)r.textContent='paused';};
  window.setStats=s=>{if(!s)return;const m=Math.floor((s.runtime_s||0)/60),
    sec=String((s.runtime_s||0)%60).padStart(2,'0');
    $('#st_run').textContent=m+':'+sec; $('#st_cyc').textContent=s.cycles||0;
    $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;
+   const _ce=$('#st_clean'); if(_ce)_ce.textContent=(s.cycles&&s.clean_pct!=null)?(s.clean_pct+'%'):'\u2014';
+   const _de=$('#st_digs'); if(_de)_de.textContent=s.digs||0;
+   const _mp=$('#st_mph'); if(_mp)_mp.textContent=(s.money_earned?('$'+fmtBig(s.money_per_hr||0)):'\u2014');
+   const _sp=$('#st_sph'); if(_sp)_sp.textContent=(s.shards_earned?fmtBig(s.shards_per_hr||0):'\u2014');
    const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
    _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
-   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);};
+   _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);
+   const _rl=document.getElementById('relicline');
+   const R=s.relics||[];
+   if(_rl){_rl.innerHTML=R.length?('<span class="lblx">\u23f3 relics</span>'+
+     R.map(r=>'<span class="relchip">'+r.name+' <b>'+Math.floor(r.left_s/60)+':'+String(r.left_s%60).padStart(2,'0')+'</b></span>').join('')):'';}
+   _relicSetUI(R);};
+ window._relNames='';
+ window._relicSetUI=function(R){const box=document.getElementById('relicset');
+   if(!box)return;
+   const names=(R||[]).map(r=>r.name).join('|');
+   if(names===window._relNames)return;   // rebuild only when the set changes
+   window._relNames=names;
+   if(!R||!R.length){box.innerHTML='';return;}
+   box.innerHTML='<span class="lblx">set timer</span>'+
+     '<select id="rsi" style="max-width:170px">'+
+     R.map((r,i)=>'<option value="'+i+'">'+r.name+'</option>').join('')+
+     '</select><input id="rst" placeholder="3m 4s" style="width:90px">'+
+     '<button type="button" class="btn2" id="rsb">Set</button>'+
+     '<button type="button" class="btn2" id="rsr">Reset to full</button>'+
+     '<span class="lblx" style="margin-left:auto">ctrl+shift+1\u20139 one \u00b7 ctrl+U all</span>';
+   const parse=t=>{t=(t||'').trim().toLowerCase();if(!t)return null;
+     let m=t.match(/^(\d+):(\d{1,2})$/);if(m)return (+m[1])*60+(+m[2]);
+     let tot=0,ok=false;
+     m=t.match(/(\d+)\s*m/);if(m){tot+=(+m[1])*60;ok=true;}
+     m=t.match(/(\d+)\s*s/);if(m){tot+=(+m[1]);ok=true;}
+     if(ok)return tot;
+     if(/^\d+$/.test(t))return +t;
+     return null;};
+   const rsb=document.getElementById('rsb');
+   if(rsb)rsb.onclick=async()=>{const i=document.getElementById('rsi').value;
+     const secs=parse(document.getElementById('rst').value);
+     if(secs==null){toast('Time like: 3m 4s, 3:04, or 184');return;}
+     try{await window.pywebview.api.relic_set(i,secs);toast('Timer set');}catch(e){}};
+   const rsr=document.getElementById('rsr');
+   if(rsr)rsr.onclick=async()=>{const i=document.getElementById('rsi').value;
+     try{await window.pywebview.api.relic_reset_one(i);toast('Timer reset to full');}catch(e){}};};
  const EVLBL={safe_stop:'Safe-stops',hard_stop:'Hard-stops',nudge:'Nudges',recover:'Recoveries',break_out:'Break-outs',shake_fail:'Failed shakes',shake_glitch:'Shake-glitch',no_progress:'No-progress',fr_recover:'FR recovery',recenter:'X recenter',relic:'Relics'};
  const EVORDER=['safe_stop','hard_stop','no_progress','shake_fail','shake_glitch','recover','break_out','nudge','recenter','fr_recover','relic'];
  const _esc=s=>(s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
@@ -2182,10 +2489,23 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(!list||!list.length){box.innerHTML='<div class="hempty">No runs yet \u2014 finish a session and it shows up here.</div>';return;}
    box.innerHTML=list.map(r=>{const m=Math.floor((r.runtime_s||0)/60);
      return '<div class="hrow"><div class="hr-top"><b>'+(r.ended||'run')+'</b>'+
+       (r.tracker?'<span style="color:#7d9b63;font-weight:700;margin-left:6px">TRACKER</span>':'')+
        '<span class="hr-reason">'+_esc(r.reason||r.stop_reason||'')+'</span></div>'+
-       '<div class="hr-stats">'+(r.cycles||0)+' pans \u00b7 '+(r.pans_per_hr||0)+'/hr \u00b7 '+m+' min \u00b7 '+
+       '<div class="hr-stats">'+(r.cycles||0)+' pans \u00b7 '+(r.digs!=null?(r.digs+' digs \u00b7 '):'')+(r.pans_per_hr||0)+'/hr \u00b7 '+m+' min \u00b7 '+
        (r.recoveries||0)+' rec \u00b7 '+(r.nudges||0)+' nudges \u00b7 '+(r.relics_used||0)+' relics \u00b7 '+
-       (r.safe_stops||0)+' safe \u00b7 '+(r.hard_stops||0)+' hard</div>'+_whyLine(r)+_timeline(r)+'</div>';}).join('');}
+       (r.safe_stops||0)+' safe \u00b7 '+(r.hard_stops||0)+' hard'+
+       ((r.clean_pct!=null&&r.cycles)?(' \u00b7 '+r.clean_pct+'% clean'):'')+'</div>'+
+       _phases(r)+_earn(r)+_whyLine(r)+_timeline(r)+'</div>';}).join('');}
+ function _earn(r){const m=r.money_earned||0,s=r.shards_earned||0;
+   if(!m&&!s)return '';
+   return '<div class="hr-stats" style="color:#9ec98a">earned: $'+fmtBig(m)+
+     ' ($'+fmtBig(r.money_per_hr||0)+'/hr, $'+fmtBig(r.money_per_pan||0)+'/pan)'+
+     ' \u00b7 '+fmtBig(s)+' shards ('+fmtBig(r.shards_per_hr||0)+'/hr, '+
+     (r.shards_per_pan||0)+'/pan)</div>';}
+ function _phases(r){const p=r.phase_timings;if(!p)return '';
+   const ks=Object.keys(p);if(!ks.length)return '';
+   const parts=ks.map(k=>k+' '+(p[k].mean_ms/1000).toFixed(2)+'s (p95 '+(p[k].p95_ms/1000).toFixed(2)+'s)');
+   return '<div class="hr-stats" style="opacity:.75">phases: '+parts.join(' \u00b7 ')+'</div>';}
  (function(){const b=document.getElementById('histrefresh');if(b)b.onclick=loadHistory;})();
  // relics
  function relicRows(){return $$('.rrow');}
@@ -2273,6 +2593,21 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function setFR(f){if(!f)return;
    if(f.FR_SCAN_X){fr.text={scan_x:f.FR_SCAN_X,rgb:f.FR_TEXT_RGB};
      const s=document.getElementById('frstat_text');if(s)s.textContent='x='+f.FR_SCAN_X;
+     const ap=document.getElementById('frstat_apon');
+     if(ap&&f.AUTOPAN_BTN_PIXEL&&(f.AUTOPAN_BTN_PIXEL[0]||f.AUTOPAN_BTN_PIXEL[1])){
+       ap.textContent='('+f.AUTOPAN_BTN_PIXEL[0]+', '+f.AUTOPAN_BTN_PIXEL[1]+')';
+       const w1=document.getElementById('frsw_apon');
+       if(w1&&f.AUTOPAN_ON_RGB)w1.style.background='rgb('+f.AUTOPAN_ON_RGB.join(',')+')';}
+     const af=document.getElementById('frstat_apoff');
+     if(af&&f.AUTOPAN_OFF_RGB&&(f.AUTOPAN_OFF_RGB[0]||f.AUTOPAN_OFF_RGB[1]||f.AUTOPAN_OFF_RGB[2])){
+       af.textContent='saved';
+       const w2=document.getElementById('frsw_apoff');
+       if(w2)w2.style.background='rgb('+f.AUTOPAN_OFF_RGB.join(',')+')';}
+     const q=document.getElementById('frstat_srtext');
+     if(q&&f.SR_TEXT_RGB&&(f.SR_TEXT_RGB[0]||f.SR_TEXT_RGB[1]||f.SR_TEXT_RGB[2])){
+       q.textContent='rgb('+f.SR_TEXT_RGB.join(',')+')';
+       const w=document.getElementById('frsw_srtext');
+       if(w)w.style.background='rgb('+f.SR_TEXT_RGB.join(',')+')';}
      const sw=document.getElementById('frsw_text');if(sw&&f.FR_TEXT_RGB)sw.style.background='rgb('+f.FR_TEXT_RGB.join(',')+')';}
    if(f.FR_BOX_TOP){fr.top=f.FR_BOX_TOP;const s=document.getElementById('frstat_top');if(s)s.textContent='y='+f.FR_BOX_TOP;}
    if(f.FR_BOX_BOTTOM){fr.bottom=f.FR_BOX_BOTTOM;const s=document.getElementById('frstat_bottom');if(s)s.textContent='y='+f.FR_BOX_BOTTOM;}
@@ -2280,7 +2615,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const s=document.getElementById('frstat_open');if(s)s.textContent='('+f.FR_OPEN_PIXEL[0]+', '+f.FR_OPEN_PIXEL[1]+')';}
    if(f.FR_HOME_PIXEL&&(f.FR_HOME_PIXEL[0]||f.FR_HOME_PIXEL[1])){fr.home=f.FR_HOME_PIXEL;
      const s=document.getElementById('frstat_home');if(s)s.textContent='('+f.FR_HOME_PIXEL[0]+', '+f.FR_HOME_PIXEL[1]+')';}}
- const FRKEY={text:'FR_TEXT',top:'FR_BOX_TOP',bottom:'FR_BOX_BOTTOM',open:'FR_OPEN_PIXEL',home:'FR_HOME_PIXEL'};
+ const FRKEY={text:'FR_TEXT',srtext:'SR_TEXT',apon:'AUTOPAN_ON',apoff:'AUTOPAN_OFF',top:'FR_BOX_TOP',bottom:'FR_BOX_BOTTOM',open:'FR_OPEN_PIXEL',home:'FR_HOME_PIXEL'};
  $$('.frbtn').forEach(btn=>btn.onclick=()=>{
    const key=FRKEY[btn.dataset.frk];
    const lab=((btn.closest('.calrow')||document).querySelector('.calname')||{}).textContent||key;
@@ -2306,6 +2641,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function _sw(c){return c?('rgb('+c.r+','+c.g+','+c.b+')'):'#000';}
  function _drow(label,c,verdict){return '<div class="detrow"><span class="detsw" style="background:'+_sw(c)+'"></span>'
    +'<b>'+label+'</b> '+(c?('rgb('+c.r+','+c.g+','+c.b+')'):'(not set)')+' '+(verdict||'')+'</div>';}
+ (function(){const b=document.getElementById('earntest');if(!b)return;
+   b.onclick=async()=>{const box=document.getElementById('earnout');
+     box.innerHTML='<div class="detrow">reading\u2026</div>';
+     let r;try{r=await window.pywebview.api.test_earn_read();}catch(e){
+       box.innerHTML='<div class="detrow det-no">failed: '+e+'</div>';return;}
+     box.innerHTML='<div class="detrow"><b>money:</b> '+(r.money||'?')+'</div>'+
+                   '<div class="detrow"><b>shards:</b> '+(r.shards||'?')+'</div>';};})();
  (function(){const b=document.getElementById('dettest');if(!b)return;
    b.onclick=async()=>{
      if(_detT){clearInterval(_detT);_detT=null;b.textContent='Test detection (live)';document.getElementById('detout').innerHTML='';return;}
@@ -2349,6 +2691,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
+ (function(){const b=$('#pausebtn');if(b)b.onclick=async()=>{
+   try{await window.pywebview.api.pause_toggle();}catch(e){}};})();
  // builds — a build saves ALL settings + relics; loading applies them all
  async function loadBuild(name){if(!name)return;
    const e=await window.pywebview.api.load_build(name);if(!e)return;
@@ -2727,7 +3071,7 @@ def main():
     try:
         _pill = webview.create_window(
             "Prospectors Plus", html=PILL_HTML, js_api=api,
-            width=272, height=132, frameless=True, on_top=True,
+            width=272, height=178, frameless=True, on_top=True,
             easy_drag=True, resizable=False, hidden=True)
     except Exception as _e:
         print("[pill] precreate failed: %s" % _e)

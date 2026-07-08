@@ -1,11 +1,23 @@
 __pycache__/
 *.pyc
 .DS_Store
+**/.DS_Store
 ACCESS_CODES_PRIVATE.txt
 run_history.json
 prospecting_builds.json
 windows/run_history.json
 windows/prospecting_builds.json
+
+# secrets — personal API keys, never commit / never bundle
+prospecting_secrets.json
+windows/prospecting_secrets.json
+Fable5/fable_secrets.json
+
+# personal chat transcript
+coach_history.json
+
+# stray/temp
+zi0waoYL
 
 # private analytics endpoint (host yourself)
 

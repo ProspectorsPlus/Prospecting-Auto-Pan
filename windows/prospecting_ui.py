@@ -36,6 +36,28 @@ SECTIONS = [
         ("EASY_FIRST_DIG_DELAY_MS",   "Wait longer before the first dig (ms)",     "int", 0),
         ("EASY_WATER_RETURN_DELAY_MS","Wait before going back to water when full (ms)", "int", 0),
     ]),
+    ("Tracker", [
+        ("TRACKER_MODE",   "Tracker: watch-only, count the game's auto-pan", "bool", False),
+        ("TRACKER_POLL_MS","Tracker sampling rhythm (ms)",                "int", 30),
+        ("TRACKER_RELICS", "Use relic timers during Tracker (toggles Auto Pan)", "bool", False),
+        ("AUTOPAN_TOL",    "Auto Pan button colour tolerance",            "int", 40),
+        ("AUTOPAN_SETTLE_MS","Wait after clicking Auto Pan (ms)",         "int", 400),
+        ("AUTOPAN_GUARD",  "Guard: re-enable Auto Pan if it turns off",   "bool", False),
+        ("AUTOPAN_GUARD_SEC","Guard check interval (seconds)",            "int", 5),
+        ("AUTOPAN_SHIFTLOCK","Shift-lock dance around Auto Pan clicks",    "bool", False),
+        ("AUTOPAN_FAST_RELOCK","Re-lock shift immediately after the click",  "bool", False),
+        ("AUTOPAN_STALL_SEC","Restart Auto Pan if idle this long (s, 0=off)","int", 0),
+        ("AUTOPAN_RELOCK_DELAY_MS","Click -> shift re-lock gap (ms)",       "int", 0),
+    ]),
+    ("Relic behaviour", [
+        ("RELIC_ON_LAND",   "Place relics only when ON LAND",             "bool", False),
+        ("RELIC_LAND_MAX_S","Max wait for land before placing anyway (s)","int", 45),
+        ("RELIC_RELATIVE",  "Relative timers (keep counting while paused)","bool", True),
+    ]),
+    ("Earnings", [
+        ("EARN_TRACK",   "Track money & shards (OCR the HUD totals)",   "bool", False),
+        ("EARN_OCR_SEC", "Read the totals every (seconds)",             "int", 10),
+    ]),
     ("Treasure chest", [
         ("TREASURE_MODE",        "Treasure Chest mode (no shake, strafe L/R)", "bool", False),
         ("TREASURE_DIGS",        "Digs per chest before strafing",             "int", 1),
@@ -50,6 +72,11 @@ SECTIONS = [
         ("MAX_DIGS_TO_FILL",   "Max digs to fill the pan",                "int", 8),
         ("DIG_FILL_MS",        "Wait for FULL after each dig (ms)",        "int", 250),
         ("PRE_DIG_SETTLE_MS",  "Settle before first dig after shake (ms)", "int", 60),
+        ("DIG_FILL_SMART",     "Smart fill wait (watch bar motion, 0 downtime)", "bool", False),
+        ("DIG_PIPELINE",       "Pipelined digs (rhythm-fire, learn dig count)", "bool", False),
+        ("DIG_PIPELINE_GAP_MS","Pipeline rhythm (ms, 0 = auto from dig speed)", "int", 0),
+        ("DIG_PLATEAU_MS",     "Smart: bar still this long = dig again (ms)", "int", 120),
+        ("DIG_SMART_CAP_MS",   "Smart: max wait per dig (ms)",              "int", 900),
     ]),
     ("Walk back into water", [
         ("PAN_BACK_MAX_MS",    "Max S walk-back (ms)",                    "int", 200),
@@ -62,10 +89,16 @@ SECTIONS = [
         ("SHAKE_CLICK_GAP_MS", "Gap between shake clicks (ms)",           "int", 14),
         ("SHAKE_HOLD_MS",      "Shake overall timeout (ms)",              "int", 1500),
         ("SHAKE_BAIL_MS",      "Shake-failed detection (ms)",             "int", 500),
+        ("SHAKE_START_CONFIRM_MS","Confirm shake started within (ms, 0 = off)", "int", 0),
+        ("SHAKE_START_RETRIES", "Deeper-tap retries when it won't start",     "int", 2),
+        ("SHAKE_RETRY_DEEPER_MS","Retry deeper S tap (ms)",                   "int", 70),
+        ("SHAKE_STALL_MS",     "Drain-stall fail-fast (ms, 0 = off)",       "int", 0),
         ("SHAKE_START_DELAY_MS","Delay before shake starts (ms)",         "int", 0),
         ("POST_SHAKE_SETTLE_MS","Settle after pan empties (ms)",          "int", 150),
     ]),
     ("Return to land (dig-probe)", [
+        ("LAND_CUE_ASSIST",    "Land assist: confirm Deposit cue before probing", "bool", False),
+        ("LAND_ASSIST_MAX_MS", "Land assist W budget (ms)",               "int", 400),
         ("DEPOSIT_MAX_MS",     "Max W to find land cue (ms)",             "int", 1200),
         ("LAND_SETTLE_MS",     "Hold W after land cue (ms)",              "int", 45),
         ("DIG_PROBE_MS",       "Wait to detect a probe-dig hit (ms)",     "int", 320),
@@ -136,6 +169,11 @@ SECTIONS = [
         ("FR_WALK_MAX_MS", "FR: max W walk to reach water (ms)",         "int", 6000),
         ("FR_END_A_MS",    "FR: hold A on land before restart (ms)",     "int", 300),
         ("FR_CROSS_CONFIRM","FR: reads to confirm water-cross/arrival",   "int", 3),
+        ("SR_RECOVERY",    "Starfall River recovery (fast-travel on soft stop)", "bool", False),
+        ("SR_TEXT_TOL",    "SR: colour match tolerance",                 "int", 55),
+        ("SR_A_MAX_MS",    "SR: max timed A strafe to water (ms)",       "int", 6000),
+        ("SR_D_PCT",       "SR: D back-off (% of the A time)",           "int", 50),
+        ("SR_S_MAX_MS",    "SR: max S walk to water (ms)",               "int", 4000),
     ]),
 ]
 
@@ -191,6 +229,66 @@ TAB_ICON = {
 
 # Per-setting explanations (shown as a ? tooltip next to each field).
 HELP = {
+    "TRACKER_MODE": "Benchmark the game's BUILT-IN auto-pan: the macro sends "
+                     "no input at all and just watches the capacity bar, "
+                     "counting digs (rise bursts, approximate) and pans "
+                     "(high bar to empty, exact). Stats and History work as "
+                     "normal and the run is labelled TRACKER, so you can "
+                     "compare it to macro runs on the same numbers. Start it, "
+                     "then turn on the game's auto-pan and keep hands off.",
+    "TRACKER_POLL_MS": "How often the tracker samples the bar. 30ms is plenty.",
+    "TRACKER_RELICS": "While tracking the game's Auto Pan, still fire your "
+                     "relic timers: it clicks Auto Pan OFF (colour-verified), "
+                     "uses the relic, returns to the pan slot, then clicks "
+                     "Auto Pan back ON. Needs the Auto Pan button position + "
+                     "both state colours calibrated (Calibrate tab).",
+    "AUTOPAN_TOL": "Per-channel colour tolerance when deciding whether the "
+                     "Auto Pan button reads ON or OFF.",
+    "AUTOPAN_SETTLE_MS": "Pause after each Auto Pan button click before "
+                     "re-reading its colour.",
+    "AUTOPAN_GUARD": "While tracking, re-read the Auto Pan button every few "
+                     "seconds; if it reads OFF twice in a row (accidental "
+                     "click, game hiccup) it clicks it back ON and logs an "
+                     "autopan_guard event.",
+    "AUTOPAN_GUARD_SEC": "How often the guard re-reads the button. Worst-case "
+                     "downtime after an accidental toggle is about twice this.",
+    "AUTOPAN_SHIFTLOCK": "Turn ON if you play with shift-lock: before touching "
+                     "the Auto Pan button it taps Shift (frees the cursor), "
+                     "clicks, then re-locks. Leave OFF if you don't use "
+                     "shift-lock (it would toggle you INTO it).",
+    "AUTOPAN_FAST_RELOCK": "Re-lock shift the instant the button click is "
+                     "verified, instead of parking the cursor at centre "
+                     "first (the lock snaps the cursor to centre anyway). "
+                     "Faster; turn off if clicks land oddly.",
+    "AUTOPAN_RELOCK_DELAY_MS": "How long to wait before the Shift tap that "
+                     "re-enters shift-lock: after the cursor is parked back at "
+                     "centre (normal mode), or right after the verified click "
+                     "(fast re-lock mode). Raise it if the re-lock ever "
+                     "registers too early.",
+    "AUTOPAN_STALL_SEC": "Health kick: Auto Pan sometimes wedges while its "
+                     "button still shows green. If the capacity bar shows NO "
+                     "activity for this many seconds while the button reads "
+                     "ON, it gets toggled off and back on. 0 = off. Set it "
+                     "comfortably above your slowest normal gap (try 5-8).",
+    "RELIC_ON_LAND": "A due relic WAITS until the macro is on land (the "
+                     "Collect Deposit cue) before placing — placing from the "
+                     "water misplaces it. The normal cycle touches land every "
+                     "few seconds, so the wait is short.",
+    "RELIC_LAND_MAX_S": "Safety valve: if land never shows for this long "
+                     "(stuck in water?), place the relic anyway.",
+    "RELIC_RELATIVE": "ON: relic timers follow REAL time — pausing the macro "
+                     "doesn't pause them, matching the in-game buff that "
+                     "keeps burning while you're paused. OFF: timers freeze "
+                     "with the pause and shift on resume.",
+    "EARN_TRACK": "Reads the money and shard totals from the bottom-right HUD "
+                     "with macOS text recognition and credits the GAINS to the "
+                     "run: $/hr, $/pan, shards/hr, shards/pan in live stats and "
+                     "History — for macro runs AND Tracker runs, so builds and "
+                     "the game's auto-pan compare on real earnings. Calibrate "
+                     "the four Money/Shards corners in the Calibrate tab first. "
+                     "Spending mid-run is ignored (only gains count).",
+    "EARN_OCR_SEC": "How often the totals are read. 10s is plenty — earnings "
+                     "are credited as deltas, nothing is missed between reads.",
     "TREASURE_MODE": "Switch to Treasure Chest Collection: NO shaking. It digs briefly, then "
                      "holds D until the Collect cue shows, digs, holds A until the cue, and so on "
                      "-- alternating sides. Uses the Deposit pixel as the Collect cue.",
@@ -220,6 +318,24 @@ HELP = {
                         "It watches the bar, so set this above your build's need.",
     "DIG_FILL_MS": "After a dig, how long to wait for the bar to read FULL before "
                    "digging again.",
+    "DIG_PIPELINE": "Cuts the dead time between digs: instead of waiting for "
+                     "the bar animation to settle after EVERY dig, it learns "
+                     "how many digs fill your pan (first 3 fills run normally) "
+                     "and fires the follow-ups on your dig-animation rhythm, "
+                     "checking the bar only after the last. Falls back and "
+                     "relearns if a fill comes up short.",
+    "DIG_PIPELINE_GAP_MS": "Rhythm between pipelined digs. 0 = derived from "
+                     "your Dig speed (190000/speed + 25ms). Raise if pipelined "
+                     "digs skip; lower for max speed.",
+    "DIG_FILL_SMART": "Fixes wasted dig animations: the fill bar ANIMATES "
+                     "after a dig, and the plain wait can time out mid-animation "
+                     "and re-dig pointlessly. Smart wait keeps waiting while the "
+                     "bar is still rising, and digs again the instant it stops "
+                     "short of full. Good for every build.",
+    "DIG_PLATEAU_MS": "Smart fill: how long the bar must sit unchanged (below "
+                     "full) before we conclude the dig wasn't enough and dig again.",
+    "DIG_SMART_CAP_MS": "Smart fill: absolute cap on one wait, in case the bar "
+                     "misbehaves. Keep well above your bar's fill-animation time.",
     "PRE_DIG_SETTLE_MS": "Tiny pause after landing before the first dig, so it "
                          "doesn't fire mid-glide and miss.",
     "PAN_BACK_MAX_MS": "Safety cap on the backward (S) walk into the water.",
@@ -235,10 +351,31 @@ HELP = {
     "SHAKE_BAIL_MS": "If the pan is STILL completely full after this long, the "
                      "shake didn't start — give up and retry. Keep above a real "
                      "shake's drain time.",
+    "SHAKE_START_CONFIRM_MS": "Opt-in fast save (0 = off). If the pan is still "
+                     "completely full this long after clicking starts, the shake "
+                     "never initiated (edge click / glitch) — tap S a touch "
+                     "deeper and keep clicking instead of losing the cycle. "
+                     "Try 300. Keep it below Shake-failed detection.",
+    "SHAKE_START_RETRIES": "How many deeper-tap retries per shake before giving "
+                     "up and letting the normal bail/recovery handle it.",
+    "SHAKE_RETRY_DEEPER_MS": "Length of the S tap used by a start retry. Bigger "
+                     "= walks back deeper into the water each retry.",
+    "SHAKE_STALL_MS": "Opt-in fail-fast (0 = off). If a STARTED shake's bar "
+                     "freezes for this long mid-drain, the game dropped the "
+                     "shake — end the attempt now instead of clicking out the "
+                     "whole timeout. Try 600. Keep it well above one drain "
+                     "tick so a slow build can't false-trigger.",
     "SHAKE_START_DELAY_MS": "Pause between reaching the water and starting the "
                             "shake (usually 0).",
     "POST_SHAKE_SETTLE_MS": "Pause after the pan empties so momentum settles you "
                             "onto land before the dig-probe.",
+    "LAND_CUE_ASSIST": "Before the first probe dig, if 'Collect Deposit' isn't "
+                     "on screen yet, hold W briefly until it shows — so the "
+                     "probe digs from ON the dirt instead of nudging blindly "
+                     "toward it. Targets the #1 wasted-time source (nudges). "
+                     "The capacity bar still verifies every dig.",
+    "LAND_ASSIST_MAX_MS": "How long the assist may hold W waiting for the cue "
+                     "before letting the normal probe take over.",
     "DEPOSIT_MAX_MS": "Safety cap on the forward (W) walk while looking for land.",
     "LAND_SETTLE_MS": "Hold W a touch longer after the land cue to sit firmly on "
                       "the dirt (prevents a land↔water flicker).",
@@ -312,6 +449,22 @@ HELP = {
     "FR_STRAFE_MS": "Length of the small D tap used to line up after returning to the pan.",
     "FR_WALK_MAX_MS": "Maximum time to hold W walking forward to reach the water / dig spot before giving up.",
     "FR_END_A_MS": "Once it reaches land (Collect Deposit cue), hold A for this long to line up, then restart the macro loop. Set 0 to skip.",
+    "SR_RECOVERY": "Fast-travel to STARFALL RIVER after a soft stop and "
+                     "resume: uses the same Fast-Travel menu calibration as "
+                     "Fortune River (scan column, list box, home pixel) with "
+                     "Starfall's own row colour (calibrate it below). Post-warp "
+                     "walk: hold A briefly, then S until the Pan cue. If both "
+                     "SR and FR recovery are on, Starfall wins.",
+    "SR_TEXT_TOL": "Per-channel colour tolerance when matching the Starfall "
+                     "row in the travel list.",
+    "SR_A_MAX_MS": "Cap on the timed A strafe: after the warp it holds A "
+                     "until the Pan cue shows, measuring how long that took. "
+                     "Fails the recovery if the water never appears in time.",
+    "SR_D_PCT": "After the timed A finds the water, hold D for this percent "
+                     "of the measured time to centre on the strip, then S "
+                     "walks into the water at the dig spot. 50 = half.",
+    "SR_S_MAX_MS": "Cap on the S walk back to the Pan cue. If it never sees "
+                     "water, the recovery reports failure instead of wandering.",
     "FR_CROSS_CONFIRM": "How many cue reads in a row are needed to count as truly in the water, and then truly on the next shore. Higher = it must really cross the water before restarting (stops it from restarting on the shore it spawned on). Lower if it is too slow to commit.",
     "X_PATTERN": "Walk back into the water on alternating 45° diagonals instead of "
                  "straight back, so each pass covers new ground. Helps when you keep "
@@ -350,6 +503,20 @@ PIXEL_FIELDS = [
     ("DIG_TRIGGER_PIXEL", "Green dig pixel (Perfect mode only)",
      "The GREEN target on the dig skill bar. Only needed if you turn Perfect dig on.",
      [1078, 532]),
+    ("MONEY_TL_PIXEL", "Money counter — TOP-LEFT corner",
+     "Top-left corner of the money region (bottom-right HUD). Leave generous "
+     "room to the LEFT — the number grows longer as you earn.",
+     [0, 0]),
+    ("MONEY_BR_PIXEL", "Money counter — BOTTOM-RIGHT corner",
+     "Bottom-right corner of the money region, just past the last digit.",
+     [0, 0]),
+    ("SHARDS_TL_PIXEL", "Shards counter — TOP-LEFT corner",
+     "Top-left corner of the shards number (next to the crystal icon). Leave "
+     "room to the left for growth.",
+     [0, 0]),
+    ("SHARDS_BR_PIXEL", "Shards counter — BOTTOM-RIGHT corner",
+     "Bottom-right corner of the shards number.",
+     [0, 0]),
 ]
 PIXEL_DEFAULTS = {k: list(d) for (k, _l, _desc, d) in PIXEL_FIELDS}
 

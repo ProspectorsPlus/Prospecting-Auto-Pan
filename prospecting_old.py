@@ -297,6 +297,82 @@ ALERT_SOUND       = "/System/Library/Sounds/Sosumi.aiff"
 SENSE_VOTES        = 1    # sensor reads fused per decision (>1 votes out flicker)
 MOVE_CONFIRM_MS    = 140  # after a move, wait this long for the target cue to settle
 DIG_FILL_MS        = 250  # after a dig, wait up to this for the bar to read FULL
+# SMART FILL WAIT (opt-in, default OFF): the game's fill bar ANIMATES up after a
+# dig, often longer than DIG_FILL_MS -- the plain wait times out mid-animation
+# and re-digs even though the pan was about to read FULL (wasted animations =
+# dead time). Smart wait watches the bar's MOTION instead: still RISING -> keep
+# waiting (up to DIG_SMART_CAP_MS); PLATEAUED below full for DIG_PLATEAU_MS ->
+# this dig genuinely wasn't enough, dig again NOW. Optimal for 1-dig AND
+# multi-dig builds: no premature re-digs, no over-waiting between real digs.
+DIG_FILL_SMART     = False
+DIG_PLATEAU_MS     = 120  # bar unchanged this long (below full) = plateaued
+DIG_SMART_CAP_MS   = 900  # hard cap on one smart wait (safety)
+# DIG PIPELINE (opt-in, default OFF): between digs the old flow waited for the
+# bar's fill ANIMATION to settle before firing the next dig -- pure dead time
+# (~300ms per extra dig). The pipeline learns how many digs one fill takes
+# (median of the last completed fills), then fires the follow-up digs on your
+# dig-animation rhythm and smart-waits ONLY after the last one. Comes up
+# short (lag, missed dig)? The normal loop tops it up and the count relearns.
+DIG_PIPELINE       = False
+DIG_PIPELINE_GAP_MS = 0   # rhythm between digs; 0 = auto (190000/DIG_SPEED+25)
+# TRACKER MODE (default OFF): watch-only benchmarking. Sends ZERO input --
+# it reads the capacity bar exactly like the macro does and counts the
+# GAME'S OWN auto-pan: rises = digs (approximate: distinct rise bursts),
+# high-bar -> empty = one pan. Stats stream + History work as normal, with
+# runs labelled TRACKER, so the built-in auto-pan and the macro compare on
+# the same ruler. Relics and all recovery are disabled while tracking.
+TRACKER_MODE       = False
+TRACKER_POLL_MS    = 30   # bar sampling rhythm while tracking
+# TRACKER + RELICS: keep relic timers running while the GAME's Auto Pan does
+# the panning. Each relic use does the safe dance: click the calibrated Auto
+# Pan button OFF (colour-verified), use the relic, return to the pan slot,
+# click Auto Pan back ON (colour-verified). Calibrate the button's position
+# and BOTH state colours in the Calibrate tab.
+TRACKER_RELICS     = False
+AUTOPAN_BTN_PIXEL  = [0, 0]       # the Auto Pan button (calibrate)
+AUTOPAN_ON_RGB     = [0, 0, 0]    # button colour when ON (calibrate)
+AUTOPAN_OFF_RGB    = [0, 0, 0]    # button colour when OFF (calibrate)
+AUTOPAN_TOL        = 40           # per-channel colour tolerance
+AUTOPAN_SETTLE_MS  = 400          # wait after clicking the button
+# AUTO PAN GUARD (opt-in): while tracking, periodically re-read the button;
+# if it reads OFF on TWO consecutive checks (an instant misread can't trip
+# it), click it back ON -- an accidental toggle can no longer silently kill
+# a whole tracking session.
+AUTOPAN_GUARD      = False
+AUTOPAN_GUARD_SEC  = 5            # how often the guard re-reads the button
+AUTOPAN_SHIFTLOCK  = False        # you play shift-locked: tap Shift to free
+                                  # the cursor before clicking the button,
+                                  # then tap Shift again to re-lock
+AUTOPAN_FAST_RELOCK = False       # re-lock IMMEDIATELY after the click (the
+                                  # lock snaps the cursor to centre anyway);
+                                  # off = park at centre first, then re-lock
+# AUTO PAN HEALTH KICK (opt-in, 0 = off): sometimes Auto Pan shows GREEN but
+# has silently wedged -- nothing digs or pans. If the capacity bar shows NO
+# activity (no rise, no drain) for AUTOPAN_STALL_SEC while the button reads
+# ON, toggle it OFF and back ON to kick it awake.
+AUTOPAN_STALL_SEC  = 0
+AUTOPAN_RELOCK_DELAY_MS = 0   # custom gap between the button click and the
+                              # shift re-lock tap (fast-relock path)
+# EARNINGS TRACKER (opt-in, default OFF): OCR the on-screen money and shard
+# totals (bottom-right HUD) every EARN_OCR_SEC using macOS Vision, credit the
+# POSITIVE deltas to the run (sum-of-gains, so mid-run spending can't corrupt
+# it), and report $ / shards per hour and per pan in stats + History. A value
+# is accepted only after two consecutive identical reads (misreads can't
+# inject garbage). Works in macro AND Tracker mode -> real build comparisons.
+EARN_TRACK         = False
+EARN_OCR_SEC       = 10
+MONEY_TL_PIXEL     = [0, 0]   # region corners; calibrate in the Calibrate tab
+MONEY_BR_PIXEL     = [0, 0]
+SHARDS_TL_PIXEL    = [0, 0]
+SHARDS_BR_PIXEL    = [0, 0]
+# LAND-CUE ASSIST (opt-in, default OFF): after a shake the dig-probe used to
+# start from a momentum GUESS and nudge forward blindly when digs didn't
+# register -- the single biggest telemetry cost (397 nudges / 40 runs). With
+# the assist, if the 'Collect Deposit' cue isn't showing yet, hold W briefly
+# until it confirms, THEN probe. The cue is used for POSITIONING only; the
+# dig-probe (capacity bar) still verifies we're really on dirt.
+LAND_CUE_ASSIST    = False
+LAND_ASSIST_MAX_MS = 400  # W budget while waiting for the Deposit cue
 MAX_DIGS_PER_VISIT = 4    # dig at most this many times to fill before giving up
 LAND_SETTLE_MS     = 45   # after the land cue fires, hold W a touch longer to land
                           # FIRMLY on the dirt (prevents a land<->water flicker).
@@ -321,6 +397,21 @@ NO_PROGRESS_SEC    = 5    # if NOTHING works for this long (no pan emptied AND n
 # started stays full. So this can be fairly short to react FAST when a shake fails
 # to initiate (e.g. you clicked on land), without killing a real in-progress shake.
 SHAKE_BAIL_MS      = 500
+# SHAKE-START CONFIRM (opt-in, 0 = OFF): a faster, gentler layer UNDER the bail.
+# If the pan is STILL COMPLETELY FULL this long after the clicks began, the shake
+# never initiated (edge click / game glitch). Instead of waiting out the full bail
+# window and losing the cycle, tap S a touch DEEPER and keep clicking, up to
+# SHAKE_START_RETRIES times. Each retry pushes the bail window back so the retry
+# gets a fair chance. Emits a 'shake_start_retry' telemetry event.
+SHAKE_START_CONFIRM_MS = 0    # 0 = disabled (default; opt-in feature)
+SHAKE_START_RETRIES    = 2    # deeper-tap retries per shake
+SHAKE_RETRY_DEEPER_MS  = 70   # the S tap length (W is dropped around the tap)
+# DRAIN-STALL (opt-in, 0 = OFF): a started shake whose bar STOPS draining
+# mid-way means the game dropped it -- the old behavior clicked out the whole
+# SHAKE_HOLD_MS timeout before noticing (the 'ran but didn't empty' fails).
+# With this on, a frozen bar for SHAKE_STALL_MS ends the attempt immediately
+# so the normal retry/recovery machinery gets it seconds sooner.
+SHAKE_STALL_MS         = 0    # bar frozen this long (while started) = stall
 # SMART BREAK-OUT: when the watchdog has recovered RECOVER_LIMIT times in a row and
 # we're still stuck, escalate -- a shake is probably ACTIVE and locking movement
 # (you can't walk mid-shake, but CLICKS still finish it). So click to finish it,
@@ -495,6 +586,15 @@ FR_ACTION_GAP_MS   = 500          # pause between each step of the sequence (ms)
 FR_OPEN_MS         = 600          # wait for the menu to appear (ms)
 FR_TEXT_RGB        = [232, 120, 200]  # Fortune River row colour (pink, calibrate)
 FR_TEXT_TOL        = 55           # colour match tolerance (per channel)
+# STARFALL RIVER recovery: same Fast-Travel machinery + shared menu geometry
+# (FR_SCAN_X / FR_BOX_* / home pixel); only the row colour and the post-warp
+# walk differ (Starfall: hold A a beat, then S back until the Pan cue).
+SR_RECOVERY        = False        # fast-travel to Starfall River on soft stop
+SR_TEXT_RGB        = [0, 0, 0]    # Starfall row colour (calibrate)
+SR_TEXT_TOL        = 55           # colour match tolerance (per channel)
+SR_A_MAX_MS        = 6000         # cap on the TIMED A strafe to find the water
+SR_D_PCT           = 50           # back off D for this %% of the timed A
+SR_S_MAX_MS        = 4000         # max S walk back to the Pan cue
 FR_SCAN_X          = 0            # x column to scan for the pink text
 FR_BOX_TOP         = 0            # y of the top of the list box
 FR_BOX_BOTTOM      = 0            # y of the bottom of the list box
@@ -534,6 +634,15 @@ HOTKEY_TOGGLE   = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyK"}
 HOTKEY_SOFTSTOP = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyJ"}
 HOTKEY_QUIT     = {"ctrl": False, "alt": False, "shift": False, "code": "Escape"}
 HOTKEY_POPOUT   = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyP"}
+HOTKEY_PAUSE    = {"ctrl": True,  "alt": False, "shift": False, "code": "KeyL"}
+HOTKEY_RELIC_RESET = {"ctrl": True, "alt": False, "shift": False, "code": "KeyU"}
+# RELIC placement/timing behaviour:
+RELIC_ON_LAND      = False  # wait until ON LAND (Collect Deposit) to place a
+                            # due relic -- placing from the water misplaces it
+RELIC_LAND_MAX_S   = 45     # give up waiting for land after this and place
+RELIC_RELATIVE     = True   # relic timers follow REAL time (the in-game buff
+                            # keeps burning while the macro is paused). Off =
+                            # timers freeze with the pause.
 _CODE_VK_MAC = {"KeyA":0,"KeyB":11,"KeyC":8,"KeyD":2,"KeyE":14,"KeyF":3,"KeyG":5,"KeyH":4,"KeyI":34,"KeyJ":38,"KeyK":40,"KeyL":37,"KeyM":46,"KeyN":45,"KeyO":31,"KeyP":35,"KeyQ":12,"KeyR":15,"KeyS":1,"KeyT":17,"KeyU":32,"KeyV":9,"KeyW":13,"KeyX":7,"KeyY":16,"KeyZ":6,"Digit1":18,"Digit2":19,"Digit3":20,"Digit4":21,"Digit5":23,"Digit6":22,"Digit7":26,"Digit8":28,"Digit9":25,"Digit0":29,"Escape":53,"Space":49,"F1":122,"F2":120,"F3":99,"F4":118,"F5":96,"F6":97,"F7":98,"F8":100,"F9":101,"F10":109,"F11":103,"F12":111}
 
 # ============================================================================
@@ -708,6 +817,21 @@ def log(msg):
     print(f"[{now - _log_t0:7.2f}s] {msg}", flush=True)
 
 
+# any of these events means the current cycle wasn't perfectly smooth
+_DIRTY_EVENTS = {"shake_fail", "shake_start_retry", "nudge", "recover",
+                 "break_out", "shake_glitch", "no_progress", "safe_stop",
+                 "hard_stop", "fr_recover", "recenter"}
+
+
+def emit_phase(name):
+    """__PHASE__ <name> line: the app times each phase (dig / water / shake)
+    for the per-phase analytics. Print-only; never affects the macro."""
+    try:
+        print("__PHASE__ " + name, flush=True)
+    except Exception:
+        pass
+
+
 def emit_event(etype, reason="", where="", contents=""):
     """Emit a structured telemetry event (__EVENT__ <json>) the app collects into
     the run record: WHAT happened and WHY, so the analytics + Coach can explain
@@ -719,6 +843,8 @@ def emit_event(etype, reason="", where="", contents=""):
             rec["where"] = where
         if contents:
             rec["contents"] = contents
+        if etype in _DIRTY_EVENTS:
+            State.cycle_dirty = True         # this cycle wasn't clean
         print("__EVENT__ " + json.dumps(rec), flush=True)
     except Exception:
         pass
@@ -1025,6 +1151,10 @@ class Detector:
 # ---- Global state -----------------------------------------------------------
 class State:
     running = False
+    paused = False           # session PAUSE: stats/relics/earnings all kept
+    relic_reset_pending = False   # (legacy flag; resets act directly now)
+    relics_ref = None             # live RelicScheduler (listener/stdin access)
+    relic_shift_pending = 0.0     # pause span to add to timers (non-relative)
     alive = True
     empty_fails = 0          # consecutive cycles the pan wouldn't empty
     shake_fails = 0          # consecutive shakes that didn't empty the pan
@@ -1037,6 +1167,17 @@ class State:
     x_dir = 0                # X-pattern: which diagonal side to use next
     x_balance = 0.0          # X-pattern: running lateral balance (ms; +right/-left)
     no_full = 0              # consecutive dig cycles where the pan never read FULL
+    cycle_dirty = False      # this cycle needed a retry/recovery (clean-cycle %)
+    fill_digs = []           # DIG PIPELINE: digs-per-fill history (learning)
+    trk_last = None          # TRACKER: previous fill sample
+    trk_peak = 0.0           # TRACKER: high-water mark of the current pan
+    trk_rise_t = 0.0         # TRACKER: last time the bar was rising
+    trk_fall_t = 0.0         # TRACKER: last time the bar was draining
+    trk_phase = ""           # TRACKER: last emitted phase
+    earn = None              # EARNINGS: live OCR tracker (or None)
+    ap_next_check = 0.0      # AUTO PAN GUARD: next scheduled button read
+    ap_off_streak = 0        # AUTO PAN GUARD: consecutive OFF reads
+    ap_kick_grace = 0.0      # HEALTH KICK: activity deadline resets to this
     t_side = 0               # Treasure mode: 0 -> strafe D (right), 1 -> A (left)
     ad_shake_n = 0           # adaptive: shake attempts in the current window
     ad_shake_miss = 0
@@ -1059,25 +1200,198 @@ class SessionStats:
     def __init__(self):
         self.start = time.perf_counter()
         self.cycles = 0       # pans emptied = completed cycles
+        self.clean_cycles = 0 # cycles with ZERO retries/recoveries (consistency)
+        self.digs = 0         # dig clicks fired (macro) / rise bursts (tracker)
+        self.money_earned = 0 # EARNINGS: summed positive money deltas
+        self.shards_earned = 0
         self.recoveries = 0
         self.safe_stops = 0
         self.hard_stops = 0
         self.relics_used = 0
+        self.pause_accum = 0.0   # total paused seconds (excluded from runtime)
+        self.pause_started = None
         self.nudges = 0
         self.stop_reason = ""
 
     def runtime(self):
-        return time.perf_counter() - self.start
+        rt = time.perf_counter() - self.start - self.pause_accum
+        if self.pause_started is not None:       # currently paused
+            rt -= time.perf_counter() - self.pause_started
+        return max(0.0, rt)
 
     def as_dict(self):
         rt = self.runtime()
         hrs = rt / 3600.0
         return {"cycles": self.cycles, "recoveries": self.recoveries,
+                "clean_cycles": self.clean_cycles,
+                "clean_pct": (round(100.0 * self.clean_cycles / self.cycles, 1)
+                              if self.cycles else 0),
+                "digs": self.digs,
+                "tracker": bool(TRACKER_MODE),
+                "money_earned": self.money_earned,
+                "shards_earned": self.shards_earned,
+                "money_per_hr": (round(self.money_earned / hrs)
+                                 if hrs > 0.0008 else 0),
+                "shards_per_hr": (round(self.shards_earned / hrs, 1)
+                                  if hrs > 0.0008 else 0),
+                "money_per_pan": (round(self.money_earned / self.cycles)
+                                  if self.cycles else 0),
+                "shards_per_pan": (round(self.shards_earned / self.cycles, 2)
+                                   if self.cycles else 0),
                 "runtime_s": int(rt),
                 "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0,
                 "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
                 "relics_used": self.relics_used, "nudges": self.nudges,
                 "stop_reason": self.stop_reason}
+
+
+class EarnTracker:
+    """EARNINGS TRACKER (see constants). Background thread: OCR the money and
+    shard HUD regions with macOS Vision; a value counts only when two
+    reads 250ms apart AGREE (misreads don't repeat); positive deltas
+    are credited to the run stats. Exits by
+    itself when the run stops. Silently a no-op when disabled/uncalibrated,
+    loudly a no-op when Vision is missing."""
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._conf = {}          # name -> confirmed total
+        self._down = {}          # name -> pending lower total (spend detect)
+        self._miss = {}          # name -> consecutive failed reads
+
+    def _regions(self):
+        out = []
+        for name, tl, br, field in (
+                ("money", MONEY_TL_PIXEL, MONEY_BR_PIXEL, "money_earned"),
+                ("shards", SHARDS_TL_PIXEL, SHARDS_BR_PIXEL, "shards_earned")):
+            try:
+                x0, y0, x1, y1 = int(tl[0]), int(tl[1]), int(br[0]), int(br[1])
+            except Exception:
+                continue
+            if x1 - x0 >= 12 and y1 - y0 >= 8:
+                out.append((name, {"left": x0, "top": y0, "width": x1 - x0,
+                                   "height": y1 - y0}, field))
+        return out
+
+    def start(self):
+        if not EARN_TRACK:
+            return
+        regs = self._regions()
+        if not regs:
+            log("[earn] EARN_TRACK is on but the money/shards regions aren't "
+                "calibrated (Calibrate tab -> Money/Shards corners)")
+            return
+        try:
+            import Vision, Foundation  # noqa: F401  (pyobjc-framework-Vision)
+        except Exception:
+            log("[earn] macOS Vision OCR not available -> earnings off "
+                "(try: pip3 install pyobjc-framework-Vision)")
+            return
+        self._stop.clear()
+        threading.Thread(target=self._run, args=(regs,), daemon=True).start()
+        log("[earn] earnings tracker running (%s)"
+            % ", ".join(n for n, _r, _f in regs))
+
+    def stop(self):
+        self._stop.set()
+
+    def _run(self, regs):
+        import mss
+        with mss.mss() as sct:
+            while not self._stop.is_set() and (State.running or State.paused):
+                for name, reg, field in regs:
+                    v = self._read_stable(sct, reg)
+                    if v is None:
+                        misses = self._miss.get(name, 0) + 1
+                        self._miss[name] = misses
+                        if misses == 3:
+                            log("[earn] %s: OCR keeps reading nothing/unstable "
+                                "-- check the region corners" % name)
+                        continue
+                    self._miss[name] = 0
+                    conf = self._conf.get(name)
+                    if conf is None:
+                        self._conf[name] = v                  # baseline
+                        log("[earn] %s baseline: %s" % (name, "{:,}".format(v)))
+                    elif v > conf:
+                        delta = v - conf
+                        # a total can't (nearly) double between reads
+                        if delta < max(conf, 10**6) and State.stats:
+                            setattr(State.stats, field,
+                                    getattr(State.stats, field) + delta)
+                            log("[earn] %s +%s" % (name, "{:,}".format(delta)))
+                        self._conf[name] = v
+                        self._down[name] = None
+                    elif v < conf:
+                        # spending -- or a repeated misread. Demand a SECOND
+                        # matching low read next cycle before re-baselining.
+                        d = self._down.get(name)
+                        if d is not None and abs(v - d) <= max(1, d // 1000):
+                            self._conf[name] = v              # no credit
+                            self._down[name] = None
+                            log("[earn] %s re-baselined to %s (spent?)"
+                                % (name, "{:,}".format(v)))
+                        else:
+                            self._down[name] = v
+                self._stop.wait(max(2, EARN_OCR_SEC))
+
+    def _read_stable(self, sct, reg):
+        """Two reads 250ms apart must AGREE. The total is static on that
+        timescale (gains land seconds apart), while an OCR misread almost
+        never repeats identically -- so this filters garbage without ever
+        blocking real values (the old 10s-apart equality rule could never
+        confirm anything while actively earning)."""
+        try:
+            a = self._read(sct, reg)
+        except Exception:
+            return None
+        if a is None:
+            return None
+        self._stop.wait(0.25)
+        try:
+            b = self._read(sct, reg)
+        except Exception:
+            return None
+        return a if a == b else None
+
+    @staticmethod
+    def _read(sct, reg):
+        """One region -> int, or None. Upscaled 3x before recognition (the
+        HUD numbers are small); bottom-most text line wins (the gain pop-ups
+        float ABOVE the total and carry a '+')."""
+        img = sct.grab(reg)
+        import mss.tools
+        arr = np.frombuffer(img.rgb, dtype=np.uint8).reshape(
+            img.height, img.width, 3)
+        big = arr.repeat(3, axis=0).repeat(3, axis=1)
+        png = mss.tools.to_png(big.tobytes(), (img.width * 3, img.height * 3))
+        from Foundation import NSData
+        import Vision
+        data = NSData.dataWithBytes_length_(png, len(png))
+        handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
+            data, None)
+        req = Vision.VNRecognizeTextRequest.alloc().init()
+        try:
+            req.setRecognitionLevel_(0)               # accurate
+            req.setUsesLanguageCorrection_(False)
+        except Exception:
+            pass
+        handler.performRequests_error_([req], None)
+        best = best_y = None
+        for obs in (req.results() or []):
+            try:
+                s = str(obs.topCandidates_(1)[0].string())
+            except Exception:
+                continue
+            if "+" in s:
+                continue                              # gain popup, not total
+            digs = "".join(c for c in s if c.isdigit())
+            if not digs:
+                continue
+            y = float(obs.boundingBox().origin.y)
+            if best is None or y < best_y:            # Vision y-up: lowest line
+                best, best_y = int(digs), y
+        return best
 
 
 # which per-event toggle gates each event name
@@ -1236,6 +1550,99 @@ def fortune_river_recover():
     return True
 
 
+
+def starfall_river_recover():
+    """SOFT-STOP recovery for STARFALL RIVER. Identical Fast-Travel machinery
+    to Fortune River (shared menu geometry + timings), matching the Starfall
+    row by ITS calibrated colour. Post-warp walk: strafe A until the Pan cue
+    while TIMING it, back off D for SR_D_PCT%% of that time (centres you on
+    the strip), then S until the Pan cue again -- that's the dig spot."""
+    det = State.detector
+    if det is None:
+        return False
+    if not any(SR_TEXT_RGB):
+        log("SR-recover: Starfall row colour not calibrated (Calibrate tab)")
+        return False
+    sct = det.sct
+    top = min(FR_BOX_TOP, FR_BOX_BOTTOM)
+    bot = max(FR_BOX_TOP, FR_BOX_BOTTOM)
+    found = False
+    for open_try in range(max(1, FR_OPEN_TRIES)):
+        if not State.running:
+            return False
+        log("SR-recover: opening Fast Travel (try %d) ..." % (open_try + 1))
+        release_all()
+        tap_key(SLOT_KEYCODES.get(FR_OPEN_SLOT), 40)
+        sleep_ms(FR_ACTION_GAP_MS)
+        mouse_tap(40)
+        sleep_ms(FR_DOUBLE_GAP_MS)
+        mouse_tap(40)
+        sleep_ms(FR_OPEN_MS)
+        tap_key(KEY_SHIFT, 60)                    # exit shift-lock (free mouse)
+        sleep_ms(FR_ACTION_GAP_MS)
+        fr_reset_home()
+        if FR_OPEN_PIXEL and (FR_OPEN_PIXEL[0] or FR_OPEN_PIXEL[1]):
+            fr_move_to(FR_OPEN_PIXEL[0], FR_OPEN_PIXEL[1])
+            sleep_ms(FR_CLICK_SETTLE_MS)
+            mouse_tap(50)
+            sleep_ms(FR_OPEN_MS)
+        for attempt in range(max(1, FR_FIND_TRIES)):
+            if not State.running:
+                return False
+            fr_move_to(FR_SCAN_X, top)
+            sleep_ms(FR_CLICK_SETTLE_MS)
+            y = top
+            while y <= bot:
+                fr_move_to(FR_SCAN_X, y)
+                sleep_ms(FR_SCAN_HOVER_MS)
+                if _rgb_match(rgb_at(sct, FR_SCAN_X, y), SR_TEXT_RGB,
+                              SR_TEXT_TOL):
+                    sleep_ms(FR_CLICK_SETTLE_MS)
+                    mouse_tap(60)
+                    sleep_ms(FR_CLICK_SETTLE_MS)
+                    found = True
+                    log("SR-recover: found Starfall River at y=%d" % y)
+                    break
+                y += max(1, FR_SCAN_STEP)
+            if found:
+                break
+            scroll_down(FR_SCROLL_STEPS)
+            sleep_ms(FR_SCROLL_WAIT_MS)
+        if found:
+            break
+        tap_key(KEY_SHIFT, 60)                    # re-lock and retry the open
+        sleep_ms(FR_ACTION_GAP_MS)
+    if not found:
+        log("SR-recover: Starfall River row NOT found -- hard stop")
+        return False
+    sleep_ms(FR_WARP_MS)                          # teleport / world load
+    tap_key(SLOT_KEYCODES.get(FR_PAN_SLOT), 60)   # back to the pan
+    sleep_ms(FR_ACTION_GAP_MS)
+    tap_key(KEY_SHIFT, 60)                        # re-enter shift-lock
+    sleep_ms(FR_ACTION_GAP_MS)
+    key_down(KEY_A)                               # strafe toward the river,
+    _t0 = time.perf_counter()                     # TIMING the distance
+    saw_a = wait_until(det.on_pan, SR_A_MAX_MS, confirm=FR_CROSS_CONFIRM)
+    a_ms = (time.perf_counter() - _t0) * 1000.0
+    key_up(KEY_A)
+    if not saw_a:
+        log("SR-recover: A-strafe never saw the water -- check the warp facing")
+        return False
+    sleep_ms(FR_ACTION_GAP_MS)
+    back = max(1, int(a_ms * SR_D_PCT / 100.0))
+    tap_key(KEY_D, back)                          # back off a fraction of it
+    log("SR-recover: water after %.0fms of A -> D back %dms" % (a_ms, back))
+    sleep_ms(FR_ACTION_GAP_MS)
+    key_down(KEY_S)                               # into the water at the spot
+    in_water = wait_until(det.on_pan, SR_S_MAX_MS, confirm=FR_CROSS_CONFIRM)
+    key_up(KEY_S)
+    if not in_water:
+        log("SR-recover: never saw the water (Pan) -- tune SR A/S lengths")
+        return False
+    log("SR-recover: in the water at the dig spot -- resuming")
+    return True
+
+
 def safe_stop(reason, hard=False):
     """A hazard/stuck was detected. By DEFAULT pause and retry shortly instead of
     hard-stopping (so an AFK run recovers itself); only hard-stop after
@@ -1246,6 +1653,23 @@ def safe_stop(reason, hard=False):
         State.stats.safe_stops += 1
     emit_event("hard_stop" if hard else "safe_stop", reason)
 
+    if SR_RECOVERY and not hard:
+        try:
+            ok = starfall_river_recover()
+        except Exception as e:
+            log("SR-recover error: %s" % e)
+            ok = False
+        if ok:
+            State.safe_retries = 0
+            State.want_reset = True
+            emit_event("sr_recover", "success after: %s" % reason)
+            print("\n*** STARFALL RIVER RECOVERY: %s -> resumed ***" % reason)
+            post_webhook("safe_stop",
+                         "\U0001f30a Starfall River recovery (%s) -> resumed"
+                         % reason,
+                         State.stats.as_dict() if State.stats else None,
+                         shot=True)
+            return
     if FR_RECOVERY and not hard:
         try:
             ok = fortune_river_recover()
@@ -1376,6 +1800,8 @@ def dig_once(detector):
     """One dig. PERFECT=False -> quick click; PERFECT=True -> release on green.
     The hold length is DIG_CLICK_MS, which the UI auto-fills from DIG_SPEED
     (so the scaling is done once, in the UI, not again here)."""
+    if State.stats:
+        State.stats.digs += 1        # dig counter (comparable with Tracker runs)
     if not PERFECT:
         mouse_down()
         sleep_ms(DIG_CLICK_MS)
@@ -1621,6 +2047,7 @@ def go_water(det):
     """HOLD S until the PAN cue (in the water), then keep holding a touch longer
     (WATER_EXTRA_BACK_MS) to walk a little FARTHER in before the shake -- the cue
     can fire right at the edge, where the shake sometimes misses."""
+    emit_phase("water")
     t0 = time.perf_counter()
     # If we overshot far onto land (dig carried us forward), a fixed short S
     # budget can't reach the water -> walk back FARTHER on each consecutive miss.
@@ -1682,6 +2109,7 @@ def do_shake(det):
     onto land WHILE the pan drains; we drop W when the Collect Deposit cue shows.
     Stop when the CAPACITY reads empty (capacity is the truth; the Shake cue
     sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
+    emit_phase("shake")
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
@@ -1692,22 +2120,67 @@ def do_shake(det):
     clicks = 0
     fixed = SHAKE_CLICKS > 0                  # exact-count mode (no extra click)
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
+    start_retries = 0                         # SHAKE-START CONFIRM (opt-in)
+    stalled = False                           # DRAIN-STALL (opt-in)
+    _stall_fill = 2.0
+    _stall_t = time.perf_counter()
+    confirm_at = t0 + SHAKE_START_CONFIRM_MS / 1000.0
+    bail_at = t0 + SHAKE_BAIL_MS / 1000.0
     while State.running and (clicks < SHAKE_CLICKS if fixed
                              else time.perf_counter() < end):
         mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
         clicks += 1
         if not started and det.on_shake():
             started = True
+            _stall_t = time.perf_counter()   # stall clock runs from the start
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
         if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
             emptied = True
             break
+        # DRAIN-STALL (opt-in, SHAKE_STALL_MS > 0): the shake started but the
+        # bar has frozen mid-drain -> the game dropped it. Fail FAST so the
+        # retry/recovery path re-shakes now instead of waiting out the timeout.
+        if SHAKE_STALL_MS > 0 and not fixed and started:
+            _f = det.cap_fill()
+            if _f < _stall_fill - 0.005:
+                _stall_fill = _f             # still draining
+                _stall_t = time.perf_counter()
+            elif (time.perf_counter() - _stall_t) * 1000.0 > SHAKE_STALL_MS:
+                stalled = True
+                log("    shake STALLED mid-drain -> fail fast")
+                break
         if w_down and det.on_deposit():      # reached land -> stop gliding...
             key_up(KEY_W); w_down = False     # ...but keep clicking to finish
             on_land = True
+        # SHAKE-START CONFIRM (opt-in, SHAKE_START_CONFIRM_MS > 0): still
+        # COMPLETELY FULL past the confirm window = the clicks never started a
+        # real shake (edge click / glitch). Micro-retry NOW: drop W, tap S a
+        # touch deeper (edge clicks are the usual cause), re-hold W and keep
+        # clicking -- ~150ms instead of losing the bail window + a whole cycle.
+        # Disarms itself the moment the bar drains or the Shake cue shows.
+        if (SHAKE_START_CONFIRM_MS > 0 and not fixed and not started
+                and start_retries < SHAKE_START_RETRIES
+                and time.perf_counter() > confirm_at
+                and det.capacity_full()):
+            start_retries += 1
+            emit_event("shake_start_retry",
+                       "no shake start in %dms -- deeper S tap, retry %d/%d"
+                       % (SHAKE_START_CONFIRM_MS, start_retries,
+                          SHAKE_START_RETRIES))
+            log(f"    shake not starting -> deeper S retry "
+                f"#{start_retries}/{SHAKE_START_RETRIES}")
+            if w_down:
+                key_up(KEY_W); w_down = False
+            tap_key(KEY_S, SHAKE_RETRY_DEEPER_MS)
+            if SHAKE_MOMENTUM_W:
+                key_down(KEY_W); w_down = True
+            _now = time.perf_counter()
+            confirm_at = _now + SHAKE_START_CONFIRM_MS / 1000.0
+            bail_at = _now + SHAKE_BAIL_MS / 1000.0
+            end = max(end, _now + 0.6)
         # CAPACITY-based bail (auto mode only): give up if the pan is STILL FULL
         # well past a real shake's duration (no drain at all = no shake).
-        if (not fixed and time.perf_counter() > t0 + SHAKE_BAIL_MS / 1000.0
+        if (not fixed and time.perf_counter() > bail_at
                 and det.capacity_full()):
             bailed = True
             break                            # truly not shaking
@@ -1723,17 +2196,21 @@ def do_shake(det):
         State.water_fails = 0
         if State.stats:
             State.stats.cycles += 1      # a pan emptied = one completed cycle
+            if not State.cycle_dirty:
+                State.stats.clean_cycles += 1   # zero retries/recoveries
+        State.cycle_dirty = False        # the next cycle starts clean
         State.last_progress = time.perf_counter()
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
         emit_event("shake_fail", ("shake never started (glitch)" if not started
-                                  else "shake ran but pan didn't empty"))
+                                  else "shake stalled mid-drain (game dropped it)"
+                                  if stalled else "shake ran but pan didn't empty"))
     _adapt_shake(emptied)
     dur = (time.perf_counter() - t0) * 1000
     log(f"    shake done: started={started} emptied={emptied} "
-        f"reached_land={on_land} bail={bailed} fails={State.shake_fails} "
-        f"({dur:.0f}ms)")
+        f"reached_land={on_land} bail={bailed} retries={start_retries} "
+        f"fails={State.shake_fails} ({dur:.0f}ms)")
 
 
 def go_land(det):
@@ -1750,25 +2227,88 @@ def go_land(det):
         f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
+def _wait_fill_smart(det):
+    """SMART FILL WAIT (see constants): wait for FULL, but stop the moment the
+    bar STOPS RISING below full -- then the caller digs again immediately."""
+    deadline = time.perf_counter() + DIG_SMART_CAP_MS / 1000.0
+    last = det.cap_fill()
+    last_rise = time.perf_counter()
+    while State.running and time.perf_counter() < deadline:
+        if det.capacity_full():
+            return True
+        f = det.cap_fill()
+        now = time.perf_counter()
+        if f > last + 0.005:                  # still climbing (fill animation)
+            last, last_rise = f, now
+        elif now - last_rise > DIG_PLATEAU_MS / 1000.0:
+            log("    fill: bar plateaued below FULL -> dig again now")
+            return det.capacity_full()        # settled short -> re-dig NOW
+    return det.capacity_full()
+
+
+def _pipeline_target():
+    """Learned digs-per-fill (median of the last completed fills). 0 = the
+    pipeline is off or still learning (first 3 fills run the normal loop)."""
+    if not DIG_PIPELINE or len(State.fill_digs) < 3:
+        return 0
+    h = sorted(State.fill_digs)
+    return h[len(h) // 2]
+
+
+def _pipeline_learn(digs, ok):
+    """Feed the learner. A pipeline shortfall clears the history so a build
+    change (or lag streak) relearns instead of repeating the mistake."""
+    if not ok:
+        State.fill_digs = []
+        return
+    State.fill_digs.append(int(digs))
+    if len(State.fill_digs) > 8:
+        del State.fill_digs[:len(State.fill_digs) - 8]
+
+
 def fill_to_full(det):
     """Once we're confirmed on land, dig until the capacity bar reads FULL. We do
     NOT assume a dig count -- we watch the bar, so builds that need 2, 3, ... digs
     all work. The probe already did dig #1; we wait for it to fill, then top up
     with more PERFECT digs as needed (capped by MAX_DIGS_TO_FILL)."""
     digs = 1                                  # the probe dig already happened
+    # DIG PIPELINE (opt-in): we know how many digs a fill takes -- fire the
+    # follow-ups on the dig-animation rhythm, smart-wait only after the LAST.
+    n_target = _pipeline_target()
+    if n_target > 1:
+        gap = (DIG_PIPELINE_GAP_MS if DIG_PIPELINE_GAP_MS > 0
+               else int(190000.0 / max(1.0, DIG_SPEED)) + 25)
+        while digs < n_target and State.running:
+            sleep_ms(gap)                     # let the current anim finish
+            dig_once(det)
+            digs += 1
+        if DIG_FILL_SMART:
+            _wait_fill_smart(det)
+        else:
+            wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)
+        if det.capacity_full():
+            log(f"    filled in {digs} dig(s) (pipelined)")
+            _pipeline_learn(digs, True)
+            return True
+        log("    pipeline came up short -> normal top-up (relearning)")
+        _pipeline_learn(digs, False)
     for i in range(MAX_DIGS_TO_FILL):
         if det.capacity_full():
             log(f"    filled in {digs} dig(s)")
+            if DIG_PIPELINE:
+                _pipeline_learn(digs, True)
             return True
         if not State.running:
             return False
         if i > 0:
             dig_once(det)                     # another PERFECT dig (release on green)
             digs += 1
-        wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)
+        if DIG_FILL_SMART:
+            _wait_fill_smart(det)             # motion-aware (opt-in)
+        else:
+            wait_until(det.capacity_full, DIG_FILL_MS, confirm=1)
     log(f"    fill: still not full after {digs} digs -> proceed anyway")
     return det.capacity_full()
-
 
 def return_and_dig(det):
     """Post-shake landing WITHOUT trusting the cue (it can stick on 'Shake').
@@ -1776,6 +2316,7 @@ def return_and_dig(det):
     fills on dirt, so the CAPACITY tells us the truth. A dig registers if the bar
     FILL RISES. We re-dig IN PLACE a few times before assuming we're off-land and
     nudging W (so a single non-registering dig can't cause a jittery nudge)."""
+    emit_phase("dig")
     State.no_full += 1
     if State.no_full >= NO_FULL_LIMIT:
         # We keep digging/nudging but the capacity bar NEVER reads full -- almost
@@ -1786,6 +2327,14 @@ def return_and_dig(det):
                   "mis-calibrated. Open Calibrate and re-set the Capacity bar "
                   "(or Auto-calibrate with Roblox open).", hard=True)
         return False
+    # LAND-CUE ASSIST (opt-in, default OFF): put ourselves ON the dirt before
+    # probing. PULSED taps only (pulse_until re-checks after every tap) -- a
+    # held W here flew PAST the deposit whenever the cue didn't confirm,
+    # because 'Collect Deposit' only shows NEAR a deposit. If the cue never
+    # shows, the taps cover very little ground and the normal probe takes over.
+    if LAND_CUE_ASSIST and LAND_ASSIST_MAX_MS > 0 and not det.on_deposit():
+        _got = pulse_until(KEY_W, det.on_deposit, LAND_ASSIST_MAX_MS)
+        log(f"    land-assist (pulsed): deposit_cue={_got}")
     for rnd in range(LAND_DIG_TRIES):
         if not State.running:
             return False
@@ -1886,6 +2435,60 @@ def break_out(det, s):
     return False
 
 
+def _autopan_state():
+    """Auto Pan button state by colour: True=on, False=off, None=unknown/
+    uncalibrated (callers then leave it alone)."""
+    det = State.detector
+    x, y = AUTOPAN_BTN_PIXEL
+    if det is None or not (x or y) \
+            or not any(AUTOPAN_ON_RGB) or not any(AUTOPAN_OFF_RGB):
+        return None
+    rgb = rgb_at(det.sct, x, y)
+    if _rgb_match(rgb, AUTOPAN_ON_RGB, AUTOPAN_TOL):
+        return True
+    if _rgb_match(rgb, AUTOPAN_OFF_RGB, AUTOPAN_TOL):
+        return False
+    return None
+
+
+def _autopan_set(want_on):
+    """Click the Auto Pan button until it READS the wanted state (max 3
+    clicks, colour-verified each time). Cursor is parked back at the home
+    pixel afterwards so relic clicks can't hit the button by accident.
+    With AUTOPAN_SHIFTLOCK: taps Shift to exit shift-lock first (frees the
+    cursor), and taps Shift again once parked back at centre.
+    Returns True if we actually toggled it (caller restores afterwards)."""
+    cur = _autopan_state()
+    if cur is None or cur == want_on:
+        return False
+    if AUTOPAN_SHIFTLOCK:
+        tap_key(KEY_SHIFT, 60)                    # exit shift-lock
+        sleep_ms(FR_ACTION_GAP_MS)
+    for _ in range(3):
+        click_at(AUTOPAN_BTN_PIXEL[0], AUTOPAN_BTN_PIXEL[1], 50)
+        sleep_ms(AUTOPAN_SETTLE_MS)
+        if _autopan_state() == want_on:
+            break
+    else:
+        log("[tracker] Auto Pan button never read on=%s -- check its "
+            "colour calibration" % want_on)
+    if AUTOPAN_SHIFTLOCK and AUTOPAN_FAST_RELOCK:
+        if AUTOPAN_RELOCK_DELAY_MS > 0:
+            sleep_ms(AUTOPAN_RELOCK_DELAY_MS)     # custom click -> shift gap
+        tap_key(KEY_SHIFT, 60)                    # re-lock right after the click
+        sleep_ms(FR_ACTION_GAP_MS)                # (lock snaps cursor to centre)
+    else:
+        if FR_HOME_PIXEL and (FR_HOME_PIXEL[0] or FR_HOME_PIXEL[1]):
+            move_cursor(FR_HOME_PIXEL[0], FR_HOME_PIXEL[1])   # park off the button
+        sleep_ms(FR_CLICK_SETTLE_MS)
+        if AUTOPAN_SHIFTLOCK:
+            if AUTOPAN_RELOCK_DELAY_MS > 0:
+                sleep_ms(AUTOPAN_RELOCK_DELAY_MS) # custom centre -> shift gap
+            tap_key(KEY_SHIFT, 60)                # re-enter shift-lock at centre
+            sleep_ms(FR_ACTION_GAP_MS)
+    return True
+
+
 class RelicScheduler:
     """Timed relic use (solar mags, idols, ...). Every relic's interval, PAUSE
     the cycle, switch to its hotbar slot, double-click to use it, switch back to
@@ -1905,18 +2508,73 @@ class RelicScheduler:
     def maybe_fire(self):
         if not RELICS_ENABLED or not State.running:
             return
+        if State.relic_shift_pending:            # non-relative pause catch-up
+            for _k in self.next:
+                if self.next[_k] is not None:
+                    self.next[_k] += State.relic_shift_pending
+            log("=== RELIC timers shifted +%.0fs (paused, non-relative) ==="
+                % State.relic_shift_pending)
+            State.relic_shift_pending = 0.0
         now = time.perf_counter()
         for i, r in enumerate(RELICS):
             due = self.next.get(i)
             if due is not None and now >= due:
+                if RELIC_ON_LAND and State.detector is not None:
+                    _land = True
+                    try:
+                        _land = State.detector.on_deposit()
+                    except Exception:
+                        pass
+                    if not _land and now - due < RELIC_LAND_MAX_S:
+                        continue                 # due, but wait for LAND first
+                    if not _land:
+                        log("=== RELIC: no land for %ds -- placing anyway ==="
+                            % RELIC_LAND_MAX_S)
                 self._fire(r)
                 self.next[i] = time.perf_counter() + r.get("minutes", 10) * 60.0
+
+    def reset_one(self, i):
+        """Restart ONE relic's timer at its full interval (hotkey Ctrl+Shift+N)."""
+        try:
+            r = RELICS[i]
+        except (IndexError, TypeError):
+            return
+        self.next[i] = time.perf_counter() + float(r.get("minutes", 10)) * 60.0
+        log("=== RELIC '%s' timer RESET to full ===" % r.get("name", i + 1))
+
+    def set_left(self, i, secs):
+        """Set ONE relic's remaining time exactly (Run-tab setter). After it
+        fires, the standard interval resumes automatically."""
+        try:
+            r = RELICS[i]
+        except (IndexError, TypeError):
+            return
+        secs = max(0.0, float(secs))
+        self.next[i] = time.perf_counter() + secs
+        log("=== RELIC '%s' timer set to %d:%02d ==="
+            % (r.get("name", i + 1), int(secs) // 60, int(secs) % 60))
+
+    def remaining(self):
+        """[{name, left_s}] for the live timer display (stats line / pill)."""
+        if not RELICS_ENABLED:
+            return []
+        now = time.perf_counter()
+        out = []
+        for i, r in enumerate(RELICS):
+            due = self.next.get(i)
+            if due is not None:
+                out.append({"name": r.get("name", "relic %d" % (i + 1)),
+                            "left_s": max(0, int(due - now))})
+        return out
 
     def _fire(self, r):
         slot = int(r.get("slot", 0))
         clicks = int(r.get("clicks", 2))
         log(f"=== RELIC: use {r.get('name','relic')} (slot {slot}) ===")
         release_all()
+        _toggled = False
+        if TRACKER_MODE and TRACKER_RELICS:
+            _toggled = _autopan_set(False)   # pause the game's Auto Pan
         sleep_ms(RELIC_PRE_MS)
         tap_key(SLOT_KEYCODES.get(slot))         # switch to the relic slot
         sleep_ms(RELIC_SWITCH_MS)
@@ -1928,6 +2586,9 @@ class RelicScheduler:
         sleep_ms(RELIC_SWITCH_MS)
         tap_key(SLOT_KEYCODES.get(RELIC_RETURN_SLOT))   # back to the pan
         sleep_ms(RELIC_SWITCH_MS)
+        if _toggled:
+            _autopan_set(True)               # resume the game's Auto Pan
+            State.ap_kick_grace = time.perf_counter()   # fresh stall window
         if State.stats: State.stats.relics_used += 1
         log("=== RELIC done -> resuming ===")
 
@@ -1959,6 +2620,74 @@ def treasure_tick(det):
         f"(pan={left} -> collect={reached})")
 
 
+def _tracker_phase(name):
+    if State.trk_phase != name:
+        State.trk_phase = name
+        emit_phase(name)
+
+
+def tracker_tick(det):
+    """TRACKER MODE: watch-only (see constants). Counts the game's own
+    auto-pan through the same detector the macro uses. No input, ever."""
+    f = det.cap_fill()
+    now = time.perf_counter()
+    if State.trk_last is None:
+        State.trk_last, State.trk_peak = f, f
+        sleep_ms(TRACKER_POLL_MS)
+        return
+    df = f - State.trk_last
+    if df > 0.015:                                   # bar rising
+        if now - State.trk_rise_t > 0.30:            # new rise burst = a dig
+            if State.stats:
+                State.stats.digs += 1
+            _tracker_phase("dig")
+        State.trk_rise_t = now
+        if f > State.trk_peak:
+            State.trk_peak = f
+    elif df < -0.015:                                # bar draining = shaking
+        if now - State.trk_fall_t > 0.30:
+            _tracker_phase("shake")
+        State.trk_fall_t = now
+    if f <= CAP_EMPTY_FRAC and State.trk_peak >= 0.35:
+        if State.stats:
+            State.stats.cycles += 1                  # one pan emptied
+            State.stats.clean_cycles += 1            # game pans have no retries
+        State.trk_peak = 0.0
+        State.last_progress = now
+    # AUTO PAN GUARD (opt-in): catch an accidental Auto Pan toggle and undo
+    # it. Two consecutive OFF reads required; the relic dance can't be
+    # interrupted (it runs between ticks, never concurrently with this).
+    if AUTOPAN_GUARD and AUTOPAN_GUARD_SEC > 0 and now >= State.ap_next_check:
+        State.ap_next_check = now + AUTOPAN_GUARD_SEC
+        _st = _autopan_state()
+        if _st is False:
+            State.ap_off_streak += 1
+            if State.ap_off_streak >= 2:
+                log("[tracker] Auto Pan found OFF -> turning it back ON")
+                emit_event("autopan_guard", "auto pan was off -- re-enabled")
+                _autopan_set(True)
+                State.ap_off_streak = 0
+        else:
+            State.ap_off_streak = 0
+    # AUTO PAN HEALTH KICK (opt-in): button GREEN but the bar has been dead
+    # (no rise, no drain) for AUTOPAN_STALL_SEC -> Auto Pan wedged; cycle it.
+    if AUTOPAN_STALL_SEC > 0:
+        _last_act = max(State.trk_rise_t, State.trk_fall_t, State.ap_kick_grace)
+        if now - _last_act > AUTOPAN_STALL_SEC:
+            if _autopan_state() is True:
+                log("[tracker] Auto Pan shows ON but nothing moved for %ds "
+                    "-> restarting it" % AUTOPAN_STALL_SEC)
+                emit_event("autopan_kick",
+                           "green but idle %ds -- toggled off/on"
+                           % AUTOPAN_STALL_SEC)
+                _autopan_set(False)
+                sleep_ms(AUTOPAN_SETTLE_MS)
+                _autopan_set(True)
+            State.ap_kick_grace = time.perf_counter()   # full fresh window
+    State.trk_last = f
+    sleep_ms(TRACKER_POLL_MS)
+
+
 class Supervisor:
     """Tick-based brain. Re-senses, acts, and watches for deadlock. Reset on
     every start so a fresh run can't inherit a stale stuck-count."""
@@ -1974,6 +2703,14 @@ class Supervisor:
         State.breakouts = 0
         State.x_balance = 0.0
         State.no_full = 0
+        State.cycle_dirty = False
+        State.fill_digs = []
+        State.trk_last = None
+        State.trk_peak = 0.0
+        State.trk_phase = ""
+        State.ap_next_check = 0.0
+        State.ap_off_streak = 0
+        State.ap_kick_grace = time.perf_counter()
         State.last_progress = time.perf_counter()
 
     def tick(self, det):
@@ -2164,13 +2901,48 @@ def _hk_label(spec):
     return "+".join(p)
 
 
+def engine_pause():
+    """Session PAUSE: freeze all inputs but keep the session alive -- stats,
+    relic timers, earnings, telemetry all survive. Resume picks up mid-run."""
+    if State.paused or not State.running:
+        return
+    State.paused = True
+    State.running = False                # every verb aborts instantly
+    if State.stats:
+        State.stats.pause_started = time.perf_counter()
+    release_all()
+    print("[PAUSED] session paused -- stats, relic timers and earnings all "
+          "kept; press the pause key to resume", flush=True)
+
+
+def engine_resume():
+    if not State.paused:
+        return
+    span = 0.0
+    if State.stats and State.stats.pause_started is not None:
+        span = time.perf_counter() - State.stats.pause_started
+        State.stats.pause_accum += span
+        State.stats.pause_started = None
+    if not RELIC_RELATIVE and span > 0:
+        State.relic_shift_pending += span    # timers were frozen with the pause
+    State.paused = False
+    State.last_progress = time.perf_counter()    # don't trip no-progress
+    State.running = True
+    print("[RUNNING] resumed from pause (stats & timers kept)", flush=True)
+
+
+_MAC_DIGIT_IDX = {18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7,
+                  25: 8}          # macOS vk for 1..9 -> relic index
+
+
 def make_listener():
     mods = {"ctrl": False, "alt": False, "shift": False}
     CTRL = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
     ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
     SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
     binds = [("toggle", HOTKEY_TOGGLE), ("soft", HOTKEY_SOFTSTOP),
-             ("quit", HOTKEY_QUIT), ("popout", HOTKEY_POPOUT)]
+             ("quit", HOTKEY_QUIT), ("popout", HOTKEY_POPOUT),
+             ("pause", HOTKEY_PAUSE), ("rreset", HOTKEY_RELIC_RESET)]
 
     def on_press(key):
         if key in CTRL:
@@ -2185,6 +2957,11 @@ def make_listener():
         vk = getattr(key, "vk", None)
         if key == keyboard.Key.esc and vk is None:
             vk = 53
+        # Ctrl+Shift+1..9 -> reset THAT relic's timer alone
+        if mods["ctrl"] and mods["shift"] and vk in _MAC_DIGIT_IDX:
+            if State.relics_ref is not None:
+                State.relics_ref.reset_one(_MAC_DIGIT_IDX[vk])
+            return
         for name, spec in binds:
             tv = _code_to_vk((spec or {}).get("code", ""))
             if tv is None or vk != tv:
@@ -2200,10 +2977,19 @@ def make_listener():
                 release_all()
                 return False
             if name == "toggle":
+                if State.paused:                 # toggling out of pause = resume
+                    engine_resume()
+                    return
                 State.running = not State.running
-                print(f"[{'RUNNING' if State.running else 'PAUSED'}]")
+                print(f"[{'RUNNING' if State.running else 'STOPPED'}]")
                 if not State.running:
                     release_all()
+            elif name == "pause":
+                (engine_resume() if State.paused else engine_pause())
+            elif name == "rreset":
+                if State.relics_ref is not None:
+                    State.relics_ref.reset()
+                print("[RELIC TIMERS RESET]")
             elif name == "soft":
                 State.want_safe_stop = True
                 print("[MANUAL SOFT-STOP]")
@@ -2360,6 +3146,40 @@ def main():
     listener = make_listener()
     listener.start()
 
+    def _stdin_ctl():
+        """Control channel from the app (Pause buttons / relic reset)."""
+        try:
+            for _line in sys.stdin:
+                _c = _line.strip().upper()
+                if _c == "PAUSE":
+                    engine_pause()
+                elif _c == "RESUME":
+                    engine_resume()
+                elif _c == "PAUSE_TOGGLE":
+                    (engine_resume() if State.paused else engine_pause())
+                elif _c == "RELIC_RESET":
+                    if State.relics_ref is not None:
+                        State.relics_ref.reset()
+                    print("[RELIC TIMERS RESET]", flush=True)
+                elif _c.startswith("RELIC_SET "):
+                    try:
+                        _p = _c.split()
+                        _i, _s = int(_p[1]), float(_p[2])
+                        if State.relics_ref is not None:
+                            State.relics_ref.set_left(_i, _s)
+                    except Exception:
+                        pass
+                elif _c.startswith("RELIC_RESET_ONE "):
+                    try:
+                        _i = int(_c.split()[1])
+                        if State.relics_ref is not None:
+                            State.relics_ref.reset_one(_i)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    threading.Thread(target=_stdin_ctl, daemon=True).start()
+
     gc.enable()   # keep GC ON: disabling it grew memory + slowed long runs
     with _MSS() as sct:
         detector = Detector(sct)
@@ -2369,6 +3189,7 @@ def main():
             sct.grab(detector.dig_region)
         sup = Supervisor()
         relics = RelicScheduler()
+        State.relics_ref = relics     # hotkeys/app can reset & set timers
         was_running = False
         last_emit = 0.0
         last_wh_stats = 0.0
@@ -2380,6 +3201,21 @@ def main():
                         State.t_side = 0
                         relics.reset()      # start relic timers from now
                         State.stats = SessionStats()
+                        State.earn = EarnTracker()
+                        State.earn.start()  # no-op unless configured
+                        if TRACKER_MODE:
+                            # tracking should GUARANTEE the game is panning:
+                            # read the Auto Pan button right away and turn it
+                            # on if needed (colour-verified, parks the cursor)
+                            _ap = _autopan_state()
+                            if _ap is False:
+                                log("[tracker] Auto Pan is OFF -> turning it ON")
+                                _autopan_set(True)
+                            elif _ap is True:
+                                log("[tracker] Auto Pan already ON")
+                            else:
+                                log("[tracker] Auto Pan button not calibrated "
+                                    "or unreadable -- start it manually")
                         last_emit = last_wh_stats = time.perf_counter()
                         was_running = True
                         log("=== RUNNING (live trace below) ===")
@@ -2388,8 +3224,11 @@ def main():
                     if State.want_safe_stop:
                         State.want_safe_stop = False
                         safe_stop("manual soft-stop (test)")
-                    relics.maybe_fire()     # timed relic use (no-op unless enabled)
-                    if TREASURE_MODE:
+                    if (not TRACKER_MODE) or TRACKER_RELICS:
+                        relics.maybe_fire() # timed relic use (no-op unless enabled)
+                    if TRACKER_MODE:
+                        tracker_tick(detector)   # watch-only: zero input
+                    elif TREASURE_MODE:
                         treasure_tick(detector)
                     else:
                         sup.tick(detector)
@@ -2397,16 +3236,30 @@ def main():
                     # live stats line for the app (parsed there, also harmless log)
                     if now - last_emit >= 2.0:
                         last_emit = now
-                        print("__STATS__ " + json.dumps(State.stats.as_dict()),
-                              flush=True)
+                        _d = State.stats.as_dict()
+                        _d["relics"] = relics.remaining()
+                        print("__STATS__ " + json.dumps(_d), flush=True)
                     # periodic webhook stats update
                     if (WEBHOOK_STATS_MIN > 0
                             and now - last_wh_stats >= WEBHOOK_STATS_MIN * 60):
                         last_wh_stats = now
                         s = State.stats.as_dict()
-                        post_webhook("stats",
-                                     f"📊 {s['cycles']} pans · {s['pans_per_hr']}/hr "
-                                     f"· {s['runtime_s']//60} min", s, shot=True)
+                        _m = (f"📊 {s['cycles']} pans · {s['pans_per_hr']}/hr · "
+                              f"{s.get('clean_pct', 0)}% clean · "
+                              f"{s.get('digs', 0)} digs · "
+                              f"{s['runtime_s'] // 60} min\n"
+                              f"💰 ${s.get('money_earned', 0):,} earned  "
+                              f"(${s.get('money_per_hr', 0):,}/hr · "
+                              f"${s.get('money_per_pan', 0):,}/pan)\n"
+                              f"💎 {s.get('shards_earned', 0):,} shards  "
+                              f"({s.get('shards_per_hr', 0):,}/hr · "
+                              f"{s.get('shards_per_pan', 0)}/pan)\n"
+                              f"🛠 {s.get('recoveries', 0)} rec · "
+                              f"{s.get('nudges', 0)} nudges · "
+                              f"{s.get('safe_stops', 0)} safe · "
+                              f"{s.get('hard_stops', 0)} hard · "
+                              f"{s.get('relics_used', 0)} relics")
+                        post_webhook("stats", _m, s, shot=True)
                     # auto-stop timer
                     if (AUTOSTOP_ENABLED and State.stats
                             and State.stats.runtime() >= AUTOSTOP_MINUTES * 60):
@@ -2429,6 +3282,11 @@ def main():
                         State.running = False
                         release_all()
                 else:
+                    if State.paused:
+                        # session PAUSE: keep was_running TRUE so resuming
+                        # skips the fresh-start init (stats/relics survive)
+                        time.sleep(0.1)
+                        continue
                     if was_running:
                         reason = ((State.stats.stop_reason if State.stats
                                    and State.stats.stop_reason else State.stop_reason)
