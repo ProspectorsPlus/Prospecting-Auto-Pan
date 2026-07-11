@@ -57,6 +57,20 @@ SECTIONS = [
     ("Earnings", [
         ("EARN_TRACK",   "Track money & shards (OCR the HUD totals)",   "bool", False),
         ("EARN_OCR_SEC", "Read the totals every (seconds)",             "int", 10),
+        ("FINDS_TRACK",  "Track finds (item pop-up OCR)",               "bool", False),
+        ("FINDS_FAST_MS","Fast opacity sample every (ms)",              "int", 40),
+        ("FINDS_OCR_MS", "Identity OCR at most every (ms)",             "int", 200),
+        ("FINDS_STACK_NEWEST", "New find appears at (bottom / top)",       "str", "bottom"),
+        ("FINDS_MIN_CONF", "Min OCR confidence for a new find (0-1)",      "float", 0.30),
+        ("FINDS_MIN_DWELL","Samples a card must live to count",         "int", 3),
+        ("FINDS_EMPTY_MS","Quiet ms before the stack resets",           "int", 700),
+        ("FINDS_CARD_SEC","Card on-screen lifetime (s)",                 "int", 5),
+        ("FINDS_WHITE_MIN","Card text brightness floor (0-255)",        "int", 170),
+        ("FINDS_DARK_MAX","Card backing darkness ceiling (0-255)",      "int", 105),
+        ("FINDS_BAND_MIN","Min text row fraction for a card (0-1)",     "float", 0.008),
+        ("FINDS_DEBUG",  "Verbose finds tracker diagnostics",           "bool", False),
+        ("SELL_BOOST_PCT","Sell boost for loot value (%)",              "int", 100),
+        ("FINDS_BANK_RARITY","Value finds at/above rarity (kept loot)",   "str", "Exotic"),
     ]),
     ("Treasure chest", [
         ("TREASURE_MODE",        "Treasure Chest mode (no shake, strafe L/R)", "bool", False),
@@ -64,6 +78,12 @@ SECTIONS = [
         ("TREASURE_DIG_MS",      "Quick dig click (ms)",                       "int", 8),
         ("TREASURE_DIG_GAP_MS",  "Delay between dig clicks (ms)",               "int", 12000),
         ("TREASURE_MOVE_MAX_MS", "Max strafe before moving on (ms)",           "int", 2500),
+    ]),
+    ("Shards", [
+        ("SHARDS_DIG_CLICKS",      "Exact dig clicks (0 = off)",          "int", 0),
+        ("SHARDS_CLICK_CONFIRM_MS","Bar must leave empty within (ms)",    "int", 100),
+        ("SHARDS_CLICK_RETRIES",   "Max clicks if the bar never moves",   "int", 3),
+        ("SHARDS_ASSUME_FULL",     "Assume full once the bar moves",      "bool", False),
     ]),
     ("Mode / Dig", [
         ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
@@ -94,6 +114,7 @@ SECTIONS = [
         ("SHAKE_RETRY_DEEPER_MS","Retry deeper S tap (ms)",                   "int", 70),
         ("SHAKE_STALL_MS",     "Drain-stall fail-fast (ms, 0 = off)",       "int", 0),
         ("SHAKE_START_DELAY_MS","Delay before shake starts (ms)",         "int", 0),
+        ("SHAKE_W_LEAD_MS","Walk forward before shaking (ms)",         "int", 0),
         ("POST_SHAKE_SETTLE_MS","Settle after pan empties (ms)",          "int", 150),
     ]),
     ("Return to land (dig-probe)", [
@@ -195,6 +216,9 @@ SECTION_HINT = {
     "Treasure chest": "A no-shake mode for collecting chests: dig, then strafe right/left "
                       "until the Collect cue, dig, repeat. Calibrate the Deposit pixel on the "
                       "Collect prompt.",
+    "Shards": "Exact-click digging for shard farming: a known number of dig "
+              "clicks (usually ONE), a registration check instead of probe "
+              "re-digs, and optionally move on the moment the fill starts.",
     "Easy tuning": "Plain-language tweaks. Type how much MORE you want of each move "
                    "and the macro adjusts the underlying timings for you.",
     "Mode / Dig": "How each dig works and how many it takes to fill the pan.",
@@ -213,6 +237,7 @@ SECTION_HINT = {
 
 
 TAB_ICON = {
+    "Shards": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l6 6l-6 12l-6 -12z"/><path d="M6 9h12"/></svg>',
     "Treasure chest": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9l1.6-3.2A2 2 0 0 1 7.4 4.5h9.2a2 2 0 0 1 1.8 1.3L20 9"/><rect x="3.5" y="9" width="17" height="10.5" rx="1.5"/><path d="M3.5 13h17"/><rect x="10.5" y="11.5" width="3" height="3.5" rx="1"/></svg>',
     "Easy tuning": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
     "Mode / Dig": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c3 3.8 6 6.8 6 9.8a6 6 0 0 1 -12 0c0 -3 3 -6 6 -9.8z"/></svg>',
@@ -289,6 +314,87 @@ HELP = {
                      "Spending mid-run is ignored (only gains count).",
     "EARN_OCR_SEC": "How often the totals are read. 10s is plenty — earnings "
                      "are credited as deltas, nothing is missed between reads.",
+    "FINDS_TRACK": "Reads the bottom-right item pop-up and logs every find — "
+                     "modifier, name, weight, rarity — into the Analytics "
+                     "window and History. Kept items get an estimated value "
+                     "from prospecting_prices.json x your sell boost, feeding "
+                     "loot $/hr and TOTAL $/hr (auto-sold money is already "
+                     "measured by the money reader). Counting runs on a fast "
+                     "pixel sampler that watches each card fade in, so burst "
+                     "drops (several skulls in one pan) all count. Calibrate "
+                     "the two 'Find pop-up' corners first.",
+    "FINDS_FAST_MS": "How often the fast pixel sampler measures the finds box "
+                     "-- no OCR, just how many cards are up and how solid each "
+                     "one is (their fade). This is what COUNTS arrivals, so it "
+                     "stays quick; 40ms tracks even burst drops.",
+    "FINDS_OCR_MS": "Shortest gap between identity OCR passes (name / weight / "
+                     "rarity). The fast sampler does the counting, so identity "
+                     "can lag safely; 200ms keeps names snappy without pegging "
+                     "a core.",
+    "FINDS_STACK_NEWEST": "Which end a newly-found item card appears at. The "
+                     "list scrolls the other way as older cards fade. 'bottom' "
+                     "(default) = new slides in underneath and pushes older "
+                     "ones up; set 'top' if yours is the other way.",
+    "FINDS_MIN_CONF": "How confident a text read must be for the OCR safety "
+                     "net to start a find on its own (0-1). The pixel tracker "
+                     "does the main counting; this only gates the net that "
+                     "catches cards the sampler never saw.",
+    "FINDS_MIN_DWELL": "How many consecutive fast samples a card band must "
+                     "survive before it can count. Filters one-frame animation "
+                     "flicker; raise it if phantom finds appear, lower it "
+                     "(min 1) if very fast cards are missed.",
+    "FINDS_EMPTY_MS": "How long the finds box must stay quiet (no card bands) "
+                     "before lingering cards are finalised and the stack "
+                     "resets.",
+    "FINDS_CARD_SEC": "How long one find card stays on screen, animations "
+                     "included (~5s). Sets the re-sighting window: a card "
+                     "with the same name/weight re-detected within this long "
+                     "of vanishing abruptly (camera swing washing out the "
+                     "pixel signal) is the SAME card and updates the original "
+                     "find instead of counting again. Real enchant duplicates "
+                     "coexist on screen, so they still count separately.",
+    "FINDS_WHITE_MIN": "How bright a pixel must be (every RGB channel, 0-255) "
+                     "to count as card TEXT. Vividly coloured tier text "
+                     "(Cosmic and friends) is caught too even though it isn't "
+                     "pure white. Lower it if the sampler misses faint cards; "
+                     "raise it if bright terrain fakes cards.",
+    "FINDS_DARK_MAX": "How dark a nearby pixel must be (every RGB channel, "
+                     "0-255) to count as the card's dark backing. Text only "
+                     "counts NEXT TO backing -- that's what makes the sampler "
+                     "terrain-proof. Raise it if cards are missed over dark "
+                     "ground.",
+    "FINDS_BAND_MIN": "Minimum fraction of a pixel row that must read as card "
+                     "text for the row to join a card band (0-1). The noise "
+                     "floor under everything; raise it if ghost cards appear.",
+    "FINDS_DEBUG": "Log the tracker's internals to the trace (bands, tracks, "
+                     "stack shifts, ghosts, inferred finds). Turn on when "
+                     "counts look wrong; leave off for normal runs.",
+    "SELL_BOOST_PCT": "Your sell boost as a percent (100 = 1x, 250 = 2.5x). "
+                     "Multiplies the estimated value of logged finds.",
+    "FINDS_BANK_RARITY": "Only value finds at/above this rarity as KEPT loot "
+                     "(Common/Uncommon/Rare/Epic/Legendary/Mythic/Exotic). "
+                     "Lower-rarity finds auto-sell and are already in the "
+                     "money counter, so valuing them here would double-count. "
+                     "Skull build banks Exotic; set it to whatever your "
+                     "Auto-Sell keeps.",
+    "SHARDS_DIG_CLICKS": "Shards mode master switch: click the dig EXACTLY "
+                     "this many times per land visit -- no probe re-digs, no "
+                     "double clicks from bar-detection races. Set 1 for a "
+                     "one-click-fill build. 0 = off (normal dig logic).",
+    "SHARDS_CLICK_CONFIRM_MS": "After the first click, the capacity bar must "
+                     "leave EMPTY (left tip no longer gray) within this long "
+                     "to prove the click registered. Only a provably-dead "
+                     "click is retried, so the animation being slow can never "
+                     "cause a double dig.",
+    "SHARDS_CLICK_RETRIES": "If the bar never moves, how many total clicks to "
+                     "try before deciding you're off land and nudging "
+                     "forward. Dead clicks happen (very short dig holds); 3 "
+                     "is a good default.",
+    "SHARDS_ASSUME_FULL": "One-click-fill builds only: the instant the bar "
+                     "starts filling, treat the pan as FULL and move on -- "
+                     "the walk back to water happens DURING the fill "
+                     "animation instead of after it. The shake clears the "
+                     "assumption automatically.",
     "TREASURE_MODE": "Switch to Treasure Chest Collection: NO shaking. It digs briefly, then "
                      "holds D until the Collect cue shows, digs, holds A until the cue, and so on "
                      "-- alternating sides. Uses the Deposit pixel as the Collect cue.",
@@ -365,6 +471,15 @@ HELP = {
                      "shake — end the attempt now instead of clicking out the "
                      "whole timeout. Try 600. Keep it well above one drain "
                      "tick so a slow build can't false-trigger.",
+    "SHAKE_W_LEAD_MS": "Momentum pre-roll: after reaching the water, hold W "
+                     "and glide toward land for EXACTLY this long before the "
+                     "first shake click -- built-up speed then carries you "
+                     "onto land as the pan drains. Pure time, no screen "
+                     "reads: the same glide every cycle (cues are useless "
+                     "mid-glide; the Shake cue sticks). Raise it if you "
+                     "stall in the water after shaking; lower it if the "
+                     "click lands on shore (shake-start retries in the "
+                     "trace). Needs 'Hold W during shake' ON. 0 = off.",
     "SHAKE_START_DELAY_MS": "Pause between reaching the water and starting the "
                             "shake (usually 0).",
     "POST_SHAKE_SETTLE_MS": "Pause after the pan empties so momentum settles you "
@@ -516,6 +631,15 @@ PIXEL_FIELDS = [
      [0, 0]),
     ("SHARDS_BR_PIXEL", "Shards counter — BOTTOM-RIGHT corner",
      "Bottom-right corner of the shards number.",
+     [0, 0]),
+    ("FIND_TL_PIXEL", "Find stack — TOP-LEFT corner",
+     "Top-left of the whole FINDS STACK area (bottom-right HUD). Finds stack "
+     "vertically and fade, so make the box TALL enough to cover several cards "
+     "at once, and wide enough for the longest item name.",
+     [0, 0]),
+    ("FIND_BR_PIXEL", "Find stack — BOTTOM-RIGHT corner",
+     "Bottom-right of the finds stack area, past the newest card's weight. "
+     "The taller the box, the more of the fading stack the tracker can read.",
      [0, 0]),
 ]
 PIXEL_DEFAULTS = {k: list(d) for (k, _l, _desc, d) in PIXEL_FIELDS}

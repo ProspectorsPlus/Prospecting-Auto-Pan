@@ -27,6 +27,7 @@ datas += [
     ("prospecting_ui.py", "."),
     ("prospecting_assistant.py", "."),
     ("prospecting_config.json", "."),
+    ("prospecting_prices.json", "."),
     ("icon.png", "."),
 ]
 hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant", "mss.windows"]

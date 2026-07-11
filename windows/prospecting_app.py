@@ -864,6 +864,48 @@ class Api:
                 res[k + "_white"] = white(out[k])
         return res
 
+    def test_find_read(self):
+        """OCR the find pop-up region ONCE and show raw lines + what parsed —
+        instant calibration check, no run needed."""
+        cur = load_saved()
+        tl, br = cur.get("FIND_TL_PIXEL") or [0, 0], cur.get("FIND_BR_PIXEL") or [0, 0]
+        try:
+            x0, y0, x1, y1 = int(tl[0]), int(tl[1]), int(br[0]), int(br[1])
+        except Exception:
+            return {"error": "bad corners"}
+        if x1 - x0 < 20 or y1 - y0 < 10:
+            return {"error": "region not calibrated (pick both corners)"}
+        try:
+            import mss, mss.tools, numpy as np
+            from Foundation import NSData
+            import Vision
+            with mss.mss() as sct:
+                img = sct.grab({"left": x0, "top": y0,
+                                "width": x1 - x0, "height": y1 - y0})
+            arr = np.frombuffer(img.rgb, dtype=np.uint8).reshape(
+                img.height, img.width, 3)
+            big = arr.repeat(3, axis=0).repeat(3, axis=1)
+            png = mss.tools.to_png(big.tobytes(), (img.width * 3, img.height * 3))
+            data = NSData.dataWithBytes_length_(png, len(png))
+            handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
+            req = Vision.VNRecognizeTextRequest.alloc().init()
+            try:
+                req.setRecognitionLevel_(0); req.setUsesLanguageCorrection_(False)
+            except Exception:
+                pass
+            handler.performRequests_error_([req], None)
+            raw = []
+            for obs in (req.results() or []):
+                try:
+                    raw.append(str(obs.topCandidates_(1)[0].string()))
+                except Exception:
+                    pass
+            return {"lines": raw}
+        except ImportError as e:
+            return {"error": "missing package: %s" % e}
+        except Exception as e:
+            return {"error": "error: %r" % (e,)}
+
     def test_earn_read(self):
         """Run the earnings OCR ONCE on the calibrated money/shards regions
         and return what it sees -- instant verification, no run needed."""
@@ -1141,6 +1183,7 @@ class Api:
         self._run_active = True
         self._last_stats = None
         self._events = []                     # detailed telemetry for this run
+        self._finds = []                      # analytics: logged finds
         self._phase_samples = {}              # per-phase durations (ms)
         self._phase_last = None
         self._macro_status = "idle"
@@ -1223,6 +1266,34 @@ class Api:
     def relic_set(self, idx, secs):
         """Set one relic's remaining time exactly (works while paused too)."""
         return self._engine_cmd("RELIC_SET %d %d" % (int(idx), int(secs)))
+
+    def analytics_data(self):
+        return {"stats": self._last_stats or {},
+                "finds": (getattr(self, "_finds", None) or [])[-200:],
+                "running": self.proc is not None
+                           and getattr(self, "_macro_status", "") not in
+                           ("off", "stopped"),
+                "alive": self.proc is not None}
+
+    def open_analytics_window(self):
+        global _analytics_win
+        try:
+            if _analytics_win is not None:
+                _analytics_win.evaluate_js("window.__reload && window.__reload()")
+                _analytics_win.show()
+                return "shown"
+        except Exception as e:
+            return "err:%s" % e
+        return "no-window"
+
+    def close_analytics_window(self):
+        global _analytics_win
+        try:
+            if _analytics_win is not None:
+                _analytics_win.hide()
+        except Exception:
+            pass
+        return "hidden"
 
     def stop(self):
         self._save_history()
@@ -1572,6 +1643,35 @@ class Api:
     def _pump(self, proc):
         for line in iter(proc.stdout.readline, ""):
             line = line.rstrip("\n")
+            if line.strip() == "__RESET__":
+                # a fresh run started (Start button OR Ctrl+K) -> clear the
+                # app-side analytics so the finds log / stats don't carry over
+                self._finds = []
+                self._last_stats = None
+                continue
+            if line.startswith("__FIND__ "):
+                try:
+                    fv = json.loads(line[9:])
+                    if not hasattr(self, "_finds") or self._finds is None:
+                        self._finds = []
+                    self._finds.append(fv)
+                    if len(self._finds) > 500:
+                        self._finds = self._finds[-500:]
+                except Exception:
+                    pass
+                continue
+            if line.startswith("__FIND_UPD__ "):
+                # a tracked card settled to a better value -> update in place
+                try:
+                    fv = json.loads(line[13:])
+                    fid = fv.get("id")
+                    for i in range(len(getattr(self, "_finds", []) or [])):
+                        if self._finds[i].get("id") == fid:
+                            self._finds[i] = fv
+                            break
+                except Exception:
+                    pass
+                continue
             if line.startswith("__STATS__ "):
                 _emit_stats(line[10:])        # raw JSON -> live stats panel
                 try:
@@ -1654,6 +1754,7 @@ _window = None
 _pill = None
 _overlay = None
 _coach_win = None
+_analytics_win = None
 
 PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:13px/1.3 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}
@@ -1727,6 +1828,24 @@ def _emit_stats(json_str):
         return
     try:
         _window.evaluate_js(f"window.setStats && setStats({json_str})")
+    except Exception:
+        pass
+
+
+def _hide_on_close(win):
+    """Make a reusable pop-out window HIDE instead of destroy when the user
+    clicks the OS close button, so it can be reopened (pywebview destroys a
+    truly-closed window, after which show() is dead)."""
+    if win is None:
+        return
+    def _closing():
+        try:
+            win.hide()
+        except Exception:
+            pass
+        return False        # cancel the real close -> window survives, hidden
+    try:
+        win.events.closing += _closing
     except Exception:
         pass
 
@@ -1826,8 +1945,10 @@ def build_html():
         '  <button type="button" id="wizbtn" class="btn">✨ Guided calibration (recommended)</button>'
         '  <button type="button" id="dettest" class="btn2">Test detection (live)</button>'
         '  <button type="button" id="earntest" class="btn2">Test money/shards read</button>'
+        '  <button type="button" id="findtest" class="btn2">Test find pop-up read</button>'
         '  <div class="detout" id="detout"></div>'
         '  <div class="detout" id="earnout"></div>'
+        '  <div class="detout" id="findout"></div>'
         '</div>'
         '<div class="caldiv"><span>or calibrate manually</span></div>'
         '<p class="chint" style="margin:0 0 10px">Click a <b>Calibrate</b> button, then '
@@ -1970,7 +2091,7 @@ def build_html():
     PINNED = ["run", "cal", "relics", "hist", "keys"]
     GROUPS = [
         ("Setup", ["Easy tuning", "Window"]),
-        ("Modes", ["Treasure chest"]),
+        ("Modes", ["Treasure chest", "Shards"]),
         ("Engine tuning", ["Mode / Dig", "Walk back into water", "Shake",
                            "Return to land (dig-probe)"]),
         ("Recovery", ["Recovery / safety", "Recovery movement (jitter taps)",
@@ -2045,6 +2166,22 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .navsearch::placeholder{color:var(--dim)}
  .navsearch:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--sand-dim)}
  .navpinned{margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+
+ .asec{color:var(--accent-lit);font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase;margin:16px 2px 8px}
+ .agrid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+ .acard{background:var(--panel);border:1px solid var(--line2);border-radius:11px;padding:11px 13px}
+ .acard .al{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+ .acard .av{font-size:21px;font-weight:800;color:var(--txt);margin-top:3px;font-variant:tabular-nums}
+ .acard .as{color:var(--mut);font-size:11px;margin-top:3px}
+ .arow{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin:0 2px 6px}
+ .arow .albl{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;width:66px}
+ .achip{background:var(--panel);border:1px solid var(--line2);border-radius:8px;padding:4px 9px;font-size:12px;color:var(--mut);font-weight:600}
+ .achip b{color:var(--accent-lit)}
+ .adim{color:var(--dim);font-size:12px}
+ .atbl{width:100%;border-collapse:collapse;margin-top:4px}
+ .atbl th{color:var(--dim);text-transform:uppercase;font-size:9px;letter-spacing:.05em;text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+ .atbl td{font-size:12px;padding:5px 8px;border-bottom:1px solid rgba(51,47,42,.5);font-variant:tabular-nums;color:var(--txt)}
+
  .navgroup{margin-bottom:1px}
  .grouphdr{display:flex;align-items:center;justify-content:space-between;width:100%;background:transparent;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;font-size:10.5px;font-weight:700;padding:9px 11px 4px;border-radius:8px}
  .grouphdr:hover{color:var(--mut)}
@@ -2340,6 +2477,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <select class="topfield sm" id="buildlist"><option value="">Load build…</option></select>
    <button class="btn2" id="delbuild" title="Delete selected build">✕</button>
    <button class="btn2" id="coachtoggle" title="Open the offline tuning coach">✦ Coach</button>
+   <button class="btn2" id="analyticsbtn" title="Open the analytics dashboard">☷ Analytics</button>
    <button class="btn2" id="popout" title="Pop out a floating control">⤢ Pop out</button>
    <button class="btn" id="savebtn">Save settings</button>
  </div>
@@ -2641,6 +2779,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function _sw(c){return c?('rgb('+c.r+','+c.g+','+c.b+')'):'#000';}
  function _drow(label,c,verdict){return '<div class="detrow"><span class="detsw" style="background:'+_sw(c)+'"></span>'
    +'<b>'+label+'</b> '+(c?('rgb('+c.r+','+c.g+','+c.b+')'):'(not set)')+' '+(verdict||'')+'</div>';}
+ (function(){const b=document.getElementById('findtest');if(b)b.onclick=async()=>{
+     const box=document.getElementById('findout');
+     box.innerHTML='<div class="detrow">reading\u2026</div>';
+     let r;try{r=await window.pywebview.api.test_find_read();}catch(e){box.innerHTML='<div class="detrow det-no">failed: '+e+'</div>';return;}
+     if(r.error){box.innerHTML='<div class="detrow det-no">'+r.error+'</div>';return;}
+     const lines=(r.lines||[]);
+     box.innerHTML='<div class="detrow"><b>OCR lines:</b> '+(lines.length?lines.map(x=>'\u201c'+x+'\u201d').join(' · '):'(nothing — widen/aim the region while a find is showing)')+'</div>';};})();
  (function(){const b=document.getElementById('earntest');if(!b)return;
    b.onclick=async()=>{const box=document.getElementById('earnout');
      box.innerHTML='<div class="detrow">reading\u2026</div>';
@@ -2675,6 +2820,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // save / run
  $('#savebtn').onclick=async()=>{const n=await window.pywebview.api.save_config(collect());toast('Saved '+n+' settings');};
  $('#popout').onclick=()=>{try{window.pywebview.api.popout();}catch(e){}};
+ $('#analyticsbtn').onclick=async()=>{try{await window.pywebview.api.open_analytics_window();}catch(e){}};
  let hotkeys={};
  function hkLabel(s){if(!s||!s.code)return 'unset';let p=[];if(s.ctrl)p.push('Ctrl');if(s.alt)p.push('Alt');if(s.shift)p.push('Shift');
    let c=s.code;if(c.indexOf('Key')===0)p.push(c.slice(3));else if(c.indexOf('Digit')===0)p.push(c.slice(5));else p.push(c);return p.join('+');}
@@ -2920,6 +3066,88 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
 </script></body></html>"""
 
 
+ANALYTICS_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
+ :root{--bg:#1a1816;--bg2:#1f1d1a;--panel:#232120;--line:#332f2a;--line2:#423d35;
+   --txt:#ece4d6;--mut:#9c9183;--dim:#6a6253;--accent:#c2924c;--accent-lit:#e0b873;--accent2:#7d9b63;}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--bg);color:var(--txt);font:13px -apple-system,"Segoe UI",sans-serif}
+ .ahead{display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--bg);z-index:2}
+ .ahead .t{font-size:15px;font-weight:700}.ahead .t b{color:var(--accent-lit)}
+ .ahead .rs{margin-left:auto;color:var(--mut);font-size:12px}
+ .awrap{padding:6px 18px 30px}
+
+ .asec{color:var(--accent-lit);font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase;margin:16px 2px 8px}
+ .agrid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+ .acard{background:var(--panel);border:1px solid var(--line2);border-radius:11px;padding:11px 13px}
+ .acard .al{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700}
+ .acard .av{font-size:21px;font-weight:800;color:var(--txt);margin-top:3px;font-variant:tabular-nums}
+ .acard .as{color:var(--mut);font-size:11px;margin-top:3px}
+ .arow{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin:0 2px 6px}
+ .arow .albl{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;width:66px}
+ .achip{background:var(--panel);border:1px solid var(--line2);border-radius:8px;padding:4px 9px;font-size:12px;color:var(--mut);font-weight:600}
+ .achip b{color:var(--accent-lit)}
+ .adim{color:var(--dim);font-size:12px}
+ .atbl{width:100%;border-collapse:collapse;margin-top:4px}
+ .atbl th{color:var(--dim);text-transform:uppercase;font-size:9px;letter-spacing:.05em;text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+ .atbl td{font-size:12px;padding:5px 8px;border-bottom:1px solid rgba(51,47,42,.5);font-variant:tabular-nums;color:var(--txt)}
+ </style></head><body>
+ <div class="ahead"><div class="t">Prospectors <b>Analytics</b></div><span class="rs" id="ars">idle</span></div>
+ <div class="awrap"><div id="aroot"></div></div>
+ <script>
+ window.fmtBig=window.fmtBig||function(n){n=Number(n)||0;const a=Math.abs(n);
+   if(a>=1e15)return (n/1e15).toFixed(2)+'Q';if(a>=1e12)return (n/1e12).toFixed(2)+'T';
+   if(a>=1e9)return (n/1e9).toFixed(2)+'B';if(a>=1e6)return (n/1e6).toFixed(2)+'M';
+   if(a>=1e3)return (n/1e3).toFixed(1)+'K';return String(Math.round(n));};
+
+window._analyticsFinds=window._analyticsFinds||[];
+window.renderAnalytics=function(root,s,finds){
+  if(!root)return;
+  const B=window.fmtBig||(x=>String(x));
+  const fmtS=v=>{v=Math.max(0,Math.round(v||0));return Math.floor(v/60)+':'+String(v%60).padStart(2,'0');};
+  s=s||{};finds=finds||[];
+  const card=(l,v,sub)=>'<div class="acard"><div class="al">'+l+'</div><div class="av">'+v+'</div>'+(sub?'<div class="as">'+sub+'</div>':'')+'</div>';
+  let h='';
+  h+='<div class="asec">Throughput</div><div class="agrid">';
+  h+=card('Pans',s.cycles||0,(s.clean_pct!=null?s.clean_pct+'% clean':''));
+  h+=card('Pans / hr',s.pans_per_hr||0,'runtime '+fmtS(s.runtime_s));
+  h+=card('Cycle time',(s.cyc_mean_s||0)+'s','p50 '+(s.cyc_p50_s||0)+' Â· p95 '+(s.cyc_p95_s||0)+' Â· last '+(s.cyc_last_s||0));
+  h+=card('Digs (registered)',s.digs||0,(s.digs_per_pan||0)+'/pan Â· '+(s.dig_clicks||0)+' clicks');
+  h+='</div>';
+  h+='<div class="asec">Earnings</div><div class="agrid">';
+  h+=card('Money','$'+B(s.money_earned||0),'$'+B(s.money_per_hr||0)+'/hr Â· $'+B(s.money_per_pan||0)+'/pan');
+  h+=card('Shards',B(s.shards_earned||0),B(s.shards_per_hr||0)+'/hr Â· '+(s.shards_per_pan||0)+'/pan');
+  h+=card('Loot value (kept)','$'+B(s.loot_value||0),'$'+B(s.loot_per_hr||0)+'/hr est');
+  h+=card('TOTAL / hr','$'+B(s.total_per_hr||0),'money + kept loot');
+  h+='</div>';
+  h+='<div class="asec">Finds â '+(s.finds_count||0)+' items Â· '+B(s.find_kg||0)+' kg Â· best '+B(s.best_kg||0)+' kg'+(s.finds_stack?' · stack '+s.finds_stack:'')+(s.finds_lowconf?' · '+s.finds_lowconf+' low-conf':'')+'</div>';
+  const rar=s.by_rarity||{},mod=s.by_mod||{};
+  const chips=o=>Object.keys(o).length?Object.entries(o).sort((a,b)=>b[1]-a[1]).map(e=>'<span class="achip">'+e[0]+' <b>'+e[1]+'</b></span>').join(''):'<span class="adim">none yet</span>';
+  h+='<div class="arow"><span class="albl">rarity</span>'+chips(rar)+'</div>';
+  h+='<div class="arow"><span class="albl">modifier</span>'+chips(mod)+'</div>';
+  h+='<div class="asec">Reliability</div><div class="agrid">';
+  h+=card('Clean cycles',(s.clean_pct!=null?s.clean_pct+'%':'â'),(s.clean_cycles||0)+' of '+(s.cycles||0));
+  h+=card('Recoveries',s.recoveries||0,(s.nudges||0)+' nudges');
+  h+=card('Shake retries',s.shake_retries||0,(s.shake_fails||0)+' fails');
+  h+=card('Stops / pauses',(s.safe_stops||0)+' / '+(s.hard_stops||0),(s.pauses||0)+' pauses Â· '+(s.relics_used||0)+' relics');
+  h+='</div>';
+  h+='<div class="asec">Find log ('+finds.length+')</div>';
+  if(finds.length){h+='<table class="atbl"><tr><th>t</th><th>item</th><th>kg</th><th>rarity</th><th>~value</th></tr>';
+    finds.slice(-120).reverse().forEach(f=>{h+='<tr><td>'+fmtS(f.t)+'</td><td>'+((f.mod?f.mod+' ':'')+f.name)+(f.conf!=null&&f.conf<0.3?' <span class="adim">?</span>':'')+(f.mmul&&f.mmul>1?' <span class="adim">x'+f.mmul+'</span>':'')+'</td><td>'+B(f.kg)+'</td><td>'+(f.rarity||'')+'</td><td>'+(f.value?'$'+B(f.value):'')+'</td></tr>';});
+    h+='</table>';}
+  else h+='<div class="adim" style="padding:4px 2px">No finds logged yet. Enable Finds tracking + calibrate the pop-up corners.</div>';
+  root.innerHTML=h;
+};
+
+ async function tick(){let d={};try{d=await window.pywebview.api.analytics_data();}catch(e){}
+   const s=d.stats||{},f=d.finds||[];
+   document.getElementById('ars').textContent=d.running?'running':(d.alive?'idle':'engine off');
+   renderAnalytics(document.getElementById('aroot'),s,f);
+   setTimeout(tick,1500);}
+ window.addEventListener('pywebviewready',tick);setTimeout(tick,600);
+ window.__reload=()=>tick();
+ </script></body></html>'''
+
+
 COACH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  :root{--bg2:#1f1d1a;--panel:#232120;--line:#332f2a;--line2:#423d35;--txt:#ece4d6;--mut:#9c9183;--dim:#6a6253;--accent:#c2924c;--accent-lit:#e0b873;--accent2:#7d9b63;--teal-lit:#9bc07e}
  *{box-sizing:border-box}
@@ -3042,7 +3270,7 @@ COACH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
 
 
 def main():
-    global _window, _pill, _overlay, _coach_win
+    global _window, _pill, _overlay, _coach_win, _analytics_win
     # Frozen macro mode: the bundled exe re-invokes itself with --run-macro to
     # run the actual macro in-process (there is no separate python.exe).
     if FROZEN and "--run-macro" in sys.argv:
@@ -3086,8 +3314,28 @@ def main():
         _coach_win = webview.create_window(
             "Coach — Prospectors Plus", html=COACH_HTML, js_api=api,
             width=900, height=820, min_size=(560, 560), hidden=True)
+        _hide_on_close(_coach_win)
     except Exception as _e:
         print("[coach] precreate failed: %s" % _e)
+    try:
+        _analytics_win = webview.create_window(
+            "Analytics — Prospectors Plus", html=ANALYTICS_HTML, js_api=api,
+            width=980, height=860, min_size=(620, 560), hidden=True)
+        _hide_on_close(_analytics_win)
+    except Exception as _e:
+        print("[analytics] precreate failed: %s" % _e)
+    def _sigint(_sig, _frm):
+        try:
+            if api.proc is not None:
+                api.proc.terminate()
+        except Exception:
+            pass
+        os._exit(0)
+    try:
+        signal.signal(signal.SIGINT, _sigint)
+        signal.signal(signal.SIGTERM, _sigint)
+    except Exception:
+        pass
     webview.start()
     try:
         api._save_history()      # window closed while running -> log it

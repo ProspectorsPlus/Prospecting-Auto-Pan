@@ -250,6 +250,9 @@ WALK_BACK_BRAKE_MS = 70
 WATER_EXTRA_BACK_MS = 0
 # Pause between releasing S and the first shake click. (0 = disabled.)
 SHAKE_START_DELAY_MS = 0
+SHAKE_W_LEAD_MS      = 0  # momentum pre-roll: walk forward this long
+                          # BEFORE the first shake click (0 = off); cuts
+                          # to clicks early when the water edge shows
 WALK_BACK_MS      = 95     # hold S to back into the water (fallback / if anchor off)
 WALK_BACK_EXTRA_MS = 0     # keep holding S this long AFTER touching water (go a
                           # bit deeper); the forward move adds the same so you
@@ -368,6 +371,37 @@ AUTOPAN_RELOCK_DELAY_MS = 0   # custom gap between the button click and the
 # inject garbage). Works in macro AND Tracker mode -> real build comparisons.
 EARN_TRACK         = False
 EARN_OCR_SEC       = 10
+# FINDS TRACKER (opt-in): watch the bottom-right item pop-up stack ("Iridescent
+# Dinosaur Skull  347 kg" / "Exotic"), log every find (modifier / name / weight
+# / rarity), and estimate the value of KEPT items via prospecting_prices.json x
+# SELL_BOOST_PCT -- auto-sold money is already measured by the money OCR; kept
+# loot is what needs estimating. v2 is a FADE-DIRECTION tracker: a fast pixel
+# sampler (FINDS_FAST_MS) sees how many cards are up and how solid each one is
+# (cards fade IN as they arrive, OUT as they age), so arrivals are counted at
+# sample speed even when several skulls land in one pan; a slower Vision OCR
+# pass (FINDS_OCR_MS) attaches each card's identity. See FindsWatcher.
+FINDS_TRACK        = False
+FINDS_FAST_MS      = 40        # fast presence/opacity sample cadence (ms)
+FINDS_OCR_MS       = 200       # min gap between identity OCR passes (ms)
+FINDS_STACK_NEWEST = "bottom"  # where a new find card appears (bottom | top)
+FINDS_MIN_CONF     = 0.30      # min OCR confidence for the OCR safety net to
+                               # start a find on its own (fade/ghost guard)
+FINDS_MIN_DWELL    = 3         # fast samples a band must live before it can
+                               # count (animation flicker can't mint a find)
+FINDS_EMPTY_CLEAR  = 3         # empty OCR passes before the safety net clears
+FINDS_EMPTY_MS     = 700       # quiet ms (no bands) before the stack resets
+FINDS_CARD_SEC     = 5         # how long one card stays on screen (s, incl.
+                               # animations) -- re-sighting dedupe window
+FINDS_WHITE_MIN    = 170       # text pixel: every RGB channel at least this
+FINDS_DARK_MAX     = 105       # card-backing pixel: every channel at most this
+FINDS_BAND_MIN     = 0.008     # min text-pixel row fraction to call a band
+FINDS_DEBUG        = False     # verbose tracker diagnostics in the trace
+SELL_BOOST_PCT     = 100    # your sell boost, in percent (100 = 1.0x)
+FINDS_BANK_RARITY  = "Exotic"  # only value finds at/above this rarity as KEPT
+                               # loot -- lower-rarity finds auto-sell and are
+                               # already in the money counter (no double-count)
+FIND_TL_PIXEL      = [0, 0] # find pop-up region corners (calibrate)
+FIND_BR_PIXEL      = [0, 0]
 MONEY_TL_PIXEL     = [0, 0]   # region corners; calibrate in the Calibrate tab
 MONEY_BR_PIXEL     = [0, 0]
 SHARDS_TL_PIXEL    = [0, 0]
@@ -446,6 +480,18 @@ TREASURE_DIGS        = 1     # how many digs per chest before strafing on
 TREASURE_DIG_MS      = 8     # quick dig click length (5-10 ms)
 TREASURE_DIG_GAP_MS  = 12000 # delay between each dig click (slow chest dig animation)
 TREASURE_MOVE_MAX_MS = 2500  # safety cap on the strafe before moving on
+# SHARDS MODE (opt-in, SHARDS_DIG_CLICKS > 0): exact-click digging for builds
+# where a known number of clicks fills the pan (shards farm: ONE). No probe
+# re-digs, no bar-race double clicks: the FIRST click must prove it landed
+# (the bar's left tip leaves gray = the fill STARTED) within
+# SHARDS_CLICK_CONFIRM_MS; only a provably-dead click is retried. With
+# SHARDS_ASSUME_FULL on, fill started = fill guaranteed: move on immediately
+# and spend the animation time already walking back to the water.
+SHARDS_DIG_CLICKS      = 0    # exact dig clicks per land visit (0 = off)
+SHARDS_CLICK_CONFIRM_MS = 100 # bar must leave EMPTY within this after click 1
+SHARDS_CLICK_RETRIES   = 3    # total clicks allowed while the bar never moves
+SHARDS_ASSUME_FULL     = False # bar moved -> treat as full NOW, walk during
+                               # the fill animation (one-click-fill builds)
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -1238,6 +1284,10 @@ class State:
     trk_fall_t = 0.0         # TRACKER: last time the bar was draining
     trk_phase = ""           # TRACKER: last emitted phase
     earn = None              # EARNINGS: live OCR tracker (or None)
+    finds = None             # FINDS: live OCR watcher (or None)
+    dig_burst_t = 0.0        # registered-dig burst clock (fixes inflation)
+    assume_full_until = 0.0  # SHARDS: treat capacity as FULL until this
+    last_cycle_end = 0.0     # per-cycle duration tracking
     ap_next_check = 0.0      # AUTO PAN GUARD: next scheduled button read
     ap_off_streak = 0        # AUTO PAN GUARD: consecutive OFF reads
     ap_kick_grace = 0.0      # HEALTH KICK: activity deadline resets to this
@@ -1264,7 +1314,18 @@ class SessionStats:
         self.start = time.perf_counter()
         self.cycles = 0       # pans emptied = completed cycles
         self.clean_cycles = 0 # cycles with ZERO retries/recoveries (consistency)
-        self.digs = 0         # dig clicks fired (macro) / rise bursts (tracker)
+        self.digs = 0         # REGISTERED digs (bar-rise bursts)
+        self.dig_clicks = 0   # dig clicks fired (attempts; >= digs)
+        self.pauses = 0       # session pauses taken
+        self.cycle_ms = []    # per-cycle durations (capped)
+        self.finds_count = 0  # FINDS: items seen in the pop-up
+        self.find_kg = 0.0    # FINDS: total weight collected
+        self.best_kg = 0.0    # FINDS: heaviest single find
+        self.by_rarity = {}   # FINDS: rarity -> count
+        self.by_mod = {}      # FINDS: modifier -> count
+        self.loot_value = 0.0 # FINDS: estimated value of logged finds
+        self.finds_stack = 0  # FINDS: cards live in the stack right now
+        self.finds_lowconf = 0 # FINDS: finds logged without a clean read
         self.money_earned = 0 # EARNINGS: summed positive money deltas
         self.shards_earned = 0
         self.recoveries = 0
@@ -1301,6 +1362,36 @@ class SessionStats:
                                   if self.cycles else 0),
                 "shards_per_pan": (round(self.shards_earned / self.cycles, 2)
                                    if self.cycles else 0),
+                "dig_clicks": self.dig_clicks,
+                "digs_per_pan": (round(self.digs / self.cycles, 2)
+                                 if self.cycles else 0),
+                "clicks_per_pan": (round(self.dig_clicks / self.cycles, 2)
+                                   if self.cycles else 0),
+                "pauses": self.pauses,
+                "cyc_mean_s": (round(sum(self.cycle_ms) / len(self.cycle_ms)
+                                     / 1000.0, 2) if self.cycle_ms else 0),
+                "cyc_p50_s": (round(sorted(self.cycle_ms)[len(self.cycle_ms)
+                                    // 2] / 1000.0, 2) if self.cycle_ms else 0),
+                "cyc_p95_s": (round(sorted(self.cycle_ms)[
+                    min(len(self.cycle_ms) - 1,
+                        int(0.95 * (len(self.cycle_ms) - 1)))] / 1000.0, 2)
+                    if self.cycle_ms else 0),
+                "cyc_last_s": (round(self.cycle_ms[-1] / 1000.0, 2)
+                               if self.cycle_ms else 0),
+                "finds_count": self.finds_count,
+                "find_kg": round(self.find_kg, 1),
+                "best_kg": round(self.best_kg, 1),
+                "by_rarity": dict(self.by_rarity),
+                "by_mod": dict(self.by_mod),
+                "finds_stack": int(self.finds_stack),
+                "finds_lowconf": int(self.finds_lowconf),
+                "loot_value": int(self.loot_value),
+                "loot_per_hr": (int(self.loot_value / hrs)
+                                if hrs > 0.0008 else 0),
+                "total_per_hr": ((round(self.money_earned / hrs)
+                                  if hrs > 0.0008 else 0)
+                                 + (int(self.loot_value / hrs)
+                                    if hrs > 0.0008 else 0)),
                 "runtime_s": int(rt),
                 "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0,
                 "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
@@ -1455,6 +1546,1135 @@ class EarnTracker:
             if best is None or y < best_y:            # Vision y-up: lowest line
                 best, best_y = int(digs), y
         return best
+
+
+_RARITIES = ("Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic",
+             "Exotic", "Divine", "Relic")
+_RARITY_RANK = {r: i for i, r in enumerate(_RARITIES)}
+
+
+def _rarity_at_least(r, floor):
+    """True if rarity r is at least `floor` in the ladder. Unknown r -> False."""
+    a = _RARITY_RANK.get((r or "").title())
+    b = _RARITY_RANK.get((floor or "").title(), 0)
+    return a is not None and a >= b
+# Value-tier modifiers from the v2.6 model (Section 4). These are the ones
+# that carry a price multiplier; "modifier_mult" in the price table sets each.
+_MODIFIERS = {"Shiny", "Pure", "Glowing", "Scorching", "Irradiated",
+              "Iridescent", "Cosmic", "Mutated", "Lunar", "Perfect"}
+
+
+def _load_prices():
+    """prospecting_prices.json (next to the config): user-editable table for
+    valuing KEPT finds. {"per_kg": {item: $/kg}, "rarity_mult": {...},
+    "modifier_mult": {...}}. Missing file/keys -> value 0 (still logged)."""
+    try:
+        with open(os.path.join(os.path.dirname(CONFIG_FILE),
+                               "prospecting_prices.json")) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _finds_row_signal(arr):
+    """Per-row 'card text' signal over the finds box. A pixel counts as TEXT
+    when it is bright like the white HUD lettering (every RGB channel >=
+    FINDS_WHITE_MIN) AND sits within a few px of a DARK pixel (the card's
+    translucent dark backing / the text outline, every channel <=
+    FINDS_DARK_MAX). Plain terrain fails one of the two tests -- snow has no
+    dark neighbours, caves have no bright text -- so the signal is ~0 unless a
+    card is there, and it scales with the card's fade alpha: THIS is the
+    opacity signal the tracker classifies on. No background-colour keying.
+    arr: HxWx3 uint8 -> float32[H], each row's text-pixel fraction (0..1)."""
+    bright = arr.min(axis=2) >= FINDS_WHITE_MIN
+    # tier-coloured glyphs (Cosmic purple and friends) are vivid but not
+    # white: very bright in some channel and bright on average also counts
+    bright |= ((arr.max(axis=2) >= 220) & (arr.mean(axis=2) >= 135))
+    dark = arr.max(axis=2) <= FINDS_DARK_MAX
+    if not bright.any() or not dark.any():
+        return np.zeros(arr.shape[0], np.float32)
+    near = dark.copy()                      # dilate the dark mask horizontally
+    for s in (1, 2, 3):
+        near[:, s:] |= dark[:, :-s]
+        near[:, :-s] |= dark[:, s:]
+    sig = (bright & near).mean(axis=1).astype(np.float32)
+    if sig.shape[0] >= 5:                   # soften 1px speckle
+        sig = np.convolve(sig, np.ones(5, np.float32) / 5.0, mode="same")
+    return sig
+
+
+def _finds_bands(sig, pitch, band_min):
+    """Segment a row signal into vertical CARD BANDS: contiguous runs that
+    clear band_min, merged across the small gaps between a card's own text
+    lines, split when one run clearly spans several card pitches (two cards
+    touching). Returns bands TOP -> BOTTOM, positions as top-down fractions of
+    the region: [{y0, y1, cy, op}] where op is the band's mean signal (the
+    card's opacity proxy)."""
+    h = int(sig.shape[0]) if hasattr(sig, "shape") else len(sig)
+    if h == 0:
+        return []
+    on = sig >= band_min
+    runs = []
+    i = 0
+    while i < h:
+        if on[i]:
+            j = i
+            while j < h and on[j]:
+                j += 1
+            runs.append([i, j])
+            i = j
+        else:
+            i += 1
+    if not runs:
+        return []
+    p = pitch if pitch > 0 else 0.16
+    gap = max(3, int(h * min(0.45 * p, 0.06)))
+    merged = [runs[0]]
+    for r in runs[1:]:
+        if r[0] - merged[-1][1] <= gap:
+            merged[-1][1] = r[1]
+        else:
+            merged.append(r)
+    min_h = max(2, int(h * max(0.02, 0.18 * p)))
+    bands = []
+    for i0, i1 in merged:
+        if i1 - i0 < min_h:
+            continue
+        n = 1
+        if pitch > 0:                        # split a run of touching cards
+            n = min(6, max(1, int(round((i1 - i0) / (h * pitch)))))
+        step = (i1 - i0) / float(n)
+        for k in range(n):
+            a0 = int(i0 + k * step)
+            a1 = max(a0 + 1, int(i0 + (k + 1) * step))
+            seg = sig[a0:a1]
+            bands.append({"y0": a0 / float(h), "y1": a1 / float(h),
+                          "cy": (a0 + a1) / (2.0 * float(h)),
+                          "op": float(seg.mean()) if len(seg) else 0.0})
+    return bands
+
+
+def _finds_align(tcys, bcys, pitch, tol):
+    """Order-preserving best match between tracked-card centres and this
+    frame's band centres, allowing one COMMON vertical shift (an insertion
+    pushes the whole stack together, so every surviving card moves by the same
+    amount). Tries candidate shifts taken from the pairwise offsets, greedily
+    matches in stack order within tol, and scores each alignment on two
+    physical laws: more matched cards is better, and cards only ever ENTER at
+    the newest end -- an alignment leaving unmatched bands on the OLD side of
+    a matched one would mean a card "spawned" mid-stack (implausible), so it
+    scores down before the smaller shift wins a tie. Returns (pairs, shift):
+    pairs = [(track_i, band_i), ...]; shift = how far the stack moved this
+    tick (negative = pushed toward the OLD end)."""
+    if not tcys or not bcys:
+        return [], 0.0
+    span = max(6.0 * pitch, 0.5)   # a whole stack can insert in one gap
+    cands = {0.0}
+    for t in tcys:
+        for b in bcys:
+            d = b - t
+            if abs(d) <= span:
+                cands.add(round(d, 3))
+    best_pairs, best_shift, best_score = [], 0.0, None
+    for sh in cands:
+        pairs = []
+        bi = 0
+        for ti, t in enumerate(tcys):
+            want = t + sh
+            while bi < len(bcys) and bcys[bi] < want - tol:
+                bi += 1
+            if bi < len(bcys) and abs(bcys[bi] - want) <= tol:
+                pairs.append((ti, bi))
+                bi += 1
+        bad = 0
+        if pairs:
+            top = max(bcys[bi] for _ti, bi in pairs)
+            used = {bi for _ti, bi in pairs}
+            bad = sum(1 for bi, b in enumerate(bcys)
+                      if bi not in used and b < top)
+        score = (len(pairs), -bad, -abs(sh))
+        if best_score is None or score > best_score:
+            best_score, best_pairs, best_shift = score, pairs, sh
+    return best_pairs, best_shift
+
+
+class FindsWatcher:
+    """FINDS TRACKER v2 -- fade-direction stack tracker.
+
+    The finds HUD is a vertical stack of notification cards: a new card fades
+    IN (transparent -> solid) at the newest end and pushes older cards along;
+    an old card fades OUT and leaves. At high luck several skulls land in ONE
+    pan, faster than an OCR pass -- so counting must not wait on OCR.
+
+    Two decoupled cadences:
+      * FAST sampler (FINDS_FAST_MS): a cheap pixel pass (no OCR) turns the
+        calibrated box into per-card BANDS with an opacity value each. Bands
+        are matched frame-to-frame by position (allowing the whole stack to
+        shift together), giving every card an opacity TRAJECTORY: rising =
+        animating IN = NEW; falling = animating OUT = already counted.
+        Arrivals are counted here, at sample speed.
+      * IDENTITY OCR (>= FINDS_OCR_MS apart): Vision reads the same grabbed
+        frame; the parsed cards (name / modifier / kg / rarity) are bound to
+        the tracked bands by position and refine each find. Identity may lag;
+        the count never does.
+
+    Count reconciliation (every fast tick): insertions implied by the stack
+    SHIFT are cross-checked against the arrivals actually seen; a shortfall
+    mints an INFERRED find (low confidence, identity best-effort) so bursts
+    cannot under-count -- while dwell, opacity floors and the OCR cross-check
+    stop noise from inventing finds. Two identical drops are two bands = two
+    arrivals = two finds, by construction. An OCR SAFETY NET (the previous
+    release's sequence tracker) still counts any card the pixel sampler never
+    saw, so a mis-tuned threshold degrades to the old behaviour, not to zero.
+    Every find prints __FIND__ once (by id) and __FIND_UPD__ when reads settle
+    to a better name/weight; run stats adjust by the delta, never twice."""
+
+    def __init__(self):
+        self._stop = threading.Event()
+        self._lock = threading.Lock()  # guards _frame / _ocr_out handoff
+        self._frame = None      # newest (ts, pixels, band snapshot) for OCR
+        self._ocr_out = []      # finished identity passes for the fast thread
+        self._tracks = []       # live cards, sorted oldest(top) -> newest
+        self._next_id = 1       # public find id (emitted)
+        self._next_key = 1      # internal track key
+        self._pitch = 0.0       # learned card pitch (fraction of region h)
+        self._plateau = 0.0     # learned solid-card opacity (EMA of peaks)
+        self._ocr_pass_n = 0    # identity passes ingested
+        self._ocr_empty = 0     # consecutive identity passes with no cards
+        self._no_band_since = None
+        self._unbound = []      # recent OCR cards no track claimed
+        self._recent_dead = []  # (t, cy, rep) of cards that just left -- a
+                                # trailing OCR read of one must not re-mint it
+        self._old_end_births = 0
+        self._blind_warned = False
+        self._last_dbg = 0.0
+        self._last_tick_t = None
+
+    # ---- lifecycle ------------------------------------------------------
+    def start(self):
+        if not FINDS_TRACK:
+            return
+        tl, br = FIND_TL_PIXEL, FIND_BR_PIXEL
+        try:
+            x0, y0, x1, y1 = int(tl[0]), int(tl[1]), int(br[0]), int(br[1])
+        except Exception:
+            return
+        if x1 - x0 < 20 or y1 - y0 < 10:
+            log("[finds] FINDS_TRACK is on but the pop-up region isn't "
+                "calibrated (Calibrate tab -> Find pop-up corners)")
+            return
+        try:
+            import Vision, Foundation  # noqa: F401
+        except Exception:
+            log("[finds] macOS Vision OCR not available -> finds tracking off")
+            return
+        self.prices = _load_prices()
+        self.ore_names = list((self.prices.get("per_kg") or {}).keys())
+        self.reg = {"left": x0, "top": y0, "width": x1 - x0, "height": y1 - y0}
+        self._stop.clear()
+        threading.Thread(target=self._run_fast, daemon=True).start()
+        threading.Thread(target=self._run_ocr, daemon=True).start()
+        log("[finds] fade tracker running (sample %dms / ocr %dms)"
+            % (max(20, int(FINDS_FAST_MS)), max(60, int(FINDS_OCR_MS))))
+
+    def stop(self):
+        self._stop.set()
+
+    # ---- the two threads --------------------------------------------------
+    def _run_fast(self):
+        import mss
+        period = max(0.02, float(FINDS_FAST_MS) / 1000.0)
+        with mss.mss() as sct:
+            while not self._stop.is_set() and (State.running or State.paused):
+                t0 = time.perf_counter()
+                try:
+                    img = sct.grab(self.reg)
+                    arr = np.frombuffer(img.rgb, dtype=np.uint8).reshape(
+                        img.height, img.width, 3)
+                    now = time.perf_counter()
+                    with self._lock:            # identity results first: they
+                        outs = self._ocr_out    # bind to the tracks as they
+                        self._ocr_out = []      # stood when THAT frame was
+                    for _ts, cards, snap in outs:      # grabbed
+                        self._ingest_ocr(now, cards, snap)
+                    bands = _finds_bands(_finds_row_signal(arr),
+                                         self._pitch, FINDS_BAND_MIN)
+                    if (FINDS_STACK_NEWEST or "bottom").lower() == "top":
+                        bands = [{"y0": 1.0 - b["y1"], "y1": 1.0 - b["y0"],
+                                  "cy": 1.0 - b["cy"], "op": b["op"]}
+                                 for b in bands]
+                        bands.sort(key=lambda b: b["cy"])
+                    self._fast_tick(now, bands)
+                    snap = [(t["key"], t["y0"], t["y1"], t["cy"])
+                            for t in self._tracks
+                            if t["miss"] == 0 and not t.get("synthetic")]
+                    with self._lock:
+                        self._frame = (now, arr, snap)
+                except Exception:
+                    pass
+                self._stop.wait(
+                    max(0.005, period - (time.perf_counter() - t0)))
+
+    def _run_ocr(self):
+        gap = max(0.06, float(FINDS_OCR_MS) / 1000.0)
+        while not self._stop.is_set() and (State.running or State.paused):
+            with self._lock:
+                fr, self._frame = self._frame, None
+            if fr is None:
+                self._stop.wait(0.02)
+                continue
+            t0 = time.perf_counter()
+            try:
+                ts, arr, snap = fr
+                cards = _cards_from_lines(_finds_ocr_array(arr),
+                                          self.ore_names)
+                if (FINDS_STACK_NEWEST or "bottom").lower() == "top":
+                    for c in cards:
+                        c["cy"] = 1.0 - c["cy"]
+                    cards.sort(key=lambda c: c["cy"])
+                with self._lock:
+                    self._ocr_out.append((ts, cards, snap))
+            except Exception:
+                pass
+            self._stop.wait(max(0.0, gap - (time.perf_counter() - t0)))
+
+    # ---- adaptive floors --------------------------------------------------
+    def _mint_floor(self):
+        f = FINDS_BAND_MIN * 1.5
+        if self._plateau > 0:
+            f = max(f, 0.25 * self._plateau)
+        return f
+
+    def _leave_floor(self):
+        f = FINDS_BAND_MIN * 0.75
+        if self._plateau > 0:
+            f = max(f, 0.10 * self._plateau)
+        return f
+
+    def _dedupe_s(self):
+        """Re-sighting window: a same-identity card re-detected within one
+        on-screen lifetime of an ABRUPT disappearance is the same card."""
+        return max(2.0, float(FINDS_CARD_SEC)) + 1.5
+
+    # ---- fast tick: track, classify, count, reconcile ----------------------
+    def _fast_tick(self, now, bands):
+        """One fast sample: associate bands to tracked cards (allowing a whole-
+        stack shift), update each card's opacity trajectory, mint NEW arrivals
+        (rising bands at the newest end), finalise leavers, and reconcile the
+        positional count against the arrivals actually seen."""
+        gap = (now - self._last_tick_t) if self._last_tick_t is not None \
+            else 0.0
+        self._last_tick_t = now
+        p = self._pitch if self._pitch > 0 else 0.15
+        tol = max(0.03, 0.4 * p)
+        tracks = self._tracks
+        pairs, shift = _finds_align([t["cy"] for t in tracks],
+                                    [b["cy"] for b in bands], p, tol)
+        matched_t = {ti for ti, _ in pairs}
+        matched_b = {bi for _, bi in pairs}
+        for ti, bi in pairs:
+            self._feed_band(now, tracks[ti], bands[bi])
+
+        # unmatched tracks: coast briefly (mid-life flicker), finalise leavers
+        coast = max(3, int(600.0 / max(20.0, float(FINDS_FAST_MS))))
+        keep, removed = [], 0
+        for ti, t in enumerate(tracks):
+            if ti in matched_t:
+                keep.append(t)
+                continue
+            if t.get("synthetic"):
+                if now - t.get("last_read_t", t["born"]) > 8.0:
+                    self._finalize(t, now)
+                    removed += 1
+                else:
+                    keep.append(t)
+                continue
+            t["miss"] += 1
+            t["cy"] += shift               # ride along with the stack
+            if t["miss"] > coast or (t["miss"] >= 2 and t.get("fading")
+                                     and not t.get("inferred")):
+                self._finalize(t, now)
+                removed += 1
+            else:
+                keep.append(t)
+
+        # unmatched bands: re-attach to a coasting/net card if one is close,
+        # hand the band to a just-inferred card that was waiting for it, or
+        # mint a brand-new arrival at the newest end
+        newest = max((t["cy"] for t in keep if t["miss"] == 0),
+                     default=None)   # only cards CONFIRMED this frame
+        arrivals = 0
+        for bi, b in enumerate(bands):
+            if bi in matched_b:
+                continue
+            att = None
+            for t in keep:
+                if (t["miss"] > 0 or t.get("synthetic")) and \
+                        abs(t["cy"] - b["cy"]) <= 0.6 * p and \
+                        (att is None or abs(t["cy"] - b["cy"])
+                         < abs(att["cy"] - b["cy"])):
+                    att = t
+            if att is None:
+                for t in keep:
+                    if t.get("inferred") and t["peak"] <= 0.0 \
+                            and now - t["born"] < 1.5:
+                        att = t
+                        break
+            if att is not None:
+                att["synthetic"] = False
+                att["miss"] = 0
+                self._feed_band(now, att, b)
+                continue
+            orphan = (newest is not None and b["cy"] <= newest + 0.25 * p)
+            t = self._new_track(now, b, orphan)
+            keep.append(t)
+            if not orphan:
+                arrivals += 1
+            elif all(b["cy"] < x["cy"] - 0.25 * p
+                     for x in keep if x is not t):
+                self._old_end_births += 1      # cards entering at the OLD end?
+                if self._old_end_births == 3:
+                    log("[finds] cards keep appearing at the OLD end -- if "
+                        "counts run low, flip FINDS_STACK_NEWEST")
+        keep.sort(key=lambda t: t["cy"])
+        self._tracks = keep
+
+        # splits: a slot whose card died and "came back" holds a NEW card --
+        # finalise the old identity and restart the slot as a fresh arrival
+        for t in list(self._tracks):
+            b = t.pop("_split", None)
+            if b is None:
+                continue
+            self._finalize(t, now)
+            self._tracks.remove(t)
+            nt = self._new_track(now, b, orphan=False)
+            nt["rising"] = True            # it just rose off a dead valley
+            nt["disrupt_t"] = now
+            self._tracks.append(nt)
+            arrivals += 1
+            if FINDS_DEBUG:
+                log("[finds] dbg slot rebirth at cy=%.2f -> new card"
+                    % b["cy"])
+        self._tracks.sort(key=lambda t: t["cy"])
+
+        # mint: dwell + opacity floor + fade-direction (rising = arriving)
+        min_dwell = max(1, int(FINDS_MIN_DWELL))
+        for t in self._tracks:
+            if t.get("minted") or t.get("orphan"):
+                continue
+            if t["seen_ticks"] < min_dwell or t["peak"] < self._mint_floor():
+                continue
+            if t.get("rising") or t["seen_ticks"] >= 2 * min_dwell:
+                self._mint(t, now)
+
+        # count reconciliation: if the stack shifted k slots but we saw fewer
+        # arrivals (a card arrived AND started leaving between samples), the
+        # difference is inferred so nothing is ever dropped silently
+        k_shift = 0
+        if self._pitch > 0 and len(pairs) >= 2 and shift < -0.5 * self._pitch \
+                and gap > max(0.12, 2.5 * float(FINDS_FAST_MS) / 1000.0):
+            k_shift = int(round(-shift / self._pitch))
+        missed = min(3, k_shift - arrivals - removed)
+        for _ in range(max(0, missed)):
+            self._infer_find(now, k_shift, arrivals)
+
+        # emit: a new card the moment it has an identity; after a fair chance
+        # (2 OCR passes + 2.5s) even without one -- reconciliation promises
+        # every counted card reaches the log
+        for t in self._tracks:
+            if not t.get("minted"):
+                continue
+            if t.get("emitted") is None:
+                if t["reads"]:
+                    self._emit(t, final=False)
+                elif (now - t["mint_t"] > 2.5
+                      and self._ocr_pass_n - t.get("mint_pass", 0) >= 2):
+                    self._emit(t, final=False, force=True)
+
+        # a long quiet spell with tracks still coasting -> the stack cleared
+        if bands:
+            self._no_band_since = None
+        elif self._no_band_since is None:
+            self._no_band_since = now
+        elif (now - self._no_band_since) * 1000.0 >= max(200, FINDS_EMPTY_MS):
+            for t in [t for t in self._tracks if not t.get("synthetic")]:
+                self._finalize(t, now)
+                self._tracks.remove(t)
+            self._no_band_since = now
+        self._stats_sync()
+        if FINDS_DEBUG and now - self._last_dbg >= 1.0:
+            self._last_dbg = now
+            log("[finds] dbg bands=%d tracks=%d minted=%d shift=%+0.3f "
+                "pitch=%.3f plat=%.4f"
+                % (len(bands), len(self._tracks),
+                   sum(1 for t in self._tracks if t.get("minted")),
+                   shift, self._pitch, self._plateau))
+
+    def _feed_band(self, now, t, b):
+        """Fold one band observation into a track: position, opacity history,
+        and the fade DIRECTION flags (rising = arriving, fading = leaving).
+        A track that faded to a valley and then RISES again is two different
+        cards -- a real card's fade-out never reverses -- so mark it for a
+        split instead of letting the newcomer wear the dead card's identity."""
+        if t.get("synthetic"):
+            t["synthetic"] = False         # pixels see it now -> promoted
+        if t.get("miss", 0) > 0:
+            t["disrupt_t"] = now           # its band went away and came back
+        ref = max(self._plateau, t["peak"], FINDS_BAND_MIN * 3.0)
+        if t.get("fading") or t.get("valley") is not None:
+            v = t.get("valley")
+            t["valley"] = b["op"] if v is None else min(v, b["op"])
+            if b["op"] > t["valley"] + 0.22 * ref:
+                t["_split"] = dict(b)      # died and came back = a NEW card
+                t["disrupt_t"] = now
+        t["cy"], t["y0"], t["y1"], t["op"] = b["cy"], b["y0"], b["y1"], b["op"]
+        t["ops"].append((now, b["op"]))
+        del t["ops"][:-8]
+        t["peak"] = max(t["peak"], b["op"])
+        t["seen_ticks"] += 1
+        t["miss"] = 0
+        if len(t["ops"]) >= 3:
+            if t["ops"][-1][1] - t["ops"][0][1] >= 0.18 * ref:
+                t["rising"] = True
+            a0, a1 = t["ops"][-3][1], t["ops"][-1][1]
+            t["fading"] = (a1 < a0 - 0.05 * ref and a1 < 0.7 * t["peak"]
+                           and t["peak"] > self._leave_floor())
+
+    def _new_track(self, now, b, orphan):
+        t = {"key": self._next_key, "cy": b["cy"], "y0": b["y0"],
+             "y1": b["y1"], "op": b["op"], "ops": [(now, b["op"])],
+             "peak": b["op"], "born": now, "seen_ticks": 1, "miss": 0,
+             "rising": False, "fading": False, "minted": False,
+             "orphan": orphan, "synthetic": False, "inferred": False,
+             "ghost": False, "id": None, "mint_t": 0.0, "mint_pass": 0,
+             "ocr_passes_alive": 0, "conf": 0.0, "last_read_t": now,
+             "reads": [], "seen": 0, "emitted": None, "rep": None}
+        self._next_key += 1
+        return t
+
+    def _mint(self, t, now):
+        """A card is now COUNTED: it existed long enough, cleared the opacity
+        floor, and either faded IN before our eyes or sat solid two dwells."""
+        if t.get("minted"):
+            return
+        t["minted"] = True
+        t["id"] = self._next_id
+        self._next_id += 1
+        t["mint_t"] = now
+        t["mint_pass"] = self._ocr_pass_n
+        if FINDS_DEBUG:
+            log("[finds] dbg + card id=%d cy=%.3f peak=%.4f rising=%s"
+                % (t["id"], t["cy"], t["peak"], t.get("rising")))
+
+    def _infer_find(self, now, k_shift, arrivals):
+        """The stack moved further than the arrivals we saw -- a card arrived
+        and slipped away between samples. Mint it anyway (the shift is the
+        witness), grab the freshest unclaimed OCR read as its identity if one
+        exists, and flag it low-confidence."""
+        base = max((t["cy"] for t in self._tracks), default=0.5)
+        b = {"cy": min(0.99, base + (self._pitch or 0.15)),
+             "y0": min(0.98, base + 0.5 * (self._pitch or 0.15)),
+             "y1": 0.999, "op": 0.0}
+        t = self._new_track(now, b, orphan=False)
+        t["inferred"] = True
+        t["ops"] = []
+        t["peak"] = 0.0
+        self._mint(t, now)
+        for i in range(len(self._unbound) - 1, -1, -1):
+            ts_u, c = self._unbound[i]
+            if now - ts_u <= 2.0:
+                self._add_read(t, c)
+                del self._unbound[i]
+                break
+        self._tracks.append(t)
+        self._tracks.sort(key=lambda x: x["cy"])
+        emit_event("finds_infer",
+                   reason="stack shifted %d, saw %d arrive" % (k_shift,
+                                                               arrivals))
+        log("[finds] reconciler: stack shifted %d but only %d seen arriving "
+            "-> counted the missing card" % (k_shift, arrivals))
+
+    # ---- identity ---------------------------------------------------------
+    def _ingest_ocr(self, now, cards, snap):
+        """Bind one identity pass to the tracked cards. Positions are matched
+        against the band SNAPSHOT taken when this frame was grabbed (the stack
+        may have shifted since). Cards no track claims feed the OCR safety
+        net."""
+        self._ocr_pass_n += 1
+        for t in self._tracks:
+            t["ocr_passes_alive"] = t.get("ocr_passes_alive", 0) + 1
+        cys = sorted(c["cy"] for c in cards)
+        for a, b in zip(cys, cys[1:]):     # card pitch: kg-anchor spacing
+            d = b - a
+            if 0.055 <= d <= 0.45:
+                self._pitch = d if self._pitch <= 0 \
+                    else 0.7 * self._pitch + 0.3 * d
+        bykey = {t["key"]: t for t in self._tracks}
+        lim = 0.5 * (self._pitch if self._pitch > 0 else 0.15)
+        leftovers = []
+        for c in cards:
+            tt = None
+            for key, y0, y1, cy in snap:            # containment first
+                if y0 - 0.02 <= c["cy"] <= y1 + 0.02:
+                    cand = bykey.get(key)
+                    if cand is not None and (
+                            tt is None or abs(cand["cy"] - c["cy"])
+                            < abs(tt["cy"] - c["cy"])):
+                        tt = cand
+            if tt is None:                          # else nearest live track
+                for t in self._tracks:
+                    if t.get("orphan"):
+                        continue
+                    d = abs(t["cy"] - c["cy"])
+                    if d <= lim and (tt is None
+                                     or d < abs(tt["cy"] - c["cy"])):
+                        tt = t
+            if tt is not None:
+                self._add_read(tt, c)
+                if tt.get("synthetic"):
+                    tt["cy"] = c["cy"]
+            else:
+                leftovers.append(c)
+        for t in self._tracks:          # an orphan band with its own distinct
+            if t.get("orphan") and t.get("seen", 0) >= 2:   # identity is a
+                rep = t.get("rep")      # real card, not a re-surfacing of one
+                if rep and not any(x is not t and x.get("rep")
+                                   and _card_same(x["rep"], rep)
+                                   for x in self._tracks):
+                    t["orphan"] = False
+        for c in self._ocr_fallback(now, leftovers, had_any=bool(cards)):
+            self._unbound.append((now, dict(c)))   # claimed by NOTHING -> the
+        del self._unbound[:-8]                     # reconciler may adopt one
+        # identity-divergence fork: when a counted track's fresh reads
+        # consistently show a DIFFERENT card (an occupant change the pixels
+        # never saw -- instant eviction, missed hand-off), do NOT let the
+        # majority flip rewrite the counted find. Freeze it as it stands,
+        # remember it as abruptly-departed, and restart the band as a new
+        # card -- which the re-sighting merge can reunite with a dead entry
+        # if it is one we already counted.
+        for t in self._tracks:
+            em = t.get("emitted")
+            reads = t.get("reads") or []
+            if not em or em.get("name") == "Unknown" or len(reads) < 4:
+                continue
+            if now - t.get("disrupt_t", -1e9) > 1.5:
+                continue    # no pixel evidence of a hand-off -> no fork (a
+                            # real hand-off always shows one: the old card
+                            # slides/fades, so its band dips or drops out;
+                            # the row-freeze above already stops rewrites)
+            tail = reads[-2:]
+            if len(tail) < 2:
+                continue
+            ke = float(em.get("kg", 0) or 0)
+
+            def _dis(rn, rk):
+                if rn != em["name"]:
+                    return True
+                return rk > 0 and ke > 0 and abs(rk - ke) > 0.25 * max(rk, ke)
+
+            if not all(_dis(rn, rk) for rn, _rm, rk, _rc in tail):
+                continue
+            ref0 = {"name": tail[0][0], "mod": tail[0][1], "kg": tail[0][2]}
+            if not all(_card_same(ref0, {"name": rn, "mod": rm, "kg": rk})
+                       for rn, rm, rk, _rc in tail[1:]):
+                continue
+            self._recent_dead.append(
+                (now, t["cy"], {"name": em["name"], "mod": em.get("mod", ""),
+                                "kg": em.get("kg", 0.0)}, False,
+                 t.get("id"), dict(em)))
+            del self._recent_dead[:-12]
+            emit_event("finds_fork",
+                       reason="%s -> %s" % (em["name"], tail[-1][0]))
+            if FINDS_DEBUG:
+                log("[finds] dbg identity fork at cy=%.2f: %s -> %s"
+                    % (t["cy"], em["name"], tail[-1][0]))
+            t["reads"] = list(tail)
+            t["seen"] = len(tail)
+            t["conf"] = max(float(r[3]) for r in tail)
+            t["emitted"] = None
+            t["minted"] = False
+            t["id"] = None
+            t["mint_pass"] = self._ocr_pass_n
+            self._mint(t, now)
+        for t in self._tracks:              # settle / first-emit on new reads
+            if t.get("minted") and t["reads"]:
+                self._emit(t, final=False)
+        self._stats_sync()
+
+    def _ocr_fallback(self, now, cur, had_any):
+        """OCR SAFETY NET -- the previous release's sequence tracker, run only
+        on cards the band tracker did NOT claim. If the pixel sampler is blind
+        for this user's rendering, counting degrades to exactly the old
+        behaviour instead of to zero; when the sampler works this stays
+        dormant."""
+        syn = [t for t in self._tracks if t.get("synthetic")]
+        if not had_any:
+            self._ocr_empty += 1
+            if self._ocr_empty >= max(2, FINDS_EMPTY_CLEAR) and syn:
+                for t in syn:
+                    self._finalize(t, now)
+                    self._tracks.remove(t)
+            return []
+        self._ocr_empty = 0
+        if not cur:
+            return []
+        live = [t for t in self._tracks if not t.get("synthetic")]
+        p = self._pitch if self._pitch > 0 else 0.15
+        lim = 0.8 * p
+        self._recent_dead = [d for d in self._recent_dead
+                             if now - d[0] <= self._dedupe_s()]
+        cur = [c for c in cur if not any(
+            abs(t["cy"] - c["cy"]) <= lim
+            or (abs(t["cy"] - c["cy"]) <= 2.0 * lim
+                and any(_card_same({"name": rn, "mod": rm, "kg": rk}, c)
+                        for rn, rm, rk, _rc in t["reads"][-8:]))
+            for t in live)
+            and not any(d[2] and _card_same(d[2], c)
+                        and abs(d[1] - c["cy"]) <= p
+                        for d in self._recent_dead)]
+        if not cur:                    # (a trailing read of a card that JUST
+            return []                  # left must not re-mint it as new)
+        prev = syn                          # oldest -> newest already
+        best_s, best_score = 0, -1
+        for s in range(len(prev) + 1):
+            ov = min(len(prev) - s, len(cur))
+            score = sum(1 for i in range(ov)
+                        if prev[s + i].get("rep")
+                        and _card_same(prev[s + i]["rep"], cur[i]))
+            score = score * 100 + ov - s
+            if score > best_score:
+                best_score, best_s = score, s
+        s = best_s
+        ov = min(len(prev) - s, len(cur))
+        for t in prev[:s]:                  # dropped off the front -> done
+            self._finalize(t, now)
+            self._tracks.remove(t)
+        for i in range(ov):                 # still there -> another read
+            self._add_read(prev[s + i], cur[i])
+            prev[s + i]["cy"] = cur[i]["cy"]
+        fresh, stray = 0, []
+        for j in range(ov, len(cur)):       # new tail -> new finds
+            c = cur[j]
+            if c["conf"] < FINDS_MIN_CONF:
+                stray.append(c)             # too faint to start a find, but
+                continue                    # real enough for the reconciler
+            t = self._new_track(now, {"cy": c["cy"], "y0": c["cy"] - 0.05,
+                                      "y1": c["cy"] + 0.05, "op": 0.0},
+                                orphan=False)
+            t["synthetic"] = True
+            t["ops"] = []
+            t["peak"] = 0.0
+            self._mint(t, now)
+            self._add_read(t, c)
+            self._tracks.append(t)
+            fresh += 1
+        if fresh:
+            self._tracks.sort(key=lambda t: t["cy"])
+            if not self._blind_warned and not any(
+                    not t.get("synthetic") for t in self._tracks):
+                self._blind_warned = True
+                log("[finds] counting via the OCR net only -- the pixel "
+                    "sampler sees no bands; tune FINDS_WHITE_MIN / "
+                    "FINDS_DARK_MAX if this persists")
+        return stray
+
+    def _add_read(self, tc, card):
+        tc["reads"].append((card["name"], card["mod"], card["kg"],
+                            card.get("conf", 1.0)))
+        if len(tc["reads"]) > 30:
+            tc["reads"] = tc["reads"][-30:]
+        tc["seen"] += 1
+        if tc["seen"] == 1 and not tc.get("synthetic") \
+                and tc.get("peak", 0.0) > 0:
+            pk = tc["peak"]                # band + identity = a real, solid
+            self._plateau = pk if self._plateau <= 0 \
+                else 0.7 * self._plateau + 0.3 * pk    # card: learn from it
+        tc["conf"] = max(tc.get("conf", 0.0), float(card.get("conf", 0.0)))
+        tc["last_read_t"] = time.perf_counter()
+        tc["rep"] = {"name": card["name"], "mod": card["mod"],
+                     "kg": card["kg"]}       # frame-matching representative
+
+    def _resolve(self, tc):
+        """Best (name, mod, kg, rarity) from a card's accumulated reads:
+        majority ore name, majority non-blank modifier, MODE weight."""
+        from collections import Counter
+        reads = tc["reads"]
+        names = [n for n, _m, _k, _c in reads if n]
+        if not names:
+            return None
+        name = Counter(names).most_common(1)[0][0]
+        kgs = [k for n, _m, k, _c in reads if k > 0 and n == name]
+        kg0 = Counter(round(k, 1) for k in kgs).most_common(1)[0][0] \
+            if kgs else 0.0
+        mods = [m for n, m, k, _c in reads
+                if m and n == name and (k <= 0 or kg0 <= 0
+                                        or abs(k - kg0) <= 0.12 * kg0)]
+        mod = Counter(mods).most_common(1)[0][0] if mods else ""
+        kgs = [k for _n, _m, k, _c in reads if k > 0]
+        if kgs:
+            c = Counter(round(k, 1) for k in kgs)
+            top = c.most_common()
+            best_n = top[0][1]
+            tied = sorted(v for v, n in top if n == best_n)
+            kg = tied[len(tied) // 2]
+        else:
+            kg = 0.0
+        rarity = (self.prices.get("rarity_of") or {}).get(name, "")
+        return name, mod, kg, rarity
+
+    def _finalize(self, t, now):
+        """A card left the stack (or the run is wrapping up): lock in its best
+        identity. A never-minted card with real reads still counts -- losing
+        it would be the silent drop this tracker exists to prevent."""
+        if not t.get("minted") and t.get("reads") and not t.get("orphan"):
+            self._mint(t, now)
+        if t.get("minted"):
+            self._emit(t, final=True, force=True)
+        if t.get("rep") or t.get("emitted"):
+            # how it died matters: a card SEEN fading to nothing is gone for
+            # good (clean); one that vanished abruptly (camera swing washing
+            # out the signal, a false split, a coast timeout) may be
+            # re-detected and must not be counted twice
+            clean = bool(t.get("fading")) and                 t.get("op", 0.0) <= 1.5 * self._leave_floor()
+            self._recent_dead.append(
+                (now, t["cy"], dict(t["rep"]) if t.get("rep") else None,
+                 clean,
+                 t.get("id") if t.get("emitted") is not None else None,
+                 t.get("emitted")))
+            del self._recent_dead[:-12]
+        if t.get("reads") and t.get("peak", 0.0) > 0.0 \
+                and not t.get("synthetic"):
+            pk = t["peak"]                  # a read+band card was truly solid:
+            self._plateau = pk if self._plateau <= 0 \
+                else 0.7 * self._plateau + 0.3 * pk
+
+    def _stats_sync(self):
+        st = State.stats
+        if st is not None:
+            st.finds_stack = sum(1 for t in self._tracks if t.get("minted"))
+
+    # ---- emit / value -----------------------------------------------------
+    def _emit(self, tc, final, force=False):
+        """Emit (or update) one find. Counts once per card id; when its best
+        value changes (more reads, or on departure) it re-states with the same
+        id and the run stats are adjusted by the delta so totals stay exact.
+        force=True also emits a counted card whose text was never readable
+        ('Unknown', $0, low confidence) -- the reconciliation promise is that
+        every card we counted reaches the log."""
+        r = self._resolve(tc)
+        if r is None:
+            if not force or not tc.get("minted") or tc.get("ghost") \
+                    or tc.get("emitted") is not None:
+                return
+            # scanned-and-empty twice with a weak band = a ghost, not a find
+            # (a shift-corroborated INFERRED card is exempt: two independent
+            # signals already vouched for it)
+            if (not tc.get("inferred")) and tc.get("ocr_passes_alive", 0) >= 2 \
+                    and (self._plateau <= 0
+                         or tc.get("peak", 0.0) < 0.5 * self._plateau):
+                tc["ghost"] = True
+                emit_event("finds_ghost", reason="band with no readable text")
+                if FINDS_DEBUG:
+                    log("[finds] dbg ghost dropped (id=%s peak=%.4f)"
+                        % (tc.get("id"), tc.get("peak", 0.0)))
+                return
+            r = ("Unknown", "", 0.0, "")
+        name, mod, kg, rarity = r
+        value = self._value(name, mod, rarity, kg)
+        prevrec = tc.get("emitted")
+        if prevrec is None and not final and not force \
+                and tc.get("seen", 0) < 2:
+            return    # let the identity settle one more read: the re-sighting
+                      # check below needs the modifier present to match safely
+        if prevrec is None and name != "Unknown":
+            # RE-SIGHTING check -- smart new-vs-old, not just position: this
+            # "new" card may be one we already counted whose pixel signal was
+            # washed out mid-life (the camera pans behind a translucent card)
+            # or that a false split re-detected. Same identity (name, weight
+            # within 2%, modifier agrees) + died ABRUPTLY (never seen fading
+            # out) + lifetimes that do NOT overlap + within one card lifetime
+            # -> the SAME skull: update the original find, don't recount.
+            # Genuine enchant duplicates coexist on screen, so their
+            # lifetimes overlap and the merge is blocked.
+            for i in range(len(self._recent_dead) - 1, -1, -1):
+                dt_, _dcy, drep, dclean, did, dem = self._recent_dead[i]
+                if did is None or dclean:
+                    continue
+                if not (-0.1 <= tc.get("born", 0.0) - dt_
+                        <= self._dedupe_s()):
+                    continue
+                ident = dem or drep
+                if not ident or ident.get("name") != name:
+                    continue
+                # a re-scan reads the SAME text -- require the weight to
+                # match exactly and the modifier to MATCH exactly, and give
+                # the new track two reads to settle first (its modifier may
+                # lag one read behind)
+                if tc.get("seen", 0) < 2:
+                    continue
+                if round(float(ident.get("kg", 0) or 0), 1) != round(kg, 1):
+                    continue
+                if mod != ident.get("mod", ""):
+                    continue
+                tc["id"] = did
+                tc["emitted"] = prevrec = dem
+                del self._recent_dead[i]
+                emit_event("finds_resight",
+                           reason="same card re-detected -> merged")
+                log("[finds] re-sighted an already-counted card -> "
+                    "updating find #%s, not recounting" % did)
+                break
+        if prevrec and (prevrec["name"], prevrec["mod"], round(prevrec["kg"], 1)) \
+                == (name, mod, round(kg, 1)) and not final:
+            return                             # nothing changed
+        if prevrec is not None and prevrec.get("name") != "Unknown":
+            pk = float(prevrec.get("kg", 0) or 0)
+            if name != prevrec.get("name") or (
+                    pk > 0 and kg > 0
+                    and abs(kg - pk) > 0.25 * max(kg, pk)):
+                return    # an emitted find NEVER rewrites into a different
+                          # card (back-to-back skulls used to overwrite each
+                          # other); the divergence fork below decides whether
+                          # a new card took this slot instead
+        st = State.stats
+        mmul = (self.prices.get("modifier_mult") or {}).get(mod, 1.0) if mod else 1.0
+        conf = round(float(tc.get("conf", 0.0)), 2)
+        lc = bool(name == "Unknown" or conf < 0.30)
+        rec = {"id": tc["id"],
+               "t": round(State.stats.runtime(), 1) if State.stats else 0,
+               "mod": mod, "name": name, "kg": kg, "rarity": rarity,
+               "value": int(value), "mmul": float(mmul), "conf": conf}
+        if prevrec is None:
+            if st is not None:
+                st.finds_count += 1
+                st.find_kg += kg
+                st.best_kg = max(st.best_kg, kg)
+                st.by_rarity[rarity or "?"] = st.by_rarity.get(rarity or "?", 0) + 1
+                st.by_mod[mod or "plain"] = st.by_mod.get(mod or "plain", 0) + 1
+                st.loot_value += value
+                if lc:
+                    st.finds_lowconf += 1
+            print("__FIND__ " + json.dumps(rec), flush=True)
+            log("[finds] %s%s %skg %s%s%s"
+                % ((mod + " ") if mod else "", name, kg, rarity,
+                   (" ~$%s" % f"{int(value):,}") if value else "",
+                   " (low conf)" if lc else ""))
+        else:
+            if st is not None:                 # correct the totals by the delta
+                st.find_kg += kg - prevrec["kg"]
+                st.best_kg = max(st.best_kg, kg)
+                st.loot_value += value - prevrec["value_f"]
+                if (prevrec["rarity"] or "?") != (rarity or "?"):
+                    st.by_rarity[prevrec["rarity"] or "?"] = max(
+                        0, st.by_rarity.get(prevrec["rarity"] or "?", 1) - 1)
+                    st.by_rarity[rarity or "?"] = st.by_rarity.get(rarity or "?", 0) + 1
+                if (prevrec["mod"] or "plain") != (mod or "plain"):
+                    st.by_mod[prevrec["mod"] or "plain"] = max(
+                        0, st.by_mod.get(prevrec["mod"] or "plain", 1) - 1)
+                    st.by_mod[mod or "plain"] = st.by_mod.get(mod or "plain", 0) + 1
+                if lc != prevrec.get("lc", False):
+                    st.finds_lowconf = max(
+                        0, st.finds_lowconf + (1 if lc else -1))
+            print("__FIND_UPD__ " + json.dumps(rec), flush=True)
+        tc["emitted"] = {"name": name, "mod": mod, "kg": kg,
+                         "rarity": rarity, "value_f": float(value), "lc": lc}
+
+    def _value(self, name, mod, rarity, kg):
+        """Estimated sale value of one KEPT find (v2.6 money model):
+            per_kg * kg * modifier_mult * rarity_mult * (1 + SellBoost/100)
+        Only finds at/above FINDS_BANK_RARITY are valued -- lower ones auto-sell
+        and are already counted by the money reader, so valuing them here would
+        double-count. per_kg is the literal wiki base $/kg (what ONE item sells
+        for) -- never the model's aggregate-scaled value."""
+        p = self.prices or {}
+        # bank rarity floor: below it -> auto-sold -> already in the money OCR
+        eff_rarity = rarity or (p.get("rarity_of") or {}).get(name, "")
+        if not _rarity_at_least(eff_rarity, FINDS_BANK_RARITY):
+            return 0.0
+        per = (p.get("per_kg") or {}).get(name, 0)
+        if not per:
+            return 0.0
+        rmul = float((p.get("rarity_mult") or {}).get(eff_rarity, 1.0))
+        mmul = float((p.get("modifier_mult") or {}).get(mod, 1.0)) if mod else 1.0
+        bank = float((p.get("bank_mult") or {}).get(name, 1.0))
+        sb = (p.get("per_item_sell_boost") or {}).get(name)
+        sb = float(sb) if sb is not None else float(SELL_BOOST_PCT)
+        return float(per) * kg * rmul * mmul * bank * (1.0 + sb / 100.0)
+
+def _best_match(s, options, cutoff=0.6):
+    """Nearest string in `options` by difflib ratio, or None below cutoff."""
+    import difflib
+    s = (s or "").strip().lower()
+    if not s or not options:
+        return None
+    best, score = None, cutoff
+    for o in options:
+        r = difflib.SequenceMatcher(None, s, o.lower()).ratio()
+        if r >= score:
+            best, score = o, r
+    return best
+
+
+def _snap_name(raw, ore_names):
+    """Snap an OCR'd item string to (canonical_name, modifier).
+    Ores are 1-2 words; modifiers are a leading word. Tries the last two
+    words and the last word against the ore list, and the first word against
+    the modifier list -- so 'Irradlatod Divoscrur Shall' -> (Dinosaur Skull,
+    Irradiated) even with heavy OCR noise."""
+    words = (raw or "").split()
+    if not words:
+        return None, ""
+    # ore name: best of last-2-words and last-1-word
+    cands = []
+    if len(words) >= 2:
+        cands.append(" ".join(words[-2:]))
+    cands.append(words[-1])
+    if len(words) >= 3:
+        cands.append(" ".join(words[-3:]))
+    name = None
+    for c in cands:
+        m = _best_match(c, ore_names, cutoff=0.55)
+        if m:
+            name = m
+            break
+    if name is None:
+        name = raw.strip().title()          # unknown ore: keep cleaned raw
+    # modifier: first word vs the known tiers
+    mod = ""
+    if len(words) > 1:
+        mm = _best_match(words[0], list(_MODIFIERS), cutoff=0.6)
+        if mm:
+            mod = mm
+    return name, mod
+
+
+_KG_RE = __import__("re").compile(r"(\d[\d,\. ]*)\s*k\s*g", __import__("re").I)
+
+
+def _finds_ocr_array(arr):
+    """OCR one grabbed finds-region frame (HxWx3 uint8, RGB) with position +
+    confidence per text line -- the same pixels the fast sampler measured, so
+    one grab feeds both the opacity signal and the identity OCR.
+
+    Returns [{t, cy, conf, h}] where cy is the line's vertical centre as a
+    TOP-DOWN normalised fraction (0 = top of region, 1 = bottom), conf is the
+    recognition confidence (0..1 -> a fade/freshness proxy: a bright new card
+    reads with high confidence, a faded one lower), h is the line height
+    (normalised). Everything is LOCATION-based inside the calibrated box -- no
+    dependence on the terrain colour behind the cards."""
+    import mss.tools
+    h, w = int(arr.shape[0]), int(arr.shape[1])
+    big = arr.repeat(3, axis=0).repeat(3, axis=1)     # 3x upscale (readable)
+    png = mss.tools.to_png(big.tobytes(), (w * 3, h * 3))
+    from Foundation import NSData
+    import Vision
+    data = NSData.dataWithBytes_length_(png, len(png))
+    handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
+        data, None)
+    req = Vision.VNRecognizeTextRequest.alloc().init()
+    try:
+        req.setRecognitionLevel_(0)          # accurate (small HUD text)
+        req.setUsesLanguageCorrection_(False)
+    except Exception:
+        pass
+    handler.performRequests_error_([req], None)
+    out = []
+    for obs in (req.results() or []):
+        try:
+            cand = obs.topCandidates_(1)[0]
+            bb = obs.boundingBox()           # normalised, origin BOTTOM-left
+            oy, hh = float(bb.origin.y), float(bb.size.height)
+            cy = 1.0 - (oy + hh / 2.0)       # -> top-down fraction
+            conf = float(getattr(cand, "confidence", lambda: 1.0)()) \
+                if callable(getattr(cand, "confidence", None)) \
+                else float(getattr(obs, "confidence", 1.0))
+            out.append({"t": str(cand.string()), "cy": cy, "conf": conf,
+                        "h": hh})
+        except Exception:
+            continue
+    out.sort(key=lambda d: d["cy"])          # top -> bottom
+    return out
+
+
+def _cards_from_lines(lines, ore_names):
+    """Group OCR lines into ITEM CARDS in the finds stack. Each card carries a
+    weight ('NNN kg'), a name and (usually) a rarity word on nearby lines; the
+    stack holds several fading cards at once, so we anchor on each 'kg' line
+    (exactly one per card) and attach the nearest name/rarity lines to it.
+
+    Returns cards ordered TOP -> BOTTOM: each {name, mod, kg, rarity, cy, conf}.
+    A card whose weight can't be read this frame is skipped (it's read on other
+    frames while it lingers in the stack)."""
+    if not lines:
+        return []
+    hs = [d["h"] for d in lines if d["h"] > 0]
+    line_h = sorted(hs)[len(hs) // 2] if hs else 0.05
+    win = max(2.6 * line_h, 0.12)            # a card spans ~2-3 text lines
+    rar_low = {r.lower(): r for r in _RARITIES}
+    cards = []
+    for d in lines:
+        t = (d["t"] or "").strip()
+        if "$" in t or t.startswith("+"):
+            continue
+        m = _KG_RE.search(t)
+        if not m:
+            continue
+        try:
+            kg = float(m.group(1).replace(",", "").replace(" ", ""))
+        except ValueError:
+            continue
+        if kg <= 0 or kg > 100000:
+            continue
+        cy = d["cy"]
+        # name: text before 'kg' on this line, else nearest wordy line ABOVE
+        inline = _KG_RE.sub("", t).strip(" -\u00b7:")
+        name_txt, rarity = "", ""
+        if sum(c.isalpha() for c in inline) >= 3 \
+                and inline.lower() not in rar_low:
+            name_txt = inline
+        best_name_d = 9.0
+        best_rar_d = 9.0
+        for e in lines:
+            dy = abs(e["cy"] - cy)
+            if dy > win:
+                continue
+            et = (e["t"] or "").strip()
+            low = et.lower()
+            if low in rar_low and dy < best_rar_d:
+                rarity, best_rar_d = rar_low[low], dy
+            elif not name_txt or e["cy"] <= cy:
+                clean = _KG_RE.sub("", et).strip(" -\u00b7:")
+                if (sum(c.isalpha() for c in clean) >= 3
+                        and clean.lower() not in rar_low
+                        and "$" not in clean and not clean.startswith("+")):
+                    # prefer the line just above the kg (dy small, above)
+                    score = dy + (0.0 if e["cy"] <= cy else 0.5)
+                    if score < best_name_d:
+                        name_txt, best_name_d = clean, score
+        if not name_txt:
+            continue
+        name, mod = _snap_name(name_txt, ore_names)
+        if not name:
+            continue
+        if not rarity:
+            rarity = ""              # filled from the price table later by name
+        cards.append({"name": name, "mod": mod, "kg": kg, "rarity": rarity,
+                      "cy": cy, "conf": d["conf"]})
+    cards.sort(key=lambda c: c["cy"])        # top -> bottom
+    return cards
+
+
+def _card_same(a, b):
+    """Fuzzy equality of two card reads (same physical card across frames):
+    same ore name, weight within 12%, and modifier agrees (or one is blank)."""
+    if a["name"] != b["name"]:
+        return False
+    ka, kb = a["kg"], b["kg"]
+    if ka > 0 and kb > 0 and abs(ka - kb) > 0.12 * max(ka, kb):
+        return False
+    if a["mod"] and b["mod"] and a["mod"] != b["mod"]:
+        return False
+    return True
 
 
 # which per-event toggle gates each event name
@@ -1864,7 +3084,7 @@ def dig_once(detector):
     The hold length is DIG_CLICK_MS, which the UI auto-fills from DIG_SPEED
     (so the scaling is done once, in the UI, not again here)."""
     if State.stats:
-        State.stats.digs += 1        # dig counter (comparable with Tracker runs)
+        State.stats.dig_clicks += 1  # attempts; REGISTERED digs counted on rise
     if not PERFECT:
         mouse_down()
         sleep_ms(DIG_CLICK_MS)
@@ -2171,12 +3391,25 @@ def do_shake(det):
     Stop when the CAPACITY reads empty (capacity is the truth; the Shake cue
     sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
     emit_phase("shake")
+    State.assume_full_until = 0.0        # the pan is about to drain for real
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
     w_down = False
     if SHAKE_MOMENTUM_W:
         key_down(KEY_W); w_down = True       # momentum toward land
+        if SHAKE_W_LEAD_MS > 0:
+            # MOMENTUM PRE-ROLL (opt-in): glide toward land for EXACTLY this
+            # long BEFORE the first click, so built-up speed carries you onto
+            # land while the pan drains. Pure clockwork on purpose: the cues
+            # carry no information here (the sticky Shake cue lingers right
+            # through the glide -- a cue-based cutoff fires instantly and
+            # randomly, which is exactly the mistimed-click bug this line
+            # replaced). No screen reads, no early exits: the same glide,
+            # every cycle. Overshoot recovery already exists (a click that
+            # lands on shore trips the shake-start-confirm deeper-S retry).
+            sleep_ms(SHAKE_W_LEAD_MS)
+            t0 = time.perf_counter()
     started = emptied = bailed = on_land = False
     clicks = 0
     fixed = SHAKE_CLICKS > 0                  # exact-count mode (no extra click)
@@ -2259,6 +3492,14 @@ def do_shake(det):
             State.stats.cycles += 1      # a pan emptied = one completed cycle
             if not State.cycle_dirty:
                 State.stats.clean_cycles += 1   # zero retries/recoveries
+            _nc = time.perf_counter()
+            if State.last_cycle_end:
+                _cd = (_nc - State.last_cycle_end) * 1000.0
+                if 300 < _cd < 120000:
+                    State.stats.cycle_ms.append(_cd)
+                    if len(State.stats.cycle_ms) > 600:
+                        del State.stats.cycle_ms[:len(State.stats.cycle_ms) - 600]
+            State.last_cycle_end = _nc
         State.cycle_dirty = False        # the next cycle starts clean
         State.last_progress = time.perf_counter()
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
@@ -2288,6 +3529,17 @@ def go_land(det):
         f"({(time.perf_counter()-t0)*1000:.0f}ms)")
 
 
+def _note_dig_registered():
+    """Count a REGISTERED dig (the bar actually rose). Rise reads within
+    350ms belong to the same dig's animation -> one burst = one dig. Fixes
+    the inflated counter (clicks that never registered used to count)."""
+    now = time.perf_counter()
+    if now - State.dig_burst_t > 0.35:
+        if State.stats:
+            State.stats.digs += 1
+    State.dig_burst_t = now
+
+
 def _wait_fill_smart(det):
     """SMART FILL WAIT (see constants): wait for FULL, but stop the moment the
     bar STOPS RISING below full -- then the caller digs again immediately."""
@@ -2300,6 +3552,7 @@ def _wait_fill_smart(det):
         f = det.cap_fill()
         now = time.perf_counter()
         if f > last + 0.005:                  # still climbing (fill animation)
+            _note_dig_registered()
             last, last_rise = f, now
         elif now - last_rise > DIG_PLATEAU_MS / 1000.0:
             log("    fill: bar plateaued below FULL -> dig again now")
@@ -2371,6 +3624,76 @@ def fill_to_full(det):
     log(f"    fill: still not full after {digs} digs -> proceed anyway")
     return det.capacity_full()
 
+def _shards_dig(det):
+    """SHARDS EXACT-CLICK DIG (opt-in, SHARDS_DIG_CLICKS > 0): click the dig
+    EXACTLY N times -- no probe re-digs, no bar-race double clicks (a fast
+    build's fill animation starts after the probe window used to close, so
+    the old probe sometimes fired click #2 while click #1 was still landing).
+    The FIRST click must prove it registered: the bar leaves EMPTY (left tip
+    no longer gray) within SHARDS_CLICK_CONFIRM_MS. Only a provably-dead
+    click is retried. If the pan wasn't empty on entry (recovery leftovers),
+    the proof is a fill RISE instead. With SHARDS_ASSUME_FULL on we don't
+    wait for FULL at all: fill started = fill guaranteed -> return now and
+    spend the animation time walking; act() treats the pan as full until the
+    animation deadline (State.assume_full_until) passes, and do_shake clears
+    it."""
+    gap = int(190000.0 / max(1.0, DIG_SPEED)) + 25   # dig-animation rhythm
+    tries = max(1, SHARDS_CLICK_RETRIES)
+    for rnd in range(LAND_DIG_TRIES):
+        if not State.running:
+            return False
+        if rnd == 0 and PRE_DIG_SETTLE_MS > 0:
+            sleep_ms(PRE_DIG_SETTLE_MS)
+        before = det.cap_fill()
+        if det.pan_empty():
+            proof = lambda: not det.pan_empty()
+        else:                            # partial pan (recovery) -> need rise
+            proof = lambda: (det.cap_fill() > before + CAP_RISE_FRAC
+                             or det.capacity_full())
+        confirmed = False
+        for t in range(tries):
+            if not State.running:
+                return False
+            dig_once(det)
+            if wait_until(proof, max(30, SHARDS_CLICK_CONFIRM_MS), confirm=1):
+                confirmed = True
+                break
+            log(f"    shards: click {t+1}/{tries} never moved the bar"
+                + (" -> retry" if t + 1 < tries else ""))
+        if confirmed:
+            State.land_fails = 0
+            State.breakouts = 0          # healthy progress -> clear escalation
+            State.safe_retries = 0
+            _note_dig_registered()
+            State.last_progress = time.perf_counter()
+            _adapt_land(rnd > 0)
+            for _k in range(1, SHARDS_DIG_CLICKS):
+                sleep_ms(gap)            # follow-ups ride the dig rhythm
+                dig_once(det)
+            if SHARDS_ASSUME_FULL:
+                State.assume_full_until = time.perf_counter() + 1.2
+                log(f"    shards: fill started (round {rnd+1}) -> assumed "
+                    f"FULL, moving on now")
+                return True
+            wait_until(det.capacity_full, max(600, DIG_FILL_MS), confirm=1)
+            log(f"    shards: filled ({SHARDS_DIG_CLICKS} click(s), "
+                f"round {rnd+1})")
+            return True
+        log(f"    shards: bar never moved (round {rnd+1}) -> nudge W fwd")
+        emit_event("nudge", "shards dig: bar never moved -- nudging forward")
+        if State.stats:
+            State.stats.nudges += 1
+        key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
+        sleep_ms(PROBE_GAP_MS)
+    State.land_fails += 1
+    _adapt_land(True)
+    log(f"    shards dig: no land after {LAND_DIG_TRIES} rounds "
+        f"(land_fails={State.land_fails})")
+    if State.land_fails >= STUCK_LIMIT:
+        safe_stop("shards dig can't find land after shaking")
+    return False
+
+
 def return_and_dig(det):
     """Post-shake landing WITHOUT trusting the cue (it can stick on 'Shake').
     We trust the W-momentum put us near land and DIG as a probe -- a dig only
@@ -2388,6 +3711,8 @@ def return_and_dig(det):
                   "mis-calibrated. Open Calibrate and re-set the Capacity bar "
                   "(or Auto-calibrate with Roblox open).", hard=True)
         return False
+    if SHARDS_DIG_CLICKS > 0:
+        return _shards_dig(det)          # SHARDS exact-click mode (see above)
     # LAND-CUE ASSIST (opt-in, default OFF): put ourselves ON the dirt before
     # probing. PULSED taps only (pulse_until re-checks after every tap) -- a
     # held W here flew PAST the deposit whenever the cue didn't confirm,
@@ -2401,18 +3726,33 @@ def return_and_dig(det):
             return False
         if rnd == 0 and PRE_DIG_SETTLE_MS > 0:
             sleep_ms(PRE_DIG_SETTLE_MS)      # let the landing settle before dig #1
+        prev_before = None
         for t in range(DIG_INPLACE_TRIES):
             if not State.running:
                 return False
             before = det.cap_fill()          # fill level BEFORE the dig
-            dig_once(det)
-            hit = wait_until(lambda: det.cap_fill() > before + CAP_RISE_FRAC
-                             or det.capacity_full(), DIG_PROBE_MS, confirm=1)
+            if prev_before is not None and (
+                    before > prev_before + CAP_RISE_FRAC
+                    or det.capacity_full()):
+                # LATE RISE: the PREVIOUS dig registered after its probe
+                # window closed (slow fill animation at high dig speed) --
+                # count it instead of burning another dig. This is what made
+                # 'Max digs to fill = 1' sometimes dig twice.
+                log("    dig-probe: previous dig registered late -> "
+                    "counting it, no extra dig")
+                hit = True
+            else:
+                dig_once(det)
+                hit = wait_until(lambda: det.cap_fill() > before
+                                 + CAP_RISE_FRAC or det.capacity_full(),
+                                 DIG_PROBE_MS, confirm=1)
+            prev_before = before
             if hit:
                 State.land_fails = 0
                 State.breakouts = 0          # healthy progress -> clear escalation
                 State.safe_retries = 0
                 log(f"    dig-probe HIT (round {rnd+1}.{t+1}) -> on land, filling")
+                _note_dig_registered()
                 State.last_progress = time.perf_counter()
                 _adapt_land(rnd > 0)         # needed nudges to land = a miss
                 fill_to_full(det)            # dig until FULL (dynamic # of digs)
@@ -2436,7 +3776,13 @@ def act(det, s):
     """Capacity-primary decision. The cue is only trusted for 'am I in the water'
     (Pan), since the Shake/Deposit cues glitch. FULL + Pan -> shake; FULL else ->
     go to water; NOT full -> dig-probe to find land + refill."""
-    if s.full:
+    full = s.full
+    if (not full and SHARDS_DIG_CLICKS > 0 and SHARDS_ASSUME_FULL
+            and time.perf_counter() < State.assume_full_until):
+        full = True                      # SHARDS: one-click fill in flight --
+                                         # the bar is still animating but the
+                                         # fill is guaranteed
+    if full:
         if s.pan:
             do_shake(det)                # FULL and in the water -> shake it out
         else:
@@ -2713,6 +4059,14 @@ def tracker_tick(det):
         if State.stats:
             State.stats.cycles += 1                  # one pan emptied
             State.stats.clean_cycles += 1            # game pans have no retries
+            _nc = time.perf_counter()
+            if State.last_cycle_end:
+                _cd = (_nc - State.last_cycle_end) * 1000.0
+                if 300 < _cd < 120000:
+                    State.stats.cycle_ms.append(_cd)
+                    if len(State.stats.cycle_ms) > 600:
+                        del State.stats.cycle_ms[:len(State.stats.cycle_ms) - 600]
+            State.last_cycle_end = _nc
         State.trk_peak = 0.0
         State.last_progress = now
     # AUTO PAN GUARD (opt-in): catch an accidental Auto Pan toggle and undo
@@ -2766,6 +4120,9 @@ class Supervisor:
         State.no_full = 0
         State.cycle_dirty = False
         State.fill_digs = []
+        State.dig_burst_t = 0.0
+        State.last_cycle_end = 0.0
+        State.assume_full_until = 0.0
         State.trk_last = None
         State.trk_peak = 0.0
         State.trk_phase = ""
@@ -2991,6 +4348,7 @@ def engine_pause():
     State.running = False                # every verb aborts instantly
     if State.stats:
         State.stats.pause_started = time.perf_counter()
+        State.stats.pauses += 1
     release_all()
     print("[PAUSED] session paused -- stats, relic timers and earnings all "
           "kept; press the pause key to resume", flush=True)
@@ -3197,6 +4555,22 @@ def log_calibration():
 
 # ---- Main -------------------------------------------------------------------
 def main():
+    import signal
+    def _sigint(_sig, _frm):
+        # Ctrl+C in the terminal -> stop everything and exit promptly
+        State.running = False
+        State.alive = False
+        try:
+            release_all()
+        except Exception:
+            pass
+        print("\n[interrupted -- exiting]", flush=True)
+        os._exit(0)
+    try:
+        signal.signal(signal.SIGINT, _sigint)
+        signal.signal(signal.SIGTERM, _sigint)
+    except Exception:
+        pass
     load_config()                 # apply UI overrides from prospecting_config.json
     if not apply_auto_calibrate():  # place pixels from the live window (if profile)
         apply_window_offset()       # else shift pixels if the window moved (opt-in)
@@ -3259,12 +4633,15 @@ def main():
             while State.alive:
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
-                        sup.reset()
+                        print("__RESET__", flush=True)   # tell the app to clear
+                        sup.reset()                      # finds/analytics
                         State.t_side = 0
                         relics.reset()      # start relic timers from now
                         State.stats = SessionStats()
                         State.earn = EarnTracker()
                         State.earn.start()  # no-op unless configured
+                        State.finds = FindsWatcher()
+                        State.finds.start() # no-op unless configured
                         if TRACKER_MODE:
                             # tracking should GUARANTEE the game is panning:
                             # read the Auto Pan button right away and turn it
