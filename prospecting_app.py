@@ -24,7 +24,7 @@ import hashlib
 
 # ---- version + update channel (compared to the website's version.json) -------
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "3.0.0"
+VERSION             = "4.0.0"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
@@ -189,6 +189,51 @@ def _window_origin():
 # ============================================================================
 # JS <-> Python bridge
 # ============================================================================
+_MID_CACHE = None
+_REVOKE_CHECKED = False
+
+
+def _machine_id():
+    """Stable per-machine fingerprint (hashed), for the invite machine-lock.
+    macOS -> IOPlatformUUID; Windows -> registry MachineGuid; else a random
+    salt persisted in config. Never sent raw -- only a sha256 hex is stored /
+    beaconed, so it can't identify hardware, only tell two machines apart."""
+    global _MID_CACHE
+    if _MID_CACHE:
+        return _MID_CACHE
+    raw = ""
+    try:
+        if sys.platform == "darwin":
+            import subprocess, re as _re
+            out = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                timeout=4).decode("utf-8", "ignore")
+            m = _re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
+            if m:
+                raw = m.group(1)
+        elif os.name == "nt":
+            import winreg
+            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                               r"SOFTWARE\Microsoft\Cryptography")
+            raw, _ = winreg.QueryValueEx(k, "MachineGuid")
+    except Exception:
+        raw = ""
+    if not raw:
+        try:
+            cur = load_saved()
+            raw = cur.get("MACHINE_SALT")
+            if not raw:
+                raw = hashlib.sha256(os.urandom(16)).hexdigest()
+                cur["MACHINE_SALT"] = raw
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(cur, f, indent=2)
+        except Exception:
+            raw = "unknown-machine"
+    _MID_CACHE = hashlib.sha256(("PPMID:" + str(raw)).encode("utf-8")).hexdigest()
+    return _MID_CACHE
+
+
+
 class Api:
     def __init__(self):
         self.proc = None
@@ -222,7 +267,8 @@ class Api:
                 "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels,
-                "colors": saved.get("PIXEL_COLORS", {})}
+                "colors": saved.get("PIXEL_COLORS", {}),
+                "autobuild": saved.get("AUTOBUILD", {})}
 
     # ---- updates ----
     def app_version(self):
@@ -301,9 +347,49 @@ class Api:
 
     # ---- access gate ----
     def access_state(self):
-        """Has this PC already unlocked with a valid code?"""
-        return {"unlocked": bool(load_saved().get("ACCESS_OK"))}
-
+        """Has this PC unlocked with a valid code AND is this the machine the
+        code was bound to? (machine-lock: copying the config to another
+        computer re-locks it, so a code can't be shared by handing over the
+        config.) Also re-checks the published code list once per launch so a
+        revoked code actually stops working -- offline / fetch errors NEVER
+        lock anyone out (fail open)."""
+        global _REVOKE_CHECKED
+        cur = load_saved()
+        if not cur.get("ACCESS_OK"):
+            return {"unlocked": False}
+        bound = cur.get("ACCESS_MACHINE")
+        mid = _machine_id()
+        if bound and bound != mid:
+            return {"unlocked": False, "moved": True}
+        if not bound:                       # legacy unlock -> bind to this PC
+            try:
+                cur["ACCESS_MACHINE"] = mid
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(cur, f, indent=2)
+            except OSError:
+                pass
+        h = cur.get("ACCESS_HASH")
+        if h and not _REVOKE_CHECKED:
+            _REVOKE_CHECKED = True          # at most one network check/launch
+            try:
+                import time as _t
+                url = ACCESS_CODES_URL + ("&" if "?" in ACCESS_CODES_URL else "?") \
+                      + "t=" + str(int(_t.time()))
+                req = urllib.request.Request(url, headers={
+                    "User-Agent": "ProspectorsPlus", "Cache-Control": "no-cache"})
+                with urllib.request.urlopen(req, timeout=4) as r:
+                    hashes = set(json.loads(r.read().decode("utf-8")).get("hashes") or [])
+                if hashes and h not in hashes:   # empty list = fail open too
+                    cur["ACCESS_OK"] = False
+                    try:
+                        with open(CONFIG_FILE, "w") as f:
+                            json.dump(cur, f, indent=2)
+                    except OSError:
+                        pass
+                    return {"unlocked": False, "revoked": True}
+            except Exception:
+                pass                        # offline etc.: never lock out
+        return {"unlocked": True}
     def verify_access(self, code):
         """Check an access code against the GitHub-hosted hashed list. On success
         remember it on this PC so we don't ask again."""
@@ -332,10 +418,15 @@ class Api:
             cur = load_saved()
             cur["ACCESS_OK"] = True
             cur["ACCESS_HASH"] = h
+            cur["ACCESS_MACHINE"] = _machine_id()   # bind code to THIS machine
             try:
                 with open(CONFIG_FILE, "w") as f:
                     json.dump(cur, f, indent=2)
             except OSError:
+                pass
+            try:
+                self._report_usage()               # beacon the redemption now
+            except Exception:
                 pass
             return {"ok": True}
         return {"ok": False,
@@ -920,6 +1011,40 @@ class Api:
             json.dump(cur, f, indent=2)
         return len(clean)
 
+    def hud_toggle(self):
+        """Show/hide the live HUD overlay. Position is remembered; default is
+        the right edge of the main screen (drag it anywhere)."""
+        global _hud, _hud_on
+        if _hud is None:
+            return "unavailable"
+        if _hud_on:
+            try:
+                cur = load_saved()
+                cur["HUD_POS"] = [int(_hud.x), int(_hud.y)]
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(cur, f, indent=2)
+            except Exception:
+                pass
+            _hud.hide()
+            _hud_on = False
+            return "hidden"
+        try:
+            pos = load_saved().get("HUD_POS")
+            if pos and len(pos) == 2:
+                _hud.move(int(pos[0]), int(pos[1]))
+            else:
+                try:
+                    import Quartz as _Q
+                    _b = _Q.CGDisplayBounds(_Q.CGMainDisplayID())
+                    _hud.move(int(_b.size.width) - 384 - 14, 90)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        _hud.show()
+        _hud_on = True
+        return "shown"
+
     # ---- builds (named profiles) ----
     def list_builds(self):
         return sorted(_read_json(BUILDS_FILE, {}).keys())
@@ -935,6 +1060,13 @@ class Api:
                 entry[k] = _coerce(t, data[k])
         entry["RELICS"] = relics or []
         entry["RELICS_ENABLED"] = bool(enabled)
+        old_m = (builds.get(name) or {}).get("_meta") or {}
+        now = int(time.time())
+        entry["_meta"] = {"desc": old_m.get("desc", ""),
+                          "created": int(old_m.get("created", now) or now),
+                          "updated": now,
+                          "used": int(old_m.get("used", 0) or 0),
+                          "last_used": int(old_m.get("last_used", 0) or 0)}
         builds[name] = entry
         with open(BUILDS_FILE, "w") as f:
             json.dump(builds, f, indent=2)
@@ -945,13 +1077,20 @@ class Api:
         entry = builds.get(name)
         if entry is None:
             return None
+        # metadata (description / usage stats) must never leak into the config
+        clean = {k: v for k, v in entry.items() if not k.startswith("_")}
         # MERGE the build into the active config so we keep things the build
         # doesn't carry (calibrated pixels, webhook URL/secret, window settings).
         cur = load_saved()
-        cur.update(entry)
+        cur.update(clean)
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
-        return entry
+        m = entry.setdefault("_meta", {})
+        m["used"] = int(m.get("used", 0) or 0) + 1
+        m["last_used"] = int(time.time())
+        with open(BUILDS_FILE, "w") as f:
+            json.dump(builds, f, indent=2)
+        return clean
 
     def delete_build(self, name):
         builds = _read_json(BUILDS_FILE, {})
@@ -960,6 +1099,35 @@ class Api:
             with open(BUILDS_FILE, "w") as f:
                 json.dump(builds, f, indent=2)
         return self.list_builds()
+
+    def builds_info(self):
+        """Everything the Builds page shows: per-build metadata + hot stats."""
+        builds = _read_json(BUILDS_FILE, {})
+        out = []
+        for name, entry in builds.items():
+            if not isinstance(entry, dict):
+                continue
+            m = entry.get("_meta") or {}
+            out.append({"name": name,
+                        "desc": str(m.get("desc", "") or ""),
+                        "created": int(m.get("created", 0) or 0),
+                        "updated": int(m.get("updated", 0) or 0),
+                        "used": int(m.get("used", 0) or 0),
+                        "last_used": int(m.get("last_used", 0) or 0),
+                        "nset": sum(1 for k in entry if not k.startswith("_")
+                                    and k not in ("RELICS", "RELICS_ENABLED")),
+                        "relics": len(entry.get("RELICS") or [])})
+        return out
+
+    def set_build_desc(self, name, desc):
+        builds = _read_json(BUILDS_FILE, {})
+        e = builds.get(name)
+        if not isinstance(e, dict):
+            return "missing"
+        e.setdefault("_meta", {})["desc"] = str(desc or "")[:500]
+        with open(BUILDS_FILE, "w") as f:
+            json.dump(builds, f, indent=2)
+        return "ok"
 
     # ---- calibrate: wait for the user to CLICK a spot, capture its x/y + colour
     def calibrate_capture(self):
@@ -1045,6 +1213,7 @@ class Api:
             import urllib.request
             user = cur.get("WEBHOOK_USER", "") or "(no name)"
             code = cur.get("ACCESS_HASH", "") or "(none)"
+            machine = (cur.get("ACCESS_MACHINE") or _machine_id())[:16]
 
             def _send():
                 ip, loc, isp = "?", "?", ""
@@ -1066,6 +1235,7 @@ class Api:
                     {"name": "Location", "value": str(loc), "inline": True},
                     {"name": "ISP", "value": str(isp or "?"), "inline": True},
                     {"name": "Access code (hash)", "value": str(code)[:120], "inline": False},
+                    {"name": "Machine", "value": str(machine), "inline": True},
                 ]}
                 body = json.dumps({"username": "PP Analytics",
                                    "embeds": [embed]}).encode("utf-8")
@@ -1564,6 +1734,7 @@ class Api:
         for line in iter(proc.stdout.readline, ""):
             line = line.rstrip("\n")
             if line.strip() == "__RESET__":
+                _hud_eval("window.hudReset&&hudReset()")
                 # a fresh run started (Start button OR Ctrl+K) -> clear the
                 # app-side analytics so the finds log / stats don't carry over
                 self._finds = []
@@ -1572,6 +1743,7 @@ class Api:
             if line.startswith("__FIND__ "):
                 try:
                     fv = json.loads(line[9:])
+                    _hud_eval("window.hudFind&&hudFind(%s)" % json.dumps(fv))
                     if not hasattr(self, "_finds") or self._finds is None:
                         self._finds = []
                     self._finds.append(fv)
@@ -1594,6 +1766,7 @@ class Api:
                 continue
             if line.startswith("__STATS__ "):
                 _emit_stats(line[10:])        # raw JSON -> live stats panel
+                _hud_eval("window.hudStats&&hudStats(%s)" % line[10:])
                 try:
                     self._last_stats = json.loads(line[10:])
                 except Exception:
@@ -1602,6 +1775,7 @@ class Api:
                     self._macro_status = "running"
                 continue
             if line.startswith("__EVENT__ "):
+                _hud_eval("window.hudEvent&&hudEvent(%s)" % line[10:])
                 try:
                     ev = json.loads(line[10:])
                     if not hasattr(self, "_events") or self._events is None:
@@ -1615,6 +1789,7 @@ class Api:
             if line.startswith("__PHASE__ "):
                 _now = time.time()
                 _name = line[10:].strip() or "?"
+                _hud_eval("window.hudPhase&&hudPhase(%s)" % json.dumps(_name))
                 _last = getattr(self, "_phase_last", None)
                 if _last:
                     _pn, _pt = _last
@@ -1637,12 +1812,15 @@ class Api:
                 continue
             _s = line.strip()
             if _s.startswith("[RUNNING]"):
+                _hud_eval("window.hudRun&&hudRun('run')")
                 self._macro_status = "running"
                 _emit_paused(False)
             elif _s.startswith("[STOPPED]"):
+                _hud_eval("window.hudRun&&hudRun('idle')")
                 self._macro_status = "stopped"
                 _emit_paused(False)
             elif _s.startswith("[PAUSED]"):
+                _hud_eval("window.hudRun&&hudRun('pause')")
                 self._macro_status = "paused"
                 _emit_paused(True)
             elif "SAFE PAUSE" in _s:
@@ -1672,6 +1850,8 @@ _HK_DEFAULTS = {
 
 _window = None
 _pill = None
+_hud = None
+_hud_on = False
 _overlay = None
 _coach_win = None
 _analytics_win = None
@@ -1743,6 +1923,14 @@ def _emit_log(text):
         pass
 
 
+def _hud_eval(js):
+    try:
+        if _hud is not None and _hud_on:
+            _hud.evaluate_js(js)
+    except Exception:
+        pass
+
+
 def _emit_stats(json_str):
     if _window is None:
         return
@@ -1797,6 +1985,107 @@ def _qm(key):
         return ""
     tip = HELP[key].replace('"', "&quot;")
     return f'<span class="qm" data-tip="{tip}">?</span>'
+
+
+def _hud_html():
+    return r"""<!doctype html><html><head><meta charset="utf-8"><style>
+ html,body{margin:0;background:rgba(23,21,18,.93);color:#ece4d6;height:100%;
+  font:12.5px Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  border-radius:14px;overflow:hidden;-webkit-user-select:none;user-select:none}
+ .wrap{padding:12px 14px 10px;display:flex;flex-direction:column;gap:7px;height:100%;box-sizing:border-box}
+ .hd{display:flex;align-items:center;gap:9px}
+ .led{width:10px;height:10px;border-radius:50%;background:#5a5347;flex:none}
+ .led.run{background:#7faf5d;box-shadow:0 0 9px rgba(127,175,93,.8)}
+ .led.pause{background:#c2924c;box-shadow:0 0 9px rgba(194,146,76,.7)}
+ .state{font-size:18px;font-weight:700}
+ .sub{color:#9c9183;font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums}
+ .stats{display:flex;gap:11px;color:#9c9183;font-size:11.5px;flex-wrap:wrap}
+ .stats b{color:#e0b873;font-variant-numeric:tabular-nums;font-weight:600}
+ .ttl{color:#6a6253;font-size:9.5px;letter-spacing:.13em;text-transform:uppercase}
+ svg{width:100%;display:block}
+ .evt{flex:1;font-size:11px;color:#9c9183;line-height:1.55;overflow:hidden}
+ .evt .warn{color:#e0a05f}.evt .bad{color:#e07b5f}.evt .good{color:#9bc07e}
+ .hint{color:#524b40;font-size:9.5px;text-align:center}
+</style></head><body><div class="wrap">
+ <div class="hd"><span class="led" id="led"></span><span class="state" id="state">idle</span>
+   <span class="sub" id="sub"></span></div>
+ <div class="stats"><span>pans <b id="hpans">0</b></span><span><b id="hpph">0</b>/hr</span>
+   <span>clean <b id="hclean">–</b></span><span>finds <b id="hfinds">0</b></span>
+   <span>lag <b id="hlag">–</b></span></div>
+ <div class="ttl">cycle — live</div>
+ <svg id="hudsvg"></svg>
+ <div class="ttl">events</div>
+ <div class="evt" id="hevt"></div>
+ <div class="hint">drag to move · HUD button in the app hides me</div>
+</div><script>
+""" + _CYCMODEL_JS + r"""
+
+ let VALS=null,AB=null,MODEL=null,SPANS=null,TOTAL=1;
+ const MAP={dig:'dig',water:'swalk',glide:'glide',shake:'shake',settle:'land'};
+ const LABEL={dig:'DIGGING',water:'HOLD S — to water',glide:'HOLD W — glide',
+   shake:'SHAKING',settle:'SETTLING',recover:'RECOVERING'};
+ let cur={stage:null,t0:0},runState='idle';
+ function rebuild(){if(!VALS)return;MODEL=cycModel(VALS,AB||{});TOTAL=Math.max(MODEL.cap,1);
+   SPANS={};let t=0;
+   MODEL.segs.forEach(s=>{const sp=SPANS[s.stage]||(SPANS[s.stage]=[t,t]);
+     sp[1]=t+s.hi;if(sp[0]>t)sp[0]=t;t+=s.hi;});
+   draw();}
+ function draw(){const svg=document.getElementById('hudsvg');if(!svg||!MODEL)return;
+   const W=356,H=64,L=4,R=4;const x=t=>L+(W-L-R)*t/TOTAL;
+   const col={dig:'#c2924c',swalk:'#6ba1b5',glide:'#9bc07e',shake:'#e0b873',land:'#b58f6b'};
+   let d='<defs><pattern id="hh" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="rgba(236,228,214,.22)" stroke-width="2"/></pattern></defs>';
+   let t0=0;
+   MODEL.segs.forEach(s=>{const a=x(t0),lo=x(t0+s.lo),hi=x(t0+s.hi);const c=col[s.stage]||'#8b8375';
+     d+='<rect x="'+a+'" y="8" width="'+Math.max(1,lo-a)+'" height="26" rx="3" fill="'+c+'" fill-opacity=".85"/>';
+     if(hi>lo+.5)d+='<rect x="'+lo+'" y="8" width="'+(hi-lo)+'" height="26" rx="3" fill="url(#hh)" stroke="'+c+'" stroke-opacity=".4"/>';
+     t0+=s.hi;});
+   d+='<line id="hcur" x1="-9" y1="3" x2="-9" y2="40" stroke="#fff" stroke-width="2" opacity="0"/>'
+     +'<text x="'+L+'" y="56" fill="#6a6253" font-size="9">0</text>'
+     +'<text x="'+(W-R)+'" y="56" fill="#6a6253" font-size="9" text-anchor="end">'+(TOTAL/1000).toFixed(2)+'s</text>'
+     +'<text x="'+(W/2)+'" y="56" fill="#8b8375" font-size="9" text-anchor="middle">est '+(MODEL.est/1000).toFixed(2)+'s · ≈'+Math.round(MODEL.pph)+'/hr</text>';
+   svg.setAttribute('viewBox','0 0 '+W+' '+H);svg.innerHTML=d;}
+ function tick(){requestAnimationFrame(tick);
+   const cl=document.getElementById('hcur');if(!cl||!MODEL)return;
+   if(!cur.stage||runState!=='run'){cl.setAttribute('opacity','0');return;}
+   const sp=SPANS[cur.stage];if(!sp){cl.setAttribute('opacity','0');return;}
+   const el=performance.now()-cur.t0;
+   const t=Math.min(sp[0]+el,sp[1]);
+   const W=356,L=4,R=4;const xx=L+(W-L-R)*t/TOTAL;
+   cl.setAttribute('x1',xx);cl.setAttribute('x2',xx);cl.setAttribute('opacity','0.95');}
+ window.hudPhase=function(p){cur={stage:MAP[p]||null,t0:performance.now()};
+   const st=document.getElementById('state');
+   if(LABEL[p])st.textContent=LABEL[p];else st.textContent=(p||'').toUpperCase();};
+ window.hudRun=function(r){runState=r;const led=document.getElementById('led');
+   led.className='led'+(r==='run'?' run':(r==='pause'?' pause':''));
+   const st=document.getElementById('state');
+   if(r==='idle')st.textContent='stopped';
+   if(r==='pause')st.textContent='PAUSED';};
+ window.hudStats=function(s){const g=id=>document.getElementById(id);
+   g('hpans').textContent=s.cycles||0;g('hpph').textContent=s.pans_per_hr||0;
+   g('hclean').textContent=(s.clean_pct!=null?s.clean_pct+'%':'–');
+   g('hfinds').textContent=s.finds_count||0;
+   g('hlag').textContent=(s.input_lag&&s.input_lag.max_ms?s.input_lag.max_ms+'ms':'ok');
+   const rt=s.runtime_s||0;g('sub') && (document.getElementById('sub').textContent=
+     Math.floor(rt/60)+':'+String(rt%60).padStart(2,'0'));
+   runState=runState==='pause'?'pause':'run';
+   document.getElementById('led').className='led'+(runState==='pause'?' pause':' run');};
+ window.hudEvent=function(e){const box=document.getElementById('hevt');if(!box)return;
+   const cls=(e.type==='nudge'||e.type==='recover'||e.type==='recenter')?'warn'
+     :(e.type&&e.type.indexOf('fail')>=0)||e.type==='no_progress'||e.type==='break_out'
+       ||e.type==='safe_stop'||e.type==='hard_stop'?'bad':'';
+   const d=document.createElement('div');d.className='e '+cls;
+   d.textContent='· '+(e.type||'?')+(e.reason?(' — '+e.reason):'');
+   box.prepend(d);while(box.children.length>4)box.removeChild(box.lastChild);};
+ window.hudFind=function(f){const box=document.getElementById('hevt');if(!box)return;
+   const d=document.createElement('div');d.className='e good';
+   d.textContent='◆ '+(f.mod?f.mod+' ':'')+f.name+' '+f.kg+'kg';
+   box.prepend(d);while(box.children.length>4)box.removeChild(box.lastChild);};
+ window.hudReset=function(){boot();document.getElementById('hevt').innerHTML='';};
+ async function boot(){try{const st=await window.pywebview.api.get_state();
+   VALS=st.values||{};AB=st.autobuild||{};rebuild();}catch(e){}}
+ window.addEventListener('pywebviewready',()=>{boot();tick();});
+ setTimeout(()=>{boot();tick();},700);
+</script></body></html>"""
 
 
 _OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:24px;height:24px;transform:translate(-50%,-50%);display:none;z-index:8;pointer-events:none}\n #marker::before,#marker::after{content:"";position:absolute;left:50%;top:50%;width:24px;height:3px;background:#ff5b5b;border-radius:2px;box-shadow:0 0 4px #000,0 0 1px #000;transform:translate(-50%,-50%) rotate(45deg)}\n #marker::after{transform:translate(-50%,-50%) rotate(-45deg)}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:200px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; the red &#10005; is the detected spot &mdash; Confirm or Redo &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0,prop=null;\n function reset(){picked=false;marker.style.display=\'none\';tip.style.display=\'none\';loupe.style.display=\'none\';prop=null;}\n function showTipAt(cx,cy,hex,x,y){marker.style.display=\'block\';marker.style.left=cx+\'px\';marker.style.top=cy+\'px\';\n   document.getElementById(\'sw\').style.background=hex;document.getElementById(\'hex\').textContent=hex;document.getElementById(\'xy\').textContent=x+\', \'+y;\n   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';picked=true;loupe.style.display=\'none\';}\n function placeProposed(){if(!prop||!natW)return;const r=shot.getBoundingClientRect();\n   showTipAt(r.left+prop.fx*r.width, r.top+prop.fy*r.height, prop.hex, prop.x, prop.y);}\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}prop=(d&&d.proposed)||null;}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';if(prop)placeProposed();};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW)return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;\n   const f=frac(e);let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;showTipAt(e.clientX,e.clientY,r.hex,r.x,r.y);});\n document.getElementById(\'redo\').onclick=()=>{reset();};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n window.__reload=function(){reset();boot();};\n window.addEventListener(\'pywebviewready\',boot);\n boot();\n</script></body></html>'
@@ -1951,6 +2240,25 @@ def build_html():
         '<button type="button" id="saverelics" class="btn" style="margin-top:12px">'
         'Save relics</button></section>')
 
+    # Builds (dedicated page)
+    nav("builds", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>', "Builds")
+    panels.append(
+        '<section class="panel" id="pbuilds"><div class="phead"><h2>Builds</h2>'
+        '<p class="chint">Every build is a FULL settings profile (all tabs + '
+        'relics). Load applies everything; Overwrite captures your current '
+        'settings into that build; click a description to edit it.</p></div>'
+        '<div class="bldbar">'
+        '<input id="bldsearch" placeholder="Search builds…" spellcheck="false">'
+        '<select id="bldsort">'
+        '<option value="new">Newest</option><option value="old">Oldest</option>'
+        '<option value="used">Most used</option>'
+        '<option value="recent">Recently used</option>'
+        '<option value="az">A–Z</option></select>'
+        '<span class="grow"></span>'
+        '<input id="bldname2" placeholder="save current as…" spellcheck="false">'
+        '<button type="button" class="btn" id="bldsave2">Save current</button>'
+        '</div><div id="bldgrid" class="bldgrid"></div></section>')
+
     # History
     nav("hist", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9 -9a9 9 0 0 0 -7 3.3L3 8"/><path d="M3 3v5h5"/><path d="M12 8v4l3 2"/></svg>', "History")
     panels.append(
@@ -1973,8 +2281,155 @@ def build_html():
                   for key, lbl in _kbrows)
         + '</div><div class="calactions"><button type="button" class="btn" id="savekeys">Save keybinds</button></div></section>')
 
-    # Settings tabs
+    # ---- Cycle: the pan loop as a visual, tunable diagram ----------------
+    # The engine-tuning sections stop being tabs and become STAGES of the
+    # loop the player actually runs; every numeric setting renders as a
+    # slider (bounds from the Coach's known-safe RANGES) synced to a precise
+    # number box. Keys keep their data-key identity, so builds/config/Coach
+    # are untouched. NOTHING is dropped: keys no stage claims fall into an
+    # automatic "Other tuning" stage.
+    nav("cycle", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-3-6.2"/><path d="M17 2.5l.3 3.6 3.6.3"/></svg>', "Cycle")
+    _byname = {}
+    for _t, _items in SECTIONS:
+        for _k, _l, _ty, _d in _items:
+            _byname[_k] = (_l, _ty, _d)
+    _MOVED = ["Mode / Dig", "Walk back into water", "Shake",
+              "Return to land (dig-probe)", "Recovery / safety",
+              "Recovery movement (jitter taps)", "Easy tuning"]
+    _moved_keys = [k for t, items in SECTIONS if t in _MOVED
+                   for k, _l, _ty, _d in items]
+    try:
+        _RNG = dict(_coach.RANGES)
+    except Exception:
+        _RNG = {}
+    _RNG.setdefault("SAFE_STOP_RETRY_SEC", (10, 600, 10))
+    _RNG.setdefault("SAFE_STOP_MAX_RETRIES", (0, 10, 1))
+    _STAGES = [
+        ("dig", "Dig", "On land, pan empty: hold the click, fill the pan.",
+         TAB_ICON.get("Mode / Dig", ""),
+         ["PERFECT", "DIG_CLICK_MS", "DIG_SPEED", "MAX_DIGS_TO_FILL",
+          "DIG_FILL_MS", "PRE_DIG_SETTLE_MS", "DIG_FILL_SMART",
+          "DIG_PLATEAU_MS", "DIG_SMART_CAP_MS", "DIG_PIPELINE",
+          "DIG_PIPELINE_GAP_MS", "EASY_FIRST_DIG_DELAY_MS"]),
+        ("swalk", "Walk back", "Pan full: hold S until the Pan cue shows.",
+         TAB_ICON.get("Walk back into water", ""),
+         ["PAN_BACK_MAX_MS", "WATER_EXTRA_BACK_MS", "EASY_WATER_BACK_MS",
+          "EASY_WATER_RETURN_DELAY_MS"]),
+        ("glide", "Glide & start",
+         "Hold W, build speed toward land — click RIGHT before the edge.",
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a3 3 0 1 0-3-3M3 13h15a3 3 0 1 1-3 3M3 18h7"/></svg>',
+         ["SHAKE_MOMENTUM_W", "SHAKE_W_LEAD_MS", "SHAKE_START_DELAY_MS",
+          "EASY_SHAKE_DELAY_MS", "SHAKE_START_CONFIRM_MS",
+          "SHAKE_START_RETRIES", "SHAKE_RETRY_DEEPER_MS", "SHAKE_BAIL_MS"]),
+        ("shake", "Shake & drain",
+         "Rapid clicks empty the pan while momentum carries you.",
+         TAB_ICON.get("Shake", ""),
+         ["SHAKE_CLICKS", "SHAKE_CLICK_MS", "SHAKE_CLICK_GAP_MS",
+          "SHAKE_HOLD_MS", "SHAKE_STALL_MS"]),
+        ("land", "Land & prove",
+         "Slide onto land as it empties; settle, then prove the dig registered.",
+         TAB_ICON.get("Return to land (dig-probe)", ""),
+         ["POST_SHAKE_SETTLE_MS", "DEPOSIT_MAX_MS", "LAND_SETTLE_MS",
+          "LAND_CUE_ASSIST", "LAND_ASSIST_MAX_MS", "DIG_PROBE_MS",
+          "PROBE_GAP_MS", "LAND_PROBE_NUDGE_MS", "LAND_DIG_TRIES",
+          "EASY_LAND_FWD_MS"]),
+        ("safety", "Safety nets",
+         "When something wedges: retries, nudges, break-outs, safe stops.",
+         TAB_ICON.get("Recovery / safety", ""),
+         ["RECOVER_ENABLED", "SHAKE_RETRY_ENABLED", "BREAKOUT_ENABLED",
+          "STUCK_TICKS", "RECOVER_LIMIT", "RECOVER_BACK_MS",
+          "SHAKE_FAIL_LIMIT", "SHAKE_GLITCH_LIMIT", "NO_PROGRESS_SEC",
+          "BREAKOUT_LIMIT", "BREAKOUT_SHAKE_MS", "BREAKOUT_REPOS_MS",
+          "SAFE_STOP_RETRY", "SAFE_STOP_RETRY_SEC", "SAFE_STOP_MAX_RETRIES",
+          "BURST_ON_MS", "BURST_OFF_MS"]),
+    ]
+    _claimed = set()
+    for _sid, _sn, _tag, _ic, _keys in _STAGES:
+        _claimed.update(k for k in _keys if k in _byname)
+    _left = [k for k in _moved_keys if k not in _claimed]
+    if _left:
+        _STAGES.append(("other", "Other tuning",
+                        "Settings the stages didn't claim (nothing is ever "
+                        "dropped).", TAB_ICON.get("Easy tuning", ""), _left))
+
+    def _crow(key):
+        lab, ty, _d = _byname[key]
+        if ty == "bool":
+            ctl = (f'<span class="switch"><input type="checkbox" data-key="{key}" '
+                   f'data-type="bool"><span class="track"><span class="knob">'
+                   f'</span></span></span>')
+        elif ty == "str":
+            ctl = (f'<input type="text" data-key="{key}" data-type="str" '
+                   f'style="width:220px;text-align:left">')
+        else:
+            r = _RNG.get(key)
+            if r:
+                ctl = (f'<span class="ctl"><input type="range" class="crng" '
+                       f'data-for="{key}" min="{r[0]}" max="{r[1]}" '
+                       f'step="{r[2]}">'
+                       f'<input type="number" data-key="{key}" '
+                       f'data-type="int" class="cnum"></span>')
+            else:
+                ctl = f'<input type="number" data-key="{key}" data-type="int">'
+        return (f'<label class="row crow"><span class="lbl">{lab}{_qm(key)}'
+                f'</span>{ctl}</label>')
+
+    _cards = []
+    for _sid, _sn, _tag, _ic, _keys in _STAGES:
+        _rows = "".join(_crow(k) for k in _keys if k in _byname)
+        _cards.append(
+            f'<div class="cstage" id="cs_{_sid}">'
+            f'<div class="cshdr"><span class="ti">{_ic}</span>'
+            f'<div><h3>{_sn}</h3><p>{_tag}</p></div></div>'
+            f'<div class="rows">{_rows}</div></div>')
+    _cyc_svg = (
+        '<div class="cycwrap"><svg viewBox="0 0 960 168" id="cycsvg">'
+        '<defs><marker id="arw" viewBox="0 0 10 10" refX="8" refY="5" '
+        'markerWidth="7" markerHeight="7" orient="auto-start-reverse">'
+        '<path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>'
+        '<rect x="8" y="30" width="196" height="86" rx="14" class="cyland"/>'
+        '<rect x="212" y="30" width="536" height="86" rx="14" class="cywater"/>'
+        '<rect x="756" y="30" width="196" height="86" rx="14" class="cyland"/>'
+        '<text x="106" y="24" class="cyzone">LAND</text>'
+        '<text x="480" y="24" class="cyzone">WATER</text>'
+        '<text x="854" y="24" class="cyzone">LAND</text>'
+        + "".join(
+            f'<g class="cnode" data-stage="{sid}" transform="translate({x},73)">'
+            f'<circle r="21" class="cnc"/>'
+            f'<g class="cni" transform="translate(-8.5,-8.5) scale(0.71)">'
+            f'{ic.replace("<svg ", "<svg width=24 height=24 ", 1)}</g>'
+            f'<text y="38" class="cnn">{nm}</text>'
+            f'<text y="53" class="cnv" id="cyv_{sid}"></text></g>'
+            for sid, nm, ic, x in [
+                ("dig", "dig", TAB_ICON.get("Mode / Dig", ""), 106),
+                ("swalk", "S — walk back", TAB_ICON.get("Walk back into water", ""), 288),
+                ("glide", "W — glide", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h11a3 3 0 1 0-3-3M3 13h15a3 3 0 1 1-3 3M3 18h7"/></svg>', 470),
+                ("shake", "click! shake", TAB_ICON.get("Shake", ""), 648),
+                ("land", "land & prove", TAB_ICON.get("Return to land (dig-probe)", ""), 854)])
+        + '<path d="M133 73h128" class="cya"/><path d="M315 73h128" class="cya"/>'
+          '<path d="M497 73h124" class="cya"/><path d="M675 73h152" class="cya"/>'
+          '<path d="M854 100v34H150" class="cya cyaback"/>'
+          '<text x="500" y="150" class="cyloop">momentum carries you out — the loop restarts</text>'
+        '</svg></div>')
+    panels.append(
+        '<section class="panel" id="pcycle"><div class="phead"><h2>Cycle</h2>'
+        '<p class="chint">This IS your pan loop. Click any stage in the '
+        'diagram to jump to its knobs; the numbers on the diagram are live. '
+        'Safety nets sit below the loop.</p></div>'
+        + _cyc_svg
+        + '<div class="cygraph"><div class="cyghd"><b>Cycle timeline</b>'
+          '<span class="cygtot" id="cygtotals"></span><span class="grow"></span>'
+          '<span class="cyghint">hover a bar for the settings behind it · '
+          'click to jump</span></div>'
+          '<svg id="cygsvg"></svg>'
+          '<div class="cygnotes" id="cygnotes"></div>'
+          '<div id="cygtip"></div></div>'
+        + "".join(_cards) + '</section>')
+
+    # Settings tabs (the engine-tuning sections live on the Cycle page now)
     for title, items in SECTIONS:
+        if title in _MOVED:
+            continue
         icon = TAB_ICON.get(title, "•")
         _search = (title + " " + " ".join(l for _k, l, _t, _d in items)).lower().replace('"', "")
         nav(title, icon, title, search=_search)
@@ -2008,14 +2463,11 @@ def build_html():
         '<button type="button" class="btn2" id="wiznext">Skip ›</button></div>'
         '<div class="wizdots" id="wizdots"></div></div></div>')
     nav_html = {n["id"]: n["html"] for n in navs}
-    PINNED = ["run", "cal", "relics", "hist", "keys"]
+    PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "keys"]
     GROUPS = [
-        ("Setup", ["Easy tuning", "Window"]),
+        ("Setup", ["Window"]),
         ("Modes", ["Treasure chest", "Shards"]),
-        ("Engine tuning", ["Mode / Dig", "Walk back into water", "Shake",
-                           "Return to land (dig-probe)"]),
-        ("Recovery", ["Recovery / safety", "Recovery movement (jitter taps)",
-                      "Smart / experimental"]),
+        ("Recovery", ["Smart / experimental"]),
         ("Alerts & limits", ["Notifications", "Auto-stop"]),
     ]
     side = ['<input id="navsearch" class="navsearch" type="text" '
@@ -2039,7 +2491,105 @@ def build_html():
                     '<button type="button" class="grouphdr"><span>Other</span>'
                     '<span class="chev">›</span></button>'
                     f'<div class="groupkids">{leftover}</div></div>')
-    return HTML.replace("{{NAV}}", "".join(side)).replace("{{PANELS}}", "".join(panels))
+    return (HTML.replace("{{NAV}}", "".join(side))
+            .replace("{{PANELS}}", "".join(panels))
+            .replace("{{CYCMODEL}}", _CYCMODEL_JS))
+
+
+_CYCMODEL_JS = r''' function cycModel(V,AB){
+   const n=k=>{const x=parseInt(V[k]||0,10);return isNaN(x)?0:x;};
+   const b=k=>!!V[k];
+   const A=AB||{};
+   const st={cap:+A.ab_cap||0,ds:+A.ab_ds||0,ss:+A.ab_ss||0,sspeed:+A.ab_sspeed||0};
+   const anim=190000/Math.max(1,n('DIG_SPEED'));
+   const rolls=ss=>4.03266e-9*ss*ss*ss-1.68935e-5*ss*ss+0.0255557*ss+0.206594;
+   const drain=(st.cap&&st.ss&&st.sspeed)?1000*st.cap/(rolls(st.sspeed)*st.ss):null;
+   const digsNeed=(st.cap&&st.ds)?Math.max(1,Math.ceil(st.cap/(1.5*st.ds))):null;
+   const PAN_BACK=n('PAN_BACK_MAX_MS')+n('EASY_WATER_BACK_MS');
+   const XTRA=n('WATER_EXTRA_BACK_MS')+n('EASY_WATER_BACK_MS');
+   const SDLY=n('SHAKE_START_DELAY_MS')+n('EASY_SHAKE_DELAY_MS');
+   const PRED=n('PRE_DIG_SETTLE_MS')+n('EASY_FIRST_DIG_DELAY_MS');
+   const POST=n('POST_SHAKE_SETTLE_MS')+n('EASY_FIRST_DIG_DELAY_MS');
+   const S=[],notes=[];
+   const seg=(stage,name,lo,hi,o)=>{lo=Math.max(0,lo);hi=Math.max(lo,hi);
+     if(hi<=0)return;S.push(Object.assign({stage,name,lo,hi,parts:[]},o||{}));};
+   if(PRED>0)seg('dig','settle before dig',PRED,PRED,
+     {parts:[['PRE_DIG_SETTLE_MS',n('PRE_DIG_SETTLE_MS')],['EASY_FIRST_DIG_DELAY_MS',n('EASY_FIRST_DIG_DELAY_MS')]]});
+   const hold=b('PERFECT')?anim:n('DIG_CLICK_MS');
+   const holdParts=b('PERFECT')?[['PERFECT','on: hold rides the dig-bar sweep'],['DIG_SPEED',n('DIG_SPEED')]]
+                               :[['DIG_CLICK_MS',n('DIG_CLICK_MS')]];
+   if(n('SHARDS_DIG_CLICKS')>0){
+     seg('dig','dig click',hold,hold,{parts:holdParts,click:true});
+     const win=Math.max(30,n('SHARDS_CLICK_CONFIRM_MS'));
+     const pLo=b('SHARDS_GREEN_CONFIRM')?Math.min(40,win):Math.min(anim*0.5,win);
+     seg('dig',b('SHARDS_GREEN_CONFIRM')?'prove click (green bar)':'prove click (bar moves)',
+       pLo,win,{parts:[['SHARDS_CLICK_CONFIRM_MS',n('SHARDS_CLICK_CONFIRM_MS')],
+                       ['SHARDS_GREEN_CONFIRM',b('SHARDS_GREEN_CONFIRM')?'on':'off']]});
+     for(let k=1;k<n('SHARDS_DIG_CLICKS');k++){
+       seg('dig','dig rhythm',anim+25,anim+25,{parts:[['DIG_SPEED',n('DIG_SPEED')]]});
+       seg('dig','dig click',hold,hold,{parts:holdParts,click:true});}
+     if(!b('SHARDS_ASSUME_FULL'))
+       seg('dig','wait for FULL',Math.max(0,anim-pLo),Math.max(600,n('DIG_FILL_MS')),
+         {parts:[['DIG_FILL_MS',n('DIG_FILL_MS')],['SHARDS_ASSUME_FULL','off']]});
+     else notes.push('assume-full: the walk to water happens DURING the fill animation');
+   }else{
+     seg('dig','probe dig',hold,hold,{parts:holdParts,click:true});
+     seg('dig','prove rise',Math.min(anim,n('DIG_PROBE_MS')),n('DIG_PROBE_MS'),
+       {parts:[['DIG_PROBE_MS',n('DIG_PROBE_MS')]]});
+     const nd=Math.min(Math.max(digsNeed||n('MAX_DIGS_TO_FILL'),1),Math.max(1,n('MAX_DIGS_TO_FILL')));
+     if(nd>1&&b('DIG_PIPELINE')){
+       const gap=n('DIG_PIPELINE_GAP_MS')>0?n('DIG_PIPELINE_GAP_MS'):anim+25;
+       for(let k=1;k<nd;k++){seg('dig','pipeline gap',gap,gap,
+           {parts:[['DIG_PIPELINE_GAP_MS',n('DIG_PIPELINE_GAP_MS')],['DIG_SPEED',n('DIG_SPEED')]]});
+         seg('dig','dig click',hold,hold,{parts:holdParts,click:true});}
+       seg('dig','wait for FULL',Math.min(anim,n('DIG_FILL_MS')),Math.max(n('DIG_FILL_MS'),anim),
+         {parts:[['DIG_FILL_MS',n('DIG_FILL_MS')]]});
+     }else{
+       for(let k=1;k<nd;k++){
+         if(b('DIG_FILL_SMART'))seg('dig','smart fill watch',anim,anim+n('DIG_PLATEAU_MS'),
+           {jump:'DIG_PLATEAU_MS',parts:[['DIG_FILL_SMART','on'],['DIG_PLATEAU_MS',n('DIG_PLATEAU_MS')]]});
+         else seg('dig','wait FULL',Math.min(anim,n('DIG_FILL_MS')),n('DIG_FILL_MS'),
+           {parts:[['DIG_FILL_MS',n('DIG_FILL_MS')]]});
+         seg('dig','dig click',hold,hold,{parts:holdParts,click:true});}
+       if(b('DIG_FILL_SMART'))seg('dig','last fill',anim,anim+n('DIG_PLATEAU_MS'),
+         {jump:'DIG_PLATEAU_MS',parts:[['DIG_FILL_SMART','on'],['DIG_PLATEAU_MS',n('DIG_PLATEAU_MS')]]});
+       else seg('dig','last fill',Math.min(anim,n('DIG_FILL_MS')),n('DIG_FILL_MS'),
+         {parts:[['DIG_FILL_MS',n('DIG_FILL_MS')]]});
+     }
+     if(digsNeed===null)notes.push('digs-to-fill unknown (save your stats in Auto-build) — showing Max digs');
+   }
+   seg('swalk','S — until the Pan cue',PAN_BACK,PAN_BACK,
+     {parts:[['PAN_BACK_MAX_MS',n('PAN_BACK_MAX_MS')],['EASY_WATER_BACK_MS',n('EASY_WATER_BACK_MS')]],
+      note:'budget — the cue usually fires sooner',cue:true});
+   if(XTRA>0)seg('swalk','deeper (extra S)',XTRA,XTRA,
+     {parts:[['WATER_EXTRA_BACK_MS',n('WATER_EXTRA_BACK_MS')],['EASY_WATER_BACK_MS',n('EASY_WATER_BACK_MS')]]});
+   if(SDLY>0)seg('glide','start delay',SDLY,SDLY,
+     {parts:[['SHAKE_START_DELAY_MS',n('SHAKE_START_DELAY_MS')],['EASY_SHAKE_DELAY_MS',n('EASY_SHAKE_DELAY_MS')]]});
+   if(b('SHAKE_MOMENTUM_W')){
+     if(n('SHAKE_W_LEAD_MS')>0)seg('glide','W — momentum glide',n('SHAKE_W_LEAD_MS'),n('SHAKE_W_LEAD_MS'),
+       {parts:[['SHAKE_W_LEAD_MS',n('SHAKE_W_LEAD_MS')]]});
+   }else notes.push('Hold W during shake is OFF — no momentum, no glide');
+   const cad=Math.max(1,n('SHAKE_CLICK_MS')+n('SHAKE_CLICK_GAP_MS'));
+   if(n('SHAKE_CLICKS')>0){
+     const d=cad*n('SHAKE_CLICKS');
+     seg('shake','shake — exactly '+n('SHAKE_CLICKS')+' clicks',d,d,
+       {parts:[['SHAKE_CLICKS',n('SHAKE_CLICKS')],['SHAKE_CLICK_MS',n('SHAKE_CLICK_MS')],
+               ['SHAKE_CLICK_GAP_MS',n('SHAKE_CLICK_GAP_MS')]],ticks:cad});
+   }else{
+     const lo=drain!==null?Math.min(drain,n('SHAKE_HOLD_MS')):n('SHAKE_HOLD_MS');
+     seg('shake',drain!==null?'shake — drain (est. from your stats)':'shake — until empty (cap)',
+       lo,n('SHAKE_HOLD_MS'),
+       {parts:[['SHAKE_CLICK_MS',n('SHAKE_CLICK_MS')],['SHAKE_CLICK_GAP_MS',n('SHAKE_CLICK_GAP_MS')],
+               ['SHAKE_HOLD_MS',n('SHAKE_HOLD_MS')],['SHAKE_BAIL_MS',n('SHAKE_BAIL_MS')]],
+        ticks:cad,bail:n('SHAKE_BAIL_MS')});
+     if(drain===null)notes.push('drain time unknown (save your stats in Auto-build) — showing the cap');
+   }
+   if(POST>0)seg('land','settle onto land',POST,POST,
+     {parts:[['POST_SHAKE_SETTLE_MS',n('POST_SHAKE_SETTLE_MS')],['EASY_FIRST_DIG_DELAY_MS',n('EASY_FIRST_DIG_DELAY_MS')]]});
+   let est=0,cap=0;
+   S.forEach(x=>{est+=x.lo;cap+=x.hi;});
+   return {segs:S,est,cap,notes,pph:est>0?3600000/est:0,drain,digsNeed};
+ }/*CYCMODEL-END*/'''
 
 
 HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
@@ -2086,6 +2636,55 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .navsearch::placeholder{color:var(--dim)}
  .navsearch:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--sand-dim)}
  .navpinned{margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+ .cycwrap{max-width:980px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px 12px 4px;margin-bottom:16px}
+ #cycsvg{width:100%;height:auto;display:block}
+ .cyland{fill:rgba(194,146,76,.10);stroke:rgba(194,146,76,.35)}
+ .cywater{fill:rgba(107,161,181,.10);stroke:rgba(107,161,181,.35)}
+ .cyzone{fill:var(--dim);font-size:10px;letter-spacing:.14em;text-anchor:middle;font-weight:700}
+ .cya{stroke:var(--dim);stroke-width:1.6;fill:none;marker-end:url(#arw);color:var(--dim)}
+ .cyaback{stroke-dasharray:4 5;opacity:.6}
+ .cyloop{fill:var(--dim);font-size:10.5px;text-anchor:middle;font-style:italic}
+ .cnode{cursor:pointer} .cnc{fill:var(--bg2);stroke:var(--line2);stroke-width:1.4;transition:stroke .15s}
+ .cnode:hover .cnc{stroke:var(--accent)} .cni{color:var(--accent-lit)}
+ .cni svg{width:24px;height:24px;overflow:visible}
+ .cnn{fill:var(--txt);font-size:11px;text-anchor:middle;font-weight:600}
+ .cnv{fill:var(--accent-lit);font-size:10.5px;text-anchor:middle;font-variant-numeric:tabular-nums}
+ .cstage{max-width:980px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:14px;scroll-margin-top:16px}
+ .cstage.pulse{border-color:var(--accent);box-shadow:0 0 0 2px var(--sand-dim)}
+ .cshdr{display:flex;gap:11px;align-items:flex-start;margin-bottom:8px}
+ .cshdr .ti{color:var(--accent-lit);margin-top:2px} .cshdr .ti svg{width:17px;height:17px}
+ .cshdr h3{margin:0;font-size:14px} .cshdr p{margin:2px 0 0;color:var(--mut);font-size:12px}
+ .crow .ctl{display:flex;gap:10px;align-items:center}
+ .crng{width:190px;accent-color:var(--accent)}
+ .cnum{width:78px}
+ .cygraph{max-width:980px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:16px;position:relative}
+ .cyghd{display:flex;gap:8px;align-items:baseline;margin-bottom:6px}
+ .cyghd b{font-size:13px} .cygtot{color:var(--accent-lit);font-size:12px;font-variant-numeric:tabular-nums}
+ .cyghint{color:var(--dim);font-size:11px}
+ #cygsvg{width:100%;height:auto;display:block}
+ .cygax{fill:var(--dim);font-size:9.5px;text-anchor:middle}
+ .cyglab{fill:#241a02;font-size:10.5px;text-anchor:middle;font-weight:700;pointer-events:none}
+ .cyglane{fill:var(--dim);font-size:9px;font-weight:700}
+ .cygbail{fill:#e07b5f;font-size:9px;text-anchor:middle}
+ .cygseg{cursor:pointer}
+ .cygnotes{color:var(--mut);font-size:11.5px;margin-top:4px;min-height:14px}
+ .hlrow{background:var(--sand-glow)!important;outline:1.5px solid var(--accent);border-radius:9px;transition:background .3s,outline .3s}
+ #cygtip{display:none;position:fixed;z-index:60;background:var(--bg2);border:1px solid var(--line2);border-radius:9px;padding:8px 11px;font-size:11.5px;color:var(--txt);max-width:240px;pointer-events:none;line-height:1.5}
+ .bldbar{display:flex;gap:9px;align-items:center;margin-bottom:14px;flex-wrap:wrap;max-width:980px}
+ .bldbar input,.bldbar select{background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font:inherit}
+ .bldbar input:focus,.bldbar select:focus{outline:none;border-color:var(--accent)}
+ #bldsearch{width:220px} #bldname2{width:190px}
+ .bldgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;max-width:980px}
+ .bcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 15px;display:flex;flex-direction:column;gap:8px}
+ .bcard:hover{border-color:var(--line2)}
+ .bhead{display:flex;align-items:center;gap:8px} .bhead h3{margin:0;font-size:14.5px;flex:1;color:var(--accent-lit);font-weight:600}
+ .bdel{background:transparent;color:var(--dim);padding:2px 9px;border-radius:7px;font-size:12px} .bdel:hover{background:#3a201c;color:#f0c0b0}
+ .bdesc{color:var(--mut);font-size:12.5px;line-height:1.45;cursor:text;min-height:18px}
+ .bdesc.empty{color:var(--dim);font-style:italic} .bdesc:hover{color:var(--txt)}
+ .bta{width:100%;min-height:52px;background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:7px 9px;font:inherit;font-size:12.5px;resize:vertical;margin-bottom:7px}
+ .bstats{color:var(--dim);font-size:11.5px;font-variant:tabular-nums}
+ .bbtns{display:flex;gap:8px} .bbtns .btn,.bbtns .btn2{padding:7px 12px;font-size:12.5px}
+ .bldempty{color:var(--dim);padding:16px 4px}
 
  .asec{color:var(--accent-lit);font-weight:700;font-size:11px;letter-spacing:.05em;text-transform:uppercase;margin:16px 2px 8px}
  .agrid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
@@ -2393,11 +2992,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <div class="grow"></div>
    <input class="topfield sm" id="buildname" placeholder="build name">
    <button class="btn2" id="savebuild">Save build</button>
-   <select class="topfield sm" id="buildlist"><option value="">Load build…</option></select>
-   <button class="btn2" id="delbuild" title="Delete selected build">✕</button>
+   <button class="btn2" id="buildsbtn" title="All saved builds — load, organise, describe">⛏ Builds</button>
    <button class="btn2" id="coachtoggle" title="Open the offline tuning coach">✦ Coach</button>
    <button class="btn2" id="analyticsbtn" title="Open the analytics dashboard">☷ Analytics</button>
    <button class="btn2" id="popout" title="Pop out a floating control">⤢ Pop out</button>
+   <button class="btn2" id="hudbtn" title="Live overlay HUD beside the game">⬒ HUD</button>
    <button class="btn" id="savebtn">Save settings</button>
  </div>
  <div class="body">
@@ -2408,8 +3007,6 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      <button type="button" class="chip" id="pv1">v1 · fast 1-dig</button>
      <button type="button" class="chip" id="pv2">v2 · multi-dig</button>
      <button type="button" class="chip" id="pdef">Reset defaults</button>
-     <div class="pretitle" style="margin-top:10px">My builds (full)</div>
-     <div id="buildchips"></div>
    </nav>
    <div class="content">{{PANELS}}</div>
    <aside class="coach" id="coach">
@@ -2462,11 +3059,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function setVals(v){fields().forEach(el=>{const k=el.dataset.key;
    if(!(k in v))return; // key not in the loaded build/config -> KEEP the current
    // value (old builds must never zero settings added after they were saved)
-   if(el.dataset.type==='bool')el.checked=!!v[k]; else el.value=(v[k]??'');});}
+   if(el.dataset.type==='bool')el.checked=!!v[k]; else el.value=(v[k]??'');});
+   if(window.syncCycle)syncCycle();}
  function collect(){const o={};fields().forEach(el=>{const k=el.dataset.key,t=el.dataset.type;
    o[k]=(t==='bool')?el.checked:(t==='str')?el.value:parseInt(el.value||'0',10);});return o;}
  function preset(p){fields().forEach(el=>{const k=el.dataset.key; if(!(k in p))return;
-   if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];});}
+   if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];});
+   if(window.syncCycle)syncCycle();}
  function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');
    clearTimeout(window._tt);window._tt=setTimeout(()=>e.classList.remove('show'),1800);}
  window.addLog=t=>{const l=$('#log');l.textContent+=t+"\n";l.scrollTop=l.scrollHeight;};
@@ -2584,10 +3183,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // tabs
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-   const id=b.dataset.tab; const pid=(id==='run'||id==='cal'||id==='relics'||id==='hist'||id==='keys')?('p'+id):('p_'+id);
+   const id=b.dataset.tab; const pid=(id==='run'||id==='cycle'||id==='builds'||id==='cal'||id==='relics'||id==='hist'||id==='keys')?('p'+id):('p_'+id);
    document.getElementById(pid).classList.add('active');
    const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
-   if(id==='hist')loadHistory();});
+   if(id==='hist')loadHistory();
+   if(id==='builds')loadBuildsPage();});
  document.querySelectorAll('.grouphdr').forEach(h=>h.onclick=()=>h.closest('.navgroup').classList.toggle('collapsed'));
  (function(){const ns=document.getElementById('navsearch');if(!ns)return;
    ns.addEventListener('input',()=>{const q=ns.value.trim().toLowerCase();
@@ -2754,28 +3354,190 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched — Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
+ (function(){const b=$('#hudbtn');if(b)b.onclick=async()=>{
+   try{const r=await window.pywebview.api.hud_toggle();
+     toast(r==='shown'?'HUD on — drag it beside Roblox':'HUD hidden');}catch(e){}};})();
  (function(){const b=$('#pausebtn');if(b)b.onclick=async()=>{
    try{await window.pywebview.api.pause_toggle();}catch(e){}};})();
- // builds — a build saves ALL settings + relics; loading applies them all
+ // builds — a build saves ALL settings + relics; loading applies them all.
+ // The dedicated Builds PAGE owns listing/search/sort/descriptions.
  async function loadBuild(name){if(!name)return;
    const e=await window.pywebview.api.load_build(name);if(!e)return;
    setVals(e); setRelics(e.RELICS||[], e.RELICS_ENABLED); toast('Loaded build "'+name+'"');}
- function renderBuildChips(list){const box=$('#buildchips');box.innerHTML='';
-   if(!list||!list.length){box.innerHTML='<div style="color:#6b7280;font-size:12px;'+
-     'padding:2px 4px">none yet — type a name + Save build</div>';return;}
-   list.forEach(n=>{const b=document.createElement('button');b.type='button';
-     b.className='chip';b.textContent=n;b.onclick=()=>loadBuild(n);box.appendChild(b);});}
- function fillBuilds(list){const sel=$('#buildlist');sel.innerHTML='<option value="">Load build…</option>';
-   list.forEach(n=>{const o=document.createElement('option');o.value=n;o.textContent=n;sel.appendChild(o);});
-   renderBuildChips(list);}
+ let BLD={list:[],q:'',sort:'new'};
+ function bldDate(ts){if(!ts)return '—';return new Date(ts*1000).toLocaleDateString();}
+ async function loadBuildsPage(){try{BLD.list=await window.pywebview.api.builds_info()||[];}
+   catch(e){BLD.list=[];}
+   renderBuildsPage();}
+ function renderBuildsPage(){const g=$('#bldgrid');if(!g)return;
+   const q=BLD.q.toLowerCase();
+   const L=BLD.list.filter(b=>!q||b.name.toLowerCase().includes(q)||(b.desc||'').toLowerCase().includes(q));
+   const s=BLD.sort;
+   L.sort((a,b)=> s==='new'?(b.created-a.created)||a.name.localeCompare(b.name)
+     : s==='old'?(a.created-b.created)||a.name.localeCompare(b.name)
+     : s==='used'?(b.used-a.used)||a.name.localeCompare(b.name)
+     : s==='recent'?(b.last_used-a.last_used)||a.name.localeCompare(b.name)
+     : a.name.localeCompare(b.name));
+   g.innerHTML='';
+   if(!L.length){const d=document.createElement('div');d.className='bldempty';
+     d.textContent=BLD.list.length?'No builds match that search.':'No builds yet — save your current settings above.';
+     g.appendChild(d);return;}
+   L.forEach(b=>{const c=document.createElement('div');c.className='bcard';
+     c.innerHTML='<div class="bhead"><h3></h3><button type="button" class="bdel" title="Delete this build">✕</button></div>'
+       +'<div class="bdesc" title="Click to edit the description"></div>'
+       +'<div class="bstats"></div>'
+       +'<div class="bbtns"><button type="button" class="btn bload">Load</button>'
+       +'<button type="button" class="btn2 bover" title="Overwrite this build with the CURRENT settings">Overwrite</button></div>';
+     c.querySelector('h3').textContent=b.name;
+     const de=c.querySelector('.bdesc');
+     de.textContent=b.desc||'Add a description…';
+     if(!b.desc)de.classList.add('empty');
+     c.querySelector('.bstats').textContent=[(b.nset||0)+' settings',
+       (b.relics?b.relics+' relic'+(b.relics>1?'s':''):'no relics'),
+       'used '+(b.used||0)+'×','created '+bldDate(b.created),
+       (b.last_used?'last used '+bldDate(b.last_used):'never used')].join(' · ');
+     c.querySelector('.bload').onclick=async()=>{await loadBuild(b.name);loadBuildsPage();};
+     c.querySelector('.bover').onclick=async()=>{
+       await window.pywebview.api.save_build(b.name,collect(),collectRelics(),$('#relicsMaster').checked);
+       toast('"'+b.name+'" overwritten with current settings');loadBuildsPage();};
+     const del=c.querySelector('.bdel');
+     del.onclick=async()=>{if(!del.dataset.arm){del.dataset.arm='1';del.textContent='sure?';
+         setTimeout(()=>{del.dataset.arm='';del.textContent='✕';},2500);return;}
+       await window.pywebview.api.delete_build(b.name);toast('Deleted "'+b.name+'"');loadBuildsPage();};
+     de.onclick=()=>{if(de.querySelector('textarea'))return;
+       de.classList.remove('empty');
+       de.innerHTML='<textarea class="bta"></textarea>'
+         +'<div class="bbtns"><button type="button" class="btn bdsave">Save</button>'
+         +'<button type="button" class="btn2 bdcancel">Cancel</button></div>';
+       const ta=de.querySelector('textarea');ta.value=b.desc||'';ta.focus();
+       de.querySelector('.bdsave').onclick=async ev=>{ev.stopPropagation();
+         await window.pywebview.api.set_build_desc(b.name,ta.value.trim());loadBuildsPage();};
+       de.querySelector('.bdcancel').onclick=ev=>{ev.stopPropagation();renderBuildsPage();};};
+     g.appendChild(c);});}
+ (function(){const s=$('#bldsearch');if(s)s.addEventListener('input',()=>{BLD.q=s.value.trim();renderBuildsPage();});
+   const o=$('#bldsort');if(o)o.onchange=()=>{BLD.sort=o.value;renderBuildsPage();};
+   const n=$('#bldname2'),sv=$('#bldsave2');
+   if(sv)sv.onclick=async()=>{const name=(n.value||'').trim();
+     if(!name){toast('Enter a build name');return;}
+     await window.pywebview.api.save_build(name,collect(),collectRelics(),$('#relicsMaster').checked);
+     n.value='';toast('Build "'+name+'" saved (all settings)');loadBuildsPage();};
+   const bb=$('#buildsbtn');
+   if(bb)bb.onclick=()=>{const t=document.querySelector('.tab[data-tab="builds"]');if(t)t.click();};})();
  $('#savebuild').onclick=async()=>{const name=$('#buildname').value.trim();
    if(!name){toast('Enter a build name');return;}
    await window.pywebview.api.save_build(name,collect(),collectRelics(),$('#relicsMaster').checked);
-   const st=await window.pywebview.api.get_state();fillBuilds(st.builds);$('#buildlist').value=name;
-   toast('Build "'+name+'" saved (all settings)');};
- $('#buildlist').onchange=()=>loadBuild($('#buildlist').value);
- $('#delbuild').onclick=async()=>{const name=$('#buildlist').value;if(!name){toast('Pick a build to delete');return;}
-   const list=await window.pywebview.api.delete_build(name);fillBuilds(list);toast('Deleted "'+name+'"');};
+   toast('Build "'+name+'" saved (all settings)');loadBuildsPage();};
+ // ==== Cycle timeline: an accurate model of ONE clean cycle ====
+ // Every duration mirrors the ENGINE's own laws: the EASY-offset folding
+ // load_config performs, the mode branches (Shards exact-click, dig
+ // pipeline, smart fill, fixed-click shake), the community stat formulas
+ // (dig animation = 190000/DIG_SPEED ms; shake drain = capacity/(rolls x
+ // shake strength)). Segments carry [lo,hi]: lo = best estimate, hi = the
+ // engine's hard budget/cap; the hatched tail is the uncertain part.
+
+ {{CYCMODEL}}
+
+ function cygJump(key){if(!key)return;
+   const el=document.querySelector('#pcycle [data-key="'+key+'"]');
+   if(!el)return;
+   const row=el.closest('.row')||el;
+   row.scrollIntoView({behavior:'smooth',block:'center'});
+   row.classList.add('hlrow');
+   setTimeout(()=>row.classList.remove('hlrow'),1900);
+   if(el.type==='number'){try{el.focus({preventScroll:true});el.select();}catch(e){}}
+   else if(el.type==='checkbox'){try{el.focus({preventScroll:true});}catch(e){}}}
+ let _cygRAF=0;
+ function renderCycGraph(){if(_cygRAF)return;
+   _cygRAF=requestAnimationFrame(()=>{_cygRAF=0;_cygDraw();});}
+ function _cygDraw(){
+   const svg=document.getElementById('cygsvg');if(!svg)return;
+   const M=cycModel(collect(),window._AB||{});
+   const W=920,H=134,L=10,R=8,axisY=96;
+   const total=Math.max(M.cap,1);
+   const x=t=>L+(W-L-R)*t/total;
+   const col={dig:'#c2924c',swalk:'#6ba1b5',glide:'#9bc07e',shake:'#e0b873',land:'#b58f6b'};
+   let d='<defs><pattern id="cyghatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="rgba(236,228,214,.30)" stroke-width="2"/></pattern></defs>';
+   const step=total>4000?1000:total>2000?500:total>800?250:100;
+   for(let t=0;t<=total;t+=step){const xx=x(t);
+     d+='<line x1="'+xx+'" y1="16" x2="'+xx+'" y2="'+axisY+'" stroke="rgba(255,255,255,.05)"/>'
+       +'<text x="'+xx+'" y="'+(axisY+12)+'" class="cygax">'+(t>=1000?(t/1000)+'s':t+'ms')+'</text>';}
+   let t0=0;
+   M.segs.forEach((s,i)=>{
+     const a=x(t0),lo=x(t0+s.lo),hi=x(t0+s.hi);
+     const c=col[s.stage]||'#8b8375';
+     d+='<rect class="cygseg" data-i="'+i+'" x="'+a+'" y="20" width="'+Math.max(1.2,lo-a)+'" height="30" rx="3" fill="'+c+'" fill-opacity="0.85"/>';
+     if(hi>lo+0.5)d+='<rect class="cygseg" data-i="'+i+'" x="'+lo+'" y="20" width="'+(hi-lo)+'" height="30" rx="3" fill="url(#cyghatch)" stroke="'+c+'" stroke-opacity=".5" stroke-dasharray="3 3"/>';
+     if(s.ticks){const lim=Math.min(70,Math.floor(s.lo/s.ticks));
+       for(let k=1;k<=lim;k++){const tx=x(t0+k*s.ticks);
+         d+='<line x1="'+tx+'" y1="23" x2="'+tx+'" y2="47" stroke="rgba(20,15,8,.45)" stroke-width="1"/>';}}
+     if(s.bail){const bx=x(t0+s.bail);
+       d+='<line x1="'+bx+'" y1="15" x2="'+bx+'" y2="52" stroke="#e07b5f" stroke-width="1.4" stroke-dasharray="3 2"/>'
+         +'<text x="'+bx+'" y="12" class="cygbail">bail</text>';}
+     if((hi-a)>s.name.length*6.4+12)d+='<text x="'+((a+hi)/2)+'" y="39" class="cyglab">'+s.name+'</text>';
+     t0+=s.hi;});
+   d+='<text x="'+L+'" y="60" class="cyglane">S</text>'
+     +'<text x="'+L+'" y="72" class="cyglane">W</text>'
+     +'<text x="'+L+'" y="84" class="cyglane">CLK</text>';
+   t0=0;const spans={S:[],W:[],C:[]};
+   M.segs.forEach(s=>{const a=t0,bx=t0+s.hi;
+     if(s.stage==='swalk')spans.S.push([a,bx]);
+     if(s.stage==='glide'&&s.name.indexOf('W')===0)spans.W.push([a,bx]);
+     if(s.stage==='shake'){spans.W.push([a,bx]);spans.C.push([a,bx]);}
+     if(s.click)spans.C.push([a,bx]);
+     t0+=s.hi;});
+   const drawSpans=(arr,y,c)=>arr.forEach(sp=>{
+     d+='<rect x="'+(x(sp[0])+16)+'" y="'+y+'" width="'+Math.max(1,x(sp[1])-x(sp[0])-16)+'" height="7" rx="2" fill="'+c+'" fill-opacity=".75"/>';});
+   drawSpans(spans.S,54,'#6ba1b5');drawSpans(spans.W,66,'#9bc07e');drawSpans(spans.C,78,'#e0b873');
+   svg.setAttribute('viewBox','0 0 '+W+' '+H);
+   svg.innerHTML=d;
+   const tot=document.getElementById('cygtotals');
+   if(tot)tot.textContent=' — est '+(M.est/1000).toFixed(2)+'s · budget '+(M.cap/1000).toFixed(2)
+     +'s · ≈'+Math.round(M.pph)+' pans/hr at est';
+   const nt=document.getElementById('cygnotes');
+   if(nt)nt.textContent=M.notes.join('  ·  ');
+   const tip=document.getElementById('cygtip');
+   svg.querySelectorAll('.cygseg').forEach(r=>{
+     const s=M.segs[+r.dataset.i];
+     r.addEventListener('mousemove',e=>{if(!tip)return;
+       tip.style.display='block';
+       tip.innerHTML='<b>'+s.name+'</b> — '+(s.lo===s.hi?Math.round(s.lo)+'ms'
+           :Math.round(s.lo)+'–'+Math.round(s.hi)+'ms')
+         +(s.note?'<br><i>'+s.note+'</i>':'')
+         +'<br>'+s.parts.map(p=>p[0]+' = '+p[1]).join('<br>')
+         +'<br><i>click → edit '+(s.jump||(s.parts[0]&&s.parts[0][0])||'')+'</i>';
+       tip.style.left=Math.min(e.clientX+12,window.innerWidth-260)+'px';
+       tip.style.top=(e.clientY+14)+'px';});
+     r.addEventListener('mouseleave',()=>{if(tip)tip.style.display='none';});
+     r.addEventListener('click',()=>cygJump(s.jump||(s.parts[0]&&s.parts[0][0])));});
+ }
+ // ---- Cycle page: sliders <-> numbers, live diagram values, stage jump ----
+ function _cyv(k){const el=document.querySelector('[data-key="'+k+'"]');
+   if(!el)return 0;
+   return el.dataset.type==='bool'?(el.checked?1:0):parseInt(el.value||'0',10);}
+ window.syncCycle=function(){
+   document.querySelectorAll('#pcycle .crng').forEach(r=>{
+     const n=document.querySelector('[data-key="'+r.dataset.for+'"]');
+     if(n&&document.activeElement!==r)r.value=n.value||0;});
+   const set=(id,t)=>{const e=document.getElementById(id);if(e)e.textContent=t;};
+   set('cyv_dig',_cyv('DIG_CLICK_MS')+'ms · ×'+_cyv('MAX_DIGS_TO_FILL'));
+   set('cyv_swalk',_cyv('PAN_BACK_MAX_MS')+(_cyv('WATER_EXTRA_BACK_MS')?'+'+_cyv('WATER_EXTRA_BACK_MS'):'')+'ms');
+   set('cyv_glide',_cyv('SHAKE_MOMENTUM_W')?(_cyv('SHAKE_W_LEAD_MS')+'ms W'):'W off!');
+   set('cyv_shake',_cyv('SHAKE_CLICK_MS')+'/'+_cyv('SHAKE_CLICK_GAP_MS')+'ms');
+   set('cyv_land',_cyv('POST_SHAKE_SETTLE_MS')+'ms settle');
+   renderCycGraph();
+ };
+ (function(){const p=document.getElementById('pcycle');if(!p)return;
+   p.addEventListener('input',e=>{const t=e.target;
+     if(t&&t.classList&&t.classList.contains('crng')){
+       const n=document.querySelector('[data-key="'+t.dataset.for+'"]');
+       if(n)n.value=t.value;}});
+   document.addEventListener('input',e=>{const t=e.target;
+     if(t&&((t.dataset&&t.dataset.key)||(t.classList&&t.classList.contains('crng'))))syncCycle();});
+   p.querySelectorAll('.cnode').forEach(g=>{g.addEventListener('click',()=>{
+     const c=document.getElementById('cs_'+g.dataset.stage);
+     if(c){c.scrollIntoView({behavior:'smooth',block:'start'});
+       c.classList.add('pulse');setTimeout(()=>c.classList.remove('pulse'),1200);}});});
+   syncCycle();})();
  // custom tooltip (native title tooltips don't show in the app window)
  const _tip=document.createElement('div');_tip.className='tip';document.body.appendChild(_tip);
  document.addEventListener('mouseover',e=>{const q=e.target.closest('.qm');if(!q)return;
@@ -2804,8 +3566,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        toast(r&&r.manual?'Opened the download page':'Update failed — opening download page');}};
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
-   DEF=s.defaults;V1=s.v1;V2=s.v2;setVals(s.values);setRunning(s.running);
-   setRelics(s.relics||[],s.relics_enabled);fillBuilds(s.builds||[]);setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});
+   DEF=s.defaults;V1=s.v1;V2=s.v2;window._AB=s.autobuild||{};setVals(s.values);setRunning(s.running);
+   setRelics(s.relics||[],s.relics_enabled);loadBuildsPage();setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});
    checkUpdate();loadHistory();
 }
  window.addEventListener('pywebviewready',boot);
@@ -2827,7 +3589,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  function gateHide(){const g=document.getElementById('gate');if(g)g.classList.remove('show');}
  async function boot(){let a={unlocked:false};try{a=await _api().access_state();}catch(e){}
    await new Promise(r=>setTimeout(r,650));splashHide();
-   if(a&&a.unlocked){init();}else{gateShow();}}
+   if(a&&a.unlocked){init();}else{gateShow();
+     const err=document.getElementById('gateErr');
+     if(err&&a&&a.moved){err.textContent='This copy was activated on another computer. Enter your code to use it here.';}
+     else if(err&&a&&a.revoked){err.textContent='This access code has been deactivated by the owner.';}}}
  (function(){const f=document.getElementById('gateForm');if(!f)return;
    f.addEventListener('submit',async e=>{e.preventDefault();
      const inp=document.getElementById('gateCode'),btn=document.getElementById('gateGo'),err=document.getElementById('gateErr');
@@ -3186,7 +3951,7 @@ COACH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
 
 
 def main():
-    global _window, _pill, _overlay, _coach_win, _analytics_win
+    global _window, _pill, _overlay, _coach_win, _analytics_win, _hud
     try:
         import webview
     except ImportError:
@@ -3196,6 +3961,7 @@ def main():
         runpy.run_path(os.path.join(HERE, "prospecting_ui.py"), run_name="__main__")
         return
     api = Api()
+    print("[boot] building main window…", flush=True)
     _window = webview.create_window("Prospectors Plus", html=build_html(),
                                     js_api=api, width=1340, height=900,
                                     min_size=(980, 680))
@@ -3206,6 +3972,7 @@ def main():
         _sw, _sh = int(_b.size.width), int(_b.size.height)
     except Exception:
         _sw, _sh = 1440, 900
+    print("[boot] main ok -> pill", flush=True)
     try:
         _pill = webview.create_window(
             "Prospectors Plus", html=PILL_HTML, js_api=api,
@@ -3213,6 +3980,17 @@ def main():
             easy_drag=True, resizable=False, hidden=True)
     except Exception as _e:
         print("[pill] precreate failed: %s" % _e)
+    print("[boot] pill ok -> hud (PP_NO_HUD=1 skips it)", flush=True)
+    try:
+        if os.environ.get("PP_NO_HUD"):
+            raise RuntimeError("skipped by PP_NO_HUD")
+        _hud = webview.create_window(
+            "HUD — Prospectors Plus", html=_hud_html(), js_api=api,
+            width=384, height=470, frameless=True, on_top=True,
+            easy_drag=True, resizable=False, hidden=True)
+    except Exception as _e:
+        print("[hud] precreate failed: %s" % _e)
+    print("[boot] hud ok -> calibrate overlay", flush=True)
     try:
         _overlay = webview.create_window(
             "Calibrate", html=_OVERLAY_HTML, js_api=api,
@@ -3220,6 +3998,7 @@ def main():
             frameless=True, on_top=True, hidden=True)
     except Exception as _e:
         print("[overlay] precreate failed: %s" % _e)
+    print("[boot] overlay ok -> coach", flush=True)
     try:
         _coach_win = webview.create_window(
             "Coach — Prospectors Plus", html=COACH_HTML, js_api=api,
@@ -3227,6 +4006,7 @@ def main():
         _hide_on_close(_coach_win)
     except Exception as _e:
         print("[coach] precreate failed: %s" % _e)
+    print("[boot] coach ok -> analytics", flush=True)
     try:
         _analytics_win = webview.create_window(
             "Analytics — Prospectors Plus", html=ANALYTICS_HTML, js_api=api,
@@ -3246,6 +4026,7 @@ def main():
         signal.signal(signal.SIGTERM, _sigint)
     except Exception:
         pass
+    print("[boot] all windows created -> starting GUI loop", flush=True)
     webview.start()
     try:
         api._save_history()      # window closed while running -> log it

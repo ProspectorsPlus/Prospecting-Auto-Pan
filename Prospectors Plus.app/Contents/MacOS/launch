@@ -1,10 +1,38 @@
 #!/bin/bash
-# Launch the native Prospecting Macro app (its own window). Falls back to the
-# browser settings UI automatically if pywebview isn't installed.
-DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
-cd "$DIR" || exit 1
-for PY in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
-  [ -x "$PY" ] && exec "$PY" prospecting_app.py
+# Prospectors Plus launcher (self-contained .app). The Python source lives in
+# Contents/Resources/app inside this bundle, so the .app works from anywhere
+# (e.g. dragged into /Applications). Uses the system Python 3; on first run it
+# installs the few Python components it needs.
+HERE="$(cd "$(dirname "$0")" && pwd)"          # Contents/MacOS
+APP="$HERE/../Resources/app"                    # bundled source
+cd "$APP" 2>/dev/null || cd "$(cd "$(dirname "$0")/../../.." && pwd)" || exit 1
+
+# Running from the read-only DMG would silently lose settings + the access
+# unlock (config writes fail). Ask the user to install first.
+if [ ! -w . ]; then
+  osascript -e 'display alert "Move to Applications first" message "Prospectors Plus is running from a read-only location (like the DMG window). Drag the app into the Applications folder, then open it from there."'
+  exit 1
+fi
+
+PY=""
+for c in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
+  [ -x "$c" ] && PY="$c" && break
 done
-P="$(command -v python3)"; [ -n "$P" ] && exec "$P" prospecting_app.py
-osascript -e 'display alert "Python 3 not found" message "Install Python 3 (python.org or Homebrew) to use this app."'
+[ -z "$PY" ] && PY="$(command -v python3)"
+if [ -z "$PY" ]; then
+  osascript -e 'display alert "Python 3 required" message "Install Python 3 from python.org, then reopen Prospectors Plus."'
+  exit 1
+fi
+
+# First run: make sure the GUI + screen libs are present.
+if ! "$PY" -c "import webview, mss, numpy, objc" >/dev/null 2>&1; then
+  osascript -e 'display notification "Installing components (first run, ~30s)…" with title "Prospectors Plus"' 2>/dev/null
+  "$PY" -m pip install --user pywebview pyobjc mss numpy pillow >/tmp/pp_setup.log 2>&1 \
+    || "$PY" -m pip install --break-system-packages pywebview pyobjc mss numpy pillow >>/tmp/pp_setup.log 2>&1
+  if ! "$PY" -c "import webview, mss, numpy, objc" >/dev/null 2>&1; then
+    osascript -e 'display alert "Setup needed" message "Open Terminal and run:\n\npip3 install pywebview pyobjc mss numpy pillow\n\nthen reopen Prospectors Plus. (Log: /tmp/pp_setup.log)"'
+    exit 1
+  fi
+fi
+
+exec "$PY" prospecting_app.py

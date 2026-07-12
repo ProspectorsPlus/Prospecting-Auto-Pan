@@ -548,8 +548,8 @@ RELIC_PRE_MS       = 120   # settle after releasing movement, before switching s
 # stats). Works as a plain Discord webhook (shows "content") AND carries
 # structured fields ("event","user","stats") so a custom bot can DM people.
 WEBHOOK_ENABLED    = False
-WEBHOOK_URL        = "http://159.203.22.31:3001/notify"  # baked default (config can override)
-WEBHOOK_SECRET     = "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13"  # baked default
+WEBHOOK_URL        = ""  # set in config only; no secret is ever baked into source
+WEBHOOK_SECRET     = ""  # set in config only; no secret is ever baked into source
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
 # Per-event notification toggles (which DMs you actually get). Recoveries are
@@ -3464,8 +3464,10 @@ def do_shake(det):
             # replaced). No screen reads, no early exits: the same glide,
             # every cycle. Overshoot recovery already exists (a click that
             # lands on shore trips the shake-start-confirm deeper-S retry).
+            emit_phase("glide")      # HUD: HOLD W momentum pre-roll
             sleep_ms(SHAKE_W_LEAD_MS)
             t0 = time.perf_counter()
+            emit_phase("shake")      # HUD: clicks start NOW (glide over)
     started = emptied = bailed = on_land = False
     clicks = 0
     fixed = SHAKE_CLICKS > 0                  # exact-count mode (no extra click)
@@ -3558,6 +3560,7 @@ def do_shake(det):
             State.last_cycle_end = _nc
         State.cycle_dirty = False        # the next cycle starts clean
         State.last_progress = time.perf_counter()
+        emit_phase("settle")             # HUD: momentum carries you onto land
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1

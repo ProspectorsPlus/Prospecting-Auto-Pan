@@ -5,8 +5,10 @@
   <key>CFBundleName</key><string>Prospectors Plus</string>
   <key>CFBundleDisplayName</key><string>Prospectors Plus</string>
   <key>CFBundleIdentifier</key><string>com.local.prospectorsplus</string>
-  <key>CFBundleVersion</key><string>2.0</string>
-  <key>CFBundleShortVersionString</key><string>2.0</string>
+  <key>CFBundleVersion</key><string>4.0.0</string>
+  <key>CFBundleShortVersionString</key><string>4.0.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>

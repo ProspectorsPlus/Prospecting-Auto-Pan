@@ -148,3 +148,28 @@ wrong against live footage; don't duplicate what the code comments already say.
     NOTE: mac/windows finds code has now DIVERGED (mac-only round; port
     later: QoS no-ops on Windows, CGImage path needs a WIC/GDI equivalent or
     keep the PNG fallback there).
+
+21. **macOS 26 threading law for the app (cost: one SIGTRAP + one deadlock).**
+    Two opposite rules coexist: (a) raw AppKit window mutations
+    (setIgnoresMouseEvents/setSharingType/setOpaque/…) MUST run on the main
+    thread — off-main they hard-trap ("NSWMWindowCoordinator … must only be
+    used from the main thread", crash report thread shows pythread_wrapper);
+    (b) pywebview ops (show/hide/move/resize/evaluate_js) MUST be called from
+    a WORKER thread — they block on the main thread internally, so calling
+    them FROM main deadlocks (beachball, no crash report). Pattern:
+    do pywebview work on the JS-API thread, dispatch only the AppKit pass via
+    PyObjCTools.AppHelper.callAfter. Boot checkpoints + PP_NO_HUD kill-switch
+    stay in main() — they turned a guessing game into two exact diagnoses.
+
+22. **Overlay v2 (transparent + auto-dock + pixel-spy) REVERTED at user
+    request after three macOS-26 fights (SIGTRAP, deadlock, Spaces).** v1
+    stands: opaque draggable card, worker-thread pywebview only, no AppKit.
+    If v2 is attempted again: the pixel-spy + capture-exclusion design
+    (NSWindowSharingNone so markers are invisible to mss window-list capture,
+    hollow-centre X, click-through) was sound; the killers were platform
+    window management — transparent=True traps at startup, off-main AppKit
+    traps, from-main pywebview deadlocks, and fullscreen Spaces need
+    CanJoinAllSpaces+FullScreenAuxiliary AND an all-Spaces window scan (which
+    must NOT leak into auto-calibrate — it would calibrate against hidden
+    windows). Consider a native NSPanel helper or Electron-style approach
+    instead of pywebview for true game overlays.

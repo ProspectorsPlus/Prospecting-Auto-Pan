@@ -29,24 +29,9 @@
   "BREAKOUT_REPOS_MS": 160,
   "BURST_ON_MS": 11,
   "BURST_OFF_MS": 1,
-  "RELICS": [
-    {
-      "name": "Solar Magnifier",
-      "minutes": 10,
-      "slot": 5,
-      "clicks": 2
-    },
-    {
-      "name": "Infernal Idol",
-      "minutes": 15,
-      "slot": 6,
-      "clicks": 2
-    }
-  ],
-  "RELICS_ENABLED": true,
-  "WEBHOOK_ENABLED": true,
-  "WEBHOOK_URL": "http://159.203.22.31:3001/notify",
-  "WEBHOOK_SECRET": "23690760157cb3ab092e5d5ce2b10ddae7bd5d669a70da13",
+  "RELICS": [],
+  "RELICS_ENABLED": false,
+  "WEBHOOK_ENABLED": false,
   "WEBHOOK_STATS_MIN": 60,
   "PIXEL_RATIOS": {
     "CAP_FULL_PIXEL": [
@@ -74,5 +59,6 @@
       0.4517
     ]
   },
-  "SYNC_URL": "https://discord.com/api/webhooks/1521560009442594836/ZxNKGERhstU2cTkG4tdei2-c9HuamMDD6ogvn7OMPD6m4YiGwWgOcFJGY9-uDE-NnbRf"
+  "WEBHOOK_URL": "",
+  "WEBHOOK_SECRET": ""
 }

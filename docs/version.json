@@ -1,7 +1,7 @@
 {
-  "version": "3.0.0",
+  "version": "4.0.0",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
-  "critical": true,
-  "notes": "Coach \u2014 a built-in tuning assistant. It opens automatically on the right; describe any problem in plain English (\"it shakes late\", \"lands in water\", \"Fortune River keeps triggering\") and it proposes exact setting changes you apply with one click, analyzes your recent runs, and estimates your ideal cycle time from your stats. Runs fully offline by default, with an optional Claude API mode (bring your own key) for free-form conversation \u2014 switch in the Coach \u2699 menu. Also includes a critical recovery fix: a 0 recovery-threshold no longer causes an instant break-out / Fortune River loop."
+  "critical": false,
+  "notes": "Prospectors Plus 4.0.0 - the biggest update yet. NEW Cycle page: your whole pan loop drawn as a live diagram with a millisecond timeline graph - drag any slider and watch the timing change, click any bar to jump to the exact setting behind it. NEW Builds page: all your saved builds in one place with search, sort (newest / most used), descriptions and one-click load/overwrite. NEW Shards mode: exact-click digging with green dig-bar confirmation and an assume-full pipeline for one-click-fill farms. NEW live HUD overlay: a draggable card showing the current stage (Digging / Hold S / Glide / Shaking), live stats and a find ticker. Reworked finds detector (fade-direction tracker) counts fast skull bursts and dupes far more accurately. Big macOS smoothness fix: the shake no longer stutters under the analytics load. Codes are now machine-locked."
 }

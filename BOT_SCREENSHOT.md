@@ -9,7 +9,7 @@ to `/notify` that the bot already receives, as two extra fields:
   "username": "Prospectors Plus",
   "content": "⚠️ Safe-paused: ...",
   "event": "safe_stop",
-  "user": "Tedtheidot",
+  "user": "YourDiscordName",
   "stats": { ... },
   "screenshot": "<base64 PNG, no data: prefix>",   // NEW (only on some events)
   "screenshot_format": "png"                          // NEW

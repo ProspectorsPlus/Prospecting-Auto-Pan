@@ -34,6 +34,19 @@ jobs:
       - name: Make icon.ico
         run: python -c "from PIL import Image;Image.open('icon.png').convert('RGBA').save('icon.ico',sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
+      # Inject the private analytics webhook from a repo SECRET (Settings ->
+      # Secrets and variables -> Actions -> new secret PP_SYNC_URL). It is NEVER
+      # committed to source. If the secret isn't set, no webhook ships (safe).
+      # NOTE: GitHub Actions does NOT expose the `secrets` context in step-level
+      # `if:` conditions (it evaluates as empty there, so the step would ALWAYS
+      # be skipped even with the secret set). The step therefore runs
+      # unconditionally and the emptiness check happens inside the script:
+      # unset/empty secret -> config left untouched, no webhook ships.
+      - name: Inject analytics webhook (no-op if PP_SYNC_URL secret unset)
+        env:
+          PP_SYNC_URL: ${{ secrets.PP_SYNC_URL }}
+        run: python -c "import json,os;u=os.environ.get('PP_SYNC_URL','').strip();p='prospecting_config.json';d=json.load(open(p));d.update({'SYNC_URL':u} if u else {});json.dump(d,open(p,'w'),indent=2);print('webhook injected' if u else 'no webhook secret; config untouched')"
+
       - name: Build app (PyInstaller)
         run: python -m PyInstaller --noconfirm prospecting.spec
 

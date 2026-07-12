@@ -13,6 +13,13 @@ prospecting_secrets.json
 windows/prospecting_secrets.json
 Fable5/fable_secrets.json
 
+# personal ACTIVE config (has your unlock state, calibration, webhook) — the
+# public build ships windows/prospecting_config.json (sanitized) instead.
+# Run once:  git rm --cached prospecting_config.json
+# (anchored to repo root — windows/prospecting_config.json is the sanitized
+#  PUBLIC default and must stay tracked)
+/prospecting_config.json
+
 # personal chat transcript
 coach_history.json
 
@@ -25,3 +32,7 @@ ANALYTICS_SETUP.md
 
 # local-only: old version extracted from tag v1.0.0 for A/B testing (regenerable)
 Prospectors_Old_v1.0.0/
+
+# macOS DMG build output
+build/
+dist/
