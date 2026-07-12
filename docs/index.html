@@ -314,7 +314,7 @@
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="wrap row">
     <div class="reveal">
-      <span class="badge"><span class="dot"></span>Latest: <span id="ver">v1.0.0</span> · Windows</span>
+      <span class="badge"><span class="dot"></span>Latest: <span id="ver">v1.0.0</span> · Windows &amp; macOS</span>
       <h1>Auto-pan <span class="accent">Prospecting</span>,<br>start to finish.</h1>
       <p class="sub">Prospectors Plus runs the full farming loop for you: pan, dig,
         shake, deposit. It reads the screen and keeps going on its own, even while
@@ -324,9 +324,13 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
           Download for Windows
         </a>
+        <a class="ghost" id="heromac" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
+          macOS
+        </a>
         <a class="ghost" href="#how">See how it works</a>
       </div>
-      <p class="cta-note" id="ctanote">Free · Windows 10 and 11 · no Python or setup needed</p>
+      <p class="cta-note" id="ctanote">Free · Windows 10/11 &amp; macOS · invite code required</p>
     </div>
 
     <div class="mock reveal reveal-d2" aria-hidden="true">
@@ -365,7 +369,7 @@
         <div class="sbar-lbl">Faster than the built-in auto pan</div>
       </div>
       <div class="sbar-item reveal reveal-d1">
-        <div class="sbar-val" style="color:var(--teal-lit)">6</div>
+        <div class="sbar-val" style="color:var(--teal-lit)">10+</div>
         <div class="sbar-lbl">Features built-in</div>
       </div>
       <div class="sbar-item reveal reveal-d2">
@@ -417,6 +421,21 @@
         <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 14l3-4 3 3 4-6"/></svg></div>
         <h3>Live stats and auto-stop</h3>
         <p>Cycles, pans per hour, recoveries and runtime update live. Set it to stop after a set number of minutes or pans.</p>
+      </div>
+      <div class="card c-sand reveal">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 15l3-6 3 4 4-8"/></svg></div>
+        <h3>Cycle page tuning</h3>
+        <p>New in 4.0 — your whole pan loop drawn as a live diagram with a millisecond timeline graph. Drag a slider and the graph redraws; click any bar to jump to its exact setting.</p>
+      </div>
+      <div class="card c-purple reveal reveal-d1">
+        <div class="ic"><svg viewBox="0 0 24 24"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z"/><path d="M9.1 9.2h5.8"/></svg></div>
+        <h3>Shards mode</h3>
+        <p>New in 4.0 — exact-click digging with green dig-bar confirmation and an assume-full pipeline, built for one-click-fill shard farms.</p>
+      </div>
+      <div class="card c-blue reveal reveal-d2">
+        <div class="ic"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M7 21h10"/></svg></div>
+        <h3>Live HUD overlay</h3>
+        <p>New in 4.0 — a draggable on-screen card showing the current stage (Digging, Hold S, Glide, Shaking), live stats and a find ticker while you farm.</p>
       </div>
     </div>
   </div>
@@ -514,7 +533,7 @@
         <ul class="req-list">
           <li>
             <span class="ic"><svg viewBox="0 0 24 24" stroke="var(--teal-lit)"><path d="M20 6 9 17l-5-5"/></svg></span>
-            Windows 10 or Windows 11 (64-bit)
+            Windows 10/11 (64-bit) — or macOS on Apple Silicon or Intel
           </li>
           <li>
             <span class="ic"><svg viewBox="0 0 24 24" stroke="var(--teal-lit)"><path d="M20 6 9 17l-5-5"/></svg></span>
@@ -526,7 +545,7 @@
           </li>
           <li>
             <span class="ic"><svg viewBox="0 0 24 24" stroke="var(--teal-lit)"><path d="M20 6 9 17l-5-5"/></svg></span>
-            No Python, no dependencies, nothing extra
+            Windows: no Python, nothing extra · macOS: Python 3 installed once
           </li>
         </ul>
       </div>
@@ -543,7 +562,11 @@
           </li>
           <li>
             <span class="ic"><svg viewBox="0 0 24 24" stroke="var(--sand-lit)"><path d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10z"/><path d="M12 8v4m0 4h.01"/></svg></span>
-            Settings, calibration and saved builds are stored in AppData and survive updates.
+            Access is invite-only: the app asks for a one-time access code on first launch, and each code locks to one computer.
+          </li>
+          <li>
+            <span class="ic"><svg viewBox="0 0 24 24" stroke="var(--sand-lit)"><path d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10z"/><path d="M12 8v4m0 4h.01"/></svg></span>
+            Settings, calibration and saved builds are stored locally and survive updates.
           </li>
           <li>
             <span class="ic"><svg viewBox="0 0 24 24" stroke="var(--sand-lit)"><path d="M12 22c5.52 0 10-4.48 10-10S17.52 2 12 2 2 6.48 2 12s4.48 10 10 10z"/><path d="M12 8v4m0 4h.01"/></svg></span>
@@ -571,7 +594,19 @@
         <summary>Do I need Python or any setup?
           <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
         </summary>
-        <p>No. It is a normal Windows installer. Download, run, and launch from your desktop or Start menu. Nothing else needed.</p>
+        <p>On Windows, no — it is a normal installer: download, run, launch. On macOS, install Python 3 once (from python.org), then the app sets up the rest by itself on first launch.</p>
+      </details>
+      <details class="reveal">
+        <summary>Is there a Mac version?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
+        <p>Yes — new in 4.0. Download the <b>.dmg</b>, drag the app into Applications, and right-click → Open the first time (it is an unsigned indie app). The finds and earnings dashboards are Mac-only for now.</p>
+      </details>
+      <details class="reveal reveal-d1">
+        <summary>Why does it ask for an access code?
+          <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>
+        </summary>
+        <p>Prospectors Plus is invite-only. Enter the code you were given and it unlocks on that computer — codes are machine-locked, so one code cannot be passed around between friends.</p>
       </details>
       <details class="reveal reveal-d2">
         <summary>Will Windows warn me when I open it?
@@ -607,11 +642,12 @@
     <div class="final reveal">
       <div class="eyebrow">Get started</div>
       <h2>Download Prospectors Plus</h2>
-      <p class="lead" style="margin-bottom:32px">Free for Windows 10 and 11. Install in under a minute.</p>
+      <p class="lead" style="margin-bottom:32px">Free for Windows and macOS. Install in under a minute.</p>
       <a class="btn lg" id="finaldl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe">
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
         Download for Windows
       </a>
+      <a class="ghost" id="finalmac" style="margin-left:12px" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest">Download for macOS</a>
     </div>
   </div>
 </section>
@@ -661,11 +697,17 @@
   fetch('https://api.github.com/repos/'+REPO+'/releases/latest')
     .then(r => { if(!r.ok) throw 0; return r.json(); })
     .then(rel => {
-      const exe = (rel.assets||[]).find(a=>/\.exe$/i.test(a.name));
+      const assets = rel.assets||[];
+      const exe = assets.find(a=>/\.exe$/i.test(a.name));
+      const dmg = assets.find(a=>/\.dmg$/i.test(a.name));
       if (exe) {
         btns.forEach(b => { if(b) b.href = exe.browser_download_url; });
         const n = document.getElementById('navdl');
         if(n) n.href = exe.browser_download_url;
+      }
+      if (dmg) {
+        [document.getElementById('heromac'), document.getElementById('finalmac')]
+          .forEach(b => { if(b) b.href = dmg.browser_download_url; });
       }
       if(rel.tag_name) document.getElementById('ver').textContent = rel.tag_name;
     })
