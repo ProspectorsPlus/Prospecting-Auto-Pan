@@ -58,6 +58,27 @@ DEFAULT_BUILDS = {
                   "created": 1752000000, "updated": 1752000000,
                   "used": 0, "builtin": True},
     },
+    "Geode Farm 1-Tap": {
+        "GEODE_MODE": True, "GEODE_DIGS_TO_FILL": 0, "GEODE_DIG_MS": 15,
+        "GEODE_DELAY_MS": 12000, "GEODE_START_MS": 800,
+        "GEODE_CONFIRM_FULL": True, "GEODE_SHAKE_HOLD_MS": 10000,
+        "SHAKE_MOMENTUM_W": True, "SHAKE_CLICKS": 0, "SHAKE_CLICK_MS": 60,
+        "SHAKE_CLICK_GAP_MS": 0, "SHAKE_HOLD_MS": 6000, "SHAKE_BAIL_MS": 500,
+        "SHAKE_START_CONFIRM_MS": 300, "SHAKE_START_RETRIES": 1,
+        "SHAKE_RETRY_DEEPER_MS": 180, "SHAKE_STALL_MS": 0,
+        "SHAKE_START_DELAY_MS": 0, "SHAKE_W_LEAD_MS": 50,
+        "POST_SHAKE_SETTLE_MS": 150, "PERFECT": False, "DIG_CLICK_MS": 5,
+        "DIG_SPEED": 1474, "MAX_DIGS_TO_FILL": 1, "DIG_FILL_MS": 2050,
+        "PRE_DIG_SETTLE_MS": 600, "PAN_BACK_MAX_MS": 100,
+        "WATER_EXTRA_BACK_MS": 0, "LAND_SETTLE_MS": 0,
+        "EASY_WATER_RETURN_DELAY_MS": 0, "SHARDS_DIG_CLICKS": 0,
+        "TREASURE_MODE": False, "CAP_EMPTY_FRAC": 0.04, "RELICS": [], "RELICS_ENABLED": False,
+        "_meta": {"desc": "Geode farming, 1-tap variant -- one quick dig fills the "
+                  "pan, then the slow momentum shake. Tuned build; calibrate your "
+                  "own capacity + dig pixels. Ships with Prospectors Plus.",
+                  "created": 1752000000, "updated": 1752000000,
+                  "used": 0, "builtin": True},
+    },
 }
 
 
@@ -1147,7 +1168,7 @@ class Api:
 
     def builds_info(self):
         """Everything the Builds page shows: per-build metadata + hot stats."""
-        builds = _read_json(BUILDS_FILE, {})
+        builds = _builds_all()
         out = []
         for name, entry in builds.items():
             if not isinstance(entry, dict):
@@ -1161,11 +1182,16 @@ class Api:
                         "last_used": int(m.get("last_used", 0) or 0),
                         "nset": sum(1 for k in entry if not k.startswith("_")
                                     and k not in ("RELICS", "RELICS_ENABLED")),
-                        "relics": len(entry.get("RELICS") or [])})
+                        "relics": len(entry.get("RELICS") or []),
+                        "builtin": bool(m.get("builtin")),
+                        "has_file": bool((m.get("attachment") or {}).get("data")),
+                        "file_name": str((m.get("attachment") or {}).get("name", "") or "")})
         return out
 
     def set_build_desc(self, name, desc):
         builds = _read_json(BUILDS_FILE, {})
+        if name not in builds and name in DEFAULT_BUILDS:
+            builds[name] = json.loads(json.dumps(DEFAULT_BUILDS[name]))
         e = builds.get(name)
         if not isinstance(e, dict):
             return "missing"
@@ -1173,6 +1199,184 @@ class Api:
         with open(BUILDS_FILE, "w") as f:
             json.dump(builds, f, indent=2)
         return "ok"
+
+    # ---- build sharing: export / import / file attachments -------------------
+    def export_build(self, name):
+        """Write ONE build (settings + description + any attached file) to a
+        .ppbuild file via the OS save dialog, so it can be shared with a friend."""
+        entry = _builds_all().get(name)
+        if not isinstance(entry, dict):
+            return {"ok": False, "error": "Build not found."}
+        payload = {"_ppbuild": 1, "app": "Prospectors Plus", "name": name,
+                   "entry": json.loads(json.dumps(entry))}
+        try:
+            import webview
+        except Exception:
+            webview = None
+        safe = ("".join(c if (c.isalnum() or c in " -_") else "_" for c in name).strip()
+                or "build")
+        try:
+            if _window is not None and webview is not None:
+                res = _window.create_file_dialog(
+                    webview.SAVE_DIALOG, save_filename=safe + ".ppbuild",
+                    file_types=("Prospectors build (*.ppbuild)",
+                                "JSON file (*.json)", "All files (*.*)"))
+                if not res:
+                    return {"cancelled": True}
+                path = res[0] if isinstance(res, (list, tuple)) else res
+            else:
+                path = os.path.join(os.path.dirname(CONFIG_FILE), safe + ".ppbuild")
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+            return {"ok": True, "path": path}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def import_build(self, text):
+        """Add a build shared as a .ppbuild/.json file. A clashing name gets a
+        numeric suffix so nothing is ever overwritten."""
+        try:
+            data = json.loads(text)
+        except Exception:
+            return {"ok": False, "error": "That isn't a valid build file."}
+        name = entry = None
+        if isinstance(data, dict) and isinstance(data.get("entry"), dict):
+            name = str(data.get("name") or "Imported build"); entry = data["entry"]
+        elif isinstance(data, dict) and any(k in TYPES for k in data):
+            name = "Imported build"; entry = data
+        elif isinstance(data, dict) and len(data) == 1:
+            k = next(iter(data))
+            if isinstance(data[k], dict):
+                name, entry = str(k), data[k]
+        if not isinstance(entry, dict):
+            return {"ok": False, "error": "No build data in that file."}
+        clean = {}
+        for k, v in entry.items():
+            if k.startswith("_") or k in ("RELICS", "RELICS_ENABLED"):
+                clean[k] = v
+            elif k in TYPES:
+                clean[k] = _coerce(TYPES[k], v)
+        clean.setdefault("RELICS", entry.get("RELICS") or [])
+        clean.setdefault("RELICS_ENABLED", bool(entry.get("RELICS_ENABLED")))
+        m = clean.setdefault("_meta", {})
+        m.pop("builtin", None)                       # imported = a real user build
+        _now = int(time.time())
+        m["created"] = _now; m["updated"] = _now
+        m["used"] = 0
+        builds = _read_json(BUILDS_FILE, {})
+        base = (name or "Imported build").strip()[:80] or "Imported build"
+        nm = base; i = 2
+        while nm in builds:
+            nm = "%s (%d)" % (base, i); i += 1
+        builds[nm] = clean
+        try:
+            with open(BUILDS_FILE, "w") as f:
+                json.dump(builds, f, indent=2)
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "name": nm, "has_file": bool((m.get("attachment") or {}).get("data"))}
+
+    def import_build_dialog(self):
+        """Open a NATIVE file picker for a shared build and add it. The HTML file
+        input greys out the custom .ppbuild extension on macOS, so the Import
+        button uses this; JS falls back to the file input only if unavailable."""
+        try:
+            import webview
+        except Exception:
+            webview = None
+        if _window is None or webview is None:
+            return {"ok": False, "error": "unavailable"}
+        try:
+            res = _window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Prospectors build (*.ppbuild;*.json)", "All files (*.*)"))
+            if not res:
+                return {"cancelled": True}
+            path = res[0] if isinstance(res, (list, tuple)) else res
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return self.import_build(text)
+
+    def attach_build_file(self, name):
+        """Pick a file (Word doc, PDF, image, txt) and store it INSIDE the build,
+        so a 'Download Roblox build' button can hand it back and it travels with
+        export/import. Seeds a default build into the personal file first."""
+        try:
+            import webview
+        except Exception:
+            webview = None
+        if _window is None or webview is None:
+            return {"ok": False, "error": "File picker unavailable."}
+        try:
+            res = _window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Documents (*.docx;*.doc;*.pdf;*.txt;*.md;*.png;*.jpg;*.jpeg)",
+                            "All files (*.*)"))
+            if not res:
+                return {"cancelled": True}
+            path = res[0] if isinstance(res, (list, tuple)) else res
+            with open(path, "rb") as f:
+                raw = f.read()
+            if len(raw) > 8 * 1024 * 1024:
+                return {"ok": False, "error": "File too large (max 8 MB)."}
+            import base64 as _b64, mimetypes as _mt
+            b64 = _b64.b64encode(raw).decode("ascii")
+            fname = os.path.basename(path)
+            mime = _mt.guess_type(fname)[0] or "application/octet-stream"
+            builds = _read_json(BUILDS_FILE, {})
+            if name not in builds and name in DEFAULT_BUILDS:
+                builds[name] = json.loads(json.dumps(DEFAULT_BUILDS[name]))
+            e = builds.get(name)
+            if not isinstance(e, dict):
+                return {"ok": False, "error": "Build not found."}
+            e.setdefault("_meta", {})["attachment"] = {
+                "name": fname, "mime": mime, "data": b64}
+            with open(BUILDS_FILE, "w") as f:
+                json.dump(builds, f, indent=2)
+            return {"ok": True, "file_name": fname}
+        except Exception as ex:
+            return {"ok": False, "error": str(ex)}
+
+    def download_build_file(self, name):
+        """Write a build's attached Roblox-build file back out via the save dialog."""
+        entry = _builds_all().get(name)
+        att = ((entry or {}).get("_meta") or {}).get("attachment") or {}
+        if not att.get("data"):
+            return {"ok": False, "error": "This build has no attached file."}
+        try:
+            import webview
+        except Exception:
+            webview = None
+        import base64 as _b64
+        try:
+            raw = _b64.b64decode(att["data"])
+        except Exception:
+            return {"ok": False, "error": "Attached file is corrupt."}
+        fname = att.get("name") or "roblox_build"
+        try:
+            if _window is not None and webview is not None:
+                res = _window.create_file_dialog(webview.SAVE_DIALOG, save_filename=fname)
+                if not res:
+                    return {"cancelled": True}
+                path = res[0] if isinstance(res, (list, tuple)) else res
+            else:
+                path = os.path.join(os.path.dirname(CONFIG_FILE), fname)
+            with open(path, "wb") as f:
+                f.write(raw)
+            return {"ok": True, "path": path}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def remove_build_file(self, name):
+        builds = _read_json(BUILDS_FILE, {})
+        e = builds.get(name)
+        if isinstance(e, dict) and (e.get("_meta") or {}).get("attachment"):
+            e["_meta"].pop("attachment", None)
+            with open(BUILDS_FILE, "w") as f:
+                json.dump(builds, f, indent=2)
+        return {"ok": True}
 
     # ---- calibrate: wait for the user to CLICK a spot, capture its x/y + colour
     def calibrate_capture(self):
@@ -2071,7 +2275,7 @@ def _hud_html():
    <span class="sub" id="sub"></span></div>
  <div class="stats"><span>pans <b id="hpans">0</b></span><span><b id="hpph">0</b>/hr</span>
    <span>clean <b id="hclean">–</b></span><span>finds <b id="hfinds">0</b></span>
-   <span>lag <b id="hlag">–</b></span></div>
+   <span>lag <b id="hlag">–</b></span><span>miss <b id="hmiss">0</b></span></div>
  <div class="gtimer" id="hgtimer" style="display:none"></div>
  <div class="ttl">cycle — live</div>
  <svg id="hudsvg"></svg>
@@ -2134,6 +2338,7 @@ def _hud_html():
    g('hclean').textContent=(s.clean_pct!=null?s.clean_pct+'%':'–');
    g('hfinds').textContent=s.finds_count||0;
    g('hlag').textContent=(s.input_lag&&s.input_lag.max_ms?s.input_lag.max_ms+'ms':'ok');
+   {const e=g('hmiss');if(e)e.textContent=s.shake_misses||0;}
    const rt=s.runtime_s||0;g('sub') && (document.getElementById('sub').textContent=
      Math.floor(rt/60)+':'+String(rt%60).padStart(2,'0'));
    runState=runState==='pause'?'pause':'run';
@@ -2190,6 +2395,7 @@ def build_html():
         '<div class="stat"><div class="sv" id="st_clean">\u2014</div><div class="sl">clean %</div></div>'
         '<div class="stat"><div class="sv" id="st_rec">0</div><div class="sl">recoveries</div></div>'
         '<div class="stat"><div class="sv" id="st_nud">0</div><div class="sl">nudges</div></div>'
+        '<div class="stat"><div class="sv" id="st_miss">0</div><div class="sl">shake misses</div></div>'
         '<div class="stat"><div class="sv" id="st_rel">0</div><div class="sl">relics</div></div>'
         '<div class="stat"><div class="sv" id="st_mph">\u2014</div><div class="sl">$/hr</div></div>'
         '<div class="stat"><div class="sv" id="st_sph">\u2014</div><div class="sl">shards/hr</div></div>'
@@ -2327,6 +2533,8 @@ def build_html():
         '<span class="grow"></span>'
         '<input id="bldname2" placeholder="save current as…" spellcheck="false">'
         '<button type="button" class="btn" id="bldsave2">Save current</button>'
+        '<button type="button" class="btn2" id="bldimport">Import build\u2026</button>'
+        '<input type="file" id="bldimportfile" style="display:none">'
         '</div><div id="bldgrid" class="bldgrid"></div></section>')
 
     # History
@@ -2749,6 +2957,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .bldbar{display:flex;gap:9px;align-items:center;margin-bottom:14px;flex-wrap:wrap;max-width:980px}
  .bldbar input,.bldbar select{background:var(--field);color:var(--txt);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font:inherit}
  .bldbar input:focus,.bldbar select:focus{outline:none;border-color:var(--accent)}
+ .bfile{display:flex;align-items:center;gap:8px;margin:6px 0 2px;font-size:12px;color:var(--mut);flex-wrap:wrap}
+ .bfile .bfn{color:var(--txt);font-weight:600;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .bfile .bxfile{background:none;border:none;color:var(--dim);cursor:pointer;font-size:13px;padding:0 2px}
+ .bfile .bxfile:hover{color:var(--txt)}
  #bldsearch{width:220px} #bldname2{width:190px}
  .bldgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;max-width:980px}
  .bcard{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 15px;display:flex;flex-direction:column;gap:8px}
@@ -3150,7 +3362,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(window.syncCycle)syncCycle();}
  function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');
    clearTimeout(window._tt);window._tt=setTimeout(()=>e.classList.remove('show'),1800);}
- window.addLog=t=>{const l=$('#log');l.textContent+=t+"\n";l.scrollTop=l.scrollHeight;};
+ window.addLog=t=>{const l=$('#log');if(!l)return;let s=l.textContent+t+"\n";
+   if(s.length>80000)s=s.slice(-60000).replace(/^[^\n]*\n/,'');
+   l.textContent=s;l.scrollTop=l.scrollHeight;};
  window.refreshValues=async function(){try{const s=await window.pywebview.api.get_state();setVals(s.values);}catch(e){}};
  window.setRunning=r=>{$('#startbtn').disabled=r;$('#stopbtn').disabled=!r;
    $('#rstate').textContent=r?'running':'stopped';};
@@ -3184,7 +3398,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    const _mp=$('#st_mph'); if(_mp)_mp.textContent=(s.money_earned?('$'+fmtBig(s.money_per_hr||0)):'\u2014');
    const _sp=$('#st_sph'); if(_sp)_sp.textContent=(s.shards_earned?fmtBig(s.shards_per_hr||0):'\u2014');
    const _set=(id,v)=>{const e=document.getElementById(id);if(e)e.textContent=v;};
-   _set('st_nud',s.nudges||0);_set('st_rel',s.relics_used||0);
+   _set('st_nud',s.nudges||0);_set('st_miss',s.shake_misses||0);_set('st_rel',s.relics_used||0);
    _set('st_safe',s.safe_stops||0);_set('st_hard',s.hard_stops||0);
    const _rl=document.getElementById('relicline');
    const R=s.relics||[];
@@ -3477,9 +3691,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    L.forEach(b=>{const c=document.createElement('div');c.className='bcard';
      c.innerHTML='<div class="bhead"><h3></h3><button type="button" class="bdel" title="Delete this build">✕</button></div>'
        +'<div class="bdesc" title="Click to edit the description"></div>'
+       +'<div class="bfile"></div>'
        +'<div class="bstats"></div>'
        +'<div class="bbtns"><button type="button" class="btn bload">Load</button>'
-       +'<button type="button" class="btn2 bover" title="Overwrite this build with the CURRENT settings">Overwrite</button></div>';
+       +'<button type="button" class="btn2 bover" title="Overwrite this build with the CURRENT settings">Overwrite</button>'
+       +'<button type="button" class="btn2 bexport" title="Save this build to a file you can send to a friend">Export</button>'
+       +'<button type="button" class="btn2 battach" title="Attach a Roblox-build doc (Word/PDF/image) to this build">Attach doc</button></div>';
      c.querySelector('h3').textContent=b.name;
      const de=c.querySelector('.bdesc');
      de.textContent=b.desc||'Add a description…';
@@ -3492,7 +3709,21 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      c.querySelector('.bover').onclick=async()=>{
        await window.pywebview.api.save_build(b.name,collect(),collectRelics(),$('#relicsMaster').checked);
        toast('"'+b.name+'" overwritten with current settings');loadBuildsPage();};
+     const bf=c.querySelector('.bfile');
+     if(b.has_file){
+       bf.innerHTML='<span class="bfn" title="'+(b.file_name||'')+'">\ud83d\udcce '+(b.file_name||'attached file')+'</span>'
+         +'<button type="button" class="btn2 bdl">Download Roblox build</button>'
+         +'<button type="button" class="bxfile" title="Remove attachment">✕</button>';
+       bf.querySelector('.bdl').onclick=async()=>{const r=await window.pywebview.api.download_build_file(b.name);
+         if(r&&r.ok)toast('Saved '+(b.file_name||'file')); else if(r&&!r.cancelled)toast((r&&r.error)||'Download failed');};
+       bf.querySelector('.bxfile').onclick=async()=>{await window.pywebview.api.remove_build_file(b.name);toast('Attachment removed');loadBuildsPage();};
+     }
+     c.querySelector('.bexport').onclick=async()=>{const r=await window.pywebview.api.export_build(b.name);
+       if(r&&r.ok)toast('Exported \u2014 send the .ppbuild file to a friend'); else if(r&&!r.cancelled)toast((r&&r.error)||'Export failed');};
+     c.querySelector('.battach').onclick=async()=>{const r=await window.pywebview.api.attach_build_file(b.name);
+       if(r&&r.ok){toast('Attached '+r.file_name);loadBuildsPage();} else if(r&&!r.cancelled)toast((r&&r.error)||'Attach failed');};
      const del=c.querySelector('.bdel');
+     if(b.builtin){del.style.display='none';}
      del.onclick=async()=>{if(!del.dataset.arm){del.dataset.arm='1';del.textContent='sure?';
          setTimeout(()=>{del.dataset.arm='';del.textContent='✕';},2500);return;}
        await window.pywebview.api.delete_build(b.name);toast('Deleted "'+b.name+'"');loadBuildsPage();};
@@ -3513,6 +3744,17 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      if(!name){toast('Enter a build name');return;}
      await window.pywebview.api.save_build(name,collect(),collectRelics(),$('#relicsMaster').checked);
      n.value='';toast('Build "'+name+'" saved (all settings)');loadBuildsPage();};
+   const imp=$('#bldimport'),impf=$('#bldimportfile');
+   const impDone=r=>{if(!r)return;if(r.cancelled)return;
+     if(r.ok){toast('Imported "'+r.name+'"'+(r.has_file?' (with doc)':''));loadBuildsPage();}
+     else toast(r.error||'Import failed');};
+   if(imp){imp.onclick=async()=>{let r=null;
+     try{r=await window.pywebview.api.import_build_dialog();}catch(_){r=null;}
+     if(!r||r.error==='unavailable'){if(impf)impf.click();return;}
+     impDone(r);};}
+   if(impf){impf.onchange=async ev=>{const f=ev.target.files[0];if(!f)return;const text=await f.text();impf.value='';
+     let r;try{r=await window.pywebview.api.import_build(text);}catch(_){r={ok:false,error:'could not read file'};}
+     impDone(r);};}
    const bb=$('#buildsbtn');
    if(bb)bb.onclick=()=>{const t=document.querySelector('.tab[data-tab="builds"]');if(t)t.click();};})();
  $('#savebuild').onclick=async()=>{const name=$('#buildname').value.trim();
@@ -3899,7 +4141,7 @@ window.renderAnalytics=function(root,s,finds){
   h+='<div class="arow"><span class="albl">modifier</span>'+chips(mod)+'</div>';
   h+='<div class="asec">Reliability</div><div class="agrid">';
   h+=card('Clean cycles',(s.clean_pct!=null?s.clean_pct+'%':'â'),(s.clean_cycles||0)+' of '+(s.cycles||0));
-  h+=card('Recoveries',s.recoveries||0,(s.nudges||0)+' nudges');
+  h+=card('Recoveries',s.recoveries||0,(s.nudges||0)+' nudges · '+(s.shake_misses||0)+' shake misses');
   h+=card('Shake retries',s.shake_retries||0,(s.shake_fails||0)+' fails');
   h+=card('Stops / pauses',(s.safe_stops||0)+' / '+(s.hard_stops||0),(s.pauses||0)+' pauses Â· '+(s.relics_used||0)+' relics');
   h+='</div>';

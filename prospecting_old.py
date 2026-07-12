@@ -462,7 +462,7 @@ BREAKOUT_REPOS_MS  = 160  # forward W reposition nudge during a break-out (gets 
 RECOVER_ENABLED     = True   # the stuck-recovery jitter step
 SHAKE_RETRY_ENABLED = True   # re-attempt a shake when stuck full+in-water
 BREAKOUT_ENABLED    = True   # the last-resort break-out to escape a stuck loop
-NO_FULL_LIMIT       = 8      # if the pan never reads FULL this many cycles in a row,
+NO_FULL_LIMIT       = 12     # if the pan never reads FULL this many cycles in a row,
                              # stop and tell the user to re-calibrate the capacity pixel
 
 # --- Treasure Chest Collection mode ------------------------------------------
@@ -1374,6 +1374,7 @@ class SessionStats:
         self.pause_accum = 0.0   # total paused seconds (excluded from runtime)
         self.pause_started = None
         self.nudges = 0
+        self.shake_misses = 0    # shakes that ran but didn't empty (fast-build misses)
         self.stop_reason = ""
 
     def runtime(self):
@@ -1435,7 +1436,33 @@ class SessionStats:
                 "pans_per_hr": round(self.cycles / hrs, 1) if hrs > 0.0008 else 0,
                 "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
                 "relics_used": self.relics_used, "nudges": self.nudges,
+                "shake_misses": self.shake_misses,
                 "stop_reason": self.stop_reason}
+
+
+class _ARPool:
+    """Per-iteration ObjC AUTORELEASE POOL for the OCR threads (macOS). The finds
+    and earnings OCR run macOS Vision on BACKGROUND threads, which have no run
+    loop to drain the thread's autorelease pool -- so every autoreleased NSData /
+    VNImageRequestHandler / result (each holding an OCR image buffer) piles up
+    for the WHOLE session. That was the multi-GB RAM leak. Wrapping each OCR call
+    in this drains those objects immediately. No-op where pyobjc isn't present
+    (Windows), so it's safe in both copies."""
+    __slots__ = ("_p",)
+
+    def __enter__(self):
+        self._p = None
+        if sys.platform == "darwin":
+            try:
+                from Foundation import NSAutoreleasePool
+                self._p = NSAutoreleasePool.alloc().init()
+            except Exception:
+                self._p = None
+        return self
+
+    def __exit__(self, *a):
+        self._p = None            # drop the only ref -> pool deallocs -> drains
+        return False
 
 
 class EarnTracker:
@@ -1494,7 +1521,8 @@ class EarnTracker:
         with mss.mss() as sct:
             while not self._stop.is_set() and (State.running or State.paused):
                 for name, reg, field in regs:
-                    v = self._read_stable(sct, reg)
+                    with _ARPool():
+                        v = self._read_stable(sct, reg)
                     if v is None:
                         misses = self._miss.get(name, 0) + 1
                         self._miss[name] = misses
@@ -1883,8 +1911,9 @@ class FindsWatcher:
                 # pixels for zero accuracy, and its prep stalled the GIL)
                 factor = 2 if arr.shape[0] >= int(1.9 * self.reg["height"]) \
                     else 3
-                cards = _cards_from_lines(_finds_ocr_array(arr, factor),
-                                          self.ore_names)
+                with _ARPool():
+                    cards = _cards_from_lines(_finds_ocr_array(arr, factor),
+                                              self.ore_names)
                 if (FINDS_STACK_NEWEST or "bottom").lower() == "top":
                     for c in cards:
                         c["cy"] = 1.0 - c["cy"]
@@ -3591,6 +3620,7 @@ def do_shake(det):
         State.shake_fails = 0
         State.breakouts = 0              # healthy progress -> clear escalation
         State.safe_retries = 0
+        State.no_full = 0                # a pan emptied -> capacity pixel is fine
         State.water_fails = 0
         if State.stats:
             State.stats.cycles += 1      # a pan emptied = one completed cycle
@@ -3610,6 +3640,8 @@ def do_shake(det):
         sleep_ms(POST_SHAKE_SETTLE_MS)   # let momentum/animation settle onto land
     else:
         State.shake_fails += 1
+        if State.stats:
+            State.stats.shake_misses += 1
         emit_event("shake_fail", ("shake never started (glitch)" if not started
                                   else "shake stalled mid-drain (game dropped it)"
                                   if stalled else "shake ran but pan didn't empty"))
