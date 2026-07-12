@@ -492,6 +492,10 @@ SHARDS_CLICK_CONFIRM_MS = 100 # bar must leave EMPTY within this after click 1
 SHARDS_CLICK_RETRIES   = 3    # total clicks allowed while the bar never moves
 SHARDS_ASSUME_FULL     = False # bar moved -> treat as full NOW, walk during
                                # the fill animation (one-click-fill builds)
+SHARDS_GREEN_CONFIRM   = False # the dig skill-bar's green zone appearing also
+                               # proves the click (frames earlier than the
+                               # capacity bar, which can lag whole animations);
+                               # needs the Perfect-dig green pixel calibrated
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -1111,6 +1115,12 @@ def _drag_for(ms, stop_fn=None):
 
 
 # ---- Colour tests -----------------------------------------------------------
+def is_green(r, g, b):
+    """The dig skill-bar's GREEN zone (bright green, green channel dominant).
+    Used as 'a dig animation is RUNNING' -- the bar only exists mid-dig."""
+    return g >= 100 and g > r + 35 and g > b + 35
+
+
 def is_white(r, g, b):
     return r >= WHITE_MIN and g >= WHITE_MIN and b >= WHITE_MIN
 
@@ -1155,6 +1165,14 @@ class Detector:
 
     def white_on_trigger(self):
         return is_white(*self._rgb(self.dig_region))
+
+    def dig_bar_green(self):
+        """True while the dig skill-bar's GREEN zone shows at the calibrated
+        trigger pixel -- i.e. a dig animation is RUNNING right now. The bar
+        only exists during a dig, so this is the earliest 'the dig
+        registered' signal there is; the capacity bar can lag it by whole
+        animations."""
+        return is_green(*self._rgb(self.dig_region))
 
     def capacity_full(self):
         return is_yellow(*self._rgb(self.cap_region))
@@ -3646,10 +3664,18 @@ def _shards_dig(det):
             sleep_ms(PRE_DIG_SETTLE_MS)
         before = det.cap_fill()
         if det.pan_empty():
-            proof = lambda: not det.pan_empty()
+            bar_proof = lambda: not det.pan_empty()
         else:                            # partial pan (recovery) -> need rise
-            proof = lambda: (det.cap_fill() > before + CAP_RISE_FRAC
-                             or det.capacity_full())
+            bar_proof = lambda: (det.cap_fill() > before + CAP_RISE_FRAC
+                                 or det.capacity_full())
+        proof = bar_proof
+        if SHARDS_GREEN_CONFIRM and not det.dig_bar_green():
+            # the dig skill-bar POPPING UP proves the dig is running -- frames
+            # earlier than the capacity bar (which can lag by 2-3 whole
+            # animations on a busy game). Armed per-visit only when the spot
+            # is NOT already green, so green terrain can't fake a dig.
+            proof = (lambda bp=bar_proof:
+                     det.dig_bar_green() or bp())
         confirmed = False
         for t in range(tries):
             if not State.running:

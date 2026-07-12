@@ -84,6 +84,7 @@ SECTIONS = [
         ("SHARDS_CLICK_CONFIRM_MS","Bar must leave empty within (ms)",    "int", 100),
         ("SHARDS_CLICK_RETRIES",   "Max clicks if the bar never moves",   "int", 3),
         ("SHARDS_ASSUME_FULL",     "Assume full once the bar moves",      "bool", False),
+        ("SHARDS_GREEN_CONFIRM",   "Green dig-bar confirms the click",    "bool", False),
     ]),
     ("Mode / Dig", [
         ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
@@ -390,6 +391,13 @@ HELP = {
                      "try before deciding you're off land and nudging "
                      "forward. Dead clicks happen (very short dig holds); 3 "
                      "is a good default.",
+    "SHARDS_GREEN_CONFIRM": "Use the dig skill-bar's GREEN zone as proof the "
+                     "click registered: the bar pops up the moment a dig "
+                     "starts, frames before the capacity bar moves (which "
+                     "can lag by 2-3 whole animations). Needs the Perfect-dig "
+                     "green pixel calibrated (Calibrate tab); Perfect mode "
+                     "itself can stay OFF. Auto-disarms for the visit if the "
+                     "spot is already green (green terrain).",
     "SHARDS_ASSUME_FULL": "One-click-fill builds only: the instant the bar "
                      "starts filling, treat the pan as FULL and move on -- "
                      "the walk back to water happens DURING the fill "
