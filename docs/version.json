@@ -1,7 +1,7 @@
 {
-  "version": "4.1.0",
+  "version": "4.2.0",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Prospectors Plus 4.1.0 - NEW Geodes mode + build sharing. Geodes: a mode for slow dig+shake animation builds (10% dig-speed geode shovels) -- waits out each fill animation instead of false-nudging, confirms digs by the green dig-bar, keeps shaking until the pan is truly empty, with a live dig-delay countdown in the HUD. Ships with a one-click 'v3 geode' preset and two ready-tuned 'Geode Farm' builds. NEW build sharing: Export any build to a file, Import a friend's, and Attach a Roblox-equipment doc (Word/PDF/image) that travels with the build -- click 'Download Roblox build' to get it. Also: a live shake-miss counter, a much smoother shake, a big RAM-leak fix for the OCR trackers, and the app now fully quits when you close it."
+  "notes": "Prospectors Plus 4.2.0 - build sharing + a big RAM-leak fix. NEW: Export any build to a file and send it to a friend; Import theirs; and Attach a Roblox-equipment doc (Word/PDF/image) that travels with the build -- a 'Download Roblox build' button hands it back so they know what to make. NEW second ready-tuned 'Geode Farm 1-Tap' build. FIXED a major memory leak in the finds/earnings OCR that grew RAM into the gigabytes over long sessions. Also: a live shake-miss counter, no more false 'capacity mis-calibrated' stop on very fast builds, and a smoother shake. Includes everything from 4.1.0 (Geodes mode, live dig timer, v3 preset)."
 }
