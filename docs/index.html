@@ -288,6 +288,26 @@
     .sbar-item:nth-child(4){border-top:1px solid var(--line);border-right:none}
     section{padding:72px 0}
   }
+
+  /* ── macOS OPEN MODAL ────────── */
+  .modal-back{position:fixed;inset:0;background:rgba(6,5,3,.74);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);z-index:300;display:none;align-items:center;justify-content:center;padding:24px;opacity:0;transition:opacity .22s}
+  .modal-back.show{display:flex;opacity:1}
+  .modal{background:var(--panel);border:1px solid var(--line2);border-radius:18px;max-width:540px;width:100%;padding:32px 32px 28px;box-shadow:0 40px 90px -28px rgba(0,0,0,.8),0 0 0 1px rgba(255,255,255,.03) inset;transform:translateY(14px) scale(.98);transition:transform .24s var(--ease)}
+  .modal-back.show .modal{transform:none}
+  .modal .mh{display:flex;align-items:center;gap:13px}
+  .modal .mh .mi{width:40px;height:40px;border-radius:11px;background:var(--sand-dim);border:1px solid var(--sand-glow);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .modal .mh .mi svg{width:20px;height:20px;stroke:var(--sand-lit);fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+  .modal h3{font-family:"Fraunces",Georgia,serif;font-size:1.45rem;font-weight:600;letter-spacing:-.02em}
+  .modal p{color:var(--mut);font-size:14.5px;margin-top:15px;line-height:1.65}
+  .modal ol{margin:16px 0 0;padding-left:20px;color:var(--txt);font-size:14.5px;line-height:1.6}
+  .modal ol li{margin-bottom:9px}
+  .modal ol li b{color:var(--txt)}
+  .modal .cmd{display:flex;align-items:center;gap:10px;background:#0a0805;border:1px solid var(--line2);border-radius:10px;padding:9px 10px 9px 13px;margin-top:12px}
+  .modal .cmd code{font-family:"IBM Plex Mono",Menlo,Consolas,monospace;font-size:12px;color:var(--teal-lit);overflow-x:auto;white-space:nowrap;flex:1;scrollbar-width:thin}
+  .modal .cmd button{flex-shrink:0;background:var(--sand);color:#1a1005;border:none;border-radius:7px;padding:7px 13px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:background .2s}
+  .modal .cmd button:hover{background:var(--sand-lit)}
+  .modal .malt{font-size:13px;color:var(--dim);margin-top:16px;line-height:1.6}
+  .modal .mfoot{margin-top:22px;display:flex;justify-content:flex-end}
 </style>
 </head>
 <body>
@@ -659,6 +679,24 @@
   </div>
 </section>
 
+<!-- macOS OPEN INSTRUCTIONS MODAL -->
+<div class="modal-back" id="macModal" role="dialog" aria-modal="true" aria-labelledby="macModalTitle">
+  <div class="modal">
+    <div class="mh">
+      <span class="mi" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg></span>
+      <h3 id="macModalTitle">Opening on macOS</h3>
+    </div>
+    <p>Your download is starting. Because Prospectors Plus is a free, unsigned app, macOS blocks it the first time you open it — this is normal. Here's the one-time fix:</p>
+    <ol>
+      <li>Drag <b>Prospectors Plus</b> into your <b>Applications</b> folder.</li>
+      <li>Open <b>Terminal</b> (press ⌘ + Space, type <b>Terminal</b>, hit Return), then paste this line and press Return:</li>
+    </ol>
+    <div class="cmd"><code id="macCmd"></code><button id="macCopy" type="button">Copy</button></div>
+    <p class="malt">Prefer not to use Terminal? Double-click the app, click <b>Done</b> on the warning, then open <b>System Settings → Privacy &amp; Security</b>, scroll down and click <b>Open Anyway</b>.</p>
+    <div class="mfoot"><button class="btn" id="macDone" type="button">Got it</button></div>
+  </div>
+</div>
+
 <footer class="wrap">
   <span>© <span id="yr"></span> Prospectors Plus. Not affiliated with the game developers.</span>
   <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan" target="_blank" rel="noopener">View on GitHub</a>
@@ -724,6 +762,30 @@
       const n=document.getElementById('ctanote');
       if(n) n.textContent='No release published yet. Check back shortly.';
     });
+
+  // ---- macOS "how to open" modal (fires when a macOS download is clicked) ----
+  const MAC_CMD = 'xattr -dr com.apple.quarantine "/Applications/Prospectors Plus.app" && open "/Applications/Prospectors Plus.app"';
+  (function(){
+    const modal=document.getElementById('macModal'),
+          cmdEl=document.getElementById('macCmd'),
+          copyBtn=document.getElementById('macCopy'),
+          doneBtn=document.getElementById('macDone');
+    if(!modal) return;
+    if(cmdEl) cmdEl.textContent = MAC_CMD;
+    const show=()=>modal.classList.add('show');
+    const hide=()=>modal.classList.remove('show');
+    // the download link still fires (not prevented) — modal just rides along
+    ['heromac','finalmac'].forEach(id=>{const b=document.getElementById(id); if(b) b.addEventListener('click', show);});
+    if(IS_MAC){const n=document.getElementById('navdl'); if(n) n.addEventListener('click', show);}
+    if(copyBtn) copyBtn.addEventListener('click',()=>{
+      const done=()=>{copyBtn.textContent='Copied ✓';setTimeout(()=>copyBtn.textContent='Copy',1600);};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(MAC_CMD).then(done).catch(()=>{});}
+      else{const t=document.createElement('textarea');t.value=MAC_CMD;document.body.appendChild(t);t.select();try{document.execCommand('copy');done();}catch(e){}document.body.removeChild(t);}
+    });
+    if(doneBtn) doneBtn.addEventListener('click',hide);
+    modal.addEventListener('click',e=>{if(e.target===modal)hide();});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape')hide();});
+  })();
 </script>
 </body>
 </html>
