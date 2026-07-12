@@ -47,7 +47,9 @@ be deactivated remotely by the owner.
 ## Install
 
 - **Windows**: download `ProspectorsPlusSetup.exe` from the release and run it.
-- **macOS**: open `ProspectorsPlus-4.0.0.dmg`, drag the app to Applications.
-  First launch: right-click → Open (unsigned indie app). Needs Python 3.
+- **macOS**: open the `.dmg`, drag the app to Applications. First launch: macOS
+  may say it "could not verify" the app (it's an unsigned indie tool) — open
+  System Settings → Privacy & Security, scroll down, click **Open Anyway**. Once
+  per install. Needs Python 3.
 
 Existing users see the update banner automatically.
