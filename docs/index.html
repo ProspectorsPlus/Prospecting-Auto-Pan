@@ -106,6 +106,11 @@
   .sub{font-size:17.5px;color:var(--mut);margin-top:22px;max-width:480px;line-height:1.7}
   .hero-cta{display:flex;align-items:center;gap:16px;margin-top:36px;flex-wrap:wrap}
   .cta-note{font-size:13px;color:var(--dim);margin-top:18px}
+  .cta-note a{color:var(--mut);text-decoration:underline;text-underline-offset:3px}
+  .cta-note a:hover{color:var(--txt)}
+  .dl-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:36px;max-width:480px}
+  .dl-row .btn.lg{justify-content:center;font-size:15px;padding:15px 14px;white-space:nowrap}
+  @media(max-width:520px){.dl-row{grid-template-columns:1fr;max-width:100%}}
 
   /* ── MOCKUP ──────────────────── */
   .mock{background:var(--panel2);border:1px solid var(--line2);border-radius:18px;overflow:hidden;box-shadow:0 0 0 1px rgba(255,255,255,.04) inset,0 40px 80px -32px rgba(0,0,0,.7),0 0 60px -24px rgba(212,148,58,.08);animation:float 6s ease-in-out infinite}
@@ -319,7 +324,7 @@
       <p class="sub">Prospectors Plus runs the full farming loop for you: pan, dig,
         shake, deposit. It reads the screen and keeps going on its own, even while
         you are away.</p>
-      <div class="hero-cta">
+      <div class="dl-row">
         <a class="btn lg" id="herodl" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
           Download for Windows
@@ -328,9 +333,8 @@
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 21h16"/></svg>
           Download for macOS
         </a>
-        <a class="ghost" href="#how">See how it works</a>
       </div>
-      <p class="cta-note" id="ctanote">Free · Windows 10/11 &amp; macOS · invite code required</p>
+      <p class="cta-note" id="ctanote">Free · Windows 10/11 &amp; macOS · invite code required · <a href="#how">see how it works</a></p>
     </div>
 
     <div class="mock reveal reveal-d2" aria-hidden="true">
@@ -697,21 +701,22 @@
 
   const REPO = 'ProspectorsPlus/Prospecting-Auto-Pan';
   const btns = [document.getElementById('herodl'), document.getElementById('finaldl')];
+  const IS_MAC = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent);
+  const navBtn = document.getElementById('navdl');
+  if (navBtn) navBtn.textContent = 'Download for ' + (IS_MAC ? 'macOS' : 'Windows');
   fetch('https://api.github.com/repos/'+REPO+'/releases/latest')
     .then(r => { if(!r.ok) throw 0; return r.json(); })
     .then(rel => {
       const assets = rel.assets||[];
       const exe = assets.find(a=>/\.exe$/i.test(a.name));
       const dmg = assets.find(a=>/\.dmg$/i.test(a.name));
-      if (exe) {
-        btns.forEach(b => { if(b) b.href = exe.browser_download_url; });
-        const n = document.getElementById('navdl');
-        if(n) n.href = exe.browser_download_url;
-      }
+      if (exe) btns.forEach(b => { if(b) b.href = exe.browser_download_url; });
       if (dmg) {
         [document.getElementById('heromac'), document.getElementById('finalmac')]
           .forEach(b => { if(b) b.href = dmg.browser_download_url; });
       }
+      const pick = IS_MAC ? (dmg || exe) : (exe || dmg);   // nav button follows the visitor's OS
+      if (navBtn && pick) navBtn.href = pick.browser_download_url;
       if(rel.tag_name) document.getElementById('ver').textContent = rel.tag_name;
     })
     .catch(()=>{
