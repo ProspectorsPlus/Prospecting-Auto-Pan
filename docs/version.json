@@ -1,7 +1,7 @@
 {
-  "version": "4.0.0",
+  "version": "4.0.1",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Prospectors Plus 4.0.0 - the biggest update yet. NEW Cycle page: your whole pan loop drawn as a live diagram with a millisecond timeline graph - drag any slider and watch the timing change, click any bar to jump to the exact setting behind it. NEW Builds page: all your saved builds in one place with search, sort (newest / most used), descriptions and one-click load/overwrite. NEW Shards mode: exact-click digging with green dig-bar confirmation and an assume-full pipeline for one-click-fill farms. NEW live HUD overlay: a draggable card showing the current stage (Digging / Hold S / Glide / Shaking), live stats and a find ticker. Reworked finds detector (fade-direction tracker) counts fast skull bursts and dupes far more accurately. Big macOS smoothness fix: the shake no longer stutters under the analytics load. Codes are now machine-locked."
+  "notes": "Prospectors Plus 4.0.1 - stability fix. Closing the app now fully quits it (and stops the macro): previously a few hidden helper windows could keep it running in the background, so it wouldn't reopen and the macro kept going. Everything from 4.0.0 (Cycle page, Builds page, Shards mode, live HUD, reworked finds, machine-locked codes) is included."
 }

@@ -24,7 +24,7 @@ import hashlib
 
 # ---- version + update channel (compared to the website's version.json) -------
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "4.0.0"
+VERSION             = "4.0.1"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
@@ -3950,6 +3950,32 @@ COACH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
 </script></body></html>'''
 
 
+def _quit_everything(api):
+    """Fully terminate the app AND the engine subprocess. The app owns several
+    hidden helper windows (pill/HUD/overlay/coach/analytics); on macOS the
+    Cocoa app will NOT quit while any window still exists, so closing just the
+    main window used to leave the process running windowless -- macOS then
+    refuses to relaunch it, and the engine kept panning. Wiring this to the
+    main window's close (and to the post-start path) guarantees a clean exit."""
+    try:
+        if api is not None and getattr(api, "proc", None) is not None:
+            try:
+                api._save_history()          # log the run that was cut short
+            except Exception:
+                pass
+            p = api.proc
+            api.proc = None
+            for step in (lambda: p.send_signal(signal.SIGINT),   # engine's clean stop
+                         lambda: p.terminate()):                 # cross-platform kill
+                try:
+                    step()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    os._exit(0)                              # drop any lingering threads/windows
+
+
 def main():
     global _window, _pill, _overlay, _coach_win, _analytics_win, _hud
     try:
@@ -3965,6 +3991,10 @@ def main():
     _window = webview.create_window("Prospectors Plus", html=build_html(),
                                     js_api=api, width=1340, height=900,
                                     min_size=(980, 680))
+    try:
+        _window.events.closed += lambda: _quit_everything(api)
+    except Exception:
+        pass
     global _pill, _overlay
     try:
         import Quartz as _Q
@@ -4014,24 +4044,22 @@ def main():
         _hide_on_close(_analytics_win)
     except Exception as _e:
         print("[analytics] precreate failed: %s" % _e)
-    def _sigint(_sig, _frm):
-        try:
-            if api.proc is not None:
-                api.proc.terminate()
-        except Exception:
-            pass
-        os._exit(0)
+    # Ctrl+C / kill: a Python signal handler can NOT run while the native GUI
+    # loop owns the main thread, so a custom handler here would never fire
+    # (that is why Ctrl+C used to just hang). Use the OS default disposition
+    # instead -> the process is terminated immediately at the C level. On a
+    # terminal Ctrl+C the engine child shares the foreground process group and
+    # receives the same SIGINT, so the macro stops cleanly too. The clean
+    # in-app quit (history save + engine terminate) is handled by the main
+    # window's close event -> _quit_everything.
     try:
-        signal.signal(signal.SIGINT, _sigint)
-        signal.signal(signal.SIGTERM, _sigint)
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
     except Exception:
         pass
     print("[boot] all windows created -> starting GUI loop", flush=True)
     webview.start()
-    try:
-        api._save_history()      # window closed while running -> log it
-    except Exception:
-        pass
+    _quit_everything(api)        # normal close path -> kill engine + hard exit
 
 
 if __name__ == "__main__":
