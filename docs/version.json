@@ -1,7 +1,7 @@
 {
-  "version": "4.0.1",
+  "version": "4.1.0",
   "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
   "installer": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe",
   "critical": false,
-  "notes": "Prospectors Plus 4.0.1 - stability fix. Closing the app now fully quits it (and stops the macro): previously a few hidden helper windows could keep it running in the background, so it wouldn't reopen and the macro kept going. Everything from 4.0.0 (Cycle page, Builds page, Shards mode, live HUD, reworked finds, machine-locked codes) is included."
+  "notes": "Prospectors Plus 4.1.0 - NEW Geodes mode. A dedicated mode for geode builds with very slow dig + shake animations (like 10% dig-speed shovels): it waits out each slow fill animation instead of false-nudging, uses the green dig-bar to know a dig actually started, keeps shaking until the pan is truly empty, and runs the normal momentum shake (not treasure's strafe). Comes with a one-click 'v3 - geode' preset and a ready-tuned 'Geode Farm' build on the Builds page. Also: a live dig-delay countdown in the HUD + Run page, a much smoother/faster shake (fewer screen reads per click), and a tunable pan-empty threshold. Find Geodes under Modes in the sidebar."
 }

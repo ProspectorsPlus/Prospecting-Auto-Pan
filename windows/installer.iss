@@ -3,7 +3,7 @@
 ; Produces:      Output\Prospectors Plus Setup.exe
 
 #define MyAppName "Prospectors Plus"
-#define MyAppVersion "4.0.1"
+#define MyAppVersion "4.1.0"
 #define MyAppPublisher "Prospectors Plus"
 #define MyAppExeName "Prospectors Plus.exe"
 

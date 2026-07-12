@@ -86,6 +86,15 @@ SECTIONS = [
         ("SHARDS_ASSUME_FULL",     "Assume full once the bar moves",      "bool", False),
         ("SHARDS_GREEN_CONFIRM",   "Green dig-bar confirms the click",    "bool", False),
     ]),
+    ("Geodes", [
+        ("GEODE_MODE",           "Geode mode (slow-animation dig, normal shake)", "bool", False),
+        ("GEODE_DIGS_TO_FILL",   "Digs to fill (0 = auto until full)",  "int", 0),
+        ("GEODE_DIG_MS",         "Quick dig hold (ms)",                 "int", 5),
+        ("GEODE_DELAY_MS",       "Animation delay per dig (ms)",        "int", 1500),
+        ("GEODE_START_MS",       "Wait for the dig to start (ms)",      "int", 800),
+        ("GEODE_CONFIRM_FULL",   "Wait for the bar to read full first", "bool", False),
+        ("GEODE_SHAKE_HOLD_MS",  "Max shake time (ms)",                 "int", 8000),
+    ]),
     ("Mode / Dig", [
         ("PERFECT",            "Perfect dig (release on green) — off = timed hold", "bool", False),
         ("DIG_CLICK_MS",       "Dig hold length (ms)",                    "int", 75),
@@ -110,6 +119,7 @@ SECTIONS = [
         ("SHAKE_CLICK_GAP_MS", "Gap between shake clicks (ms)",           "int", 14),
         ("SHAKE_HOLD_MS",      "Shake overall timeout (ms)",              "int", 1500),
         ("SHAKE_BAIL_MS",      "Shake-failed detection (ms)",             "int", 500),
+        ("CAP_EMPTY_FRAC",     "Pan-empty threshold (lower = wait emptier)", "float", 0.04),
         ("SHAKE_START_CONFIRM_MS","Confirm shake started within (ms, 0 = off)", "int", 0),
         ("SHAKE_START_RETRIES", "Deeper-tap retries when it won't start",     "int", 2),
         ("SHAKE_RETRY_DEEPER_MS","Retry deeper S tap (ms)",                   "int", 70),
@@ -201,6 +211,20 @@ SECTIONS = [
 
 PRESET_V1 = {"PERFECT": False, "DIG_CLICK_MS": 15, "MAX_DIGS_TO_FILL": 1}
 PRESET_V2 = {"PERFECT": False, "DIG_CLICK_MS": 75, "MAX_DIGS_TO_FILL": 8}
+PRESET_GEODE = {
+                "GEODE_MODE": True, "GEODE_DIGS_TO_FILL": 0, "GEODE_DIG_MS": 5,
+                "GEODE_DELAY_MS": 12000, "GEODE_START_MS": 800,
+                "GEODE_CONFIRM_FULL": True, "GEODE_SHAKE_HOLD_MS": 10000,
+                "SHAKE_MOMENTUM_W": True, "SHAKE_CLICKS": 0, "SHAKE_CLICK_MS": 60,
+                "SHAKE_CLICK_GAP_MS": 0, "SHAKE_HOLD_MS": 6000, "SHAKE_BAIL_MS": 500,
+                "SHAKE_START_CONFIRM_MS": 300, "SHAKE_START_RETRIES": 1,
+                "SHAKE_RETRY_DEEPER_MS": 180, "SHAKE_STALL_MS": 0,
+                "SHAKE_START_DELAY_MS": 0, "SHAKE_W_LEAD_MS": 50,
+                "POST_SHAKE_SETTLE_MS": 150, "PERFECT": False, "DIG_CLICK_MS": 5,
+                "DIG_SPEED": 1474, "MAX_DIGS_TO_FILL": 1, "DIG_FILL_MS": 2050,
+                "PRE_DIG_SETTLE_MS": 600, "PAN_BACK_MAX_MS": 100,
+                "WATER_EXTRA_BACK_MS": 0, "LAND_SETTLE_MS": 0,
+                "EASY_WATER_RETURN_DELAY_MS": 0, "SHARDS_DIG_CLICKS": 0}
 DEFAULTS = {k: d for _, items in SECTIONS for (k, _l, _t, d) in items}
 TYPES = {k: t for _, items in SECTIONS for (k, _l, t, _d) in items}
 
@@ -220,6 +244,10 @@ SECTION_HINT = {
     "Shards": "Exact-click digging for shard farming: a known number of dig "
               "clicks (usually ONE), a registration check instead of probe "
               "re-digs, and optionally move on the moment the fill starts.",
+    "Geodes": "For geode builds with a very slow fill animation. Taps the dig a "
+              "set number of times, waits out the animation between each (so it "
+              "won't false-nudge while the fill is still catching up), then runs "
+              "the normal walk-back + momentum shake -- not treasure's strafe.",
     "Easy tuning": "Plain-language tweaks. Type how much MORE you want of each move "
                    "and the macro adjusts the underlying timings for you.",
     "Mode / Dig": "How each dig works and how many it takes to fill the pan.",
@@ -239,6 +267,7 @@ SECTION_HINT = {
 
 TAB_ICON = {
     "Shards": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l6 6l-6 12l-6 -12z"/><path d="M6 9h12"/></svg>',
+    "Geodes": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l7 5.5-2.5 9.5h-9L5 7.5z"/><circle cx="12" cy="11" r="3"/></svg>',
     "Treasure chest": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9l1.6-3.2A2 2 0 0 1 7.4 4.5h9.2a2 2 0 0 1 1.8 1.3L20 9"/><rect x="3.5" y="9" width="17" height="10.5" rx="1.5"/><path d="M3.5 13h17"/><rect x="10.5" y="11.5" width="3" height="3.5" rx="1"/></svg>',
     "Easy tuning": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>',
     "Mode / Dig": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5c3 3.8 6 6.8 6 9.8a6 6 0 0 1 -12 0c0 -3 3 -6 6 -9.8z"/></svg>',
@@ -403,6 +432,38 @@ HELP = {
                      "the walk back to water happens DURING the fill "
                      "animation instead of after it. The shake clears the "
                      "assumption automatically.",
+    "GEODE_MODE": "Geode mode: for builds with a very slow fill animation (like "
+                     "10% dig-speed geode shovels). It taps the dig, WAITS OUT "
+                     "the slow animation instead of assuming the dig failed, "
+                     "fills the pan, then runs the normal walk-back + momentum "
+                     "shake. Turn Shards and Treasure OFF when using this.",
+    "GEODE_DIGS_TO_FILL": "How many dig taps fill the pan on this build, "
+                     "waiting out each slow animation. Set 0 for AUTO -- keep "
+                     "digging until the capacity bar actually reads FULL "
+                     "(recommended; robust to how many digs a geode takes).",
+    "GEODE_DIG_MS": "Length of each quick dig hold, 5-10 ms (same idea as the "
+                     "Shards/Treasure quick dig).",
+    "GEODE_DELAY_MS": "The big one: how long to wait for the SLOW geode fill "
+                     "animation after each dig before deciding it failed. It "
+                     "ends early the moment the bar moves, so set it as high as "
+                     "your slowest geode animation (e.g. 1500-3000 ms). This is "
+                     "what stops the false nudges.",
+    "GEODE_START_MS": "After clicking, how long to wait for the dig to actually "
+                     "START -- proven by the green dig-bar appearing (calibrate "
+                     "the dig trigger pixel), or the capacity bar moving -- "
+                     "before it re-clicks. The animation timer only begins once "
+                     "a dig is confirmed running, so it lines up with the real "
+                     "dig. Raise it if your game is laggy to start digs.",
+    "GEODE_CONFIRM_FULL": "After the set number of digs, also wait for the "
+                     "capacity bar to actually read FULL before walking back. "
+                     "Leave OFF to trust the dig count and move on immediately "
+                     "(better when the bar is very laggy).",
+    "GEODE_SHAKE_HOLD_MS": "The geode shovel slows the SHAKE too, so the normal "
+                     "shake can quit before the pan empties. This is the max time "
+                     "to keep shaking (it still stops the instant the pan is "
+                     "empty). Raise it if your shake is very slow; the "
+                     "bail-if-still-full is turned off in geode mode so a slow "
+                     "shake is never cut short.",
     "TREASURE_MODE": "Switch to Treasure Chest Collection: NO shaking. It digs briefly, then "
                      "holds D until the Collect cue shows, digs, holds A until the cue, and so on "
                      "-- alternating sides. Uses the Deposit pixel as the Collect cue.",
@@ -462,6 +523,13 @@ HELP = {
                       "stream, since a held press is dropped on macOS).",
     "SHAKE_CLICK_GAP_MS": "Gap between shake clicks. Lower = faster rattle.",
     "SHAKE_HOLD_MS": "Overall shake time limit; it stops early when the pan empties.",
+    "CAP_EMPTY_FRAC": "How little yellow must be left on the capacity bar "
+                     "before the pan counts as EMPTY (0.04 = 4%). If the shake "
+                     "stops while a sliver of capacity is still showing, LOWER "
+                     "this (e.g. 0.02). If it never reads empty, raise it. The "
+                     "proper fix for 'empty too early' is to re-Calibrate the "
+                     "capacity bar so its LEFT corner sits at the true left edge "
+                     "of the bar.",
     "SHAKE_BAIL_MS": "If the pan is STILL completely full after this long, the "
                      "shake didn't start — give up and retry. Keep above a real "
                      "shake's drain time.",

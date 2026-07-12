@@ -24,7 +24,7 @@ import hashlib
 
 # ---- version + update channel (compared to the website's version.json) -------
 # >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "4.0.1"
+VERSION             = "4.1.0"
 UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
 DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
 ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
@@ -33,6 +33,42 @@ INSTALLER_URL       = "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/r
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(HERE, "prospecting_config.json")
 BUILDS_FILE = os.path.join(HERE, "prospecting_builds.json")
+
+# Bundled default builds -- these SHIP with the app so every download has a
+# ready geode setup on the Builds page (user builds of the same name override
+# them; loading one seeds it into the personal builds file).
+DEFAULT_BUILDS = {
+    "Geode Farm": {
+        "GEODE_MODE": True, "GEODE_DIGS_TO_FILL": 0, "GEODE_DIG_MS": 5,
+        "GEODE_DELAY_MS": 12000, "GEODE_START_MS": 800, "GEODE_CONFIRM_FULL": True,
+        "GEODE_SHAKE_HOLD_MS": 10000, "SHAKE_MOMENTUM_W": True, "SHAKE_CLICKS": 0,
+        "SHAKE_CLICK_MS": 60, "SHAKE_CLICK_GAP_MS": 0, "SHAKE_HOLD_MS": 6000,
+        "SHAKE_BAIL_MS": 500, "SHAKE_START_CONFIRM_MS": 300,
+        "SHAKE_START_RETRIES": 1, "SHAKE_RETRY_DEEPER_MS": 180,
+        "SHAKE_STALL_MS": 0, "SHAKE_START_DELAY_MS": 0, "SHAKE_W_LEAD_MS": 50,
+        "POST_SHAKE_SETTLE_MS": 150, "PERFECT": False, "DIG_CLICK_MS": 5,
+        "DIG_SPEED": 1474, "MAX_DIGS_TO_FILL": 1, "DIG_FILL_MS": 2050,
+        "PRE_DIG_SETTLE_MS": 600, "PAN_BACK_MAX_MS": 100, "WATER_EXTRA_BACK_MS": 0,
+        "LAND_SETTLE_MS": 0, "EASY_WATER_RETURN_DELAY_MS": 0,
+        "SHARDS_DIG_CLICKS": 0, "TREASURE_MODE": False, "CAP_EMPTY_FRAC": 0.04, "RELICS": [], "RELICS_ENABLED": False,
+        "_meta": {"desc": "Geode farming \u2014 slow-animation dig then the normal "
+                  "momentum shake (not treasure's strafe). Set 'Animation delay "
+                  "per dig' to match your geode's fill animation (~12s). Ships "
+                  "with Prospectors Plus.",
+                  "created": 1752000000, "updated": 1752000000,
+                  "used": 0, "builtin": True},
+    },
+}
+
+
+def _builds_all():
+    """User builds merged over the bundled defaults (user wins on name clash)."""
+    b = {k: json.loads(json.dumps(v)) for k, v in DEFAULT_BUILDS.items()}
+    try:
+        b.update(_read_json(BUILDS_FILE, {}))
+    except Exception:
+        pass
+    return b
 MACRO_FILE = os.path.join(HERE, "prospecting_old.py")
 
 
@@ -53,6 +89,7 @@ try:
     TYPES = getattr(_ui, "TYPES", {})
     PRESET_V1 = getattr(_ui, "PRESET_V1", {})
     PRESET_V2 = getattr(_ui, "PRESET_V2", {})
+    PRESET_GEODE = getattr(_ui, "PRESET_GEODE", {})
     SECTION_HINT = getattr(_ui, "SECTION_HINT", {})
     TAB_ICON = getattr(_ui, "TAB_ICON", {})
     HELP = getattr(_ui, "HELP", {})
@@ -63,7 +100,7 @@ except Exception:
     traceback.print_exc()
     SECTIONS = []
     DEFAULTS = TYPES = {}
-    PRESET_V1 = PRESET_V2 = {}
+    PRESET_V1 = PRESET_V2 = PRESET_GEODE = {}
     SECTION_HINT = TAB_ICON = HELP = {}
     PIXEL_FIELDS = []
     PIXEL_DEFAULTS = {}
@@ -139,6 +176,11 @@ def _coerce(t, v):
         return bool(v)
     if t == "str":
         return str(v)
+    if t == "float":
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return 0.0
     try:
         return int(v)
     except (ValueError, TypeError):
@@ -264,7 +306,7 @@ class Api:
               "AUTOPAN_OFF_RGB": list(saved.get("AUTOPAN_OFF_RGB", [0, 0, 0]))}
         hk = {k: saved.get(k, _HK_DEFAULTS[k]) for k in _HK_DEFAULTS}
         return {"values": merged, "running": self.proc is not None, "fr": fr, "hotkeys": hk,
-                "v1": PRESET_V1, "v2": PRESET_V2, "defaults": DEFAULTS,
+                "v1": PRESET_V1, "v2": PRESET_V2, "geode": PRESET_GEODE, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
                 "builds": self.list_builds(), "pixels": pixels,
                 "colors": saved.get("PIXEL_COLORS", {}),
@@ -598,7 +640,7 @@ class Api:
         hist = list(reversed(hist)) if isinstance(hist, list) else []
         return {
             "settings": merged,
-            "builds": _read_json(BUILDS_FILE, {}),
+            "builds": _builds_all(),
             "build_name": saved.get("_ACTIVE_BUILD", ""),
             "history": hist,
             "stats": stats or saved.get("COACH_STATS", {}) or {},
@@ -1047,7 +1089,7 @@ class Api:
 
     # ---- builds (named profiles) ----
     def list_builds(self):
-        return sorted(_read_json(BUILDS_FILE, {}).keys())
+        return sorted(_builds_all().keys())
 
     def save_build(self, name, data, relics, enabled):
         name = (name or "").strip()
@@ -1075,6 +1117,9 @@ class Api:
     def load_build(self, name):
         builds = _read_json(BUILDS_FILE, {})
         entry = builds.get(name)
+        if entry is None and name in DEFAULT_BUILDS:
+            entry = json.loads(json.dumps(DEFAULT_BUILDS[name]))  # seed default
+            builds[name] = entry
         if entry is None:
             return None
         # metadata (description / usage stats) must never leak into the config
@@ -1804,6 +1849,20 @@ class Api:
                             del _arr[:len(_arr) - 500]
                 self._phase_last = (_name, _now)
                 continue
+            if line.startswith("__GEODE__ "):
+                try:
+                    _g = json.loads(line[10:])
+                except Exception:
+                    _g = {"ms": 0, "label": ""}
+                _gm = int(_g.get("ms", 0) or 0)
+                _gl = json.dumps(_g.get("label", ""))
+                _hud_eval("window.hudGeode&&hudGeode(%d,%s)" % (_gm, _gl))
+                try:
+                    if _window is not None:
+                        _window.evaluate_js("window.geodeTimer&&geodeTimer(%d,%s)" % (_gm, _gl))
+                except Exception:
+                    pass
+                continue
             if line.strip() == "__POPOUT__":
                 try:
                     self.toggle_popout()
@@ -2006,12 +2065,14 @@ def _hud_html():
  .evt{flex:1;font-size:11px;color:#9c9183;line-height:1.55;overflow:hidden}
  .evt .warn{color:#e0a05f}.evt .bad{color:#e07b5f}.evt .good{color:#9bc07e}
  .hint{color:#524b40;font-size:9.5px;text-align:center}
+ .gtimer{color:#f0b95a;font-size:12px;font-weight:700;text-align:center;background:rgba(212,148,58,.12);border:1px solid rgba(212,148,58,.3);border-radius:7px;padding:4px 8px;margin:2px 0;font-variant-numeric:tabular-nums}
 </style></head><body><div class="wrap">
  <div class="hd"><span class="led" id="led"></span><span class="state" id="state">idle</span>
    <span class="sub" id="sub"></span></div>
  <div class="stats"><span>pans <b id="hpans">0</b></span><span><b id="hpph">0</b>/hr</span>
    <span>clean <b id="hclean">–</b></span><span>finds <b id="hfinds">0</b></span>
    <span>lag <b id="hlag">–</b></span></div>
+ <div class="gtimer" id="hgtimer" style="display:none"></div>
  <div class="ttl">cycle — live</div>
  <svg id="hudsvg"></svg>
  <div class="ttl">events</div>
@@ -2055,6 +2116,14 @@ def _hud_html():
  window.hudPhase=function(p){cur={stage:MAP[p]||null,t0:performance.now()};
    const st=document.getElementById('state');
    if(LABEL[p])st.textContent=LABEL[p];else st.textContent=(p||'').toUpperCase();};
+ window.hudGeode=function(ms,label){const el=document.getElementById('hgtimer');if(!el)return;
+   if(window._hgInt){clearInterval(window._hgInt);window._hgInt=null;}
+   if(!ms||ms<=0){el.style.display='none';return;}
+   const end=performance.now()+ms;
+   const upd=()=>{const left=Math.max(0,end-performance.now());
+     el.textContent='\u23f3 '+(label||'geode')+' '+(left/1000).toFixed(1)+'s';
+     if(left<=0){clearInterval(window._hgInt);window._hgInt=null;}};
+   el.style.display='block';upd();window._hgInt=setInterval(upd,100);};
  window.hudRun=function(r){runState=r;const led=document.getElementById('led');
    led.className='led'+(r==='run'?' run':(r==='pause'?' pause':''));
    const st=document.getElementById('state');
@@ -2112,6 +2181,7 @@ def build_html():
         'Pause</button>'
         '<button type="button" id="stopbtn" class="big stop" '
         'disabled>Stop</button><span id="rstate" class="rstate">stopped</span></div>'
+        '<div id="geodebar" class="geodebar" style="display:none"></div>'
         '<div class="statsbar">'
         '<div class="stat"><div class="sv" id="st_run">0:00</div><div class="sl">runtime</div></div>'
         '<div class="stat"><div class="sv" id="st_cyc">0</div><div class="sl">pans</div></div>'
@@ -2361,6 +2431,9 @@ def build_html():
         elif ty == "str":
             ctl = (f'<input type="text" data-key="{key}" data-type="str" '
                    f'style="width:220px;text-align:left">')
+        elif ty == "float":
+            ctl = (f'<input type="number" data-key="{key}" data-type="float" '
+                   f'step="0.005" min="0" style="width:110px">')
         else:
             r = _RNG.get(key)
             if r:
@@ -2442,6 +2515,9 @@ def build_html():
             elif typ == "str":
                 ctl = (f'<input type="text" data-key="{key}" data-type="str" '
                        f'style="width:240px;text-align:left">')
+            elif typ == "float":
+                ctl = (f'<input type="number" data-key="{key}" data-type="float" '
+                       f'step="0.005" min="0" style="width:130px">')
             else:
                 ctl = f'<input type="number" data-key="{key}" data-type="int">'
             rows.append(f'<label class="row"><span class="lbl">{label}{_qm(key)}</span>'
@@ -2466,7 +2542,7 @@ def build_html():
     PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "keys"]
     GROUPS = [
         ("Setup", ["Window"]),
-        ("Modes", ["Treasure chest", "Shards"]),
+        ("Modes", ["Treasure chest", "Shards", "Geodes"]),
         ("Recovery", ["Smart / experimental"]),
         ("Alerts & limits", ["Notifications", "Auto-stop"]),
     ]
@@ -2820,6 +2896,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .stop{background:#3a2330;color:#ffb4b4} .stop:disabled,.go:disabled{opacity:.5;cursor:default}
  .rstate{color:var(--mut);margin-left:6px}
  .statsbar{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 12px}
+ .geodebar{display:flex;align-items:center;gap:12px;background:rgba(212,148,58,.12);border:1px solid rgba(212,148,58,.32);border-radius:10px;padding:10px 14px;margin:0 0 12px}
+ .geodebar .gtl{font-size:12px;font-weight:600;color:#f0b95a;text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+ .geodebar .gtv{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;min-width:58px}
+ .geodebar .gtbar{flex:1;height:8px;background:rgba(255,255,255,.06);border-radius:4px;overflow:hidden}
+ .geodebar .gtbar i{display:block;height:100%;background:#d4943a}
  .histbox{max-width:680px;display:flex;flex-direction:column;gap:8px}
  .hrow{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
  .hr-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
@@ -3006,6 +3087,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      <div class="pretitle">Quick presets</div>
      <button type="button" class="chip" id="pv1">v1 · fast 1-dig</button>
      <button type="button" class="chip" id="pv2">v2 · multi-dig</button>
+     <button type="button" class="chip" id="pv3">v3 · geode</button>
      <button type="button" class="chip" id="pdef">Reset defaults</button>
    </nav>
    <div class="content">{{PANELS}}</div>
@@ -3053,7 +3135,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  </div>
  <div class="ok" id="toast"></div>
 <script>
- let DEF={},V1={},V2={};
+ let DEF={},V1={},V2={},GEODE={};
  const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
  const fields=()=>$$('[data-key]');
  function setVals(v){fields().forEach(el=>{const k=el.dataset.key;
@@ -3062,7 +3144,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(el.dataset.type==='bool')el.checked=!!v[k]; else el.value=(v[k]??'');});
    if(window.syncCycle)syncCycle();}
  function collect(){const o={};fields().forEach(el=>{const k=el.dataset.key,t=el.dataset.type;
-   o[k]=(t==='bool')?el.checked:(t==='str')?el.value:parseInt(el.value||'0',10);});return o;}
+   o[k]=(t==='bool')?el.checked:(t==='str')?el.value:(t==='float')?parseFloat(el.value||'0'):parseInt(el.value||'0',10);});return o;}
  function preset(p){fields().forEach(el=>{const k=el.dataset.key; if(!(k in p))return;
    if(el.dataset.type==='bool')el.checked=!!p[k]; else el.value=p[k];});
    if(window.syncCycle)syncCycle();}
@@ -3083,6 +3165,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  window.setPaused=p=>{const b=$('#pausebtn');
    if(b){b.textContent=p?'Resume':'Pause';b.classList.toggle('on',!!p);}
    const r=$('#rstate');if(r&&p)r.textContent='paused';};
+ window.geodeTimer=function(ms,label){const el=document.getElementById('geodebar');if(!el)return;
+   if(window._ggInt){clearInterval(window._ggInt);window._ggInt=null;}
+   if(!ms||ms<=0){el.style.display='none';return;}
+   const end=performance.now()+ms,tot=ms;
+   const upd=()=>{const left=Math.max(0,end-performance.now());
+     el.innerHTML='<span class="gtl">'+(label||'geode fill')+'</span>'
+       +'<span class="gtv">'+(left/1000).toFixed(1)+'s</span>'
+       +'<span class="gtbar"><i style="width:'+(100*left/tot).toFixed(1)+'%"></i></span>';
+     if(left<=0){clearInterval(window._ggInt);window._ggInt=null;}};
+   el.style.display='flex';upd();window._ggInt=setInterval(upd,100);};
  window.setStats=s=>{if(!s)return;const m=Math.floor((s.runtime_s||0)/60),
    sec=String((s.runtime_s||0)%60).padStart(2,'0');
    $('#st_run').textContent=m+':'+sec; $('#st_cyc').textContent=s.cycles||0;
@@ -3333,7 +3425,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    if(r&&r.ok){setPixels(r.pixels||{});setColors(r.colors||{});toast('Imported calibration \u2713');}else{toast('Import failed: '+((r&&r.error)||'invalid'));}
    ev.target.value='';};
  // presets
- $('#pv1').onclick=()=>preset(V1); $('#pv2').onclick=()=>preset(V2); $('#pdef').onclick=()=>preset(DEF);
+ $('#pv1').onclick=()=>preset(V1); $('#pv2').onclick=()=>preset(V2); $('#pv3').onclick=()=>preset(GEODE); $('#pdef').onclick=()=>preset(DEF);
  // save / run
  $('#savebtn').onclick=async()=>{const n=await window.pywebview.api.save_config(collect());toast('Saved '+n+' settings');};
  $('#popout').onclick=()=>{try{window.pywebview.api.popout();}catch(e){}};
@@ -3566,7 +3658,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        toast(r&&r.manual?'Opened the download page':'Update failed — opening download page');}};
    if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
-   DEF=s.defaults;V1=s.v1;V2=s.v2;window._AB=s.autobuild||{};setVals(s.values);setRunning(s.running);
+   DEF=s.defaults;V1=s.v1;V2=s.v2;GEODE=s.geode||{};window._AB=s.autobuild||{};setVals(s.values);setRunning(s.running);
    setRelics(s.relics||[],s.relics_enabled);loadBuildsPage();setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});setHotkeys(s.hotkeys||{});
    checkUpdate();loadHistory();
 }

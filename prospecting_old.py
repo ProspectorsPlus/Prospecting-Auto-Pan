@@ -489,6 +489,34 @@ SHARDS_GREEN_CONFIRM   = False # the dig skill-bar's green zone appearing also
                                # proves the click (frames earlier than the
                                # capacity bar, which can lag whole animations);
                                # needs the Perfect-dig green pixel calibrated
+# --- GEODE MODE (opt-in, GEODE_MODE=True) ------------------------------------
+# Fast-tap dig on a build with a VERY slow fill animation (e.g. 10% dig-speed
+# geode shovels). The capacity bar lags the dig by a long beat, so the normal
+# probe would time out and false-nudge ("dig failed") while the fill is merely
+# still animating. Geode dig taps the dig GEODE_DIGS_TO_FILL times with a long
+# per-dig wait (GEODE_DELAY_MS) that ENDS EARLY the instant the bar moves, and
+# nudges ONLY when the FIRST dig of a land round shows no movement at all after
+# that whole wait. Then it hands back to the NORMAL cycle -> walk to water +
+# momentum shake (NOT treasure's L/R strafe).
+GEODE_MODE           = False
+GEODE_DIGS_TO_FILL   = 1     # dig taps to fill the pan
+GEODE_DIG_MS         = 5     # quick dig hold (5-10 ms, like shards/treasure)
+GEODE_DELAY_MS       = 1500  # max wait per dig for the slow fill animation --
+                             # ends early if the bar moves (this is the anti-nudge)
+GEODE_CONFIRM_FULL   = False # also wait for the bar to actually read FULL before
+                             # shaking (off = trust the dig count and move on)
+GEODE_START_MS       = 800   # after a click, how long to wait for the dig to
+                             # actually START (green dig-bar shows / bar moves)
+                             # before re-clicking -- the timer only runs once a
+                             # dig is confirmed running
+GEODE_START_TRIES    = 3     # re-click this many times if a dig won't start
+GEODE_SHAKE_CHECK    = 3     # geode shake: rattle this many clicks between
+                             # screen reads (>1 = smoother/faster + drains fuller)
+GEODE_SHAKE_HOLD_MS  = 8000  # the geode shovel slows the SHAKE too, so keep
+                             # shaking up to this long (until the pan empties);
+                             # 0 = use the normal SHAKE_HOLD_MS. In geode mode the
+                             # "still completely full -> bail" early-out is also
+                             # suppressed so a slow shake is never cut off.
 # Post-shake landing by DIG-PROBE (not by cue). After a shake the "Shake" cue can
 # STICK and never flip to "Collect Deposit", so we don't wait for that cue. We
 # trust the W-momentum carried us toward land and just DIG: a dig only fills on
@@ -3448,6 +3476,16 @@ def do_shake(det):
     sticks). Bails only if the pan stays COMPLETELY FULL past SHAKE_BAIL_MS."""
     emit_phase("shake")
     State.assume_full_until = 0.0        # the pan is about to drain for real
+    # GEODE shake: the geode shovel slows the SHAKE too, so the normal caps quit
+    # before the pan empties. Give it a much longer run and suppress the
+    # early "still completely full -> bail" (a slow shake legitimately stays full
+    # a while) -- it keeps clicking until the pan actually empties.
+    _sh_geode = GEODE_MODE and GEODE_SHAKE_HOLD_MS > 0
+    _sh_hold  = GEODE_SHAKE_HOLD_MS if _sh_geode else SHAKE_HOLD_MS
+    _sh_bail  = GEODE_SHAKE_HOLD_MS if _sh_geode else SHAKE_BAIL_MS
+    _sh_stall = SHAKE_STALL_MS * 4 if _sh_geode else SHAKE_STALL_MS
+    _sh_check = GEODE_SHAKE_CHECK if (_sh_geode and GEODE_SHAKE_CHECK > 1) else 1
+    _empty_frac = CAP_EMPTY_FRAC * 0.5 if _sh_geode else CAP_EMPTY_FRAC
     t0 = time.perf_counter()
     if SHAKE_START_DELAY_MS > 0:
         sleep_ms(SHAKE_START_DELAY_MS)       # start later (we walked farther back)
@@ -3471,33 +3509,41 @@ def do_shake(det):
     started = emptied = bailed = on_land = False
     clicks = 0
     fixed = SHAKE_CLICKS > 0                  # exact-count mode (no extra click)
-    end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
+    end = time.perf_counter() + _sh_hold / 1000.0
     start_retries = 0                         # SHAKE-START CONFIRM (opt-in)
     stalled = False                           # DRAIN-STALL (opt-in)
     _stall_fill = 2.0
     _stall_t = time.perf_counter()
     confirm_at = t0 + SHAKE_START_CONFIRM_MS / 1000.0
-    bail_at = t0 + SHAKE_BAIL_MS / 1000.0
+    bail_at = t0 + _sh_bail / 1000.0
     while State.running and (clicks < SHAKE_CLICKS if fixed
                              else time.perf_counter() < end):
         mouse_tap(SHAKE_CLICK_MS)            # one shake click (rattle)
         clicks += 1
+        # GEODE: rattle fast and only READ the screen every Nth click. The
+        # per-click sensor grabs (2-4 screen reads each) are what made the slow
+        # shake stutter -- down, pause, down. Sensing less often also lets it
+        # drain a touch past the first 'empty' read, so it won't stop with a
+        # sliver of capacity still showing.
+        if _sh_check > 1 and not fixed and (clicks % _sh_check):
+            sleep_ms(SHAKE_CLICK_GAP_MS)
+            continue
         if not started and det.on_shake():
             started = True
             _stall_t = time.perf_counter()   # stall clock runs from the start
             log(f"    shake STARTED ({(time.perf_counter()-t0)*1000:.0f}ms)")
-        if not fixed and det.pan_empty():    # auto mode: stop the instant it empties
+        _f = det.cap_fill()                  # ONE grab -> reused for empty + stall
+        if not fixed and _f < _empty_frac:   # auto mode: stop when empty
             emptied = True
             break
         # DRAIN-STALL (opt-in, SHAKE_STALL_MS > 0): the shake started but the
         # bar has frozen mid-drain -> the game dropped it. Fail FAST so the
         # retry/recovery path re-shakes now instead of waiting out the timeout.
         if SHAKE_STALL_MS > 0 and not fixed and started:
-            _f = det.cap_fill()
             if _f < _stall_fill - 0.005:
                 _stall_fill = _f             # still draining
                 _stall_t = time.perf_counter()
-            elif (time.perf_counter() - _stall_t) * 1000.0 > SHAKE_STALL_MS:
+            elif (time.perf_counter() - _stall_t) * 1000.0 > _sh_stall:
                 stalled = True
                 log("    shake STALLED mid-drain -> fail fast")
                 break
@@ -3528,7 +3574,7 @@ def do_shake(det):
                 key_down(KEY_W); w_down = True
             _now = time.perf_counter()
             confirm_at = _now + SHAKE_START_CONFIRM_MS / 1000.0
-            bail_at = _now + SHAKE_BAIL_MS / 1000.0
+            bail_at = _now + _sh_bail / 1000.0
             end = max(end, _now + 0.6)
         # CAPACITY-based bail (auto mode only): give up if the pan is STILL FULL
         # well past a real shake's duration (no drain at all = no shake).
@@ -3761,6 +3807,114 @@ def _shards_dig(det):
     return False
 
 
+def emit_geode_timer(ms, label=""):
+    """__GEODE__ marker -> drives the live delay countdown in the HUD + Run page.
+    ms>0 starts/refreshes the countdown; ms=0 clears it."""
+    try:
+        print("__GEODE__ " + json.dumps({"ms": int(ms), "label": label}), flush=True)
+    except Exception:
+        pass
+
+
+def _geode_wait(ms, label, det):
+    """FIXED wait for the slow geode fill animation to fully COMPLETE before the
+    next dig (same idea as treasure's dig gap). It does NOT end the instant the
+    bar twitches -- the geode is not ready to be dug again until the whole
+    animation finishes, so ending early makes the next dig silently miss. Bails
+    only on Stop or a real FULL read, streams a live countdown, and keeps the
+    no-progress watchdog quiet the whole time (a running geode animation IS
+    progress -- without this the 1-5s watchdog fires a bogus break-out mid-fill)."""
+    ms = max(0, int(ms))
+    emit_geode_timer(ms, label)
+    end = time.perf_counter() + ms / 1000.0
+    try:
+        while State.running and time.perf_counter() < end:
+            if det is not None and det.capacity_full():
+                break
+            State.last_progress = time.perf_counter()   # animation = progress
+            left = (end - time.perf_counter()) * 1000.0
+            sleep_ms(int(min(120.0, max(15.0, left))))
+    finally:
+        emit_geode_timer(0)
+
+
+def _geode_dig(det):
+    """GEODE DIG (opt-in, GEODE_MODE): fast-tap dig on a build with a VERY slow
+    fill animation (e.g. 10% dig-speed geode shovels). Each dig: click, briefly
+    look for the GREEN dig-bar (or a capacity move) so the timer can start
+    promptly, then WAIT the full GEODE_DELAY_MS animation, then judge by the
+    CAPACITY -- if the bar rose the dig registered (keep going / stop at FULL); if
+    a whole dig+animation moved NOTHING, we're off land -> nudge forward. A
+    missing green NEVER nudges on its own (that caused the false-nudge + break-out
+    cascade). GEODE_DIGS_TO_FILL = 0 means dig until the bar reads FULL (auto);
+    >0 means exactly that many. Done -> normal cycle: walk to water + momentum
+    shake (NOT treasure's strafe)."""
+    n_target = max(0, GEODE_DIGS_TO_FILL)
+    hold     = max(1, GEODE_DIG_MS)
+    delay    = max(50, GEODE_DELAY_MS)
+    startwin = max(120, GEODE_START_MS)
+    hard_cap = n_target if n_target > 0 else 30
+    for rnd in range(LAND_DIG_TRIES):
+        if not State.running:
+            return False
+        if rnd == 0 and PRE_DIG_SETTLE_MS > 0:
+            sleep_ms(PRE_DIG_SETTLE_MS)
+        digs = 0
+        while State.running and digs < hard_cap:
+            before    = det.cap_fill()
+            was_empty = det.pan_empty()
+            if State.stats:
+                State.stats.dig_clicks += 1
+            mouse_tap(hold)
+            # green (if the dig trigger pixel is calibrated) confirms the dig
+            # started + starts the timer promptly; if it doesn't show we still
+            # wait the animation and judge by capacity, so it never false-nudges.
+            wait_until(lambda _b=before, _e=was_empty:
+                       det.dig_bar_green()
+                       or (_e and not det.pan_empty())
+                       or det.cap_fill() > _b + CAP_RISE_FRAC
+                       or det.capacity_full(), startwin, confirm=1)
+            _geode_wait(delay, "geode fill %d%s" % (
+                digs + 1, ("/%d" % n_target) if n_target > 0 else ""), det)
+            if det.cap_fill() > before + CAP_RISE_FRAC or det.capacity_full():
+                digs += 1
+                State.land_fails = 0
+                State.breakouts  = 0
+                State.safe_retries = 0
+                _note_dig_registered()
+                State.last_progress = time.perf_counter()
+                if det.capacity_full():
+                    break
+            else:
+                break                        # full dig + animation moved nothing
+        if digs == 0:
+            log(f"    geode: no fill after a full dig+animation (round {rnd + 1}) "
+                f"-> nudge W fwd")
+            emit_event("nudge", "geode dig: no fill after the animation -- nudging forward to find land")
+            if State.stats:
+                State.stats.nudges += 1
+            key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
+            sleep_ms(PROBE_GAP_MS)
+            _adapt_land(True)
+            continue
+        _adapt_land(rnd > 0)
+        if GEODE_CONFIRM_FULL and not det.capacity_full():
+            wait_until(det.capacity_full, max(delay, DIG_FILL_MS), confirm=1)
+        if not det.capacity_full():
+            # trust the count: hold 'full' briefly so the walk-back shakes
+            # instead of re-digging while the bar still lags
+            State.assume_full_until = time.perf_counter() + 2.0
+        log(f"    geode: {digs} dig(s) done (round {rnd + 1}) -> walk to shake")
+        return True
+    State.land_fails += 1
+    _adapt_land(True)
+    log(f"    geode dig: no land after {LAND_DIG_TRIES} rounds "
+        f"(land_fails={State.land_fails})")
+    if State.land_fails >= STUCK_LIMIT:
+        safe_stop("geode dig can't find land after shaking")
+    return False
+
+
 def return_and_dig(det):
     """Post-shake landing WITHOUT trusting the cue (it can stick on 'Shake').
     We trust the W-momentum put us near land and DIG as a probe -- a dig only
@@ -3778,6 +3932,8 @@ def return_and_dig(det):
                   "mis-calibrated. Open Calibrate and re-set the Capacity bar "
                   "(or Auto-calibrate with Roblox open).", hard=True)
         return False
+    if GEODE_MODE:
+        return _geode_dig(det)           # GEODES: slow-animation, count-based dig
     if SHARDS_DIG_CLICKS > 0:
         return _shards_dig(det)          # SHARDS exact-click mode (see above)
     # LAND-CUE ASSIST (opt-in, default OFF): put ourselves ON the dirt before
@@ -3844,8 +4000,8 @@ def act(det, s):
     (Pan), since the Shake/Deposit cues glitch. FULL + Pan -> shake; FULL else ->
     go to water; NOT full -> dig-probe to find land + refill."""
     full = s.full
-    if (not full and SHARDS_DIG_CLICKS > 0 and SHARDS_ASSUME_FULL
-            and time.perf_counter() < State.assume_full_until):
+    if (not full and time.perf_counter() < State.assume_full_until
+            and ((SHARDS_DIG_CLICKS > 0 and SHARDS_ASSUME_FULL) or GEODE_MODE)):
         full = True                      # SHARDS: one-click fill in flight --
                                          # the bar is still animating but the
                                          # fill is guaranteed
