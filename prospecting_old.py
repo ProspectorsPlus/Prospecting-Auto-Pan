@@ -4436,6 +4436,26 @@ _SCRIPT_EMPTY_PASS_LIMIT = 50      # do-nothing passes before stopping itself
 _SCRIPT_MAX_PASSES = 200000        # absolute top-level loop guard
 _SCRIPT_STALL_S = 180.0            # no block completed for this long = wedged
 
+# ---- version 2 (Prospector Studio desktop) limits ---------------------------
+# v2 programs come from the standalone Studio compiler. Same hard-rail
+# philosophy: everything here is re-enforced at runtime regardless of what
+# the file claims, so a tampered .ppscript can never widen what it may do.
+_SCRIPT2_MAX_BLOCKS = 2000
+_SCRIPT2_MAX_DEPTH = 32
+_SCRIPT2_MAX_VARS = 64
+_SCRIPT2_MAX_HOOK_BLOCKS = 200
+_SCRIPT2_HOOK_STEP_BUDGET = 4000
+_SCRIPT2_STR_MAX = 400
+_SCRIPT2_WHILE_MAX = 100000
+_SCRIPT2_READS = ("cue_pan", "cue_deposit", "cue_shake", "cap_full",
+                  "cap_empty", "cap_frac", "rand", "pass_n", "time_ms")
+_SCRIPT2_OPS = ("add", "sub", "mul", "div", "mod", "neg", "abs", "min", "max",
+                "round", "floor", "ceil", "clamp", "lt", "le", "gt", "ge",
+                "eq", "ne", "and", "or", "not", "concat")
+# Node types allowed in the on_stop hook (must never wait or send input).
+_SCRIPT2_STOP_SAFE = ("set_var", "log", "hud_text", "notify", "comment",
+                      "branch")
+
 # Runtime key whitelist: token -> platform keycode. Built from the platform
 # key tables above, so the same script presses the same game keys on both OSes.
 _SCRIPT_KEYS = {"W": KEY_W, "A": KEY_A, "S": KEY_S, "D": KEY_D,
@@ -4465,6 +4485,230 @@ def _script_clamp_wait(ms):
     return max(_SCRIPT_WAIT_MIN_MS, min(_SCRIPT_WAIT_MAX_MS, ms))
 
 
+# ---- v2 expression engine ----------------------------------------------------
+# Expressions are DATA (nested dicts), walked and evaluated here; never eval'd.
+# Semantics are pinned against the Studio TypeScript VM by the cross-language
+# conformance suite (studio_conformance.py), so simulation matches execution.
+
+def _sv_floor(x):
+    i = int(x)
+    return i if (x >= 0 or x == i) else i - 1
+
+
+def _js_round(x):
+    """Math.round: half toward positive infinity (used for glide paths)."""
+    return _sv_floor(x + 0.5)
+
+
+def _sv_round_away(x):
+    """round: half away from zero (used by the round expression op)."""
+    return _sv_floor(x + 0.5) if x >= 0 else -_sv_floor(-x + 0.5)
+
+
+def _sv_finite(x):
+    return x == x and x != float("inf") and x != float("-inf")
+
+
+def _sv_text(v):
+    """Format a value as user-visible text, matching the Studio VM."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        f = float(v)
+        if f == int(f) and abs(f) < 1e15:
+            return str(int(f))
+        return ("%.4f" % f).rstrip("0").rstrip(".")
+    return str(v)
+
+
+def _sv_num(v, ctx):
+    if isinstance(v, bool):
+        return 1.0 if v else 0.0
+    if isinstance(v, (int, float)):
+        f = float(v)
+        if not _sv_finite(f):
+            raise ValueError("%s: value is not a finite number" % ctx)
+        return f
+    raise ValueError("%s: expected a number, got text" % ctx)
+
+
+def _sv_bool(v):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    return len(v) > 0
+
+
+def _sv_truthy(v):
+    """Condition truthiness for branch and while (text "false" counts as no)."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    return len(v) > 0 and v != "false"
+
+
+def _sv_eq(x, y):
+    if isinstance(x, str) or isinstance(y, str):
+        return _sv_text(x) == _sv_text(y)
+    return _sv_num(x, "eq") == _sv_num(y, "eq")
+
+
+def _hex_rgb(hexstr):
+    try:
+        v = int(str(hexstr).lstrip("#"), 16)
+        return ((v >> 16) & 255, (v >> 8) & 255, v & 255)
+    except (TypeError, ValueError):
+        return (0, 0, 0)
+
+
+def _mulberry32(seed):
+    """Deterministic PRNG behind the rand read; bit-identical to the Studio
+    TypeScript implementation."""
+    st = [seed & 0xFFFFFFFF]
+
+    def rand():
+        st[0] = (st[0] + 0x6D2B79F5) & 0xFFFFFFFF
+        t = st[0]
+        t = ((t ^ (t >> 15)) * (t | 1)) & 0xFFFFFFFF
+        t = ((t + (((t ^ (t >> 7)) * ((t | 61) & 0xFFFFFFFF)) & 0xFFFFFFFF))
+             & 0xFFFFFFFF) ^ t
+        return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296.0
+    return rand
+
+
+def _script_eval(e, runner, det, depth=0):
+    """Evaluate one expression tree. Raises ValueError with a human message
+    on any problem; the tick wrapper turns that into a safe stop."""
+    if depth > 32:
+        raise ValueError("expression is nested too deeply")
+    if not isinstance(e, dict):
+        raise ValueError("malformed expression")
+    if "lit" in e:
+        return e["lit"]
+    if "var" in e:
+        nm = e["var"]
+        if nm not in runner.vars:
+            raise ValueError('variable "%s" is not declared' % nm)
+        return runner.vars[nm]
+    if "read" in e:
+        w = e["read"]
+        if w == "cue_pan":
+            return bool(det.on_pan())
+        if w == "cue_deposit":
+            return bool(det.on_deposit())
+        if w == "cue_shake":
+            return bool(det.on_shake())
+        if w == "cap_full":
+            return bool(det.capacity_full())
+        if w == "cap_empty":
+            return bool(det.pan_empty())
+        if w == "cap_frac":
+            return float(det.cap_fill())
+        if w == "rand":
+            return runner._rand()
+        if w == "pass_n":
+            return float(runner.passes)
+        if w == "time_ms":
+            return (time.perf_counter() - runner._t0) * 1000.0
+        raise ValueError("unknown read %r" % (w,))
+    op = e.get("op")
+    args = e.get("args")
+    if not isinstance(args, list) or len(args) > 4:
+        raise ValueError("malformed expression")
+    a = [_script_eval(x, runner, det, depth + 1) for x in args]
+    if op == "add":
+        return _sv_num(a[0], op) + _sv_num(a[1], op)
+    if op == "sub":
+        return _sv_num(a[0], op) - _sv_num(a[1], op)
+    if op == "mul":
+        return _sv_num(a[0], op) * _sv_num(a[1], op)
+    if op == "div":
+        d = _sv_num(a[1], op)
+        if d == 0:
+            raise ValueError("division by zero")
+        return _sv_num(a[0], op) / d
+    if op == "mod":
+        d = _sv_num(a[1], op)
+        if d == 0:
+            raise ValueError("modulo by zero")
+        return _sv_num(a[0], op) % d
+    if op == "neg":
+        return -_sv_num(a[0], op)
+    if op == "abs":
+        return abs(_sv_num(a[0], op))
+    if op == "min":
+        return min(_sv_num(a[0], op), _sv_num(a[1], op))
+    if op == "max":
+        return max(_sv_num(a[0], op), _sv_num(a[1], op))
+    if op == "round":
+        return float(_sv_round_away(_sv_num(a[0], op)))
+    if op == "floor":
+        return float(_sv_floor(_sv_num(a[0], op)))
+    if op == "ceil":
+        return float(-_sv_floor(-_sv_num(a[0], op)))
+    if op == "clamp":
+        v, lo, hi = (_sv_num(a[0], op), _sv_num(a[1], op), _sv_num(a[2], op))
+        return max(lo, min(hi, v))
+    if op == "lt":
+        return _sv_num(a[0], op) < _sv_num(a[1], op)
+    if op == "le":
+        return _sv_num(a[0], op) <= _sv_num(a[1], op)
+    if op == "gt":
+        return _sv_num(a[0], op) > _sv_num(a[1], op)
+    if op == "ge":
+        return _sv_num(a[0], op) >= _sv_num(a[1], op)
+    if op == "eq":
+        return _sv_eq(a[0], a[1])
+    if op == "ne":
+        return not _sv_eq(a[0], a[1])
+    if op == "and":
+        return _sv_bool(a[0]) and _sv_bool(a[1])
+    if op == "or":
+        return _sv_bool(a[0]) or _sv_bool(a[1])
+    if op == "not":
+        return not _sv_bool(a[0])
+    if op == "concat":
+        return "".join(_sv_text(v) for v in a)
+    raise ValueError("unknown operation %r" % (op,))
+
+
+def _expr_shape_ok(e, var_decls, depth=0):
+    """Static well-formedness walk of one expression tree."""
+    if depth > 32 or not isinstance(e, dict):
+        return False
+    if "lit" in e:
+        v = e["lit"]
+        if isinstance(v, bool):
+            return True
+        if isinstance(v, (int, float)):
+            return _sv_finite(float(v))
+        return isinstance(v, str) and len(v) <= _SCRIPT2_STR_MAX
+    if "var" in e:
+        return isinstance(e["var"], str) and e["var"] in var_decls
+    if "read" in e:
+        return e["read"] in _SCRIPT2_READS
+    if "op" in e:
+        args = e.get("args")
+        return (e["op"] in _SCRIPT2_OPS and isinstance(args, list)
+                and len(args) <= 4
+                and all(_expr_shape_ok(x, var_decls, depth + 1) for x in args))
+    return False
+
+
+def _script2_stop_safe(blocks):
+    """True when a hook body only contains nodes that never wait or send
+    input (the on_stop rule)."""
+    for b in blocks:
+        if not isinstance(b, dict) or b.get("type") not in _SCRIPT2_STOP_SAFE:
+            return False
+        for lst in (b.get("children"), b.get("else")):
+            if isinstance(lst, list) and not _script2_stop_safe(lst):
+                return False
+    return True
+
+
 class ScriptRunner:
     """Walks the block tree with an explicit frame stack (no recursion at run
     time). One call to tick() = one block step. A fresh runner is built for
@@ -4474,6 +4718,7 @@ class ScriptRunner:
         self.name = name or "Custom script"
         self.dead = ""                # non-empty -> refuse to run, with reason
         self.blocks = []
+        self.version = 1
         self.passes = 0
         self.empty_passes = 0
         self.pass_activity = False    # this pass sent input / really waited
@@ -4481,34 +4726,62 @@ class ScriptRunner:
         self.pass_started = 0.0
         self.last_step_t = time.perf_counter()
         self.last_emit_t = 0.0
-        self.stack = []               # frames: [list, index, repeats_left]
+        self.stack = []               # frames: [list, index, reps, kind, extra]
+        self.vars = {}                # v2 variables: name -> value
+        self.var_decls = {}           # v2 variables: name -> type
+        self.hooks = {}               # v2 hooks: name -> block list
+        self.on_set_var = None        # optional observers (tests and tools)
+        self.on_pass = None
+        self._stuck_at_pass = 0       # test hook: fire on_stuck after pass N
+        self._pending_stuck = False
+        self._started = False
+        self._ran_on_stop = False
+        self._suppress_on_stop = False
+        self._det = None
+        self._cur = None
+        self._t0 = time.perf_counter()
+        self._rand = _mulberry32(int(time.time()) & 0xFFFFFFFF)
+        r = find_roblox_rect()
+        self._cursor = ((r[0] + r[2] // 2, r[1] + r[3] // 2) if r
+                        else (0, 0))
         try:
             data = json.loads(raw_json or "")
         except (TypeError, ValueError):
             self.dead = "the active custom script could not be read; open " \
                         "Studio and set it active again"
             return
+        if isinstance(data, dict) and data.get("version") == 2:
+            self.version = 2
         blocks = (data or {}).get("blocks") if isinstance(data, dict) else None
         if not isinstance(blocks, list) or not blocks:
             self.dead = "the active custom script is empty or malformed"
             return
+        if self.version == 2 and not self._load_v2(data):
+            return
         n, deep = self._shape(blocks, 1)
-        if n > _SCRIPT_MAX_BLOCKS:
+        max_blocks = (_SCRIPT2_MAX_BLOCKS if self.version == 2
+                      else _SCRIPT_MAX_BLOCKS)
+        max_depth = (_SCRIPT2_MAX_DEPTH if self.version == 2
+                     else _SCRIPT_MAX_DEPTH)
+        if n > max_blocks:
             self.dead = "the active custom script has too many blocks"
-        elif deep > _SCRIPT_MAX_DEPTH:
+        elif deep > max_depth:
             self.dead = "the active custom script is nested too deeply"
         elif n < 0:
             self.dead = "the active custom script contains blocks this " \
                         "version does not understand"
+        elif self.version == 2 and not self._check_exprs(blocks):
+            pass                      # _check_exprs filled self.dead
         else:
             self.blocks = blocks
             self._reset_walk()
 
     def _shape(self, blocks, depth):
         """Count blocks + max depth; -1 count = a block failed the shape check."""
+        tab = _SCRIPT_HANDLERS_V2 if self.version == 2 else _SCRIPT_HANDLERS
         n, deep = 0, depth
         for b in blocks:
-            if (not isinstance(b, dict) or b.get("type") not in _SCRIPT_HANDLERS
+            if (not isinstance(b, dict) or b.get("type") not in tab
                     or not isinstance(b.get("params", {}), dict)):
                 return -1, deep
             n += 1
@@ -4519,18 +4792,43 @@ class ScriptRunner:
                     return -1, kd
                 n += kn
                 deep = max(deep, kd)
+            if self.version == 2:
+                els = b.get("else")
+                if els is not None:
+                    if (not isinstance(els, list)
+                            or b.get("type") not in ("branch", "detect_pixel")):
+                        return -1, deep
+                    if els:
+                        kn, kd = self._shape(els, depth + 1)
+                        if kn < 0:
+                            return -1, kd
+                        n += kn
+                        deep = max(deep, kd)
         return n, deep
 
     def _reset_walk(self):
-        self.stack = [[self.blocks, 0, 1]]
+        self.stack = [[self.blocks, 0, 1, "top", None]]
         self.pass_activity = False
         self.pass_dirty = False
         self.pass_started = time.perf_counter()
 
     # ---- param helpers (defensive re-clamp; the editor validated already) --
-    @staticmethod
-    def _pi(p, key, dflt, lo, hi):
+    def _pi(self, p, key, dflt, lo, hi):
         v = p.get(key, dflt)
+        if isinstance(v, dict):
+            if self.version == 2 and "$expr" in v:
+                ev = _script_eval(v["$expr"], self, self._det)
+                if isinstance(ev, bool):
+                    v = 1 if ev else 0
+                elif isinstance(ev, (int, float)):
+                    v = ev
+                else:
+                    try:
+                        v = int(float(ev))
+                    except (TypeError, ValueError):
+                        v = dflt
+            else:
+                v = dflt
         try:
             v = int(v)
         except (TypeError, ValueError):
@@ -4540,6 +4838,8 @@ class ScriptRunner:
     def _key(self, p, key_param, movement_only=False):
         """Whitelisted keycode for a key param, or None (= safe stop)."""
         tok = p.get(key_param)
+        if isinstance(tok, dict) and self.version == 2 and "$expr" in tok:
+            tok = _sv_text(_script_eval(tok["$expr"], self, self._det))
         if movement_only and tok not in _SCRIPT_MOVE_KEYS:
             if tok in (None, "", "none"):
                 return None, False
@@ -4573,9 +4873,24 @@ class ScriptRunner:
         if State.want_reset:          # fresh slate after a safe-pause retry
             State.want_reset = False
             self._reset_walk()
+            if self.version == 2 and self.hooks.get("on_stuck"):
+                self._pending_stuck = True
         release_all()                 # anti-drift, same as the supervisor
         try:
-            self._step(det)
+            self._det = det
+            if self.version == 2 and not self._started:
+                self._started = True
+                self._run_hook("on_start", det)
+            if self._pending_stuck:
+                self._pending_stuck = False
+                self._run_hook("on_stuck", det)
+            if State.running:
+                self._step(det)
+            if (self.version == 2 and not State.running
+                    and not self._ran_on_stop and not self._suppress_on_stop
+                    and self.hooks.get("on_stop")):
+                self._ran_on_stop = True
+                self._run_hook("on_stop", det)
         except Exception as e:
             release_all()
             safe_stop("Custom script error: %s" % e)
@@ -4585,16 +4900,29 @@ class ScriptRunner:
                       % int(_SCRIPT_STALL_S))
 
     def _step(self, det):
-        # find the next block, unwinding finished frames / repeats
+        self._det = det
+        # find the next block, unwinding finished frames / repeats / whiles
         while True:
             if not self.stack:
                 self._wrap_pass()
                 if not State.running:
                     return
-                self.stack = [[self.blocks, 0, 1]]
+                self.stack = [[self.blocks, 0, 1, "top", None]]
             frame = self.stack[-1]
-            lst, i, reps = frame
+            lst, i, reps = frame[0], frame[1], frame[2]
             if i >= len(lst):
+                kind = frame[3]
+                if kind == "hook":
+                    self.stack.pop()
+                    return
+                if kind == "while":
+                    ex = frame[4]
+                    if (not ex[2]) and ex[1] > 0 and self._while_again(det, ex[0]):
+                        frame[1] = 0
+                        ex[1] -= 1
+                        continue
+                    self.stack.pop()
+                    continue
                 if reps > 1:
                     frame[1], frame[2] = 0, reps - 1
                     continue
@@ -4608,24 +4936,40 @@ class ScriptRunner:
         t = b.get("type")
         p = b.get("params") or {}
         kids = b.get("children") if isinstance(b.get("children"), list) else []
+        self._cur = b
         self._emit_block(b)
-        enter = _SCRIPT_HANDLERS[t](self, det, p, kids)
-        if enter is not None:
+        tab = _SCRIPT_HANDLERS_V2 if self.version == 2 else _SCRIPT_HANDLERS
+        enter = tab[t](self, det, p, kids)
+        frame[1] += 1
+        if isinstance(enter, tuple):
+            tag = enter[0]
+            if tag == "push":
+                if enter[1] and enter[2] > 0:
+                    self.stack.append([enter[1], 0, enter[2], enter[3],
+                                       enter[4]])
+            else:
+                self._unwind_loop(tag == "break")
+        elif enter is not None:
             # container decided to run its children (enter = repeat count)
-            frame[1] += 1
             if kids and enter > 0:
-                self.stack.append([kids, 0, enter])
-        else:
-            frame[1] += 1
+                self.stack.append([kids, 0, enter,
+                                   "loop" if t == "repeat" else "body", None])
         self.last_step_t = time.perf_counter()
         State.last_progress = self.last_step_t
 
     def _wrap_pass(self):
         """The implicit top-level loop wrapped: one pass = one pan."""
         self.passes += 1
+        if self._stuck_at_pass and self.passes == self._stuck_at_pass:
+            self._run_hook("on_stuck", self._det)
         now = time.perf_counter()
         if self.pass_activity:
             self.empty_passes = 0
+            if self.on_pass:
+                try:
+                    self.on_pass(self.passes)
+                except Exception:
+                    pass
             if State.stats:
                 State.stats.cycles += 1
                 if not self.pass_dirty:
@@ -4674,7 +5018,8 @@ class ScriptRunner:
         clicks = self._pi(p, "clicks", 0, 0, 100)
         click_ms = self._pi(p, "click_ms", 18, 1, 200)
         gap_ms = self._pi(p, "gap_ms", 14, 1, 500)
-        max_ms = _script_clamp_wait(p.get("max_ms", 4000))
+        max_ms = _script_clamp_wait(
+            self._pi(p, "max_ms", 4000, 1, _SCRIPT_WAIT_MAX_MS))
         self.pass_activity = True
         hold_w = bool(p.get("momentum_w"))
         if hold_w:
@@ -4742,6 +5087,7 @@ class ScriptRunner:
         if at == "center":
             r = find_roblox_rect()
             if r:
+                self._cursor = (r[0] + r[2] // 2, r[1] + r[3] // 2)
                 move_cursor(r[0] + r[2] // 2, r[1] + r[3] // 2)
                 sleep_ms(30)
             else:
@@ -4749,6 +5095,7 @@ class ScriptRunner:
         elif at == "autopan":
             bp = globals().get("AUTOPAN_BTN_PIXEL") or [0, 0]
             if bp and int(bp[0]) and int(bp[1]):
+                self._cursor = (int(bp[0]), int(bp[1]))
                 move_cursor(int(bp[0]), int(bp[1]))
                 sleep_ms(30)
             else:
@@ -4791,7 +5138,8 @@ class ScriptRunner:
         if fn is None:
             safe_stop("the custom script waits for an unknown prompt")
             return None
-        timeout = _script_clamp_wait(p.get("timeout_ms", 3000))
+        timeout = _script_clamp_wait(
+            self._pi(p, "timeout_ms", 3000, 1, _SCRIPT_WAIT_MAX_MS))
         self.pass_activity = True
         code, bad = self._key(p, "hold", movement_only=True)
         if bad:
@@ -4819,7 +5167,8 @@ class ScriptRunner:
     def _do_wait_cap(self, det, p, kids):
         want_full = p.get("state") != "empty"
         fn = det.capacity_full if want_full else det.pan_empty
-        timeout = _script_clamp_wait(p.get("timeout_ms", 5000))
+        timeout = _script_clamp_wait(
+            self._pi(p, "timeout_ms", 5000, 1, _SCRIPT_WAIT_MAX_MS))
         self.pass_activity = True
         ok = wait_until(fn, timeout, confirm=2)
         if not ok and State.running and p.get("on_timeout") == "stop":
@@ -4849,6 +5198,10 @@ class ScriptRunner:
         return 0 if val else 1
 
     def _do_repeat(self, det, p, kids):
+        raw = p.get("times")
+        if isinstance(raw, dict) and self.version == 2 and "$expr" in raw:
+            # A wired count may be 0, meaning skip the loop this pass.
+            return self._pi(p, "times", 1, 0, 1000)
         return self._pi(p, "times", 1, 1, 1000)
 
     def _do_group(self, det, p, kids):
@@ -4861,6 +5214,316 @@ class ScriptRunner:
         return None
 
     def _do_comment(self, det, p, kids):
+        return None
+
+    # ---- v2 (Prospector Studio desktop) ------------------------------------
+    # New node types compiled by the standalone Studio. Semantics are pinned
+    # against the Studio TypeScript VM by studio_conformance.py.
+
+    def _load_v2(self, data):
+        """Parse v2 variables and hooks. Returns False (with self.dead set)
+        on any problem."""
+        vs = data.get("variables", [])
+        if vs is None:
+            vs = []
+        if not isinstance(vs, list) or len(vs) > _SCRIPT2_MAX_VARS:
+            self.dead = "the active custom script has a bad variables list"
+            return False
+        for d in vs:
+            nm = d.get("name") if isinstance(d, dict) else None
+            ty = d.get("type") if isinstance(d, dict) else None
+            if (not isinstance(nm, str) or not nm or len(nm) > 32
+                    or not (nm[0].isalpha() and all(
+                        ch.isalnum() or ch == "_" for ch in nm))
+                    or nm in self.var_decls
+                    or ty not in ("number", "bool", "string")):
+                self.dead = "the active custom script has a bad variable " \
+                            "declaration"
+                return False
+            init = d.get("initial")
+            if ty == "number":
+                if (isinstance(init, bool) or not isinstance(init, (int, float))
+                        or not _sv_finite(float(init))):
+                    self.dead = ("the active custom script variable %r has a "
+                                 "bad initial value" % nm)
+                    return False
+                init = float(init)
+            elif ty == "bool":
+                if not isinstance(init, bool):
+                    self.dead = ("the active custom script variable %r has a "
+                                 "bad initial value" % nm)
+                    return False
+            else:
+                if not isinstance(init, str) or len(init) > _SCRIPT2_STR_MAX:
+                    self.dead = ("the active custom script variable %r has a "
+                                 "bad initial value" % nm)
+                    return False
+            self.var_decls[nm] = ty
+            self.vars[nm] = init
+        hk = data.get("hooks", {})
+        if hk is None:
+            hk = {}
+        if not isinstance(hk, dict):
+            self.dead = "the active custom script has a bad hooks table"
+            return False
+        for k, body in hk.items():
+            if k not in ("on_start", "on_stop", "on_stuck") \
+                    or not isinstance(body, list):
+                self.dead = "the active custom script has an unknown hook"
+                return False
+            if not body:
+                continue
+            n, deep = self._shape(body, 1)
+            if n < 0 or n > _SCRIPT2_MAX_HOOK_BLOCKS \
+                    or deep > _SCRIPT2_MAX_DEPTH:
+                self.dead = "the active custom script hook %s is malformed" % k
+                return False
+            if k == "on_stop" and not _script2_stop_safe(body):
+                self.dead = ("the on stop hook may only set variables, log, "
+                             "show HUD text, notify, or branch")
+                return False
+            if not self._check_exprs(body):
+                return False
+            self.hooks[k] = body
+        return True
+
+    def _check_exprs(self, blocks):
+        """Static walk over every wired param expression. Fills self.dead on
+        the first malformed tree."""
+        for b in blocks:
+            for v in (b.get("params") or {}).values():
+                if isinstance(v, dict):
+                    if "$expr" not in v \
+                            or not _expr_shape_ok(v["$expr"], self.var_decls):
+                        self.dead = ("the active custom script has a "
+                                     "malformed wired value on block %r"
+                                     % (b.get("id", "?"),))
+                        return False
+            for lst in (b.get("children"), b.get("else")):
+                if isinstance(lst, list) and lst \
+                        and not self._check_exprs(lst):
+                    return False
+        return True
+
+    def _pv_eval(self, v):
+        """Evaluate a param value: expression dicts in v2, literals as-is."""
+        if isinstance(v, dict):
+            if self.version == 2 and "$expr" in v:
+                return _script_eval(v["$expr"], self, self._det)
+            raise ValueError("malformed wired value")
+        return v
+
+    def _unwind_loop(self, is_break):
+        """Break/continue: unwind body frames to the nearest loop frame."""
+        while self.stack:
+            fr = self.stack[-1]
+            kind = fr[3]
+            if kind == "loop":
+                fr[1] = len(fr[0])
+                if is_break:
+                    fr[2] = 1
+                return
+            if kind == "while":
+                fr[1] = len(fr[0])
+                if is_break:
+                    fr[4][2] = True
+                return
+            self.stack.pop()
+            if kind in ("top", "hook"):
+                return
+        return
+
+    def _while_again(self, det, b):
+        """One While lap check: the fixed 10 ms yield, then the condition."""
+        sleep_ms(10)
+        if not State.running:
+            return False
+        p = b.get("params") or {}
+        return _sv_truthy(self._pv_eval(p.get("cond", True)))
+
+    def _run_hook(self, name, det):
+        """Run one hook body synchronously on a private frame stack."""
+        body = self.hooks.get(name) if self.version == 2 else None
+        if not body:
+            return
+        saved = self.stack
+        self.stack = [[body, 0, 1, "hook", None]]
+        n = 0
+        try:
+            while self.stack and n < _SCRIPT2_HOOK_STEP_BUDGET and State.alive:
+                if not State.running and name != "on_stop":
+                    break
+                self._step(det)
+                n += 1
+        finally:
+            self.stack = saved
+
+    def _anchor_point(self, a):
+        """Resolve a calibration anchor name to a screen point."""
+        if a == "none":
+            return (0, 0)
+        if a == "autopan":
+            bp = globals().get("AUTOPAN_BTN_PIXEL") or [0, 0]
+            if bp and int(bp[0]) and int(bp[1]):
+                return (int(bp[0]), int(bp[1]))
+            return (0, 0)
+        r = find_roblox_rect()
+        if not r:
+            return (0, 0)
+        if a == "center":
+            return (r[0] + r[2] // 2, r[1] + r[3] // 2)
+        return (r[0], r[1])
+
+    def _resolve_anchor(self, p, xk="x", yk="y"):
+        a = p.get("anchor", "window")
+        if isinstance(a, dict):
+            a = _sv_text(self._pv_eval(a))
+        base = self._anchor_point(a)
+        return (base[0] + self._pi(p, xk, 0, -10000, 10000),
+                base[1] + self._pi(p, yk, 0, -10000, 10000))
+
+    def _pixel_rgb(self, det, x, y):
+        r, g, b = rgb_at(det.sct, x, y)
+        return (float(r), float(g), float(b))
+
+    def _glide_to(self, x2, y2, duration_ms, steps):
+        """Cursor glide in small steps, matching the Studio VM path model."""
+        if duration_ms <= 0 or steps <= 1:
+            self._cursor = (int(x2), int(y2))
+            move_cursor(int(x2), int(y2))
+            return
+        x1, y1 = self._cursor
+        per = duration_ms / float(steps)
+        for i in range(1, steps + 1):
+            d = _js_round(per * i) - _js_round(per * (i - 1))
+            if not _script_sleep(d):
+                return
+            nx = _js_round(x1 + (x2 - x1) * i / float(steps))
+            ny = _js_round(y1 + (y2 - y1) * i / float(steps))
+            self._cursor = (nx, ny)
+            move_cursor(nx, ny)
+
+    def _emit_hud(self, txt):
+        try:
+            print("__SCRIPTHUD__ " + json.dumps({"text": txt}), flush=True)
+        except Exception:
+            pass
+
+    def _do_branch(self, det, p, kids):
+        b = self._cur
+        taken = _sv_truthy(self._pv_eval(p.get("cond", True)))
+        els = b.get("else") if isinstance(b.get("else"), list) else []
+        return ("push", kids if taken else els, 1, "body", None)
+
+    def _do_while(self, det, p, kids):
+        b = self._cur
+        max_iters = self._pi(p, "max_iters", 10000, 1, _SCRIPT2_WHILE_MAX)
+        sleep_ms(10)
+        if not State.running:
+            return None
+        if not _sv_truthy(self._pv_eval(p.get("cond", True))):
+            return None
+        return ("push", kids, 1, "while", [b, max_iters - 1, False])
+
+    def _do_break(self, det, p, kids):
+        return ("break",)
+
+    def _do_continue(self, det, p, kids):
+        return ("continue",)
+
+    def _do_set_var(self, det, p, kids):
+        name = p.get("name")
+        ty = self.var_decls.get(name)
+        if ty is None:
+            raise ValueError('variable "%s" is not declared' % (name,))
+        v = self._pv_eval(p.get("value", 0))
+        if ty == "number":
+            if isinstance(v, bool):
+                v = 1.0 if v else 0.0
+            elif isinstance(v, (int, float)):
+                v = float(v)
+            else:
+                try:
+                    v = float(str(v).strip())
+                except (TypeError, ValueError):
+                    v = float("nan")
+            if not _sv_finite(v):
+                raise ValueError('variable "%s" holds a number, the value '
+                                 "is not numeric" % name)
+        elif ty == "bool":
+            v = _sv_truthy(v)
+        else:
+            v = _sv_text(v)[:_SCRIPT2_STR_MAX]
+        self.vars[name] = v
+        if self.on_set_var:
+            try:
+                self.on_set_var(name, v)
+            except Exception:
+                pass
+        return None
+
+    def _do_detect_pixel(self, det, p, kids):
+        b = self._cur
+        x, y = self._resolve_anchor(p)
+        tol = self._pi(p, "tolerance", 24, 0, 128)
+        col = p.get("color", "#ffffff")
+        target = _hex_rgb(col if isinstance(col, str) else "#ffffff")
+        rgb = self._pixel_rgb(det, x, y)
+        m = (abs(rgb[0] - target[0]) <= tol
+             and abs(rgb[1] - target[1]) <= tol
+             and abs(rgb[2] - target[2]) <= tol)
+        store = p.get("store")
+        if isinstance(store, str) and store:
+            if self.var_decls.get(store) != "bool":
+                raise ValueError('detect pixel stores into "%s", which is '
+                                 "not a yes/no variable" % store)
+            self.vars[store] = m
+            if self.on_set_var:
+                try:
+                    self.on_set_var(store, m)
+                except Exception:
+                    pass
+        els = b.get("else") if isinstance(b.get("else"), list) else []
+        return ("push", kids if m else els, 1, "body", None)
+
+    def _do_move_mouse(self, det, p, kids):
+        x, y = self._resolve_anchor(p)
+        dur = self._pi(p, "duration_ms", 120, 0, 5000)
+        steps = self._pi(p, "steps", 12, 1, 100)
+        self.pass_activity = True
+        self._glide_to(x, y, dur, steps)
+        return None
+
+    def _do_drag_mouse(self, det, p, kids):
+        a = p.get("anchor", "window")
+        if isinstance(a, dict):
+            a = _sv_text(self._pv_eval(a))
+        base = self._anchor_point(a)
+        x1 = base[0] + self._pi(p, "x1", 0, -10000, 10000)
+        y1 = base[1] + self._pi(p, "y1", 0, -10000, 10000)
+        x2 = base[0] + self._pi(p, "x2", 0, -10000, 10000)
+        y2 = base[1] + self._pi(p, "y2", 0, -10000, 10000)
+        dur = self._pi(p, "duration_ms", 300, 20, 10000)
+        steps = self._pi(p, "steps", 16, 2, 200)
+        self.pass_activity = True
+        self._cursor = (x1, y1)
+        move_cursor(x1, y1)
+        _script_sleep(30)
+        mouse_down()
+        try:
+            self._glide_to(x2, y2, dur, steps)
+        finally:
+            mouse_up()
+        return None
+
+    def _do_log(self, det, p, kids):
+        msg = _sv_text(self._pv_eval(p.get("message", "")))[:200]
+        log(msg)
+        return None
+
+    def _do_hud_text(self, det, p, kids):
+        txt = _sv_text(self._pv_eval(p.get("text", "")))[:120]
+        self._emit_hud(txt)
         return None
 
 
@@ -4877,6 +5540,21 @@ _SCRIPT_HANDLERS = {
     "group": ScriptRunner._do_group, "stop": ScriptRunner._do_stop,
     "comment": ScriptRunner._do_comment,
 }
+
+# Version 2 adds the Prospector Studio desktop node set on top of v1.
+_SCRIPT_HANDLERS_V2 = dict(_SCRIPT_HANDLERS)
+_SCRIPT_HANDLERS_V2.update({
+    "branch": ScriptRunner._do_branch,
+    "while": ScriptRunner._do_while,
+    "break_loop": ScriptRunner._do_break,
+    "continue_loop": ScriptRunner._do_continue,
+    "set_var": ScriptRunner._do_set_var,
+    "detect_pixel": ScriptRunner._do_detect_pixel,
+    "move_mouse": ScriptRunner._do_move_mouse,
+    "drag_mouse": ScriptRunner._do_drag_mouse,
+    "log": ScriptRunner._do_log,
+    "hud_text": ScriptRunner._do_hud_text,
+})
 
 
 def script_tick(det):

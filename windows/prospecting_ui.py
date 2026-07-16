@@ -2097,6 +2097,32 @@ STUDIO_MAX_DEPTH = 16
 # files from a NEWER schema are refused at import with a clear message.
 STUDIO_SCHEMA_VERSION = 1
 
+# Version 2 programs come from the standalone Prospector Studio desktop app
+# (node graphs compiled to the PPScript v2 IR). The embedded editor cannot
+# edit them, but the library can store, activate, run, export, and share
+# them; the engine interpreter executes them behind its own hard rails.
+STUDIO_SCHEMA_V2 = 2
+STUDIO2_MAX_BLOCKS = 2000
+STUDIO2_MAX_DEPTH = 32
+STUDIO2_MAX_VARS = 64
+STUDIO2_MAX_HOOK_BLOCKS = 200
+STUDIO2_STR_MAX = 400
+STUDIO2_V2_ONLY_TYPES = ("branch", "while", "break_loop", "continue_loop",
+                         "set_var", "detect_pixel", "move_mouse",
+                         "drag_mouse", "log", "hud_text")
+STUDIO2_TYPES = set(STUDIO_BLOCKS) | set(STUDIO2_V2_ONLY_TYPES)
+STUDIO2_CONTAINERS = set(STUDIO_CONTAINERS) | {"branch", "while",
+                                               "detect_pixel"}
+STUDIO2_ELSE_TYPES = ("branch", "detect_pixel")
+STUDIO2_HOOKS = ("on_start", "on_stop", "on_stuck")
+STUDIO2_STOP_SAFE = ("set_var", "log", "hud_text", "notify", "comment",
+                     "branch")
+STUDIO2_READS = ("cue_pan", "cue_deposit", "cue_shake", "cap_full",
+                 "cap_empty", "cap_frac", "rand", "pass_n", "time_ms")
+STUDIO2_OPS = ("add", "sub", "mul", "div", "mod", "neg", "abs", "min", "max",
+               "round", "floor", "ceil", "clamp", "lt", "le", "gt", "ge",
+               "eq", "ne", "and", "or", "not", "concat")
+
 
 def render(msg=""):
     saved = load_saved()

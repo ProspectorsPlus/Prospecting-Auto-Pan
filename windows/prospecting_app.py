@@ -166,6 +166,19 @@ try:
     STUDIO_MAX_BLOCKS = getattr(_ui, "STUDIO_MAX_BLOCKS", 500)
     STUDIO_MAX_DEPTH = getattr(_ui, "STUDIO_MAX_DEPTH", 16)
     STUDIO_SCHEMA_VERSION = getattr(_ui, "STUDIO_SCHEMA_VERSION", 1)
+    STUDIO_SCHEMA_V2 = getattr(_ui, "STUDIO_SCHEMA_V2", 2)
+    STUDIO2_MAX_BLOCKS = getattr(_ui, "STUDIO2_MAX_BLOCKS", 2000)
+    STUDIO2_MAX_DEPTH = getattr(_ui, "STUDIO2_MAX_DEPTH", 32)
+    STUDIO2_MAX_VARS = getattr(_ui, "STUDIO2_MAX_VARS", 64)
+    STUDIO2_MAX_HOOK_BLOCKS = getattr(_ui, "STUDIO2_MAX_HOOK_BLOCKS", 200)
+    STUDIO2_STR_MAX = getattr(_ui, "STUDIO2_STR_MAX", 400)
+    STUDIO2_TYPES = getattr(_ui, "STUDIO2_TYPES", set())
+    STUDIO2_CONTAINERS = getattr(_ui, "STUDIO2_CONTAINERS", set())
+    STUDIO2_ELSE_TYPES = getattr(_ui, "STUDIO2_ELSE_TYPES", ())
+    STUDIO2_HOOKS = getattr(_ui, "STUDIO2_HOOKS", ())
+    STUDIO2_STOP_SAFE = getattr(_ui, "STUDIO2_STOP_SAFE", ())
+    STUDIO2_READS = getattr(_ui, "STUDIO2_READS", ())
+    STUDIO2_OPS = getattr(_ui, "STUDIO2_OPS", ())
 except Exception:
     import traceback
     traceback.print_exc()
@@ -183,6 +196,19 @@ except Exception:
     STUDIO_MAX_BLOCKS = 500
     STUDIO_MAX_DEPTH = 16
     STUDIO_SCHEMA_VERSION = 1
+    STUDIO_SCHEMA_V2 = 2
+    STUDIO2_MAX_BLOCKS = 2000
+    STUDIO2_MAX_DEPTH = 32
+    STUDIO2_MAX_VARS = 64
+    STUDIO2_MAX_HOOK_BLOCKS = 200
+    STUDIO2_STR_MAX = 400
+    STUDIO2_TYPES = set()
+    STUDIO2_CONTAINERS = set()
+    STUDIO2_ELSE_TYPES = ()
+    STUDIO2_HOOKS = ()
+    STUDIO2_STOP_SAFE = ()
+    STUDIO2_READS = ()
+    STUDIO2_OPS = ()
 
 # Local tuning assistant (offline expert system). Optional: if it fails to load,
 # the rest of the app keeps working and the Coach panel just reports it's offline.
@@ -1044,6 +1070,220 @@ def _studio_block_title(b, idx_path):
     return "Block %s (%s)" % (".".join(str(i + 1) for i in idx_path), nm)
 
 
+def _studio_expr_ok(e, var_names, depth=0):
+    """Static well-formedness walk of one wired-expression tree (v2)."""
+    if depth > 32 or not isinstance(e, dict):
+        return False
+    if "lit" in e:
+        v = e["lit"]
+        if isinstance(v, bool):
+            return True
+        if isinstance(v, (int, float)):
+            return v == v and v != float("inf") and v != float("-inf")
+        return isinstance(v, str) and len(v) <= STUDIO2_STR_MAX
+    if "var" in e:
+        return isinstance(e["var"], str) and e["var"] in var_names
+    if "read" in e:
+        return e["read"] in STUDIO2_READS
+    if "op" in e:
+        args = e.get("args")
+        return (e["op"] in STUDIO2_OPS and isinstance(args, list)
+                and len(args) <= 4
+                and all(_studio_expr_ok(x, var_names, depth + 1)
+                        for x in args))
+    return False
+
+
+def _studio2_count(lst):
+    n = 0
+    for b in lst:
+        if not isinstance(b, dict):
+            continue
+        n += 1
+        for key in ("children", "else"):
+            kids = b.get(key)
+            if isinstance(kids, list):
+                n += _studio2_count(kids)
+    return n
+
+
+def _studio2_stop_safe(lst):
+    for b in lst:
+        if not isinstance(b, dict) or b.get("type") not in STUDIO2_STOP_SAFE:
+            return False
+        for key in ("children", "else"):
+            kids = b.get(key)
+            if isinstance(kids, list) and not _studio2_stop_safe(kids):
+                return False
+    return True
+
+
+def _studio_validate_v2(script):
+    """Structural check for version 2 programs (made in the standalone
+    Prospector Studio desktop app). The engine re-validates everything
+    again at runtime behind its own hard rails, so this focuses on shape,
+    limits, and clear messages. The embedded editor never edits these."""
+    errors, problems = [], []
+    if script.get("format") != "ppscript":
+        errors.append("Not a Prospector Studio script (missing the "
+                      "ppscript marker).")
+    if not _studio_name_ok(script.get("name")):
+        errors.append("The script needs a name: 1 to 60 printable "
+                      "characters, no leading or trailing spaces.")
+    desc = script.get("description", "")
+    if not isinstance(desc, str) or len(desc) > 300:
+        errors.append("The description must be text, at most 300 characters.")
+    known = {"format", "version", "name", "description", "author",
+             "created", "updated", "blocks", "settings", "variables",
+             "hooks"}
+    extra = [k for k in script if k not in known]
+    if extra:
+        errors.append("Unknown fields in the script file: %s."
+                      % ", ".join(sorted(str(k) for k in extra)[:5]))
+    var_names = set()
+    vs = script.get("variables", [])
+    if vs is None:
+        vs = []
+    if not isinstance(vs, list) or len(vs) > STUDIO2_MAX_VARS:
+        errors.append("The variables list is malformed or too long.")
+        vs = []
+    for d in vs:
+        nm = d.get("name") if isinstance(d, dict) else None
+        ty = d.get("type") if isinstance(d, dict) else None
+        if (not isinstance(nm, str) or not nm or len(nm) > 32
+                or not (nm[0].isalpha() and all(ch.isalnum() or ch == "_"
+                                                for ch in nm))
+                or nm in var_names
+                or ty not in ("number", "bool", "string")):
+            errors.append("A variable declaration is malformed.")
+            continue
+        var_names.add(nm)
+    blocks = script.get("blocks")
+    if not isinstance(blocks, list):
+        errors.append("The blocks field must be a list.")
+        return {"ok": False, "errors": errors, "problems": problems}
+    total = _studio2_count(blocks)
+    if total > STUDIO2_MAX_BLOCKS:
+        errors.append("Too many blocks (%d; the limit is %d)."
+                      % (total, STUDIO2_MAX_BLOCKS))
+        return {"ok": False, "errors": errors, "problems": problems}
+    if not blocks:
+        problems.append("The script is empty; publish it again from "
+                        "Prospector Studio with at least one step.")
+    seen_ids = set()
+
+    def walk(lst, depth):
+        if depth > STUDIO2_MAX_DEPTH:
+            errors.append("Blocks are nested deeper than %d levels."
+                          % STUDIO2_MAX_DEPTH)
+            return
+        for b in lst:
+            if not isinstance(b, dict):
+                errors.append("A block is not an object.")
+                continue
+            bid = b.get("id")
+            if not isinstance(bid, str) or not (1 <= len(bid) <= 64):
+                errors.append("A block has a bad or missing id.")
+            elif bid in seen_ids:
+                errors.append("Duplicate block id '%s'." % bid)
+            else:
+                seen_ids.add(bid)
+            t = b.get("type")
+            if t not in STUDIO2_TYPES:
+                errors.append("Unknown block type %r." % (t,))
+                continue
+            params = b.get("params")
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                errors.append("Block '%s': params must be an object."
+                              % (bid,))
+                params = {}
+            for k, v in params.items():
+                if isinstance(v, dict):
+                    if "$expr" not in v                             or not _studio_expr_ok(v.get("$expr"), var_names):
+                        errors.append("Block '%s': the wired value on %r "
+                                      "is malformed." % (bid, k))
+                elif not isinstance(v, (int, float, str, bool)):
+                    errors.append("Block '%s': parameter %r has a bad "
+                                  "value." % (bid, k))
+                elif isinstance(v, str) and len(v) > STUDIO2_STR_MAX:
+                    errors.append("Block '%s': parameter %r is too long."
+                                  % (bid, k))
+            kids = b.get("children")
+            if kids is not None and not isinstance(kids, list):
+                errors.append("Block '%s': children must be a list." % (bid,))
+                kids = []
+            if kids and t not in STUDIO2_CONTAINERS:
+                errors.append("Block '%s' (%s) cannot contain steps."
+                              % (bid, t))
+            els = b.get("else")
+            if els is not None:
+                if not isinstance(els, list) or t not in STUDIO2_ELSE_TYPES:
+                    errors.append("Block '%s' cannot have a No branch."
+                                  % (bid,))
+                    els = []
+            if isinstance(kids, list) and kids:
+                walk(kids, depth + 1)
+            if isinstance(els, list) and els:
+                walk(els, depth + 1)
+
+    walk(blocks, 1)
+    hk = script.get("hooks", {})
+    if hk is None:
+        hk = {}
+    if not isinstance(hk, dict):
+        errors.append("The hooks field must be an object.")
+        hk = {}
+    for k, body in hk.items():
+        if k not in STUDIO2_HOOKS or not isinstance(body, list):
+            errors.append("Unknown or malformed hook %r." % (k,))
+            continue
+        if _studio2_count(body) > STUDIO2_MAX_HOOK_BLOCKS:
+            errors.append("The %s hook has too many blocks." % k)
+            continue
+        if k == "on_stop" and body and not _studio2_stop_safe(body):
+            errors.append("The on_stop hook may only set variables, log, "
+                          "show HUD text, notify, or branch.")
+        walk(body, 1)
+    return {"ok": not errors, "errors": errors, "problems": problems}
+
+
+def _studio_sanitize_v2(script):
+    """Import path for version 2 files: strict validation, no repair. A v2
+    program is compiled output; a malformed one must be re-exported from
+    Prospector Studio, not silently patched here."""
+    chk = _studio_validate_v2(script)
+    if not chk["ok"]:
+        return None, ("Could not import this Prospector Studio script: "
+                      + " ".join(chk["errors"][:3])
+                      + " Re-export it from Prospector Studio.")
+    out = {"format": "ppscript", "version": STUDIO_SCHEMA_V2}
+    out["name"] = "".join(ch for ch in str(script.get("name", "")).strip()
+                          if ch.isprintable())[:60] or "Imported script"
+    out["description"] = ("".join(ch for ch in str(script.get("description")
+                                                   or "")
+                                  if ch.isprintable()))[:300]
+    out["author"] = ("".join(ch for ch in str(script.get("author") or "")
+                             if ch.isprintable()))[:60]
+    now = int(time.time())
+    created = script.get("created")
+    out["created"] = created if isinstance(created, int)         and not isinstance(created, bool) and created >= 0 else now
+    out["updated"] = now
+    out["settings"] = {}
+    out["blocks"] = script.get("blocks") or []
+    vs = script.get("variables")
+    if isinstance(vs, list) and vs:
+        out["variables"] = vs
+    hk = script.get("hooks")
+    if isinstance(hk, dict):
+        hk = {k: v for k, v in hk.items()
+              if k in STUDIO2_HOOKS and isinstance(v, list) and v}
+        if hk:
+            out["hooks"] = hk
+    return out, None
+
+
 def _studio_validate(script):
     """STRICT schema + runnability check. Returns
     {"ok": bool, "errors": [str], "problems": [str]} where errors mean the
@@ -1057,6 +1297,9 @@ def _studio_validate(script):
     v = script.get("version")
     if not isinstance(v, int) or isinstance(v, bool) or v < 1:
         errors.append("Unsupported script version.")
+    elif v == STUDIO_SCHEMA_V2:
+        # Standalone Prospector Studio program: its own validation path.
+        return _studio_validate_v2(script)
     elif v > STUDIO_SCHEMA_VERSION:
         errors.append("This script was made with a newer version of "
                       "Prospectors Plus; update the app to open it.")
@@ -1202,6 +1445,8 @@ def _studio_sanitize(script):
     deep) returns an error instead. Never executes anything."""
     if not isinstance(script, dict):
         return None, "That file does not contain a script."
+    if script.get("version") == STUDIO_SCHEMA_V2:
+        return _studio_sanitize_v2(script)
     out = {"format": "ppscript", "version": 1}
     nm = script.get("name")
     out["name"] = (str(nm).strip()[:60] if isinstance(nm, (str, int, float))
@@ -2858,6 +3103,12 @@ class Api:
         s = d["scripts"].get(name)
         if not isinstance(s, dict):
             return {"ok": False, "error": "Script not found."}
+        if s.get("version") == STUDIO_SCHEMA_V2:
+            return {"ok": False, "error":
+                    "This script was made in Prospector Studio (the "
+                    "desktop app). Open it there to edit it. You can "
+                    "still set it active, run it, export it, and share "
+                    "it from this library."}
         return {"ok": True, "script": _studio_normalize(s),
                 "active": d["active"] == name}
 
