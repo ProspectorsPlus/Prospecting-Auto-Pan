@@ -517,6 +517,13 @@ SHARDS_GREEN_CONFIRM   = False # the dig skill-bar's green zone appearing also
 # nudges ONLY when the FIRST dig of a land round shows no movement at all after
 # that whole wait. Then it hands back to the NORMAL cycle -> walk to water +
 # momentum shake (NOT treasure's L/R strafe).
+# --- CUSTOM SCRIPTS (Prospector Studio) --------------------------------------
+# The active user-built block script. The app validates and writes these; the
+# ScriptRunner interpreter (further down) walks the JSON as pure data.
+SCRIPT_MODE   = False  # run the active Studio script instead of a built-in mode
+SCRIPT_ACTIVE = ""     # its name (History labels + logs)
+SCRIPT_JSON   = ""     # the script itself (JSON text)
+
 GEODE_MODE           = False
 GEODE_DIGS_TO_FILL   = 1     # dig taps to fill the pan
 GEODE_DIG_MS         = 5     # quick dig hold (5-10 ms, like shards/treasure)
@@ -719,6 +726,7 @@ KEY_S = 0x1F            # S
 KEY_A = 0x1E            # A
 KEY_D = 0x20            # D
 KEY_SHIFT = 0x2A        # left Shift (open Fast Travel)
+KEY_SPACE = 0x39        # Space (jump; Studio scripts)
 # Hotbar slot number -> Windows scancode (digit row 1..0).
 SLOT_KEYCODES = {1: 0x02, 2: 0x03, 3: 0x04, 4: 0x05, 5: 0x06,
                  6: 0x07, 7: 0x08, 8: 0x09, 9: 0x0A, 0: 0x0B}
@@ -1444,6 +1452,7 @@ class State:
     detector = None          # live Detector (for Fortune River recovery)
     scale = 1.0              # screen scale (physical px / points) for cursor moves
     fr_cur = None            # tracked cursor pos during Fortune River recovery
+    script_runner = None     # live ScriptRunner while a custom script runs
 
 
 class SessionStats:
@@ -1491,6 +1500,7 @@ class SessionStats:
                               if self.cycles else 0),
                 "digs": self.digs,
                 "tracker": bool(TRACKER_MODE),
+                "script": (SCRIPT_ACTIVE if SCRIPT_MODE else ""),
                 "money_earned": self.money_earned,
                 "shards_earned": self.shards_earned,
                 "money_per_hr": (round(self.money_earned / hrs)
@@ -4359,6 +4369,487 @@ class RelicScheduler:
         log("=== RELIC done -> resuming ===")
 
 
+# ============================================================================
+# CUSTOM SCRIPTS (Prospector Studio) -- the block interpreter
+# ============================================================================
+# Runs a user-composed block script (built in the Studio window) as the active
+# mode. The script arrives as validated JSON through the normal config path
+# (SCRIPT_JSON); this walker executes ONE block step per supervisor-loop tick,
+# driving ONLY the existing input + Detector primitives, so Ctrl+K / Esc,
+# Pause, relic timers, stats, notifications and safe stop all keep working
+# exactly as they do for the built-in modes.
+#
+# HARD SAFETY RAILS (independent of anything the editor saved, so a
+# hand-tampered .ppscript can never widen what a script may do):
+#   - the key whitelist below is enforced again at runtime,
+#   - every wait is clamped to [100 ms, 120 s] (a hang-forever cannot exist),
+#   - sleeps run in short slices that abort the instant the run stops,
+#   - held keys and the mouse are ALWAYS released (finally blocks + the
+#     supervisor-style release_all() each tick),
+#   - a script that completes passes without doing anything real stops itself,
+#   - no completed step for _SCRIPT_STALL_S trips the normal safe stop,
+#   - any interpreter error routes to safe_stop; the engine process survives.
+
+_SCRIPT_WAIT_MIN_MS = 100
+_SCRIPT_WAIT_MAX_MS = 120000
+_SCRIPT_MAX_BLOCKS = 500
+_SCRIPT_MAX_DEPTH = 16
+_SCRIPT_EMPTY_PASS_LIMIT = 50      # do-nothing passes before stopping itself
+_SCRIPT_MAX_PASSES = 200000        # absolute top-level loop guard
+_SCRIPT_STALL_S = 180.0            # no block completed for this long = wedged
+
+# Runtime key whitelist: token -> platform keycode. Built from the platform
+# key tables above, so the same script presses the same game keys on both OSes.
+_SCRIPT_KEYS = {"W": KEY_W, "A": KEY_A, "S": KEY_S, "D": KEY_D,
+                "Shift": KEY_SHIFT, "Space": KEY_SPACE}
+for _i in range(1, 10):
+    _SCRIPT_KEYS[str(_i)] = SLOT_KEYCODES.get(_i)
+_SCRIPT_MOVE_KEYS = ("W", "A", "S", "D")
+
+
+def _script_sleep(ms):
+    """Sleep in <=25 ms slices so Esc / Ctrl+K / Pause abort instantly.
+    Returns True if the full time elapsed, False if the run stopped."""
+    end = time.perf_counter() + max(0.0, ms) / 1000.0
+    while State.running and State.alive:
+        left = (end - time.perf_counter()) * 1000.0
+        if left <= 0:
+            return True
+        sleep_ms(min(25.0, left))
+    return False
+
+
+def _script_clamp_wait(ms):
+    try:
+        ms = int(ms)
+    except (TypeError, ValueError):
+        ms = _SCRIPT_WAIT_MIN_MS
+    return max(_SCRIPT_WAIT_MIN_MS, min(_SCRIPT_WAIT_MAX_MS, ms))
+
+
+class ScriptRunner:
+    """Walks the block tree with an explicit frame stack (no recursion at run
+    time). One call to tick() = one block step. A fresh runner is built for
+    every run start, so a stale walk state can never leak between sessions."""
+
+    def __init__(self, raw_json, name):
+        self.name = name or "Custom script"
+        self.dead = ""                # non-empty -> refuse to run, with reason
+        self.blocks = []
+        self.passes = 0
+        self.empty_passes = 0
+        self.pass_activity = False    # this pass sent input / really waited
+        self.pass_dirty = False       # this pass had a miss/timeout-stop event
+        self.pass_started = 0.0
+        self.last_step_t = time.perf_counter()
+        self.last_emit_t = 0.0
+        self.stack = []               # frames: [list, index, repeats_left]
+        try:
+            data = json.loads(raw_json or "")
+        except (TypeError, ValueError):
+            self.dead = "the active custom script could not be read; open " \
+                        "Studio and set it active again"
+            return
+        blocks = (data or {}).get("blocks") if isinstance(data, dict) else None
+        if not isinstance(blocks, list) or not blocks:
+            self.dead = "the active custom script is empty or malformed"
+            return
+        n, deep = self._shape(blocks, 1)
+        if n > _SCRIPT_MAX_BLOCKS:
+            self.dead = "the active custom script has too many blocks"
+        elif deep > _SCRIPT_MAX_DEPTH:
+            self.dead = "the active custom script is nested too deeply"
+        elif n < 0:
+            self.dead = "the active custom script contains blocks this " \
+                        "version does not understand"
+        else:
+            self.blocks = blocks
+            self._reset_walk()
+
+    def _shape(self, blocks, depth):
+        """Count blocks + max depth; -1 count = a block failed the shape check."""
+        n, deep = 0, depth
+        for b in blocks:
+            if (not isinstance(b, dict) or b.get("type") not in _SCRIPT_HANDLERS
+                    or not isinstance(b.get("params", {}), dict)):
+                return -1, deep
+            n += 1
+            kids = b.get("children")
+            if isinstance(kids, list) and kids:
+                kn, kd = self._shape(kids, depth + 1)
+                if kn < 0:
+                    return -1, kd
+                n += kn
+                deep = max(deep, kd)
+        return n, deep
+
+    def _reset_walk(self):
+        self.stack = [[self.blocks, 0, 1]]
+        self.pass_activity = False
+        self.pass_dirty = False
+        self.pass_started = time.perf_counter()
+
+    # ---- param helpers (defensive re-clamp; the editor validated already) --
+    @staticmethod
+    def _pi(p, key, dflt, lo, hi):
+        v = p.get(key, dflt)
+        try:
+            v = int(v)
+        except (TypeError, ValueError):
+            v = dflt
+        return max(lo, min(hi, v))
+
+    def _key(self, p, key_param, movement_only=False):
+        """Whitelisted keycode for a key param, or None (= safe stop)."""
+        tok = p.get(key_param)
+        if movement_only and tok not in _SCRIPT_MOVE_KEYS:
+            if tok in (None, "", "none"):
+                return None, False
+            safe_stop("the custom script tried to hold a key that is not "
+                      "W A S or D")
+            return None, True
+        code = _SCRIPT_KEYS.get(tok)
+        if code is None:
+            safe_stop("the custom script tried to press a key that is not "
+                      "allowed (%r)" % (tok,))
+            return None, True
+        return code, False
+
+    def _emit_block(self, b):
+        now = time.perf_counter()
+        if now - self.last_emit_t < 0.25:
+            return
+        self.last_emit_t = now
+        try:
+            print("__SCRIPT__ " + json.dumps(
+                {"id": str(b.get("id", "")), "type": str(b.get("type", "")),
+                 "pass": self.passes}), flush=True)
+        except Exception:
+            pass
+
+    # ---- the tick ----------------------------------------------------------
+    def tick(self, det):
+        if self.dead:
+            safe_stop("Custom script problem: %s." % self.dead, hard=True)
+            return
+        if State.want_reset:          # fresh slate after a safe-pause retry
+            State.want_reset = False
+            self._reset_walk()
+        release_all()                 # anti-drift, same as the supervisor
+        try:
+            self._step(det)
+        except Exception as e:
+            release_all()
+            safe_stop("Custom script error: %s" % e)
+            return
+        if (time.perf_counter() - self.last_step_t) > _SCRIPT_STALL_S:
+            safe_stop("the custom script made no progress for %d seconds"
+                      % int(_SCRIPT_STALL_S))
+
+    def _step(self, det):
+        # find the next block, unwinding finished frames / repeats
+        while True:
+            if not self.stack:
+                self._wrap_pass()
+                if not State.running:
+                    return
+                self.stack = [[self.blocks, 0, 1]]
+            frame = self.stack[-1]
+            lst, i, reps = frame
+            if i >= len(lst):
+                if reps > 1:
+                    frame[1], frame[2] = 0, reps - 1
+                    continue
+                # NOTE: the parent's index already advanced when this
+                # frame was pushed, so popping must NOT advance it again
+                # (that would skip the sibling after a container).
+                self.stack.pop()
+                continue
+            b = lst[i]
+            break
+        t = b.get("type")
+        p = b.get("params") or {}
+        kids = b.get("children") if isinstance(b.get("children"), list) else []
+        self._emit_block(b)
+        enter = _SCRIPT_HANDLERS[t](self, det, p, kids)
+        if enter is not None:
+            # container decided to run its children (enter = repeat count)
+            frame[1] += 1
+            if kids and enter > 0:
+                self.stack.append([kids, 0, enter])
+        else:
+            frame[1] += 1
+        self.last_step_t = time.perf_counter()
+        State.last_progress = self.last_step_t
+
+    def _wrap_pass(self):
+        """The implicit top-level loop wrapped: one pass = one pan."""
+        self.passes += 1
+        now = time.perf_counter()
+        if self.pass_activity:
+            self.empty_passes = 0
+            if State.stats:
+                State.stats.cycles += 1
+                if not self.pass_dirty:
+                    State.stats.clean_cycles += 1
+                if State.last_cycle_end:
+                    dur = (now - State.last_cycle_end) * 1000.0
+                    if 300 < dur < 600000:
+                        State.stats.cycle_ms.append(dur)
+                        if len(State.stats.cycle_ms) > 600:
+                            del State.stats.cycle_ms[:len(State.stats.cycle_ms) - 600]
+                State.last_cycle_end = now
+        else:
+            self.empty_passes += 1
+            if self.empty_passes >= _SCRIPT_EMPTY_PASS_LIMIT:
+                safe_stop("this script completes laps without doing anything "
+                          "(no input and no waiting); check its blocks")
+                return
+        if self.passes >= _SCRIPT_MAX_PASSES:
+            safe_stop("the custom script hit its lap limit")
+            return
+        self._reset_walk()
+        sleep_ms(10)                  # breathing room; never a hot spin
+
+    # ---- block handlers -----------------------------------------------------
+    # Leaf handlers return None. Container handlers return how many times the
+    # children should run right now (0 = skip them).
+    def _do_dig(self, det, p, kids):
+        hold = self._pi(p, "hold_ms", 75, 1, 5000)
+        self.pass_activity = True
+        if State.stats:
+            State.stats.dig_clicks += 1
+        base = det.cap_start_rgb()
+        mouse_down()
+        try:
+            _script_sleep(hold)
+        finally:
+            mouse_up()
+        if not State.running:
+            return None
+        if wait_until(lambda: det.cap_changed(base), CAP_START_MS):
+            if State.stats:
+                State.stats.digs += 1
+        return None
+
+    def _do_shake(self, det, p, kids):
+        clicks = self._pi(p, "clicks", 0, 0, 100)
+        click_ms = self._pi(p, "click_ms", 18, 1, 200)
+        gap_ms = self._pi(p, "gap_ms", 14, 1, 500)
+        max_ms = _script_clamp_wait(p.get("max_ms", 4000))
+        self.pass_activity = True
+        hold_w = bool(p.get("momentum_w"))
+        if hold_w:
+            key_down(KEY_W)
+        try:
+            if clicks > 0:
+                for _n in range(clicks):
+                    if not State.running:
+                        return None
+                    mouse_tap(click_ms)
+                    _script_sleep(gap_ms)
+            else:
+                end = time.perf_counter() + max_ms / 1000.0
+                empties = 0
+                while State.running and time.perf_counter() < end:
+                    mouse_tap(click_ms)
+                    _script_sleep(gap_ms)
+                    if det.pan_empty():
+                        empties += 1
+                        if empties >= 2:
+                            return None
+                    else:
+                        empties = 0
+                if State.running and not det.pan_empty():
+                    self.pass_dirty = True
+                    if State.stats:
+                        State.stats.shake_misses += 1
+                    emit_event("shake_fail",
+                               "script shake gave up before the pan emptied")
+        finally:
+            if hold_w:
+                key_up(KEY_W)
+        return None
+
+    def _do_hold_key(self, det, p, kids):
+        code, bad = self._key(p, "key", movement_only=True)
+        if bad or code is None:
+            return None
+        ms = self._pi(p, "ms", 300, 1, _SCRIPT_WAIT_MAX_MS)
+        self.pass_activity = True
+        key_down(code)
+        try:
+            _script_sleep(ms)
+        finally:
+            key_up(code)
+        return None
+
+    def _do_tap_key(self, det, p, kids):
+        code, bad = self._key(p, "key")
+        if bad or code is None:
+            return None
+        hold = self._pi(p, "hold_ms", 40, 1, 2000)
+        self.pass_activity = True
+        key_down(code)
+        try:
+            _script_sleep(hold)
+        finally:
+            key_up(code)
+        return None
+
+    def _do_click(self, det, p, kids):
+        hold = self._pi(p, "hold_ms", 40, 1, 5000)
+        at = p.get("at", "none")
+        self.pass_activity = True
+        if at == "center":
+            r = find_roblox_rect()
+            if r:
+                move_cursor(r[0] + r[2] // 2, r[1] + r[3] // 2)
+                sleep_ms(30)
+            else:
+                log("[script] no Roblox window found; clicking in place")
+        elif at == "autopan":
+            bp = globals().get("AUTOPAN_BTN_PIXEL") or [0, 0]
+            if bp and int(bp[0]) and int(bp[1]):
+                move_cursor(int(bp[0]), int(bp[1]))
+                sleep_ms(30)
+            else:
+                log("[script] Auto Pan button not calibrated; clicking in place")
+        mouse_down()
+        try:
+            _script_sleep(hold)
+        finally:
+            mouse_up()
+        return None
+
+    def _do_wait(self, det, p, kids):
+        self.pass_activity = True
+        _script_sleep(self._pi(p, "ms", 500, 1, _SCRIPT_WAIT_MAX_MS))
+        return None
+
+    def _do_relic(self, det, p, kids):
+        slot = self._pi(p, "slot", 2, 1, 9)
+        clicks = self._pi(p, "clicks", 2, 1, 5)
+        self.pass_activity = True
+        # RelicScheduler._fire only reads its relic dict + module globals, so
+        # reusing it keeps script relic placement identical to timed relics.
+        RelicScheduler._fire(None, {"name": "script relic", "slot": slot,
+                                    "clicks": clicks})
+        return None
+
+    def _do_notify(self, det, p, kids):
+        msg = str(p.get("message") or "Checkpoint reached")[:200]
+        self.pass_activity = True
+        post_webhook("script", "\U0001f4dc %s" % msg,
+                     State.stats.as_dict() if State.stats else None)
+        return None
+
+    def _cue_fn(self, det, cue):
+        return {"pan": det.on_pan, "deposit": det.on_deposit,
+                "shake": det.on_shake}.get(cue)
+
+    def _do_wait_cue(self, det, p, kids):
+        fn = self._cue_fn(det, p.get("cue"))
+        if fn is None:
+            safe_stop("the custom script waits for an unknown prompt")
+            return None
+        timeout = _script_clamp_wait(p.get("timeout_ms", 3000))
+        self.pass_activity = True
+        code, bad = self._key(p, "hold", movement_only=True)
+        if bad:
+            return None
+        end = time.perf_counter() + timeout / 1000.0
+        if code is not None:
+            key_down(code)
+        try:
+            ok = True
+            if p.get("fresh"):
+                left = int((end - time.perf_counter()) * 1000)
+                ok = wait_until(lambda: not fn(), max(1, left), confirm=2)
+            if ok:
+                left = int((end - time.perf_counter()) * 1000)
+                ok = wait_until(fn, max(1, left), confirm=1)
+        finally:
+            if code is not None:
+                key_up(code)
+        if not ok and State.running and p.get("on_timeout") == "stop":
+            self.pass_dirty = True
+            safe_stop("the %s prompt never showed within %d ms (script)"
+                      % (p.get("cue"), timeout))
+        return None
+
+    def _do_wait_cap(self, det, p, kids):
+        want_full = p.get("state") != "empty"
+        fn = det.capacity_full if want_full else det.pan_empty
+        timeout = _script_clamp_wait(p.get("timeout_ms", 5000))
+        self.pass_activity = True
+        ok = wait_until(fn, timeout, confirm=2)
+        if not ok and State.running and p.get("on_timeout") == "stop":
+            self.pass_dirty = True
+            safe_stop("the pan never read %s within %d ms (script)"
+                      % ("full" if want_full else "empty", timeout))
+        return None
+
+    def _do_if_cue(self, det, p, kids):
+        fn = self._cue_fn(det, p.get("cue"))
+        return 1 if (fn is not None and fn()) else 0
+
+    def _do_if_cap(self, det, p, kids):
+        want_full = p.get("state") != "empty"
+        fn = det.capacity_full if want_full else det.pan_empty
+        return 1 if fn() else 0
+
+    def _do_if_not(self, det, p, kids):
+        chk = p.get("check")
+        if chk in ("pan", "deposit", "shake"):
+            fn = self._cue_fn(det, chk)
+            val = bool(fn and fn())
+        elif chk == "empty":
+            val = det.pan_empty()
+        else:
+            val = det.capacity_full()
+        return 0 if val else 1
+
+    def _do_repeat(self, det, p, kids):
+        return self._pi(p, "times", 1, 1, 1000)
+
+    def _do_group(self, det, p, kids):
+        return 1
+
+    def _do_stop(self, det, p, kids):
+        msg = str(p.get("message") or "Stopped by the script")[:120]
+        self.pass_dirty = True
+        safe_stop("script: %s" % msg)
+        return None
+
+    def _do_comment(self, det, p, kids):
+        return None
+
+
+# One handler per schema block type; studio_tests.py asserts this table stays
+# in lockstep with STUDIO_BLOCKS in prospecting_ui.py.
+_SCRIPT_HANDLERS = {
+    "dig": ScriptRunner._do_dig, "shake": ScriptRunner._do_shake,
+    "hold_key": ScriptRunner._do_hold_key, "tap_key": ScriptRunner._do_tap_key,
+    "click": ScriptRunner._do_click, "wait": ScriptRunner._do_wait,
+    "relic": ScriptRunner._do_relic, "notify": ScriptRunner._do_notify,
+    "wait_cue": ScriptRunner._do_wait_cue, "wait_cap": ScriptRunner._do_wait_cap,
+    "if_cue": ScriptRunner._do_if_cue, "if_cap": ScriptRunner._do_if_cap,
+    "if_not": ScriptRunner._do_if_not, "repeat": ScriptRunner._do_repeat,
+    "group": ScriptRunner._do_group, "stop": ScriptRunner._do_stop,
+    "comment": ScriptRunner._do_comment,
+}
+
+
+def script_tick(det):
+    """Run the active custom script (SCRIPT_MODE). The runner is built lazily
+    on the first tick of a run and torn down on every fresh start."""
+    if State.script_runner is None:
+        State.script_runner = ScriptRunner(SCRIPT_JSON, SCRIPT_ACTIVE)
+        log("=== CUSTOM SCRIPT: %s ===" % State.script_runner.name)
+    State.script_runner.tick(det)
+
+
 def treasure_tick(det):
     """TREASURE CHEST mode (no shake): dig briefly, then strafe sideways -- D,
     then A, alternating -- until the Collect/Deposit cue appears again, then dig.
@@ -4995,6 +5486,7 @@ def main():
                     if not was_running:     # fresh start -> clear stuck-counters
                         print("__RESET__", flush=True)   # tell the app to clear
                         sup.reset()                      # finds/analytics
+                        State.script_runner = None   # fresh Studio walker
                         State.t_side = 0
                         relics.reset()      # start relic timers from now
                         State.stats = SessionStats()
@@ -5027,6 +5519,8 @@ def main():
                         relics.maybe_fire() # timed relic use (no-op unless enabled)
                     if TRACKER_MODE:
                         tracker_tick(detector)   # watch-only: zero input
+                    elif SCRIPT_MODE:
+                        script_tick(detector)    # custom Studio script
                     elif TREASURE_MODE:
                         treasure_tick(detector)
                     else:

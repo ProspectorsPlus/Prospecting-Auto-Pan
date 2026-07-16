@@ -64,6 +64,7 @@ CONFIG_FILE = os.path.join(DATA_DIR, "prospecting_config.json")
 BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
 TUTORIAL_FILE = os.path.join(DATA_DIR, "tutorial_content.json")        # owner edits
 TUTORIAL_CACHE = os.path.join(DATA_DIR, "tutorial_remote_cache.json")  # site copy
+SCRIPTS_FILE = os.path.join(DATA_DIR, "prospecting_scripts.json")   # Studio scripts
 
 # Bundled default builds -- these SHIP with the app so every download has a
 # ready geode setup on the Builds page (user builds of the same name override
@@ -158,6 +159,12 @@ try:
     PIXEL_FIELDS = getattr(_ui, "PIXEL_FIELDS", [])
     PIXEL_DEFAULTS = getattr(_ui, "PIXEL_DEFAULTS", {})
     REGION_FIELDS = getattr(_ui, "REGION_FIELDS", [])
+    STUDIO_BLOCKS = getattr(_ui, "STUDIO_BLOCKS", {})
+    STUDIO_GROUPS = getattr(_ui, "STUDIO_GROUPS", [])
+    STUDIO_CONTAINERS = getattr(_ui, "STUDIO_CONTAINERS", set())
+    STUDIO_KEY_WHITELIST = getattr(_ui, "STUDIO_KEY_WHITELIST", [])
+    STUDIO_MAX_BLOCKS = getattr(_ui, "STUDIO_MAX_BLOCKS", 500)
+    STUDIO_MAX_DEPTH = getattr(_ui, "STUDIO_MAX_DEPTH", 16)
 except Exception:
     import traceback
     traceback.print_exc()
@@ -168,6 +175,12 @@ except Exception:
     PIXEL_FIELDS = []
     PIXEL_DEFAULTS = {}
     REGION_FIELDS = []
+    STUDIO_BLOCKS = {}
+    STUDIO_GROUPS = []
+    STUDIO_CONTAINERS = set()
+    STUDIO_KEY_WHITELIST = []
+    STUDIO_MAX_BLOCKS = 500
+    STUDIO_MAX_DEPTH = 16
 
 # Local tuning assistant (offline expert system). Optional: if it fails to load,
 # the rest of the app keeps working and the Coach panel just reports it's offline.
@@ -808,6 +821,8 @@ def _tutorial_merged():
         helps["help:" + k] = {"body": v}
     for k, v in UI_HELP.items():
         helps[k] = {"body": v}
+    for _sbt, _sbd in STUDIO_BLOCKS.items():
+        helps["studio:" + _sbt] = {"body": _sbd.get("help", "")}
     tour_ids = {st["id"] for steps in tours.values() for st in steps}
     for k, ov in over.items():
         if k in tour_ids:
@@ -815,6 +830,357 @@ def _tutorial_merged():
         helps.setdefault(k, {}).update(
             {f: ov[f] for f in ("body", "img", "vid") if ov.get(f)})
     return {"tours": tours, "help": helps, "owner": _is_owner()}
+
+
+# ============================================================================
+# PROSPECTOR STUDIO -- script model, validation, templates, persistence
+# ============================================================================
+# A script is DATA, never code: a versioned JSON tree of blocks the engine
+# interpreter walks. Everything here validates/sanitizes against the single
+# schema source of truth (STUDIO_BLOCKS in prospecting_ui.py). Files are
+# written two-phase (tmp + os.replace) so a crash can never truncate them.
+
+def _studio_load():
+    """prospecting_scripts.json, tolerant of a missing/garbled file."""
+    d = _read_json(SCRIPTS_FILE, {})
+    if not isinstance(d, dict):
+        d = {}
+    scripts = d.get("scripts")
+    if not isinstance(scripts, dict):
+        scripts = {}
+    meta = d.get("meta")
+    if not isinstance(meta, dict):
+        meta = {}
+    active = d.get("active")
+    if not isinstance(active, str) or active not in scripts:
+        active = ""
+    return {"active": active, "scripts": scripts, "meta": meta}
+
+
+def _studio_write(data):
+    tmp = SCRIPTS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, SCRIPTS_FILE)
+
+
+def _studio_name_ok(name):
+    if not isinstance(name, str):
+        return False
+    n = name.strip()
+    if not (1 <= len(n) <= 60) or n != name:
+        return False
+    return all(ch.isprintable() for ch in n)
+
+
+def _studio_count_blocks(blocks):
+    n = 0
+    for b in blocks or []:
+        n += 1
+        if isinstance(b, dict) and isinstance(b.get("children"), list):
+            n += _studio_count_blocks(b["children"])
+    return n
+
+
+def _studio_block_title(b, idx_path):
+    d = STUDIO_BLOCKS.get((b or {}).get("type") or "", {})
+    nm = d.get("name") or str((b or {}).get("type") or "block")
+    return "Block %s (%s)" % (".".join(str(i + 1) for i in idx_path), nm)
+
+
+def _studio_validate(script):
+    """STRICT schema + runnability check. Returns
+    {"ok": bool, "errors": [str], "problems": [str]} where errors mean the
+    script is malformed (reject) and problems mean it saves fine but cannot
+    run or be set active until fixed. Every message names the block."""
+    errors, problems = [], []
+    if not isinstance(script, dict):
+        return {"ok": False, "errors": ["That is not a script."], "problems": []}
+    if script.get("format") != "ppscript":
+        errors.append("Not a Prospector Studio script (missing the ppscript marker).")
+    if script.get("version") != 1:
+        errors.append("Unsupported script version (this app understands version 1).")
+    if not _studio_name_ok(script.get("name")):
+        errors.append("The script needs a name: 1 to 60 printable characters, "
+                      "no leading or trailing spaces.")
+    desc = script.get("description", "")
+    if not isinstance(desc, str) or len(desc) > 300:
+        errors.append("The description must be text, at most 300 characters.")
+    author = script.get("author", "")
+    if not isinstance(author, str) or len(author) > 60:
+        errors.append("The author must be text, at most 60 characters.")
+    for fld in ("created", "updated"):
+        v = script.get(fld, 0)
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            errors.append("The %s stamp must be a whole number." % fld)
+    st = script.get("settings", {})
+    if not isinstance(st, dict):
+        errors.append("The settings field must be an object.")
+    known = {"format", "version", "name", "description", "author",
+             "created", "updated", "blocks", "settings"}
+    extra = [k for k in script if k not in known]
+    if extra:
+        errors.append("Unknown fields in the script file: %s."
+                      % ", ".join(sorted(str(k) for k in extra)[:5]))
+    blocks = script.get("blocks")
+    if not isinstance(blocks, list):
+        errors.append("The blocks field must be a list.")
+        return {"ok": False, "errors": errors, "problems": problems}
+    total = _studio_count_blocks(blocks)
+    if total > STUDIO_MAX_BLOCKS:
+        errors.append("Too many blocks (%d; the limit is %d)."
+                      % (total, STUDIO_MAX_BLOCKS))
+        return {"ok": False, "errors": errors, "problems": problems}
+    seen_ids = set()
+    has_action = []
+
+    def walk(lst, idx_path, depth):
+        if depth > STUDIO_MAX_DEPTH:
+            errors.append("Blocks are nested deeper than %d levels."
+                          % STUDIO_MAX_DEPTH)
+            return
+        stopped = False
+        for i, b in enumerate(lst):
+            path = idx_path + [i]
+            if not isinstance(b, dict):
+                errors.append("Block %s is not an object."
+                              % ".".join(str(x + 1) for x in path))
+                continue
+            title = _studio_block_title(b, path)
+            bid = b.get("id")
+            if (not isinstance(bid, str) or not (1 <= len(bid) <= 24)
+                    or not all(c.isalnum() or c in "_-" for c in bid)):
+                errors.append("%s: bad or missing block id." % title)
+            elif bid in seen_ids:
+                errors.append("%s: duplicate block id '%s'." % (title, bid))
+            else:
+                seen_ids.add(bid)
+            t = b.get("type")
+            d = STUDIO_BLOCKS.get(t) if isinstance(t, str) else None
+            if d is None:
+                errors.append("%s: unknown block type %r." % (title, t))
+                continue
+            extra_f = [k for k in b if k not in ("id", "type", "params", "children")]
+            if extra_f:
+                errors.append("%s: unknown fields %s."
+                              % (title, ", ".join(sorted(str(k) for k in extra_f)[:4])))
+            params = b.get("params")
+            if not isinstance(params, dict):
+                errors.append("%s: params must be an object." % title)
+                params = {}
+            spec = {p["key"]: p for p in d["params"]}
+            for k in params:
+                if k not in spec:
+                    errors.append("%s: unknown parameter %r." % (title, k))
+            for k, p in spec.items():
+                if k not in params:
+                    errors.append("%s: missing \"%s\"." % (title, p["label"]))
+                    continue
+                v = params[k]
+                if p["type"] == "int":
+                    if isinstance(v, bool) or not isinstance(v, int):
+                        errors.append("%s: \"%s\" must be a whole number."
+                                      % (title, p["label"]))
+                    else:
+                        lo, hi, _s = p["range"]
+                        if not (lo <= v <= hi):
+                            errors.append("%s: \"%s\" must be between %d and %d."
+                                          % (title, p["label"], lo, hi))
+                elif p["type"] == "bool":
+                    if not isinstance(v, bool):
+                        errors.append("%s: \"%s\" must be on or off."
+                                      % (title, p["label"]))
+                elif p["type"] == "choice":
+                    if v not in [c[0] for c in p["choices"]]:
+                        errors.append("%s: \"%s\" has an invalid choice %r."
+                                      % (title, p["label"], v))
+                else:  # str
+                    if not isinstance(v, str) or len(v) > p.get("max", 200):
+                        errors.append("%s: \"%s\" must be text, at most %d "
+                                      "characters." % (title, p["label"],
+                                                       p.get("max", 200)))
+                    elif any((not ch.isprintable()) for ch in v):
+                        errors.append("%s: \"%s\" contains characters that "
+                                      "cannot be typed." % (title, p["label"]))
+            kids = b.get("children")
+            if t in STUDIO_CONTAINERS:
+                if kids is None:
+                    kids = []
+                if not isinstance(kids, list):
+                    errors.append("%s: children must be a list." % title)
+                    kids = []
+                if not kids:
+                    problems.append("%s is empty; give it at least one step "
+                                    "inside, or remove it." % title)
+                walk(kids, path, depth + 1)
+            else:
+                if kids not in (None, []):
+                    errors.append("%s: this block cannot hold steps inside."
+                                  % title)
+            if stopped:
+                problems.append("%s can never run: it sits after a Safe stop "
+                                "in the same list." % title)
+            if t == "stop":
+                stopped = True
+            if t in ("dig", "shake", "hold_key", "tap_key", "click", "relic"):
+                has_action.append(True)
+
+    walk(blocks, [], 1)
+    if not blocks:
+        problems.append("The script is empty; add blocks from the palette, "
+                        "or start from a template.")
+    elif not has_action and not errors:
+        problems.append("This script never sends any input (no dig, shake, "
+                        "key, click or relic block), so it would do nothing.")
+    return {"ok": not errors, "errors": errors, "problems": problems}
+
+
+def _studio_sanitize(script):
+    """Best-effort repair of an IMPORTED (untrusted) script: coerce types,
+    clamp ranges, drop unknown fields, regenerate every id. Anything that
+    cannot be repaired safely (unknown block type, too many blocks, too
+    deep) returns an error instead. Never executes anything."""
+    if not isinstance(script, dict):
+        return None, "That file does not contain a script."
+    out = {"format": "ppscript", "version": 1}
+    nm = script.get("name")
+    out["name"] = (str(nm).strip()[:60] if isinstance(nm, (str, int, float))
+                   and str(nm).strip() else "Imported script")
+    out["name"] = "".join(ch for ch in out["name"] if ch.isprintable()) or "Imported script"
+    out["description"] = ("".join(ch for ch in str(script.get("description") or "")
+                                  if ch.isprintable()))[:300]
+    out["author"] = ("".join(ch for ch in str(script.get("author") or "")
+                             if ch.isprintable()))[:60]
+    now = int(time.time())
+    out["created"] = script.get("created") if isinstance(script.get("created"), int) \
+        and not isinstance(script.get("created"), bool) and script.get("created") >= 0 else now
+    out["updated"] = now
+    out["settings"] = {}
+    blocks = script.get("blocks")
+    if not isinstance(blocks, list):
+        return None, "That file has no blocks list."
+    if _studio_count_blocks(blocks) > STUDIO_MAX_BLOCKS:
+        return None, ("That script has more than %d blocks; refusing it."
+                      % STUDIO_MAX_BLOCKS)
+    counter = [0]
+    bad = []
+
+    def fix(lst, depth):
+        if depth > STUDIO_MAX_DEPTH:
+            bad.append("Blocks are nested deeper than %d levels."
+                       % STUDIO_MAX_DEPTH)
+            return []
+        res = []
+        for b in lst:
+            if not isinstance(b, dict):
+                continue
+            t = b.get("type")
+            d = STUDIO_BLOCKS.get(t) if isinstance(t, str) else None
+            if d is None:
+                bad.append("Unknown block type %r." % (t,))
+                continue
+            counter[0] += 1
+            nb = {"id": "b%d" % counter[0], "type": t, "params": {}}
+            src = b.get("params") if isinstance(b.get("params"), dict) else {}
+            for p in d["params"]:
+                v = src.get(p["key"], p["default"])
+                if p["type"] == "int":
+                    try:
+                        v = int(v)
+                    except (TypeError, ValueError):
+                        v = p["default"]
+                    if isinstance(src.get(p["key"]), bool):
+                        v = p["default"]
+                    lo, hi, _s = p["range"]
+                    v = max(lo, min(hi, v))
+                elif p["type"] == "bool":
+                    v = bool(v)
+                elif p["type"] == "choice":
+                    if v not in [c[0] for c in p["choices"]]:
+                        v = p["default"]
+                else:
+                    v = "".join(ch for ch in str(v if v is not None else "")
+                                if ch.isprintable())[:p.get("max", 200)]
+                nb["params"][p["key"]] = v
+            if t in STUDIO_CONTAINERS:
+                kids = b.get("children") if isinstance(b.get("children"), list) else []
+                nb["children"] = fix(kids, depth + 1)
+            res.append(nb)
+        return res
+
+    out["blocks"] = fix(blocks, 1)
+    if bad:
+        return None, ("Could not import this script: " + " ".join(bad[:3])
+                      + " It may be from a newer version, or hand-edited.")
+    chk = _studio_validate(out)
+    if not chk["ok"]:
+        return None, "Could not import this script: " + " ".join(chk["errors"][:3])
+    return out, None
+
+
+def _studio_tpl_block(counter, t, params=None, children=None):
+    counter[0] += 1
+    d = STUDIO_BLOCKS[t]
+    b = {"id": "b%d" % counter[0], "type": t,
+         "params": {p["key"]: p["default"] for p in d["params"]}}
+    if params:
+        b["params"].update(params)
+    if t in STUDIO_CONTAINERS:
+        b["children"] = children or []
+    return b
+
+
+def _studio_templates():
+    """The shipped starting points. Fresh dicts every call (callers mutate)."""
+    now = int(time.time())
+
+    def mk(name, desc, blocks):
+        return {"format": "ppscript", "version": 1, "name": name,
+                "description": desc, "author": "", "created": now,
+                "updated": now, "blocks": blocks, "settings": {}}
+    c = [0]
+    standard = mk(
+        "Standard loop",
+        "The macro's default cycle, rebuilt from blocks: dig until the pan "
+        "is full, walk back into the water, glide and shake it empty, land, "
+        "repeat.",
+        [_studio_tpl_block(c, "comment",
+                           {"text": "One pan per lap: dig, walk back, shake, land."}),
+         _studio_tpl_block(c, "dig", {"hold_ms": 75}),
+         _studio_tpl_block(c, "wait_cap",
+                           {"state": "full", "timeout_ms": 1500,
+                            "on_timeout": "continue"}),
+         _studio_tpl_block(c, "wait_cue",
+                           {"cue": "pan", "hold": "S", "fresh": False,
+                            "timeout_ms": 1500, "on_timeout": "continue"}),
+         _studio_tpl_block(c, "shake",
+                           {"clicks": 0, "click_ms": 18, "gap_ms": 14,
+                            "max_ms": 4000, "momentum_w": True}),
+         _studio_tpl_block(c, "wait", {"ms": 150}),
+         _studio_tpl_block(c, "wait_cue",
+                           {"cue": "deposit", "hold": "W", "fresh": False,
+                            "timeout_ms": 1500, "on_timeout": "continue"})])
+    c = [0]
+    treasure = mk(
+        "Treasure (Rubble Creek)",
+        "The Treasure mode two-step: dig the Rubble Creek deposit, strafe "
+        "right to the sands until Collect shows, dig, strafe back. No "
+        "shaking. Both spots run each lap.",
+        [_studio_tpl_block(c, "comment",
+                           {"text": "Stand on a Rubble Creek deposit with the "
+                                    "Collect prompt showing before you start."}),
+         _studio_tpl_block(c, "dig", {"hold_ms": 8}),
+         _studio_tpl_block(c, "wait", {"ms": 12000}),
+         _studio_tpl_block(c, "wait_cue",
+                           {"cue": "deposit", "hold": "D", "fresh": True,
+                            "timeout_ms": 6000, "on_timeout": "continue"}),
+         _studio_tpl_block(c, "dig", {"hold_ms": 8}),
+         _studio_tpl_block(c, "wait", {"ms": 12000}),
+         _studio_tpl_block(c, "wait_cue",
+                           {"cue": "deposit", "hold": "A", "fresh": True,
+                            "timeout_ms": 6000, "on_timeout": "continue"})])
+    blank = mk("Blank", "An empty canvas. Add blocks from the palette.", [])
+    return [standard, treasure, blank]
 
 
 def _coerce(t, v):
@@ -2294,6 +2660,295 @@ class Api:
                 json.dump(builds, f, indent=2)
         return {"ok": True}
 
+    # ---- PROSPECTOR STUDIO: script library Api ------------------------------
+    def studio_list(self):
+        """Everything the Studio library and the Run-tab selector render."""
+        d = _studio_load()
+        out = []
+        for name in sorted(d["scripts"], key=lambda n: -(d["scripts"][n].get("updated") or 0)):
+            s = d["scripts"][name]
+            chk = _studio_validate(s)
+            out.append({"name": name,
+                        "description": s.get("description", ""),
+                        "blocks": _studio_count_blocks(s.get("blocks") or []),
+                        "updated": s.get("updated", 0),
+                        "active": name == d["active"],
+                        "runnable": bool(chk["ok"] and not chk["problems"]),
+                        "issues": len(chk["errors"]) + len(chk["problems"])})
+        return {"ok": True, "scripts": out, "active": d["active"],
+                "running": self.proc is not None}
+
+    def studio_get(self, name):
+        d = _studio_load()
+        s = d["scripts"].get(name)
+        if not isinstance(s, dict):
+            return {"ok": False, "error": "Script not found."}
+        return {"ok": True, "script": json.loads(json.dumps(s)),
+                "active": d["active"] == name}
+
+    def studio_validate(self, script):
+        return _studio_validate(script)
+
+    def studio_templates(self):
+        return {"ok": True, "templates": _studio_templates()}
+
+    def studio_save(self, script, prev_name=None):
+        """Save a script under script['name']. Schema errors reject; mere
+        runnability problems save fine (drafts must never lose work) and are
+        returned so the editor can show them. Renames move the entry and keep
+        the active pointer (and the engine config copy) in step."""
+        chk = _studio_validate(script)
+        if not chk["ok"]:
+            return {"ok": False, "error": " ".join(chk["errors"][:3]),
+                    "errors": chk["errors"], "problems": chk["problems"]}
+        script = json.loads(json.dumps(script))
+        name = script["name"]
+        d = _studio_load()
+        prev = prev_name if (isinstance(prev_name, str)
+                             and prev_name in d["scripts"]) else None
+        if name in d["scripts"] and prev != name and prev is not None:
+            return {"ok": False,
+                    "error": "A script called '%s' already exists; pick a "
+                             "different name." % name,
+                    "errors": [], "problems": chk["problems"]}
+        now = int(time.time())
+        script["updated"] = now
+        if not script.get("created"):
+            script["created"] = now
+        if prev is not None and prev != name:
+            del d["scripts"][prev]
+            if d["active"] == prev:
+                d["active"] = name
+        d["scripts"][name] = script
+        try:
+            _studio_write(d)
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e,
+                    "errors": [], "problems": chk["problems"]}
+        if d["active"] == name:
+            self._studio_push_active(name if not chk["problems"] else "")
+            if chk["problems"]:
+                d["active"] = ""
+                _studio_write(d)
+        return {"ok": True, "name": name, "problems": chk["problems"],
+                "active": d["active"]}
+
+    def studio_delete(self, name):
+        d = _studio_load()
+        if name not in d["scripts"]:
+            return {"ok": False, "error": "Script not found."}
+        del d["scripts"][name]
+        if d["active"] == name:
+            d["active"] = ""
+            self._studio_push_active("")
+        try:
+            _studio_write(d)
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e}
+        return {"ok": True, "active": d["active"]}
+
+    def studio_duplicate(self, name):
+        d = _studio_load()
+        s = d["scripts"].get(name)
+        if not isinstance(s, dict):
+            return {"ok": False, "error": "Script not found."}
+        base = (name + " copy")[:60]
+        nm, i = base, 2
+        while nm in d["scripts"]:
+            nm = ("%s %d" % (base, i))[:60]
+            i += 1
+        c = json.loads(json.dumps(s))
+        c["name"] = nm
+        c["created"] = c["updated"] = int(time.time())
+        d["scripts"][nm] = c
+        try:
+            _studio_write(d)
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e}
+        return {"ok": True, "name": nm}
+
+    def _studio_push_active(self, name):
+        """Write the active-script keys into the engine config. Empty name =
+        back to the built-in modes. The engine reads these via load_config()."""
+        d = _studio_load()
+        s = d["scripts"].get(name) if name else None
+        cur = load_saved()
+        cur["SCRIPT_MODE"] = bool(s)
+        cur["SCRIPT_ACTIVE"] = name if s else ""
+        cur["SCRIPT_JSON"] = (json.dumps(s, separators=(",", ":"))
+                              if s else "")
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(cur, f, indent=2)
+
+    def studio_set_active(self, name):
+        """Make a script the active mode ('' = back to built-in modes). Only
+        clean, runnable scripts can be activated."""
+        d = _studio_load()
+        if name:
+            s = d["scripts"].get(name)
+            if not isinstance(s, dict):
+                return {"ok": False, "error": "Script not found."}
+            chk = _studio_validate(s)
+            if not chk["ok"] or chk["problems"]:
+                return {"ok": False,
+                        "error": "Fix this first: "
+                                 + " ".join((chk["errors"] + chk["problems"])[:2]),
+                        "errors": chk["errors"], "problems": chk["problems"]}
+        d["active"] = name or ""
+        try:
+            _studio_write(d)
+            self._studio_push_active(name or "")
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e}
+        return {"ok": True, "active": d["active"]}
+
+    def studio_meta(self, patch=None):
+        """Small Studio flags that must survive restarts (for example whether
+        the editor walkthrough already offered itself once)."""
+        d = _studio_load()
+        if isinstance(patch, dict):
+            for k, v in patch.items():
+                if isinstance(k, str) and k.isidentifier() and len(k) <= 40:
+                    d["meta"][k] = bool(v)
+            try:
+                _studio_write(d)
+            except OSError:
+                pass
+        return {"ok": True, "meta": d["meta"]}
+
+    def studio_export(self, name):
+        """Write ONE script to a .ppscript file via the OS save dialog."""
+        d = _studio_load()
+        s = d["scripts"].get(name)
+        if not isinstance(s, dict):
+            return {"ok": False, "error": "Script not found."}
+        payload = {"_ppscript": 1, "app": "Prospectors Plus",
+                   "script": json.loads(json.dumps(s))}
+        try:
+            import webview
+        except Exception:
+            webview = None
+        safe = ("".join(c if (c.isalnum() or c in " -_") else "_" for c in name).strip()
+                or "script")
+        try:
+            if _window is not None and webview is not None:
+                res = _window.create_file_dialog(
+                    webview.SAVE_DIALOG, save_filename=safe + ".ppscript",
+                    file_types=("Prospector Studio script (*.ppscript)",
+                                "JSON file (*.json)", "All files (*.*)"))
+                if not res:
+                    return {"cancelled": True}
+                path = res[0] if isinstance(res, (list, tuple)) else res
+            else:
+                path = os.path.join(os.path.dirname(CONFIG_FILE), safe + ".ppscript")
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+            return {"ok": True, "path": path}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def studio_import(self, text):
+        """Add a script shared as a .ppscript/.json file. The file is treated
+        as UNTRUSTED input: parsed, sanitized, strictly re-validated, and
+        renamed on a clash so nothing is ever overwritten or executed."""
+        if not isinstance(text, str) or len(text) > 2 * 1024 * 1024:
+            return {"ok": False, "error": "That file is too large to be a script."}
+        try:
+            data = json.loads(text)
+        except Exception:
+            return {"ok": False, "error": "That is not a valid script file."}
+        raw = None
+        if isinstance(data, dict) and isinstance(data.get("script"), dict):
+            raw = data["script"]
+        elif isinstance(data, dict) and data.get("format") == "ppscript":
+            raw = data
+        if raw is None:
+            return {"ok": False, "error": "No script found in that file."}
+        script, err = _studio_sanitize(raw)
+        if err:
+            return {"ok": False, "error": err}
+        d = _studio_load()
+        base = script["name"]
+        nm, i = base, 2
+        while nm in d["scripts"]:
+            nm = ("%s (%d)" % (base, i))[:60]
+            i += 1
+        script["name"] = nm
+        d["scripts"][nm] = script
+        try:
+            _studio_write(d)
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e}
+        chk = _studio_validate(script)
+        return {"ok": True, "name": nm, "problems": chk["problems"]}
+
+    def studio_import_dialog(self):
+        """Native file picker for a shared script (the HTML file input greys
+        out custom extensions on macOS, same as builds)."""
+        try:
+            import webview
+        except Exception:
+            webview = None
+        if _window is None or webview is None:
+            return {"ok": False, "error": "unavailable"}
+        try:
+            res = _window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=False,
+                file_types=("Prospector Studio script (*.ppscript;*.json)",
+                            "All files (*.*)"))
+            if not res:
+                return {"cancelled": True}
+            path = res[0] if isinstance(res, (list, tuple)) else res
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read(2 * 1024 * 1024 + 1)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        return self.studio_import(text)
+
+    def studio_run(self, name):
+        """Set a script active and start the macro, through the exact same
+        launch path as the Start button (stats, HUD, history, hotkeys all
+        behave identically)."""
+        if self.proc is not None:
+            return {"ok": False, "error": "Already running. Stop the current "
+                                          "run first."}
+        r = self.studio_set_active(name)
+        if not r.get("ok"):
+            return r
+        out = self.launch(None)
+        return {"ok": out == "launched", "state": out}
+
+    def studio_stop(self):
+        self.stop()
+        return {"ok": True}
+
+    def studio_state(self):
+        """Live state for the Studio window (polled while it is open)."""
+        d = _studio_load()
+        return {"ok": True, "running": self.proc is not None,
+                "status": getattr(self, "_macro_status", "off"),
+                "active": d["active"]}
+
+    def open_studio_window(self):
+        global _studio_win
+        try:
+            if _studio_win is not None:
+                _studio_win.evaluate_js("window.__reload && window.__reload()")
+                _studio_win.show()
+                return "shown"
+        except Exception as e:
+            return "err:%s" % e
+        return "no-window"
+
+    def close_studio_window(self):
+        global _studio_win
+        try:
+            if _studio_win is not None:
+                _studio_win.hide()
+        except Exception:
+            pass
+        return "hidden"
+
     # ---- calibrate: wait for the user to mark a spot, capture its x/y + colour
     def cue_mask_status(self):
         cur = load_saved()
@@ -3452,6 +4107,7 @@ _hud_on = False
 _overlay = None
 _coach_win = None
 _analytics_win = None
+_studio_win = None
 
 PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
  html,body{margin:0;height:100%;background:#1a1816;color:#ece4d6;font:13px/1.3 -apple-system,"Segoe UI",sans-serif;overflow:hidden;-webkit-user-select:none;user-select:none}

@@ -1699,6 +1699,372 @@ REGION_FIELDS = [
 PIXEL_DEFAULTS = {k: list(d) for (k, _l, _desc, d) in PIXEL_FIELDS}
 
 
+# ============================================================================
+# PROSPECTOR STUDIO -- the block schema (single source of truth)
+# ============================================================================
+# Every Studio block type is defined ONCE here: its palette group, label, icon,
+# parameters (with types, defaults and known-safe ranges), whether it holds
+# children, a plain-English summary template, and its tagged hover-help. The
+# app generates the editor palette JSON from this at render time, the Python
+# validator walks it, and studio_tests.py asserts the engine interpreter's
+# handler table matches this exact type set, so the three can never drift.
+# Ranges reuse the Coach's known-safe bounds where a parameter corresponds to
+# an existing engine setting. Keys are forever: never rename a type or a
+# param key (saved .ppscript files are keyed by them); labels can change.
+
+STUDIO_KEY_WHITELIST = ["W", "A", "S", "D", "1", "2", "3", "4", "5", "6",
+                        "7", "8", "9", "Shift", "Space"]
+
+STUDIO_GROUPS = [("action", "Actions"), ("sense", "Sensing"), ("flow", "Flow")]
+
+_SB_ICO = {
+    "dig": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 5l6 6M15 3l6 6M14 10l-7.5 7.5M6 21l-3-3 2.5-2.5a2.1 2.1 0 0 1 3 3z"/></svg>',
+    "shake": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9c2-1.5 4-1.5 6 0s4 1.5 6 0 4-1.5 6 0M3 15c2-1.5 4-1.5 6 0s4 1.5 6 0 4-1.5 6 0"/></svg>',
+    "hold_key": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="11" rx="2"/><path d="M8 14.5h8"/></svg>',
+    "tap_key": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="14" height="10" rx="2"/><path d="M12 9V5M12 5l-2.5 2.5M12 5l2.5 2.5"/></svg>',
+    "click": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4l6 15 2.2-6L19 11z"/><path d="M14 13l5 5"/></svg>',
+    "wait": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
+    "relic": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4h10l4 5.5L12 21 3 9.5z"/><path d="M3 9.5h18M12 21L8.5 9.5 12 4l3.5 5.5z"/></svg>',
+    "notify": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 19a2.2 2.2 0 0 0 4 0"/></svg>',
+    "wait_cue": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg>',
+    "wait_cap": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="8" width="17" height="8" rx="2"/><path d="M21.5 11v2M5.5 11v2h4v-2"/></svg>',
+    "if_cue": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7c0 2 1 3 3 3h9"/><path d="M15 9.5L18.5 13 15 16.5"/><path d="M6 14v7"/></svg>',
+    "if_cap": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7c0 2 1 3 3 3h9"/><path d="M15 9.5L18.5 13 15 16.5"/><rect x="3.5" y="16" width="5" height="5" rx="1"/></svg>',
+    "if_not": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7c0 2 1 3 3 3h9"/><path d="M15 9.5L18.5 13 15 16.5"/><path d="M4 21l4-6"/></svg>',
+    "repeat": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3"/><path d="M20 5H7a4 4 0 0 0-4 4v1M7 22l-3-3 3-3"/><path d="M4 19h13a4 4 0 0 0 4-4v-1"/></svg>',
+    "group": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/></svg>',
+    "stop": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z"/><path d="M9 9h6v6H9z"/></svg>',
+    "comment": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5z"/></svg>',
+}
+
+_SB_KEYCHOICES = [[k, k] for k in STUDIO_KEY_WHITELIST]
+_SB_CUES = [["pan", "Pan (in the water)"], ["deposit", "Collect Deposit (on land)"],
+            ["shake", "Shake (mid-shake)"]]
+
+STUDIO_BLOCKS = {
+    # ---- Actions ----------------------------------------------------------
+    "dig": {
+        "group": "action", "name": "Dig click", "icon": _SB_ICO["dig"],
+        "summary": "Hold the dig click for {hold_ms} ms.",
+        "params": [
+            {"key": "hold_ms", "label": "Dig hold (ms)", "type": "int",
+             "default": 75, "range": [5, 600, 10]},
+        ],
+        "help": "**One dig: press and hold the mouse for the set time, then "
+                "release.** The same click the macro's own dig uses. On most "
+                "gear the hold length decides where the skill bar lands, so "
+                "copy your Dig hold length from the Cycle page.\n"
+                "raise: your dig speed is low and digs release {{before the "
+                "green zone}}.\n"
+                "lower: very fast gear overshoots the green zone.\n"
+                "pairs: Wait for capacity | Wait\n"
+                "Note: the pan only fills when you dig on diggable land with "
+                "the Collect Deposit prompt showing."},
+    "shake": {
+        "group": "action", "name": "Shake clicks", "icon": _SB_ICO["shake"],
+        "summary": "Shake the pan empty with rapid clicks ({clicks_t}).",
+        "params": [
+            {"key": "clicks", "label": "Exact clicks (0 = until empty)", "type": "int",
+             "default": 0, "range": [0, 30, 1]},
+            {"key": "click_ms", "label": "Each click length (ms)", "type": "int",
+             "default": 18, "range": [8, 60, 4]},
+            {"key": "gap_ms", "label": "Gap between clicks (ms)", "type": "int",
+             "default": 14, "range": [4, 60, 3]},
+            {"key": "max_ms", "label": "Give up after (ms)", "type": "int",
+             "default": 4000, "range": [400, 20000, 200]},
+            {"key": "momentum_w", "label": "Hold W while shaking (glide onto land)",
+             "type": "bool", "default": True},
+        ],
+        "help": "**Empties the pan with rapid clicks**, exactly like the "
+                "macro's own shake. Set clicks to 0 and it keeps clicking "
+                "until the capacity bar reads empty, or until the give-up "
+                "time runs out.\n"
+                "when: you are in the water holding a full pan.\n"
+                "raise: slow shake animations (geode gear) need a bigger "
+                "give-up time so the shake {{does not cut off early}}.\n"
+                "pairs: Wait for cue | Wait for capacity\n"
+                "Note: Hold W while shaking recreates the momentum glide the "
+                "standard cycle uses to slide you onto land as it drains."},
+    "hold_key": {
+        "group": "action", "name": "Hold key", "icon": _SB_ICO["hold_key"],
+        "summary": "Hold {key} for {ms} ms.",
+        "params": [
+            {"key": "key", "label": "Key", "type": "choice", "default": "S",
+             "choices": [["W", "W (forward)"], ["A", "A (left)"],
+                         ["S", "S (back)"], ["D", "D (right)"]]},
+            {"key": "ms", "label": "Hold for (ms)", "type": "int",
+             "default": 300, "range": [20, 10000, 20]},
+        ],
+        "help": "**Holds one movement key for a fixed time.** Good for "
+                "stepping a set distance. If you want to walk UNTIL a prompt "
+                "appears, use Wait for cue with a held key instead; it stops "
+                "at the right moment on its own.\n"
+                "raise: the step is too short and you {{stop before the "
+                "target}}.\n"
+                "lower: you sail past the spot.\n"
+                "pairs: Wait for cue\n"
+                "Note: movement only, W A S D. The key is always released, "
+                "even if you stop the macro mid-hold."},
+    "tap_key": {
+        "group": "action", "name": "Tap key", "icon": _SB_ICO["tap_key"],
+        "summary": "Tap {key} ({hold_ms} ms).",
+        "params": [
+            {"key": "key", "label": "Key", "type": "choice", "default": "1",
+             "choices": _SB_KEYCHOICES},
+            {"key": "hold_ms", "label": "Hold for (ms)", "type": "int",
+             "default": 40, "range": [10, 500, 10]},
+        ],
+        "help": "**Presses and releases one key**: a hotbar number, a "
+                "movement key, Shift or Space. Use it to switch hotbar slots "
+                "or hop.\n"
+                "when: switching to a tool slot before a click, or jumping "
+                "with Space.\n"
+                "pairs: Use relic slot | Click mouse\n"
+                "Note: only these keys are allowed, and the macro enforces "
+                "the same list again while it runs, so a script can never "
+                "press anything else."},
+    "click": {
+        "group": "action", "name": "Click mouse", "icon": _SB_ICO["click"],
+        "summary": "Click the mouse for {hold_ms} ms{at_t}.",
+        "params": [
+            {"key": "hold_ms", "label": "Click length (ms)", "type": "int",
+             "default": 40, "range": [5, 2000, 5]},
+            {"key": "at", "label": "Move the cursor first", "type": "choice",
+             "default": "none",
+             "choices": [["none", "No, click where it is"],
+                         ["center", "Screen centre (game window)"],
+                         ["autopan", "Auto Pan button (calibrated)"]]},
+        ],
+        "help": "**One left click, held for the set time.** Optionally warps "
+                "the cursor first: to the centre of the Roblox window, or to "
+                "the game's calibrated Auto Pan button.\n"
+                "when: pressing an in-game button, or a generic click a mode "
+                "needs.\n"
+                "pairs: Tap key | Wait\n"
+                "Note: the Auto Pan target needs the Auto Pan button "
+                "calibrated on the Calibrate page first."},
+    "wait": {
+        "group": "action", "name": "Wait", "icon": _SB_ICO["wait"],
+        "summary": "Wait {ms} ms.",
+        "params": [
+            {"key": "ms", "label": "Wait for (ms)", "type": "int",
+             "default": 500, "range": [10, 120000, 50]},
+        ],
+        "help": "**Does nothing for the set time.** The workhorse for slow "
+                "animations: the Treasure dig takes about 12000 ms on slow "
+                "gear, so a Wait after the dig lets it finish before the "
+                "next move.\n"
+                "raise: the next step keeps firing {{before the animation "
+                "ends}}.\n"
+                "lower: obvious dead time between steps.\n"
+                "pairs: Dig click | Wait for capacity\n"
+                "Note: Esc, Ctrl+K and Pause all interrupt a Wait instantly."},
+    "relic": {
+        "group": "action", "name": "Use relic slot", "icon": _SB_ICO["relic"],
+        "summary": "Use the relic in slot {slot} ({clicks} clicks).",
+        "params": [
+            {"key": "slot", "label": "Hotbar slot", "type": "int",
+             "default": 2, "range": [1, 9, 1]},
+            {"key": "clicks", "label": "Clicks to place it", "type": "int",
+             "default": 2, "range": [1, 5, 1]},
+        ],
+        "help": "**Places a relic exactly like the Relics page does**: switch "
+                "to the slot, click to use it, switch back to the pan slot.\n"
+                "when: you want relic use at a fixed point in your loop "
+                "instead of on a timer.\n"
+                "pairs: Wait for cue\n"
+                "Note: your timed relics on the Relics page keep working "
+                "during a script run too; do not double up on the same "
+                "relic."},
+    "notify": {
+        "group": "action", "name": "Notify", "icon": _SB_ICO["notify"],
+        "summary": "Send a Discord notification: “{message}”.",
+        "params": [
+            {"key": "message", "label": "Message", "type": "str",
+             "default": "Checkpoint reached", "max": 200},
+        ],
+        "help": "**Sends a Discord DM through your existing notification "
+                "setup**, with your live stats attached.\n"
+                "when: you want a ping when a slow loop completes a lap, or "
+                "when a rare branch runs.\n"
+                "pairs: If cue shows | Repeat N times\n"
+                "Note: needs Notifications turned on with your Discord user "
+                "set, exactly like every other notification. Keep it out of "
+                "fast loops or you will spam yourself."},
+    # ---- Sensing ----------------------------------------------------------
+    "wait_cue": {
+        "group": "sense", "name": "Wait for cue", "icon": _SB_ICO["wait_cue"],
+        "summary": "Wait up to {timeout_ms} ms for the {cue_t} prompt{hold_t}{fresh_t}.",
+        "params": [
+            {"key": "cue", "label": "Prompt to wait for", "type": "choice",
+             "default": "pan", "choices": _SB_CUES},
+            {"key": "hold", "label": "Hold a key while waiting", "type": "choice",
+             "default": "none",
+             "choices": [["none", "No key"], ["W", "W (forward)"], ["A", "A (left)"],
+                         ["S", "S (back)"], ["D", "D (right)"]]},
+            {"key": "fresh", "label": "Leave the current prompt first",
+             "type": "bool", "default": False},
+            {"key": "timeout_ms", "label": "Give up after (ms)", "type": "int",
+             "default": 3000, "range": [100, 120000, 100]},
+            {"key": "on_timeout", "label": "If it never shows", "type": "choice",
+             "default": "continue",
+             "choices": [["continue", "Keep going"], ["stop", "Safe stop"]]},
+        ],
+        "help": "**Watches the white HUD prompt through the calibrated "
+                "detector and moves on the moment it shows.** Hold a key "
+                "while waiting and this becomes the classic walk-until "
+                "move: hold S until Pan is the standard walk into the "
+                "water, hold D until Collect Deposit is the Treasure "
+                "strafe.\n"
+                "when: any step that should end at a place, not after a "
+                "time.\n"
+                "raise: laggy games need a bigger give-up time so slow "
+                "prompts {{do not time out}}.\n"
+                "pairs: Shake clicks | Dig click\n"
+                "Note: Leave the current prompt first makes it wait for the "
+                "prompt to disappear before counting it again; turn it on "
+                "when you are strafing from one Collect spot to the next, "
+                "or the prompt you are still standing on counts instantly. "
+                "A held key is always released afterwards."},
+    "wait_cap": {
+        "group": "sense", "name": "Wait for capacity", "icon": _SB_ICO["wait_cap"],
+        "summary": "Wait up to {timeout_ms} ms for the pan to read {state_t}.",
+        "params": [
+            {"key": "state", "label": "Wait until the pan is", "type": "choice",
+             "default": "full", "choices": [["full", "Full"], ["empty", "Empty"]]},
+            {"key": "timeout_ms", "label": "Give up after (ms)", "type": "int",
+             "default": 5000, "range": [100, 120000, 100]},
+            {"key": "on_timeout", "label": "If it never happens", "type": "choice",
+             "default": "continue",
+             "choices": [["continue", "Keep going"], ["stop", "Safe stop"]]},
+        ],
+        "help": "**Watches the calibrated capacity bar** and moves on when "
+                "it reads full or empty, so your script syncs to what "
+                "actually happened instead of guessing with fixed waits.\n"
+                "when: after a dig (wait for full) or a shake (wait for "
+                "empty).\n"
+                "raise: slow fill animations need a bigger give-up time.\n"
+                "pairs: Dig click | Shake clicks\n"
+                "Note: full and empty use the same thresholds as the "
+                "macro's own cycle, including your Pan-empty threshold "
+                "setting."},
+    "if_cue": {
+        "group": "sense", "name": "If cue shows", "icon": _SB_ICO["if_cue"],
+        "kids": True,
+        "summary": "If the {cue_t} prompt is showing, run the steps inside.",
+        "params": [
+            {"key": "cue", "label": "Prompt to check", "type": "choice",
+             "default": "deposit", "choices": _SB_CUES},
+        ],
+        "help": "**Checks the HUD prompt once, right now.** If it is "
+                "showing, the steps inside run; if not, they are skipped "
+                "and the script continues after this block.\n"
+                "when: branching, like only dig if Collect Deposit is up.\n"
+                "pairs: If not | Wait for cue\n"
+                "Note: it does not wait. If you want to wait for the "
+                "prompt, use Wait for cue instead."},
+    "if_cap": {
+        "group": "sense", "name": "If capacity", "icon": _SB_ICO["if_cap"],
+        "kids": True,
+        "summary": "If the pan reads {state_t}, run the steps inside.",
+        "params": [
+            {"key": "state", "label": "Pan state to check", "type": "choice",
+             "default": "full", "choices": [["full", "Full"], ["empty", "Empty"]]},
+        ],
+        "help": "**Checks the capacity bar once, right now.** If the pan "
+                "matches, the steps inside run; otherwise they are "
+                "skipped.\n"
+                "when: like only shake if the pan is actually full.\n"
+                "pairs: If not | Wait for capacity\n"
+                "Note: it does not wait; pair it with Wait for capacity "
+                "when timing matters."},
+    "if_not": {
+        "group": "sense", "name": "If not", "icon": _SB_ICO["if_not"],
+        "kids": True,
+        "summary": "If {check_t} is NOT true, run the steps inside.",
+        "params": [
+            {"key": "check", "label": "Check that is false", "type": "choice",
+             "default": "full",
+             "choices": [["pan", "The Pan prompt shows"],
+                         ["deposit", "The Collect Deposit prompt shows"],
+                         ["shake", "The Shake prompt shows"],
+                         ["full", "The pan is full"],
+                         ["empty", "The pan is empty"]]},
+        ],
+        "help": "**The inverse check**: the steps inside run only when the "
+                "chosen read is NOT true right now.\n"
+                "when: like if the pan is not full yet, dig again.\n"
+                "pairs: If cue shows | If capacity\n"
+                "Note: reads once, instantly, through the same calibrated "
+                "detector as everything else."},
+    # ---- Flow -------------------------------------------------------------
+    "repeat": {
+        "group": "flow", "name": "Repeat N times", "icon": _SB_ICO["repeat"],
+        "kids": True,
+        "summary": "Repeat the steps inside {times} times.",
+        "params": [
+            {"key": "times", "label": "Times", "type": "int",
+             "default": 2, "range": [1, 1000, 1]},
+        ],
+        "help": "**Runs the steps inside a fixed number of times**, then "
+                "continues.\n"
+                "when: multi-dig fills, or doing a spot pattern N times "
+                "before moving on.\n"
+                "pairs: Dig click | Group\n"
+                "Note: the WHOLE script already repeats forever on its own; "
+                "you never need a Repeat around everything."},
+    "group": {
+        "group": "flow", "name": "Group", "icon": _SB_ICO["group"],
+        "kids": True,
+        "summary": "{label}",
+        "params": [
+            {"key": "label", "label": "Name this group", "type": "str",
+             "default": "Steps", "max": 60},
+        ],
+        "help": "**A named container that just runs its steps in order.** "
+                "Purely for keeping big scripts readable: fold related "
+                "steps under one label.\n"
+                "when: your script grows past a handful of blocks.\n"
+                "pairs: Comment | Repeat N times\n"
+                "Note: it changes nothing about how the script runs."},
+    "stop": {
+        "group": "flow", "name": "Safe stop", "icon": _SB_ICO["stop"],
+        "summary": "Safe stop: “{message}”.",
+        "params": [
+            {"key": "message", "label": "Reason to show", "type": "str",
+             "default": "Stopped by the script", "max": 120},
+        ],
+        "help": "**Ends the run through the macro's normal safe-stop path**: "
+                "inputs released, stats saved, the reason shown in the log "
+                "and History, notifications sent if enabled.\n"
+                "when: a done condition, like stopping when the bag is "
+                "likely full.\n"
+                "pairs: If capacity | Repeat N times\n"
+                "Note: your safe-stop settings decide whether it pauses and "
+                "retries or stops for good, exactly like a built-in run."},
+    "comment": {
+        "group": "flow", "name": "Comment", "icon": _SB_ICO["comment"],
+        "summary": "{text}",
+        "params": [
+            {"key": "text", "label": "Note to yourself", "type": "str",
+             "default": "", "max": 200},
+        ],
+        "help": "**A note in the script that does nothing when it runs.** "
+                "Use it to explain a step to a friend you share the script "
+                "with, or to future you.\n"
+                "when: anywhere a step needs explaining.\n"
+                "pairs: Group\n"
+                "Note: comments are skipped instantly by the macro."},
+}
+
+# Container types (may hold children). Everything else is a leaf.
+STUDIO_CONTAINERS = {t for t, d in STUDIO_BLOCKS.items() if d.get("kids")}
+
+# Hard structural limits, enforced by the validator AND re-checked at runtime.
+STUDIO_MAX_BLOCKS = 500
+STUDIO_MAX_DEPTH = 16
+
+
 def render(msg=""):
     saved = load_saved()
     navs, panels = [], []
