@@ -6846,7 +6846,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  // tabs
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-   const id=b.dataset.tab; const pid=(id==='run'||id==='cycle'||id==='builds'||id==='cal'||id==='relics'||id==='hist'||id==='keys')?('p'+id):('p_'+id);
+   const id=b.dataset.tab; const pid=(id==='run'||id==='cycle'||id==='builds'||id==='cal'||id==='relics'||id==='hist'||id==='studio'||id==='keys')?('p'+id):('p_'+id);
    document.getElementById(pid).classList.add('active');
    const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
    if(id==='hist')loadHistory();
@@ -8245,6 +8245,7 @@ def _studio_html():
    S._lastKey=coalesce||null;S._lastT=now;
    fn(S.script);S.dirty=true;
    if(light){document.body.classList.add('isdirty');
+     T('undobtn').disabled=!S.undo.length;T('redobtn').disabled=!S.redo.length;
      var chk=clientCheck();S.problems=chk;renderProblems();setValidity();return;}
    render();}
  function restore(json){var o=JSON.parse(json);S.script.blocks=o.b;S.script.name=o.n;S.script.description=o.d;
