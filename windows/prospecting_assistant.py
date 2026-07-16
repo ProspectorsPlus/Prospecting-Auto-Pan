@@ -244,7 +244,7 @@ def _fix_shake_miss(s, ch, m):
     return ("The shake is **missing / not registering**. I'm lengthening each shake "
             "click, giving it longer before it's called a failure, and (if it was off) "
             "turning on hold-W momentum. If it *never* shakes at all, your **Shake** "
-            "prompt pixel may be miscalibrated — re-run Guided calibration's Shake step.")
+            "prompt pixel may be miscalibrated, re-run Guided calibration's Shake step.")
 
 
 def _fix_shake_overflow(s, ch, m):
@@ -254,7 +254,7 @@ def _fix_shake_overflow(s, ch, m):
              "let the pan fully settle so a trailing shake click can't bleed into the dig")
         _bump(ch, s, "PRE_DIG_SETTLE_MS", +1, "settle before the first dig so it doesn't fire mid-shake", m)
         return ("A shake click is **bleeding into the dig** and wrecking quality. The "
-                "clean fix is a **fixed shake count** so it can't over-click — tell me how "
+                "clean fix is a **fixed shake count** so it can't over-click, tell me how "
                 "many shake clicks empty your pan (e.g. “set shake clicks to 3”) and I'll "
                 "lock it. For now I've added settle time so the extra click can't reach the dig.")
     return ("You already use a fixed shake count (%d). Adding settle time after the "
@@ -366,7 +366,7 @@ def _fix_overshoot_land(s, ch, m):
         _bump(ch, s, "DEPOSIT_MAX_MS", -1, "cap the forward walk shorter", m)
     return ("It's **overshooting the land**. Easing off the forward push so it stops on "
             "the dig spot. (If it runs *way* past, your Collect-Deposit prompt pixel may "
-            "be reading late — re-calibrate it.)")
+            "be reading late, re-calibrate it.)")
 
 
 def _fix_recover_aggressive(s, ch, m):
@@ -394,7 +394,7 @@ def _fix_fr_too_easy(s, ch, m):
     _bump(ch, s, "SHAKE_FAIL_LIMIT", +1, "more shake retries before a soft stop", m)
     return ("**Fortune River recovery is triggering too easily.** Raising the stuck/"
             "shake thresholds so a soft stop (which triggers FR) only happens on a real "
-            "problem. Note: if either threshold is **0** it fires instantly — these are "
+            "problem. Note: if either threshold is **0** it fires instantly, these are "
             "now set to safe values. You can also turn **FR recovery** off entirely.")
 
 
@@ -446,19 +446,19 @@ def _fix_fr_jumpy(s, ch, m):
 def _fix_x_drift(s, ch, m):
     if not s.get("X_PATTERN", False):
         return ("This is about the **X pattern** (diagonal walk-backs), but it's currently "
-                "off — turn on **X pattern** first, then I can tune the drift.")
-    _bump(ch, s, "X_STRAFE_MS", -1, "shorter diagonal each pass — straighter, less sideways drift", m)
+                "off, turn on **X pattern** first, then I can tune the drift.")
+    _bump(ch, s, "X_STRAFE_MS", -1, "shorter diagonal each pass, straighter, less sideways drift", m)
     cur = int(s.get("X_RECENTER_MS", 400))
     if cur == 0 or cur > 300:
         _set(ch, s, "X_RECENTER_MS", 300, "recenter sooner so it can't wander off the strip")
     return ("The **X pattern is drifting off position**. I'm shortening the diagonal part "
-            "of each back-walk (so most of it is straight — keeps depth and landing "
+            "of each back-walk (so most of it is straight, keeps depth and landing "
             "consistent) and making it **auto-recenter sooner**. If it still ends in the "
             "water, say “X pattern lands me in water” and I'll shorten the diagonal more.")
 
 
 def _fix_capacity(s, ch, m):
-    return ("This sounds like a **capacity-bar calibration** issue, not a timing one — "
+    return ("This sounds like a **capacity-bar calibration** issue, not a timing one, "
             "so I won't change timings. If it walks forward and never digs, or thinks "
             "the pan is full/empty wrongly, re-run **Guided calibration → Capacity bar** "
             "with the bar completely full, and make sure only the bar is in view. Use "
@@ -721,7 +721,7 @@ def _why_text(hist, focus=None):
     agg = _aggregate_events(hist)
     types, reasons = agg["types"], agg["reasons"]
     if not types:
-        return ("I don't have detailed run telemetry yet — run the macro once (this "
+        return ("I don't have detailed run telemetry yet, run the macro once (this "
                 "version records the reason behind every safe-stop, nudge and recovery) "
                 "and then ask me again.")
     order = [focus] if focus else ["safe_stop", "hard_stop", "no_progress", "shake_fail",
@@ -735,11 +735,11 @@ def _why_text(hist, focus=None):
         causes = reasons.get(et, [])[:4]
         if causes:
             bits = ", ".join("%d× %s" % (n, why) for why, n in causes if why)
-            out.append("**%s** (%d): %s" % (label.capitalize(), types[et], bits or "—"))
+            out.append("**%s** (%d): %s" % (label.capitalize(), types[et], bits or "none"))
         else:
             out.append("**%s**: %d" % (label.capitalize(), types[et]))
     if not out:
-        return "No events of that kind in your recent runs — that part's running clean."
+        return "No events of that kind in your recent runs, that part's running clean."
     head = ("Here's why those happened across your recent runs (most common first):\n\n- "
             if not focus else "Breakdown of %s across recent runs:\n\n- "
             % _EVENT_LABEL.get(focus, focus))
@@ -828,7 +828,7 @@ def respond(message, ctx):
     # 0b) "too much / you overdid it" with nothing else -> back off
     if relax and not any(kw in text for _, _, kws, _, _ in SYMPTOMS for kw, _w in kws):
         return _wrap(
-            "No problem — I won't push that further. If one change overshot, tell me "
+            "No problem, I won't push that further. If one change overshot, tell me "
             "which setting (e.g. “the land push is too much”) and I'll dial it back, or "
             "just lower it in its tab. You can also **Dismiss** a change card before "
             "applying it.", [], prev, ["Undo the last change", "It's fine now"])
@@ -838,8 +838,8 @@ def respond(message, ctx):
             "what do you do") and len(text) < 40 and not changes:
         return _wrap(
             "I'm your tuning coach. Tell me what the macro is doing wrong in plain "
-            "English — “it shakes late”, “it lands in water”, “digs too early”, "
-            "“Fortune River keeps triggering” — and I'll propose exact setting changes you "
+            "English, “it shakes late”, “it lands in water”, “digs too early”, "
+            "“Fortune River keeps triggering”, and I'll propose exact setting changes you "
             "can apply with one click. I can also **analyze your last runs**, **make a "
             "build faster**, or **explain any setting**. I only change settings, never code, "
             "and nothing applies until you confirm.", [], "", DEFAULT_CHIPS)
@@ -854,7 +854,7 @@ def respond(message, ctx):
                     or k.lower() in text:
                 h = _HELP.get(k)
                 if h:
-                    return _wrap("**%s** — %s" % (lab, h), [], "explain",
+                    return _wrap("**%s**, %s" % (lab, h), [], "explain",
                                  ["Change it", "Something's wrong with it"])
         # fall through if no match
 
@@ -904,11 +904,11 @@ def respond(message, ctx):
                 _bump(changes, s, "POST_SHAKE_SETTLE_MS", +1, "more settle to cut safe-stops")
                 _bump(changes, s, "LAND_SETTLE_MS", +1, "plant on land to avoid hazard stops")
                 _bump(changes, s, "SAFE_STOP_MAX_RETRIES", +1, "heal more before a hard stop")
-                bits.append("You've had stops — I've nudged settle/retry settings up for "
+                bits.append("You've had stops, I've nudged settle/retry settings up for "
                             "stability. If the stops are at the water's edge, also try "
                             "“it lands in water”.")
             if flags.get("rec", 0) >= 8 * max(1, flags.get("n", 1)) / 2:
-                bits.append("High recovery count usually means a timing mismatch — tell me "
+                bits.append("High recovery count usually means a timing mismatch, tell me "
                             "the specific symptom (shake miss? short land?) and I'll target it.")
         bits.extend(notes)
         if wants_eff and not stats:
@@ -919,10 +919,10 @@ def respond(message, ctx):
                 changes, "efficiency", ["Trim dead time anyway", "Explain a setting"],
                 ask_stats=True)
         if not bits and not changes:
-            bits.append("I don't see any run history yet — run the macro once and I'll "
+            bits.append("I don't see any run history yet, run the macro once and I'll "
                         "have data to analyze. Meanwhile, tell me any symptom and I'll tune it.")
         return _wrap(" ".join(bits) if bits else
-                     "Here's a small efficiency pass — trimmed some dead time. Review the "
+                     "Here's a small efficiency pass, trimmed some dead time. Review the "
                      "changes; raise anything back up if reliability drops.",
                      changes, "efficiency",
                      ["Now make it more reliable", "Tell me my ideal cycle"])
@@ -949,7 +949,7 @@ def respond(message, ctx):
             if sid == prev:
                 reply = fix(s, changes, 2.0)
                 return _wrap("Pushing that further. " + reply, changes, sid,
-                             ["Still off", "That's worse — undo", "Perfect, save it"])
+                             ["Still off", "That's worse, undo", "Perfect, save it"])
 
     if scored:
         top = scored[:2]                       # apply up to two related symptoms
@@ -963,19 +963,19 @@ def respond(message, ctx):
                 lo, hi, _ = RANGES.get(c["key"], (None, None, 1))
                 # halve the move instead
             replies.insert(0, "(Easing the adjustment since you said it was too much.)")
-        chips = ["Still happening", "That fixed it — save", "Something else is wrong"]
+        chips = ["Still happening", "That fixed it, save", "Something else is wrong"]
         return _wrap("\n\n".join(replies), changes, topic, chips)
 
     # 5) positive / thanks
     if _has(text, "perfect", "works now", "fixed", "thank", "thanks", "great", "nice",
             "that worked", "good job"):
-        return _wrap("Nice — glad that's sorted. Hit **Save settings** (or **Save "
+        return _wrap("Nice, glad that's sorted. Hit **Save settings** (or **Save "
                      "build**) to keep it. Anything else acting up?", [], "",
                      DEFAULT_CHIPS)
 
     # 6) fallback
     return _wrap(
-        "I want to target the right knob — can you say what it's doing wrong? For "
+        "I want to target the right knob, can you say what it's doing wrong? For "
         "example: *“the shake misses”*, *“it lands in the water”*, *“it digs before "
         "reaching land”*, *“Fortune River keeps triggering”*, or *“make it faster”*. "
         "You can also ask me to **explain any setting** or **analyze your last runs**.",

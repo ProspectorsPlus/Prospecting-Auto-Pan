@@ -45,11 +45,14 @@ if [ -f prospecting_secrets.json ]; then
 import json, sys
 try:
     sec = json.load(open("prospecting_secrets.json"))
-    url = sec.get("SYNC_URL", "")
-    if url:
-        p = sys.argv[1]; d = json.load(open(p)); d["SYNC_URL"] = url
+    p = sys.argv[1]; d = json.load(open(p)); changed = []
+    for k in ("SYNC_URL", "WEBHOOK_URL", "WEBHOOK_SECRET"):
+        v = str(sec.get(k, "") or "").strip()
+        if v:
+            d[k] = v; changed.append(k)
+    if changed:
         json.dump(d, open(p, "w"), indent=2)
-        print("   (injected SYNC_URL from prospecting_secrets.json)")
+        print("   (injected %s from prospecting_secrets.json)" % ", ".join(changed))
 except Exception:
     pass
 PY

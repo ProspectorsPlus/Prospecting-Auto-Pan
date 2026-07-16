@@ -42,10 +42,12 @@ jobs:
       # be skipped even with the secret set). The step therefore runs
       # unconditionally and the emptiness check happens inside the script:
       # unset/empty secret -> config left untouched, no webhook ships.
-      - name: Inject analytics webhook (no-op if PP_SYNC_URL secret unset)
+      - name: Inject private endpoints (no-op for any unset secret)
         env:
           PP_SYNC_URL: ${{ secrets.PP_SYNC_URL }}
-        run: python -c "import json,os;u=os.environ.get('PP_SYNC_URL','').strip();p='prospecting_config.json';d=json.load(open(p));d.update({'SYNC_URL':u} if u else {});json.dump(d,open(p,'w'),indent=2);print('webhook injected' if u else 'no webhook secret; config untouched')"
+          PP_WEBHOOK_URL: ${{ secrets.PP_WEBHOOK_URL }}
+          PP_WEBHOOK_SECRET: ${{ secrets.PP_WEBHOOK_SECRET }}
+        run: python -c "import json,os;p='prospecting_config.json';d=json.load(open(p));m={'SYNC_URL':os.environ.get('PP_SYNC_URL','').strip(),'WEBHOOK_URL':os.environ.get('PP_WEBHOOK_URL','').strip(),'WEBHOOK_SECRET':os.environ.get('PP_WEBHOOK_SECRET','').strip()};ch=[k for k,v in m.items() if v];d.update({k:v for k,v in m.items() if v});json.dump(d,open(p,'w'),indent=2);print('injected: '+', '.join(ch) if ch else 'no secrets set; config untouched')"
 
       - name: Build app (PyInstaller)
         run: python -m PyInstaller --noconfirm prospecting.spec

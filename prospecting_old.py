@@ -177,6 +177,18 @@ CUE_WHITE_MIN     = 160           # a pixel is "cue text" if all channels >= thi
 CUE_WHITE_SPREAD  = 70            # ...and max-min spread <= this (whitish)
 CUE_WHITE_FRAC    = 0.12          # cue present if >= this FRACTION of the box is
                                   # white text (counts pixels, doesn't average)
+# ADVANCED CUE MATCHING (opt-in): instead of "is this small box mostly white",
+# match the EXACT white-pixel shape of the cue word (Pan / Shake / Collect
+# Deposit) captured in Advanced Calibration. A random white player cannot
+# reproduce the precise letter shape, so it is spoof-proof. Falls back to the
+# box check above for any cue without a mask, and whenever the window is resized
+# (a fixed mask would misalign -> raises a recalibration warning).
+ADVANCED_CUES     = False
+CUE_MASK_FRAC     = 0.85          # cue present if >= this fraction of the mask's
+                                  # captured pixels read white right now
+CUE_MASKS         = {}            # cue -> {ratio:[l,t,w,h], w, h, bits(b64)}
+CUE_MASK_BOXES    = {}            # runtime: cue -> live screen box (placed at start)
+CUE_MASKS_ONLY    = False         # test mode: use ONLY captured masks, no box fallback
 DEPOSIT_MAX_MS    = 1200          # safety cap riding W to find the land cue
 SHAKE_INIT_MS     = 280           # window to confirm the "Shake" cue after the
                                   # start-click; if it never shows (and you read
@@ -572,11 +584,15 @@ RELIC_CLICK_GAP_MS = 90    # gap between the relic clicks
 RELIC_PRE_MS       = 120   # settle after releasing movement, before switching slot
 
 # --- DISCORD WEBHOOK / NOTIFICATIONS -----------------------------------------
-# Posts JSON to WEBHOOK_URL on events (start, safe-stop, bag full, periodic
-# stats). Works as a plain Discord webhook (shows "content") AND carries
-# structured fields ("event","user","stats") so a custom bot can DM people.
+# Posts to WEBHOOK_URL on events (start, safe-stop, bag full, periodic stats).
+# When WEBHOOK_URL is empty it falls back to SYNC_URL, the webhook every
+# shipped build carries in its config, so notifications work out of the box.
+# Renders on a plain Discord webhook as content + an embed (user/event/stats
+# as embed fields, since Discord drops unknown JSON keys) AND still carries
+# the raw "event"/"user"/"stats" fields for a custom relay bot.
 WEBHOOK_ENABLED    = False
 WEBHOOK_URL        = ""  # set in config only; no secret is ever baked into source
+SYNC_URL           = ""  # injected into shipped configs; fallback delivery URL
 WEBHOOK_SECRET     = ""  # set in config only; no secret is ever baked into source
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
@@ -1150,6 +1166,48 @@ def is_yellow(r, g, b):
     return r >= YEL_MIN and g >= YEL_MIN and b <= min(r, g) - YEL_BLUE_GAP
 
 
+def _unpack_cue_mask(m):
+    """CUE_MASKS bits (base64 packed bools) -> HxW bool array, or None."""
+    try:
+        import base64
+        raw = base64.b64decode(m["bits"])
+        h, w = int(m["h"]), int(m["w"])
+        bits = np.unpackbits(np.frombuffer(raw, dtype=np.uint8))[:h * w]
+        return bits.reshape(h, w).astype(bool)
+    except Exception:
+        return None
+
+
+def place_cue_masks():
+    """Place each captured cue mask onto the LIVE window from its stored ratio
+    (advanced cue matching). Runs once at start after the pixels are placed. If
+    the window SIZE drifted from calibration the fixed-size mask would misalign,
+    so that cue is skipped (falls back to the box check) and a recalibration
+    reason is set for the app to flag."""
+    global CUE_MASK_BOXES
+    CUE_MASK_BOXES = {}
+    if not ADVANCED_CUES or not CUE_MASKS:
+        return
+    rect = find_roblox_rect()
+    if not rect:
+        return
+    x, y, w, h = rect
+    for cue, m in CUE_MASKS.items():
+        try:
+            rl, rt, rw, rh = m["ratio"]
+            bw, bh = int(round(rw * w)), int(round(rh * h))
+            if abs(bw - int(m["w"])) > 2 or abs(bh - int(m["h"])) > 2:
+                State.recal_reason = ("the Roblox window/resolution changed since "
+                                      "calibration -- advanced cue matching is off "
+                                      "until you re-calibrate")
+                continue
+            CUE_MASK_BOXES[cue] = {"left": int(round(x + rl * w)),
+                                   "top": int(round(y + rt * h)),
+                                   "width": int(m["w"]), "height": int(m["h"])}
+        except Exception:
+            continue
+
+
 # ---- Capture + detection ----------------------------------------------------
 class Detector:
     def __init__(self, sct):
@@ -1203,9 +1261,9 @@ class Detector:
         (on_land, in_water, shaking, pan_full, pan_empty). Position cues are
         mutually exclusive via the deposit-pixel guard, so the wide 'Collect
         Deposit' text can't masquerade as 'Pan'/'Shake'."""
-        dep = self._cue_white(self.deposit_region)
-        pan = self._cue_white(self.pan_region) and not dep
-        shk = self._cue_white(self.shake_region) and not dep
+        dep = self._cue("DEPOSIT", self.deposit_region)
+        pan = self._cue("PAN", self.pan_region) and not dep
+        shk = self._cue("SHAKE", self.shake_region) and not dep
         full = self.capacity_full()
         empty = self.pan_empty()
         return dep, pan, shk, full, empty
@@ -1220,18 +1278,51 @@ class Detector:
         white = (lo >= CUE_WHITE_MIN) & ((hi - lo) <= CUE_WHITE_SPREAD)
         return float(white.mean()) >= CUE_WHITE_FRAC
 
+    def _cue_mask_match(self, cue_key):
+        """Advanced cue matching: True/False if this cue has a captured mask that
+        is currently placed, else None (caller falls back to the box check)."""
+        if not ADVANCED_CUES:
+            return None
+        box = CUE_MASK_BOXES.get(cue_key)
+        m = CUE_MASKS.get(cue_key)
+        if not box or not m:
+            return None
+        try:
+            img = np.asarray(self.sct.grab(box))[:, :, :3].astype(np.int16)
+            b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+            lo = np.minimum(np.minimum(r, g), b)
+            hi = np.maximum(np.maximum(r, g), b)
+            white = (lo >= CUE_WHITE_MIN) & ((hi - lo) <= CUE_WHITE_SPREAD)
+            mask = _unpack_cue_mask(m)
+            if mask is None or mask.shape != white.shape or not mask.any():
+                return None
+            return float(white[mask].mean()) >= CUE_MASK_FRAC
+        except Exception:
+            return None
+
+    def _cue(self, cue_key, region):
+        """Mask match if available (advanced), else the plain white-box check.
+        CUE_MASKS_ONLY (test mode) removes the box fallback so ONLY captured masks
+        drive detection -- a cue with no usable mask then never fires."""
+        r = self._cue_mask_match(cue_key)
+        if r is not None:
+            return r
+        if ADVANCED_CUES and CUE_MASKS_ONLY:
+            return False
+        return self._cue_white(region)
+
     def on_deposit(self):
         """True when the 'Collect Deposit' cue shows (white) = on the land edge."""
-        return self._cue_white(self.deposit_region)
+        return self._cue("DEPOSIT", self.deposit_region)
 
     def on_pan(self):
         """True when the 'Pan' cue shows (white) = in the water. Excludes the
         wide 'Collect Deposit' text (its leftmost pixel) to avoid confusion."""
-        return self._cue_white(self.pan_region) and not self._cue_white(self.deposit_region)
+        return self._cue("PAN", self.pan_region) and not self._cue("DEPOSIT", self.deposit_region)
 
     def on_shake(self):
         """True when the 'Shake' cue shows (white) = the shake has initiated."""
-        return self._cue_white(self.shake_region) and not self._cue_white(self.deposit_region)
+        return self._cue("SHAKE", self.shake_region) and not self._cue("DEPOSIT", self.deposit_region)
 
     def cap_start_rgb(self):
         """Current colour at the start of the bar (for baseline comparison)."""
@@ -1299,6 +1390,7 @@ class Detector:
 # ---- Global state -----------------------------------------------------------
 class State:
     running = False
+    recal_reason = ""        # non-empty -> the app shows a red "recalibrate" flag
     paused = False           # session PAUSE: stats/relics/earnings all kept
     relic_reset_pending = False   # (legacy flag; resets act directly now)
     relics_ref = None             # live RelicScheduler (listener/stdin access)
@@ -2819,34 +2911,84 @@ def _grab_screenshot_b64():
         return None
 
 
+def _webhook_payload(event, message, stats=None):
+    """Build the notification payload: content + a Discord embed carrying the
+    user/event/stats (plain webhooks drop unknown JSON keys, so anything a
+    relay bot or the owner needs to SEE must live in the embed), plus the raw
+    fields for a custom relay reading the POST body directly."""
+    st = stats or {}
+    fields = [{"name": "User", "value": str(WEBHOOK_USER or "(not set)")[:100],
+               "inline": True},
+              {"name": "Event", "value": str(event)[:60], "inline": True}]
+    bits = []
+    if st.get("cycles") is not None:
+        bits.append("%s pans" % st.get("cycles"))
+    if st.get("pans_per_hr"):
+        bits.append("%s/hr" % st.get("pans_per_hr"))
+    if st.get("runtime_s"):
+        bits.append("%dm" % int(int(st.get("runtime_s") or 0) / 60))
+    if st.get("recoveries") is not None:
+        bits.append("%s rec" % st.get("recoveries"))
+    if bits:
+        fields.append({"name": "Stats", "value": " / ".join(bits)[:200],
+                       "inline": True})
+    embed = {"title": "Prospectors Plus", "description": str(message)[:1500],
+             "color": 0xC2924C, "fields": fields}
+    return {"username": "Prospectors Plus", "content": str(message)[:1900],
+            "embeds": [embed], "event": event, "user": WEBHOOK_USER,
+            "stats": st}
+
+
+def _webhook_send(url, payload, img_b64=None):
+    """Deliver a payload to a webhook URL, blocking. Attaches the screenshot
+    as a real multipart file upload (attachment://shot.png) so it renders in
+    Discord. Retries once without SSL verification because the bundled macOS
+    Python often ships without certificates. Returns (ok, error_string)."""
+    import ssl as _ssl
+    try:
+        if img_b64:
+            payload["screenshot"] = img_b64          # the bot decodes + attaches it
+            payload["screenshot_format"] = "png"
+        data = json.dumps(payload).encode("utf-8")
+        headers = {"Content-Type": "application/json",
+                   "User-Agent": "ProspectorsPlus/1.0"}
+        if WEBHOOK_SECRET:
+            headers["x-macro-secret"] = WEBHOOK_SECRET
+        req = urllib.request.Request(url, data=data, headers=headers)
+        try:
+            urllib.request.urlopen(req, timeout=8)
+        except Exception as e1:
+            if getattr(e1, "code", None):          # a real HTTP rejection
+                return False, "HTTP %s" % e1.code
+            urllib.request.urlopen(req, timeout=8,
+                                   context=_ssl._create_unverified_context())
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
 def post_webhook(event, message, stats=None, shot=False):
-    """Fire a JSON notification to WEBHOOK_URL (non-blocking). Plain Discord
-    webhooks render 'content'; a custom bot can read event/user/stats. Honours
-    the per-event NOTIFY_* toggles so users get only the DMs they want."""
-    if not WEBHOOK_ENABLED or not WEBHOOK_URL:
+    """Fire a notification (non-blocking). Uses WEBHOOK_URL, or SYNC_URL when
+    that is empty, so shipped builds notify without extra setup. Honours the
+    per-event NOTIFY_* toggles so users get only the DMs they want."""
+    url = (WEBHOOK_URL or "").strip()
+    if not WEBHOOK_ENABLED or not url:
+        if WEBHOOK_ENABLED and not url:
+            print("[webhook] no WEBHOOK_URL set -- user notification dropped "
+                  "(owner analytics never uses this path)")
         return
     flag = _EVENT_FLAG.get(event)
     if flag and not globals().get(flag, True):
         return
-    payload = {"username": "Prospectors Plus", "content": message,
-               "event": event, "user": WEBHOOK_USER, "stats": stats or {}}
-    if shot and NOTIFY_SCREENSHOT:
-        img = _grab_screenshot_b64()
-        if img:
-            payload["screenshot"] = img
-            payload["screenshot_format"] = "png"
+    payload = _webhook_payload(event, message, stats)
+    img = _grab_screenshot_b64() if (shot and NOTIFY_SCREENSHOT) else None
+    if img:
+        payload["screenshot"] = img            # legacy relay-bot field
 
     def _send():
-        try:
-            headers = {"Content-Type": "application/json"}
-            if WEBHOOK_SECRET:
-                headers["x-macro-secret"] = WEBHOOK_SECRET
-            req = urllib.request.Request(
-                WEBHOOK_URL, data=json.dumps(payload).encode("utf-8"),
-                headers=headers)
-            urllib.request.urlopen(req, timeout=8)
-        except Exception as e:
-            print(f"[webhook] failed: {e}")
+        ok, err = _webhook_send(url, payload, img)
+        if not ok:
+            print(f"[webhook] failed: {err}")
 
     threading.Thread(target=_send, daemon=True).start()
 
@@ -4014,7 +4156,7 @@ def return_and_dig(det):
                 return True
         # none of the in-place digs registered -> probably off land -> nudge fwd
         log(f"    no dig registered (round {rnd+1}) -> nudge W fwd")
-        emit_event("nudge", "no dig registered — nudging forward to find land")
+        emit_event("nudge", "no dig registered, nudging forward to find land")
         if State.stats: State.stats.nudges += 1
         key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
         sleep_ms(PROBE_GAP_MS)               # settle before the next round
@@ -4057,18 +4199,18 @@ def recover(det, s):
         post_webhook("recovery", "🛠️ Recovering (got stuck, correcting)",
                      State.stats.as_dict(), shot=True)
     if s.full and s.pan:
-        emit_event("recover", "full & in water — pan won't empty, re-shaking",
+        emit_event("recover", "full & in water, pan won't empty, re-shaking",
                    s.where, s.contents)
         if SHAKE_RETRY_ENABLED:
             do_shake(det)                # full in water, won't empty -> shake again
     elif s.full:
         # full but not in water -> jitter S back toward the water
-        emit_event("recover", "full on land — jitter back to the water", s.where, s.contents)
+        emit_event("recover", "full on land, jitter back to the water", s.where, s.contents)
         if State.stats: State.stats.nudges += 1
         pulse_until(KEY_S, det.on_pan, RECOVER_BACK_MS)
     else:
         # empty, can't land -> jitter forward, then re-probe with a dig next tick
-        emit_event("recover", "empty — can't find land, jitter forward", s.where, s.contents)
+        emit_event("recover", "empty, can't find land, jitter forward", s.where, s.contents)
         if State.stats: State.stats.nudges += 1
         pulse_until(KEY_W, det.capacity_full, RECOVER_BACK_MS)
 
@@ -4081,7 +4223,7 @@ def break_out(det, s):
     forward to get off the water edge. After this we reset the counters and let
     normal logic try again ('do as if it was normal'). Returns True if it emptied."""
     log("    ** BREAK-OUT: click to finish any active shake, then reposition **")
-    emit_event("break_out", "stuck at %s/%s — forcing an escape" % (s.where, s.contents),
+    emit_event("break_out", "stuck at %s/%s, forcing an escape" % (s.where, s.contents),
                s.where, s.contents)
     if s.full:
         end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
@@ -4410,7 +4552,7 @@ class Supervisor:
         if SHAKE_GLITCH_LIMIT > 0 and State.shake_fails >= SHAKE_GLITCH_LIMIT:
             if BREAKOUT_ENABLED and State.breakouts < BREAKOUT_LIMIT:
                 State.breakouts += 1
-                emit_event("shake_glitch", "shake didn't register x%d — quick recovery"
+                emit_event("shake_glitch", "shake didn't register x%d, quick recovery"
                            % State.shake_fails)
                 log(f"** shake not registering x{State.shake_fails} "
                     f"-> quick break-out #{State.breakouts} **")
@@ -4431,7 +4573,7 @@ class Supervisor:
         if (BREAKOUT_ENABLED and NO_PROGRESS_SEC > 0 and State.last_progress
                 and time.perf_counter() - State.last_progress > NO_PROGRESS_SEC):
             State.breakouts += 1
-            emit_event("no_progress", "nothing completed for %ds — click-to-empty recovery"
+            emit_event("no_progress", "nothing completed for %ds, click-to-empty recovery"
                        % NO_PROGRESS_SEC)
             log(f"** no progress for {NO_PROGRESS_SEC}s -> break-out #{State.breakouts} (click to empty) **")
             if State.breakouts > BREAKOUT_LIMIT:
@@ -4828,6 +4970,7 @@ def main():
     load_config()                 # apply UI overrides from prospecting_config.json
     if not apply_auto_calibrate():  # place pixels from the live window (if profile)
         apply_window_offset()       # else shift pixels if the window moved (opt-in)
+    place_cue_masks()               # advanced cue matching: place captured masks
     print(__doc__.split("SETUP")[0])
     print(f"Dig trigger pixel {DIG_TRIGGER_PIXEL} (white-line release).")
     print(f"Capacity-full pixel {CAP_FULL_PIXEL} (yellow = full).")
@@ -5015,6 +5158,7 @@ def monitor():
     load_config()                 # apply UI overrides from prospecting_config.json
     if not apply_auto_calibrate():
         apply_window_offset()
+    place_cue_masks()
     print("MONITOR -- no input. Watch the values on land / in water / mid-shake.\n")
     with _MSS() as sct:
         det = Detector(sct)
