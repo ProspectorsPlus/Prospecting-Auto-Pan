@@ -2670,7 +2670,7 @@ class Api:
             res = _window.create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=False,
                 file_types=("Documents (*.docx;*.doc;*.pdf;*.txt;*.md;*.png;*.jpg;*.jpeg)",
-                            "All files (*.*)"))
+                            "Studio script (*.ppscript)", "All files (*.*)"))
             if not res:
                 return {"cancelled": True}
             path = res[0] if isinstance(res, (list, tuple)) else res

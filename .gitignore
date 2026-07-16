@@ -5,6 +5,8 @@ __pycache__/
 ACCESS_CODES_PRIVATE.txt
 run_history.json
 prospecting_builds.json
+prospecting_scripts.json
+windows/prospecting_scripts.json
 windows/run_history.json
 windows/prospecting_builds.json
 

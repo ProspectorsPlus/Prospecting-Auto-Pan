@@ -53,4 +53,25 @@ Results are appended per run; the latest full run is authoritative.
   deterministic stub run stands in and the live pass is recorded as an owner follow-up.
 
 ## Results log
-(appended chronologically)
+- 2026-07-16 03:xx baseline (pre-change): tour_check ALL CHECKS PASS; finds_sim ALL SCENARIOS PASS.
+- 2026-07-16 (step 1, schema+model): py_compile x8 ok; validator/sanitizer/template smoke ok;
+  protocol green.
+- 2026-07-16 (step 2, interpreter): studio_tests found the container-pop double-advance bug
+  (fixed, regression test added); suite ALL PASS; protocol green. Milestone commit b47b79a.
+- 2026-07-16 (step 3, UI): protocol green incl. new STUDIO surface node --check, 14 tabs +
+  58 sels + 7 studio sels resolve, six studio lockstep regions identical. Commit 64ddcba.
+- 2026-07-16 (headless Api battery): save/list/activate/rename(active follows)/clash-guard/
+  export-import round-trip identical/tamper x5 refused/duplicate/delete-deactivates: all ok.
+- 2026-07-16 (engine plumbing): config -> load_config -> ScriptRunner alive, stats labelled.
+- 2026-07-16 (browser-pane interactive pass, real rendered code + shimmed api):
+  editor select/inspector/param-sync/summaries, add via click AND Enter, undo/redo,
+  empty-container problem + amber dot, Alt+arrow move + nest + outdent, duplicate,
+  delete-confirm modal, template modal, 8-step editor walkthrough, run-state pill +
+  disabled states, live block highlight, 740x560 layout, main-window Studio tab library,
+  Run-tab selector + note, History Tracker/script badges, studio tour auto-offer
+  (gate-guarded). Found + fixed: studio tab panel switch, undo-button staleness.
+- 2026-07-16 (real app): boot log shows every window incl. Studio created; clean quit;
+  kill leaves no process.
+- 2026-07-16 (final): py_compile x8, tour_check ALL CHECKS PASS, finds_sim ALL SCENARIOS
+  PASS, studio_tests ALL PASS, zip rebuilt + byte-matched, app-copy diff still exactly the
+  two pre-existing platform hunks. Live-game pass = owner follow-up (EVALUATION.md).

@@ -1,46 +1,56 @@
 # Prospector Studio — Progress
 
-Updated: 2026-07-16 (session start)
+Updated: 2026-07-16 (end of the overnight implementation session)
 
-## Current status
-Inspection complete; source-of-truth docs written. Baseline verified green before any change:
-- `python3 tour_check.py` -> RESULT: ALL CHECKS PASS (144 keys, 9 tours/74 steps, lockstep ok)
-- `python3 finds_sim.py` -> ALL SCENARIOS PASS
+## Current status: COMPLETE (one owner-only follow-up)
+Every mandatory MVP item is implemented, integrated, mirrored and verified. The only open
+item is the live-game acceptance pass (Roblox + calibration were not available; the same
+path is proven against the deterministic detector + input stubs). See EVALUATION.md.
 
-## What already exists (preserved, not rebuilt)
-Everything in PROJECT_MEMORY.md: the pywebview app + all HTML surfaces in prospecting_app.py,
-the active engine prospecting_old.py (supervisor, Detector, input, modes, recovery ladder,
-SessionStats, emits, webhooks), the 144-key schema + HELP/UI_HELP in prospecting_ui.py, RANGES in
-prospecting_assistant.py, tours/preview/builds/access/presets/keybinds, the windows/ mirror, the
-verification harness (tour_check.py, finds_sim.py), the 14-file Windows zip.
+## What shipped (all mirrored byte-identically into windows/)
+- `prospecting_ui.py`: `STUDIO_BLOCKS` (17 block types with params, ranges, icons, tagged
+  help), `STUDIO_GROUPS`, `STUDIO_KEY_WHITELIST`, `STUDIO_CONTAINERS`, limits; 5 new UI_HELP
+  entries for the Studio tab controls.
+- `prospecting_app.py`: script model helpers (`_studio_load/_studio_write/_studio_validate/
+  _studio_sanitize/_studio_templates`), 20 `studio_*` Api methods, `prospecting_scripts.json`
+  persistence (two-phase writes), `.ppscript` export/import via native dialogs, the
+  `STUDIO_HTML` editor window (`_studio_html()` generated from the schema), window creation
+  in `main()`, `__SCRIPT__` forwarding, the Studio sidebar tab + library panel, the Run-tab
+  Mode selector, History script badges, `TOUR_DEFAULTS['studio']` + `['studio_editor']`,
+  build attachments accept `.ppscript`.
+- `prospecting_old.py`: `SCRIPT_MODE/SCRIPT_ACTIVE/SCRIPT_JSON` config plumbing, `KEY_SPACE`
+  per platform, the CUSTOM SCRIPTS interpreter section (`ScriptRunner`, `script_tick`,
+  `_SCRIPT_HANDLERS`, hard safety rails), dispatch Tracker > script > Treasure > supervisor,
+  `as_dict` script label.
+- `tour_check.py`: STUDIO surface node --check, studio tour selector resolution, six new
+  lockstep regions (app x4, engine, ui).
+- `studio_tests.py` (dev-only): 60+ checks; validator battery, drift guards, interpreter
+  walk tests with stubbed input/detector, Treasure-template integration, abort timing.
+- Docs: PRODUCT_SPEC, ARCHITECTURE, IMPLEMENTATION_PLAN, TASKS, DECISIONS, TEST_PLAN,
+  EVALUATION, README, PROJECT_MEMORY §23.
+- `Prospectors Plus Windows.zip` rebuilt (14 files, byte-matched).
 
-## What is missing (this project)
-All of Prospector Studio: schema, persistence, Api, interpreter, Studio tab + window + editor,
-run selector, sharing, tours/help, tests, verification extensions.
+## Verification state (latest run, all green)
+- `python3 -m py_compile` x8 ✓
+- `python3 tour_check.py` -> RESULT: ALL CHECKS PASS (11 tours / 88 steps; 144 keys; studio
+  lockstep regions identical) ✓
+- `python3 finds_sim.py` -> ALL SCENARIOS PASS ✓
+- `python3 studio_tests.py` -> STUDIO TESTS: ALL PASS ✓
+- Headless Api battery (save/list/activate/rename/export/import/tamper/delete) ✓
+- Browser-pane interactive pass over the real rendered UI (editor + main window) ✓
+- Real app boot: all windows incl. Studio created, clean quit ✓
+- App copies diff vs windows/: still exactly the two pre-existing platform hunks ✓
 
-## Key facts discovered during inspection (they drive the implementation)
-- App copies differ ONLY in `_roblox_rect()` and the screen-size block in `main()` (83 lines);
-  ui/assistant copies are fully identical; the engine copies diverge in the input/capture/OCR/
-  hotkey/main() regions but the areas I touch (config globals area, SessionStats.as_dict, the
-  mode dispatch block, the region before `def treasure_tick`) are shared and byte-identical.
-- Mode dispatch lives in engine main(): `if TRACKER_MODE ... elif TREASURE_MODE ... else sup.tick`.
-- `save_config()` merges only TYPES keys into the existing config -> SCRIPT_* keys survive.
-- `post_webhook(event,...)`: unknown events pass the per-event flag check; still needs
-  WEBHOOK_ENABLED + URL.
-- Tour content is Python TOUR_DEFAULTS served via tutorial_content(); per-tour localStorage flags
-  `pp_tour_<name>`; TOUR_LIST/TAB_TOURS wire the menu + auto-offer; tour_check asserts selector
-  resolution + em-dash sweep + lockstep slices between anchors.
-- mac keys: KEY_W/S/A/D/SHIFT + SLOT_KEYCODES digits; windows scancodes likewise; no KEY_SPACE yet.
-
-## Done so far
-- [x] Baseline protocol run (green).
-- [x] PRODUCT_SPEC.md, ARCHITECTURE.md, IMPLEMENTATION_PLAN.md, TASKS.md, DECISIONS.md,
-      TEST_PLAN.md, PROGRESS.md, EVALUATION.md scaffold.
+## Key decisions
+See DECISIONS.md (30 entries). Highlights: schema single-source in prospecting_ui.py with a
+drift-guard test against the engine handler table; one pan = one top-level pass; wait_cue
+grew `hold` + `fresh` params (the walk-until-cue and treasure strafe primitives); runtime
+whitelist + wait clamps independent of the editor.
 
 ## Problems / blockers
-None yet.
+None. Owner follow-up: one live Treasure run at Rubble Creek (see EVALUATION.md).
 
-## Next action
-Implement step 1 (schema + validation + persistence + Api + templates) in the macOS copies via a
-scripted patch, mirror to windows/, extend nothing in tour_check yet, run the protocol, then unit
-tests.
+## Next action (if a future session continues)
+Nothing mandatory. Enhancement candidates, in value order: live current-block highlight in
+the HUD, more sensing blocks (green dig-bar, money/shard reads), variables/counters,
+record-actions-into-blocks helper, owner-only palette editing.
