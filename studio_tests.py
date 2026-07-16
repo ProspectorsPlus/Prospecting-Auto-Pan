@@ -478,6 +478,75 @@ check("real _script_sleep aborts the instant the run stops",
       res is False and dt < 1.0, dt)
 
 # =============================================================================
+print("[4] v1 review: forward compatibility, storage recovery, caching")
+# =============================================================================
+oldstyle = {"format": "ppscript", "version": 1, "name": "Old", "description": "",
+            "author": "", "created": 1, "updated": 1, "settings": {},
+            "blocks": [{"id": "a", "type": "dig", "params": {}},
+                       {"id": "r", "type": "repeat", "params": {"times": 2}}]}
+norm = app._studio_normalize(oldstyle)
+check("normalize fills missing params and children",
+      norm["blocks"][0]["params"].get("hold_ms") == 75
+      and norm["blocks"][1].get("children") == [])
+check("normalized old-style script has no schema errors",
+      app._studio_validate(norm)["ok"], app._studio_validate(norm)["errors"])
+check("original stored data is never mutated by normalize",
+      "hold_ms" not in oldstyle["blocks"][0]["params"])
+newer = json.loads(json.dumps(norm)); newer["version"] = 99
+r = app._studio_validate(newer)
+check("file from a newer schema refused with a clear message",
+      not r["ok"] and any("newer version" in e for e in r["errors"]), r["errors"])
+check("version 0 refused", not app._studio_validate(dict(norm, version=0))["ok"])
+
+fresh_state()
+rn = po.ScriptRunner(json.dumps(norm), "Old")
+det = FakeDet(); det_live[0] = det
+rn.tick(det); rn.tick(det)
+check("engine runs an old-style (normalized) script",
+      not rn.dead and po.State.stats.dig_clicks >= 1,
+      (rn.dead, po.State.stats.dig_clicks))
+
+# list cache: served, then invalidated by a write
+app._STUDIO_LIST_CACHE["key"] = None
+api_t = app.Api()
+api_t.studio_save(app._studio_templates()[2], None)         # "Blank"
+r1 = api_t.studio_list()
+check("list cache primed", app._STUDIO_LIST_CACHE["scripts"] is not None and r1["ok"])
+r2 = api_t.studio_list()
+check("second list call served from cache",
+      r2["scripts"] is app._STUDIO_LIST_CACHE["scripts"])
+api_t.studio_delete("Blank")
+r3 = api_t.studio_list()
+check("cache invalidated by a write",
+      all(s["name"] != "Blank" for s in r3["scripts"]))
+
+# crash-safe storage: corrupt main file recovers from the rolling .bak
+import tempfile
+import shutil as _sh
+_tdir = tempfile.mkdtemp()
+_orig_sf = app.SCRIPTS_FILE
+app.SCRIPTS_FILE = os.path.join(_tdir, "prospecting_scripts.json")
+app._STUDIO_LIST_CACHE["key"] = None
+try:
+    d0 = {"active": "", "scripts": {"Keep": app._studio_templates()[0]}, "meta": {}}
+    app._studio_write(d0)                       # first write (no .bak yet)
+    d0["scripts"]["Keep"]["description"] = "second save"
+    app._studio_write(d0)                       # .bak now holds the first state
+    with open(app.SCRIPTS_FILE, "w") as f:
+        f.write("{definitely corrupted")
+    rec = app._studio_load()
+    check("corrupt scripts file recovers from .bak",
+          "Keep" in rec["scripts"], list(rec["scripts"]))
+    with open(app.SCRIPTS_FILE, "w") as f:
+        f.write("")                              # empty file (partial write)
+    rec2 = app._studio_load()
+    check("empty scripts file recovers from .bak", "Keep" in rec2["scripts"])
+finally:
+    app.SCRIPTS_FILE = _orig_sf
+    app._STUDIO_LIST_CACHE["key"] = None
+    _sh.rmtree(_tdir, ignore_errors=True)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

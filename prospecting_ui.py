@@ -2091,6 +2091,11 @@ STUDIO_CONTAINERS = {t for t, d in STUDIO_BLOCKS.items() if d.get("kids")}
 # Hard structural limits, enforced by the validator AND re-checked at runtime.
 STUDIO_MAX_BLOCKS = 500
 STUDIO_MAX_DEPTH = 16
+# Bump ONLY when a saved script from this schema could not be understood by
+# older apps. Adding a block type or a param never needs a bump: older files
+# are normalized (missing params filled with defaults) on every load, and
+# files from a NEWER schema are refused at import with a clear message.
+STUDIO_SCHEMA_VERSION = 1
 
 
 def render(msg=""):

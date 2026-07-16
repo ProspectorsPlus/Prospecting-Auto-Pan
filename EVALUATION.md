@@ -91,3 +91,59 @@ review against every mandatory MVP item.
 ## Result
 Round 1 closed with all findings fixed and re-verified (full protocol green). No blocking
 findings remain.
+
+## Round 2 (2026-07-16, v1 review board: 11-pass review of v0.9)
+
+Method: architecture/UX/workflow/runtime/reliability/performance/accessibility/DX/product/
+polish/adversarial passes; every claim measured in the running editor (browser pane, real
+rendered code) or against the real Python/engine layers.
+
+### Weaknesses found and fixed
+1. **Forward compatibility hole (architecture).** Adding a param to any block type would
+   have flagged every existing saved script as broken ("missing param" errors). Fixed with
+   normalize-then-validate at load boundaries + a real version window (newer-schema files
+   refused with a human message). Proven by tests: an old-style script missing params loads,
+   validates clean, and runs in the engine.
+2. **Data-loss window (reliability).** The scripts file had two-phase writes but no recovery
+   for a corrupt/truncated file; the Studio config write was single-phase. Fixed: rolling
+   .bak + read fallback (tested with corrupt and empty files), two-phase config write.
+3. **O(n) revalidation on every library render (performance).** studio_list now caches
+   against the file stamp; invalidated on write (tested).
+4. **Selection cost at scale (performance).** Full canvas rebuild on every selection: ~310 ms
+   at the 500-block cap. Selection became a class-swap + inspector-only render: ~45 ms.
+5. **Structural edits at scale (performance).** Double renders in add/dup/del/move/drop paths
+   removed; `content-visibility:auto` skips offscreen layout. Measured at the cap:
+   ~330 ms -> ~80-100 ms per action. Undo ~40 ms. Interpreter: 0.8 us/tick at 456 blocks,
+   16 levels deep, 50k ticks.
+6. **Workflow friction (UX).** No fast add path, no context menu, no copy/paste, no palette
+   filter, focus lost after delete, no drag auto-scroll, no cost feedback. Added: / quick-
+   insert with fuzzy match and full keyboard control; right-click context menu (every action
+   also has a shortcut, shown in the menu); Ctrl+C/V subtree copy/paste with client-side
+   sanitize; palette filter; delete selects the next block; drag auto-scroll near canvas
+   edges; worst-case lap estimate in the top bar; hovering a canvas block now explains it.
+7. **Polish gaps.** New-block entry animation (only the added block animates; full
+   reduced-motion opt-out), error-toned toasts, aria-live on the validity text.
+
+### Adversarial re-checks after the changes
+- Full editor regression at template scale: add, duplicate, Alt-move, copy/paste, delete-
+  selects-next, 8x undo restore, keyboard nesting, validity dot, lap estimate: all pass.
+- 511-block script correctly refused by the engine (cap works); a dead runner hard-stops
+  once and the engine stays alive and stoppable.
+- tour_check (incl. node --check on the grown Studio JS + lockstep), finds_sim,
+  studio_tests (now 75+ checks): ALL PASS. App-copy diff vs windows/ still exactly the two
+  pre-existing platform hunks. Real app boots with every window; clean quit. Zip rebuilt
+  and byte-matched.
+
+### Rejected in this round (with reasons)
+- Multi-select and bulk edit; favorites/recent blocks; parameter presets: adds surface,
+  saves nothing at 17 block types and typical script sizes.
+- Dry-run simulator, breakpoints, timeline replay, dependency graphs: the lap estimate,
+  live block highlight, History timeline and run logs already answer the real questions.
+- Shared md() renderer between windows; handler auto-registration; plugin system: cost or
+  risk exceeds benefit at this product size (see DECISIONS 38-39).
+- Raising the 500-block cap: no user need; guarantees would degrade.
+
+## Result
+Round 2 closed. Remaining V2 opportunities: HUD current-block display, more sensing blocks
+(green dig-bar, money/shard reads), variables/counters, reusable sub-script "macros",
+record-actions-to-blocks, virtualized canvas if the cap ever rises.

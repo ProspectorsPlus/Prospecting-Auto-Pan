@@ -165,6 +165,7 @@ try:
     STUDIO_KEY_WHITELIST = getattr(_ui, "STUDIO_KEY_WHITELIST", [])
     STUDIO_MAX_BLOCKS = getattr(_ui, "STUDIO_MAX_BLOCKS", 500)
     STUDIO_MAX_DEPTH = getattr(_ui, "STUDIO_MAX_DEPTH", 16)
+    STUDIO_SCHEMA_VERSION = getattr(_ui, "STUDIO_SCHEMA_VERSION", 1)
 except Exception:
     import traceback
     traceback.print_exc()
@@ -181,6 +182,7 @@ except Exception:
     STUDIO_KEY_WHITELIST = []
     STUDIO_MAX_BLOCKS = 500
     STUDIO_MAX_DEPTH = 16
+    STUDIO_SCHEMA_VERSION = 1
 
 # Local tuning assistant (offline expert system). Optional: if it fails to load,
 # the rest of the app keeps working and the Coach panel just reports it's offline.
@@ -939,10 +941,18 @@ def _tutorial_merged():
 # written two-phase (tmp + os.replace) so a crash can never truncate them.
 
 def _studio_load():
-    """prospecting_scripts.json, tolerant of a missing/garbled file."""
-    d = _read_json(SCRIPTS_FILE, {})
+    """prospecting_scripts.json, tolerant of a missing/garbled file. A file
+    that exists but cannot be parsed falls back to the .bak written on every
+    save, so a crash mid-write or a bad hand-edit never loses the library."""
+    d = _read_json(SCRIPTS_FILE, None)
     if not isinstance(d, dict):
-        d = {}
+        if os.path.exists(SCRIPTS_FILE):
+            d = _read_json(SCRIPTS_FILE + ".bak", None)
+            if isinstance(d, dict):
+                print("[studio] scripts file unreadable; recovered the "
+                      "previous state from its backup")
+        if not isinstance(d, dict):
+            d = {}
     scripts = d.get("scripts")
     if not isinstance(scripts, dict):
         scripts = {}
@@ -955,11 +965,59 @@ def _studio_load():
     return {"active": active, "scripts": scripts, "meta": meta}
 
 
+_STUDIO_LIST_CACHE = {"key": None, "scripts": None, "active": ""}
+
+
 def _studio_write(data):
+    """Two-phase write plus a rolling .bak of the previous state: neither a
+    crash mid-write nor a bad save can lose more than the very last change."""
     tmp = SCRIPTS_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
+    if os.path.exists(SCRIPTS_FILE):
+        try:
+            shutil.copyfile(SCRIPTS_FILE, SCRIPTS_FILE + ".bak")
+        except OSError:
+            pass
     os.replace(tmp, SCRIPTS_FILE)
+    _STUDIO_LIST_CACHE["key"] = None
+
+
+def _studio_normalize(script):
+    """Forward compatibility without migrations: fill anything an OLDER
+    schema did not know about (new params, new optional fields) with the
+    current defaults. Runs at every LOAD boundary (open, list validation,
+    engine push); the editor always writes complete data, so saving stays
+    strict. Returns a deep copy; never mutates stored data."""
+    if not isinstance(script, dict):
+        return script
+    s = json.loads(json.dumps(script))
+    s.setdefault("description", "")
+    s.setdefault("author", "")
+    s.setdefault("settings", {})
+    now = int(time.time())
+    s.setdefault("created", now)
+    s.setdefault("updated", now)
+
+    def fill(lst):
+        for b in lst or []:
+            if not isinstance(b, dict):
+                continue
+            d = STUDIO_BLOCKS.get(b.get("type"))
+            if d is None:
+                continue
+            p = b.get("params")
+            if not isinstance(p, dict):
+                p = b["params"] = {}
+            for spec in d["params"]:
+                p.setdefault(spec["key"], spec["default"])
+            if b.get("type") in STUDIO_CONTAINERS:
+                if not isinstance(b.get("children"), list):
+                    b["children"] = []
+                fill(b["children"])
+    if isinstance(s.get("blocks"), list):
+        fill(s["blocks"])
+    return s
 
 
 def _studio_name_ok(name):
@@ -996,8 +1054,12 @@ def _studio_validate(script):
         return {"ok": False, "errors": ["That is not a script."], "problems": []}
     if script.get("format") != "ppscript":
         errors.append("Not a Prospector Studio script (missing the ppscript marker).")
-    if script.get("version") != 1:
-        errors.append("Unsupported script version (this app understands version 1).")
+    v = script.get("version")
+    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+        errors.append("Unsupported script version.")
+    elif v > STUDIO_SCHEMA_VERSION:
+        errors.append("This script was made with a newer version of "
+                      "Prospectors Plus; update the app to open it.")
     if not _studio_name_ok(script.get("name")):
         errors.append("The script needs a name: 1 to 60 printable characters, "
                       "no leading or trailing spaces.")
@@ -2737,12 +2799,24 @@ class Api:
 
     # ---- PROSPECTOR STUDIO: script library Api ------------------------------
     def studio_list(self):
-        """Everything the Studio library and the Run-tab selector render."""
+        """Everything the Studio library and the Run-tab selector render.
+        Results are cached against the scripts-file stamp so big libraries
+        do not re-validate on every tab click."""
+        try:
+            st = os.stat(SCRIPTS_FILE)
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = None
+        if (key is not None and _STUDIO_LIST_CACHE["key"] == key
+                and _STUDIO_LIST_CACHE["scripts"] is not None):
+            return {"ok": True, "scripts": _STUDIO_LIST_CACHE["scripts"],
+                    "active": _STUDIO_LIST_CACHE["active"],
+                    "running": self.proc is not None}
         d = _studio_load()
         out = []
         for name in sorted(d["scripts"], key=lambda n: -(d["scripts"][n].get("updated") or 0)):
             s = d["scripts"][name]
-            chk = _studio_validate(s)
+            chk = _studio_validate(_studio_normalize(s))
             out.append({"name": name,
                         "description": s.get("description", ""),
                         "blocks": _studio_count_blocks(s.get("blocks") or []),
@@ -2750,6 +2824,9 @@ class Api:
                         "active": name == d["active"],
                         "runnable": bool(chk["ok"] and not chk["problems"]),
                         "issues": len(chk["errors"]) + len(chk["problems"])})
+        _STUDIO_LIST_CACHE["key"] = key
+        _STUDIO_LIST_CACHE["scripts"] = out
+        _STUDIO_LIST_CACHE["active"] = d["active"]
         return {"ok": True, "scripts": out, "active": d["active"],
                 "running": self.proc is not None}
 
@@ -2758,7 +2835,7 @@ class Api:
         s = d["scripts"].get(name)
         if not isinstance(s, dict):
             return {"ok": False, "error": "Script not found."}
-        return {"ok": True, "script": json.loads(json.dumps(s)),
+        return {"ok": True, "script": _studio_normalize(s),
                 "active": d["active"] == name}
 
     def studio_validate(self, script):
@@ -2850,10 +2927,12 @@ class Api:
         cur = load_saved()
         cur["SCRIPT_MODE"] = bool(s)
         cur["SCRIPT_ACTIVE"] = name if s else ""
-        cur["SCRIPT_JSON"] = (json.dumps(s, separators=(",", ":"))
-                              if s else "")
-        with open(CONFIG_FILE, "w") as f:
+        cur["SCRIPT_JSON"] = (json.dumps(_studio_normalize(s),
+                                         separators=(",", ":")) if s else "")
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(cur, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
 
     def studio_set_active(self, name):
         """Make a script the active mode ('' = back to built-in modes). Only
@@ -2863,7 +2942,7 @@ class Api:
             s = d["scripts"].get(name)
             if not isinstance(s, dict):
                 return {"ok": False, "error": "Script not found."}
-            chk = _studio_validate(s)
+            chk = _studio_validate(_studio_normalize(s))
             if not chk["ok"] or chk["problems"]:
                 return {"ok": False,
                         "error": "Fix this first: "
@@ -7997,6 +8076,30 @@ def _studio_html():
  .prob i{font-style:normal;flex:none;margin-top:1px}
  .prob.err{color:var(--red)} .prob.warn{color:#c2924c}
  .prob:hover{color:var(--txt)}
+ .palfilter{width:100%;margin:0 0 10px;font-size:12px}
+ .qins{position:fixed;left:50%;top:14%;transform:translateX(-50%);z-index:55;width:min(420px,90vw);
+  background:var(--panel);border:1px solid var(--line2);border-radius:13px;padding:10px;display:none;
+  box-shadow:0 18px 50px rgba(0,0,0,.55)}
+ .qins.show{display:block}
+ .qins input{width:100%;margin-bottom:8px}
+ .qi{display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:8px;cursor:pointer;font-weight:600;font-size:12.5px}
+ .qi .pico{width:15px;height:15px;display:flex;opacity:.75} .qi .pico svg{width:15px;height:15px}
+ .qi .qgrp{margin-left:auto;color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:800}
+ .qi.on,.qi:hover{background:rgba(168,121,74,.14);color:var(--accent-lit)}
+ .ctx{position:fixed;z-index:56;background:var(--panel);border:1px solid var(--line2);border-radius:11px;
+  padding:5px;min-width:200px;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+ .ctx button{display:flex;width:100%;text-align:left;background:transparent;color:var(--txt);
+  padding:7px 10px;border-radius:7px;font-size:12.5px;font-weight:600;gap:8px;align-items:center}
+ .ctx button:hover,.ctx button:focus-visible{background:rgba(168,121,74,.14);color:var(--accent-lit)}
+ .ctx button:disabled{opacity:.4}
+ .ctx button .kbd{margin-left:auto;color:var(--dim);font-size:10.5px;font-weight:700}
+ .ctx .sep{height:1px;background:var(--line);margin:4px 6px}
+ .ctx button.danger{color:var(--red)}
+ .blk{content-visibility:auto;contain-intrinsic-size:auto 44px}
+ .blk.new{animation:blkin .2s var(--ease)}
+ @keyframes blkin{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+ #toast.err{border-color:var(--red);color:#f0c0b0}
+ @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none !important;transition:none !important}}
  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);background:#2c2620;
   border:1px solid var(--line2);border-radius:10px;padding:10px 18px;opacity:0;pointer-events:none;
   transition:opacity .2s,transform .2s;z-index:60;font-weight:600;max-width:80vw}
@@ -8035,7 +8138,7 @@ def _studio_html():
    <button class="btn2" id="stnewbtn" title="Start a new script from a template">New script</button>
    <span class="grow"></span>
    <span class="runpill" id="runpill">&#9679; running</span>
-   <span class="valdot" id="valdot"></span><span class="valtxt" id="valtxt">no script</span>
+   <span class="valdot" id="valdot"></span><span class="valtxt" id="valtxt" aria-live="polite">no script</span><span class="valtxt" id="laptxt" title="Worst case for one full lap, if every wait runs to its limit"></span>
    <button class="btn2" id="undobtn" title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;</button>
    <button class="btn2" id="redobtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">&#8631;</button>
    <button class="btn2" id="valbtn" title="Check the whole script for problems">Validate</button>
@@ -8050,13 +8153,13 @@ def _studio_html():
    <span class="dirty" id="dirtylab">unsaved changes</span>
  </div>
  <div class="main">
-   <aside class="pal" id="pal" aria-label="Block palette">{{PALETTE}}
-     <div class="palhint">Click a block to add it after the selected one, or drag it exactly where it should go. Drop onto an If, Repeat or Group to put it inside.</div>
+   <aside class="pal" id="pal" aria-label="Block palette"><input id="palfilter" class="palfilter" type="text" placeholder="Filter blocks&hellip;" aria-label="Filter palette blocks" spellcheck="false">{{PALETTE}}
+     <div class="palhint">Click a block to add it after the selected one, or drag it exactly where it should go. Drop onto an If, Repeat or Group to put it inside. Press <b>/</b> to quick-add by name; right-click any block for more.</div>
    </aside>
    <section class="canvas" id="canvasWrap">
      <div class="offer" id="touroffer"><span>New to Studio? A two minute walkthrough shows you how to build the Treasure script from blocks.</span><button class="btn" id="offeryes">Show me</button><button class="btn2" id="offerno">No thanks</button></div>
      <div class="looplab" id="looplab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3"/><path d="M20 5H7a4 4 0 0 0-4 4v1M7 22l-3-3 3-3"/><path d="M4 19h13a4 4 0 0 0 4-4v-1"/></svg> repeats forever while the macro runs</div>
-     <div class="loopwrap" id="loopwrap"><div id="canvas"></div></div>
+     <div class="loopwrap" id="loopwrap"><div id="canvas"></div><button class="addkid" id="addend" title="Add a block at the end (or press /)">+ add a block</button></div>
    </section>
    <aside class="insp" id="insp" aria-label="Block inspector">
      <div class="inspbody" id="inspbody"><div class="inone">Select a block on the canvas to edit what it does.</div></div>
@@ -8081,6 +8184,11 @@ def _studio_html():
      <div class="tbtns"><button class="btn2" id="sttourskip">Skip</button><span class="grow"></span>
        <button class="btn2" id="sttourback">Back</button><button class="btn" id="sttournext">Next</button></div></div>
  </div>
+ <div class="qins" id="qins" role="dialog" aria-label="Quick add a block">
+   <input id="qinsin" placeholder="Type a block name&hellip;" aria-label="Search blocks" spellcheck="false">
+   <div id="qinslist" role="listbox" aria-label="Matching blocks"></div>
+ </div>
+ <div id="ctx" class="ctx" role="menu" style="display:none"></div>
  <div id="toast" role="status"></div>
 <script>
  var __BLOCKS={{BLOCKS}};
@@ -8090,7 +8198,8 @@ def _studio_html():
  var S={script:null,prevName:null,sel:null,undo:[],redo:[],dirty:false,insertInto:null,
         problems:[],helpmap:{},templates:[],running:false,meta:{},lib:[]};
  var GK={action:'g-action',sense:'g-sense',flow:'g-flow'};
- function toast(m){var t=T('toast');t.textContent=m;t.classList.add('show');
+ function toast(m,kind){var t=T('toast');t.textContent=m;
+   t.className=(kind==='err')?'err':'';t.classList.add('show');
    clearTimeout(t._t);t._t=setTimeout(function(){t.classList.remove('show');},2600);}
  // ---- tree helpers ---------------------------------------------------------
  function walk(blocks,fn,parent,depth){blocks=blocks||[];for(var i=0;i<blocks.length;i++){
@@ -8148,7 +8257,7 @@ def _studio_html():
  // ---- render -----------------------------------------------------------------
  function blkHTML(b){var d=__BLOCKS[b.type]||{name:b.type,group:'flow',icon:''};
    var iss=S._issueById[b.id];
-   var h='<div class="blk '+GK[d.group]+(S.sel===b.id?' sel':'')+(iss?' issue':'')+'" data-id="'+esc(b.id)+
+   var h='<div class="blk '+GK[d.group]+(S.sel===b.id?' sel':'')+(iss?' issue':'')+(S._animId===b.id?' new':'')+'" data-id="'+esc(b.id)+
      '" tabindex="0" draggable="true" role="button" aria-label="'+esc(d.name)+'">'+
      '<span class="bico">'+d.icon+'</span><div class="bmain"><div class="bname">'+esc(d.name)+'</div>'+
      '<div class="bsum">'+summarize(b)+'</div>'+(iss?('<div class="bissue">'+esc(iss)+'</div>'):'')+
@@ -8170,17 +8279,34 @@ def _studio_html():
    cv.innerHTML=bl.length?bl.map(blkHTML).join(''):
      '<div class="cvempty"><b>An empty canvas.</b><br>Add your first block from the palette on the left,'+
      '<br>or start again from a template.<br><button class="btn2" id="cvtpl">Choose a template</button></div>';
+   S._animId=null;
    var ct=T('cvtpl');if(ct)ct.onclick=function(){openTplModal(false);};
    T('scname').value=S.script.name||'';T('scdesc').value=S.script.description||'';
    document.body.classList.toggle('isdirty',S.dirty);
    renderInspector();renderProblems();setValidity();
    T('undobtn').disabled=!S.undo.length;T('redobtn').disabled=!S.redo.length;}
- function setValidity(){var d=T('valdot'),t=T('valtxt');
-   if(!S.script){d.className='valdot';t.textContent='no script';return;}
+ function lapMs(bl){var t=0;for(var i=0;i<(bl||[]).length;i++){var b=bl[i];var P=b.params||{};
+   switch(b.type){
+     case 'dig':t+=(P.hold_ms||0)+400;break;
+     case 'shake':t+=(P.clicks>0)?(P.clicks*((P.click_ms||0)+(P.gap_ms||0))):(P.max_ms||0);break;
+     case 'hold_key':t+=P.ms||0;break;
+     case 'tap_key':t+=P.hold_ms||0;break;
+     case 'click':t+=(P.hold_ms||0)+((P.at&&P.at!=='none')?60:0);break;
+     case 'wait':t+=P.ms||0;break;
+     case 'relic':t+=2600;break;
+     case 'wait_cue':case 'wait_cap':t+=P.timeout_ms||0;break;
+     case 'repeat':t+=(P.times||1)*lapMs(b.children);break;
+     case 'if_cue':case 'if_cap':case 'if_not':case 'group':t+=lapMs(b.children);break;
+     case 'stop':return t;
+   }}return t;}
+ function setValidity(){var d=T('valdot'),t=T('valtxt'),lp=T('laptxt');
+   if(!S.script){d.className='valdot';t.textContent='no script';if(lp)lp.textContent='';return;}
    var e=S.problems.errs.length,p=S.problems.probs.length;
    if(e){d.className='valdot err';t.textContent=e+' error'+(e>1?'s':'');}
    else if(p){d.className='valdot warn';t.textContent=p+' to fix before it can run';}
-   else{d.className='valdot ok';t.textContent='ready to run';}}
+   else{d.className='valdot ok';t.textContent='ready to run';}
+   if(lp){var ms=lapMs(S.script.blocks);
+     lp.textContent=(ms>0&&(S.script.blocks||[]).length)?('lap \u2264 '+(ms<1000?(Math.round(ms)+' ms'):((ms/1000).toFixed(1)+' s'))):'';}}
  function renderProblems(extra){var pb=T('probbar');var items=[];
    S.problems.errs.forEach(function(p){items.push({lv:'err',p:p});});
    S.problems.probs.forEach(function(p){items.push({lv:'warn',p:p});});
@@ -8209,7 +8335,7 @@ def _studio_html():
      '<input type="text" id="'+id+'" maxlength="'+(p.max||200)+'" value="'+esc(v)+'" data-pkey="'+p.key+'" spellcheck="false"></div>';}
  function renderInspector(){var box=T('inspbody');var b=S.sel?find(S.sel):null;
    if(!b){box.innerHTML='<div class="inone">Select a block on the canvas to edit what it does.<br><br>'+
-     'Keyboard: arrows move the selection, Alt+arrows move the block, Enter on a palette card adds it, Delete removes.</div>';
+     'Keyboard: arrows move the selection, Alt+arrows move or nest a block, / quick-adds by name, Ctrl+C, Ctrl+V and Ctrl+D copy, paste and duplicate, Delete removes.</div>';
      showHelpFor(null);return;}
    var d=__BLOCKS[b.type];
    var h='<div class="ihead"><span class="bico '+GK[d.group]+'">'+d.icon+'</span><h3>'+esc(d.name)+'</h3></div>'+
@@ -8256,45 +8382,59 @@ def _studio_html():
  function addBlock(type,at){if(!S.script){toast('Open or create a script first.');return;}
    if(countBlocks(S.script.blocks)>=500){toast('Block limit reached (500).');return;}
    var nb=newBlock(type);
+   var oldSel=S.sel,oldInto=S.insertInto;
+   S._animId=nb.id;
    apply(function(s){
-     if(at&&at.into){var host=find(at.into);if(host&&host.children){host.children.push(nb);return;}}
-     if(at&&at.before!==undefined&&at.list){at.list.splice(at.before,0,nb);return;}
-     if(S.sel){var loc=findList(S.sel);var selB=find(S.sel);
-       if(selB&&__BLOCKS[selB.type].kids&&S.insertInto===S.sel){selB.children.push(nb);return;}
-       if(loc){loc.list.splice(loc.i+1,0,nb);return;}}
-     s.blocks.push(nb);});
-   S.sel=nb.id;S.insertInto=null;render();focusSel();}
- function delBlock(id){apply(function(s){var loc=findList(id);if(loc)loc.list.splice(loc.i,1);});
-   if(S.sel===id){S.sel=null;render();}}
+     if(at&&at.into){var host=find(at.into);if(host&&host.children){host.children.push(nb);S.sel=nb.id;return;}}
+     if(at&&at.before!==undefined&&at.list){at.list.splice(at.before,0,nb);S.sel=nb.id;return;}
+     if(oldSel){var loc=findList(oldSel);var selB=find(oldSel);
+       if(selB&&__BLOCKS[selB.type].kids&&oldInto===oldSel){selB.children.push(nb);S.sel=nb.id;return;}
+       if(loc){loc.list.splice(loc.i+1,0,nb);S.sel=nb.id;return;}}
+     s.blocks.push(nb);S.sel=nb.id;});
+   S.insertInto=null;focusSel();}
+ function delBlock(id){var loc0=findList(id);
+   var nxt=loc0?(loc0.list[loc0.i+1]||loc0.list[loc0.i-1]||null):null;
+   apply(function(s){var loc=findList(id);if(loc)loc.list.splice(loc.i,1);
+     if(S.sel===id)S.sel=nxt?nxt.id:null;});
+   if(S.sel)focusSel();}
+ function freshId(){S._idN=(S._idN||0)+1;return 'b'+Date.now().toString(36)+'x'+S._idN;}
+ function reId(x){x.id=freshId();(x.children||[]).forEach(reId);return x;}
  function dupBlock(id){var b=find(id);if(!b)return;
-   var cp=JSON.parse(JSON.stringify(b));
-   (function reid(x){x.id=nextIdIn(cp,x);(x.children||[]).forEach(reid);})(cp);
-   function nextIdIn(root,x){S._dupN=(S._dupN||0)+1;return 'b'+Date.now().toString(36)+S._dupN;}
-   apply(function(s){var loc=findList(id);if(loc)loc.list.splice(loc.i+1,0,cp);});
-   S.sel=cp.id;render();focusSel();}
+   var cp=reId(JSON.parse(JSON.stringify(b)));
+   S._animId=cp.id;
+   apply(function(s){var loc=findList(id);if(loc){loc.list.splice(loc.i+1,0,cp);S.sel=cp.id;}});
+   focusSel();}
  function moveBlock(id,dir){var loc=findList(id);if(!loc)return;
    if(dir==='up'&&loc.i>0)apply(function(){loc.list.splice(loc.i-1,0,loc.list.splice(loc.i,1)[0]);});
    else if(dir==='down'&&loc.i<loc.list.length-1)apply(function(){loc.list.splice(loc.i+1,0,loc.list.splice(loc.i,1)[0]);});
    else if(dir==='out'){var parent=null;walk(S.script.blocks,function(b){
        if(b.children&&b.children.indexOf(loc.list[loc.i])>=0){parent=b;return false;}});
      if(parent){var ploc=findList(parent.id);
-       apply(function(){var b=loc.list.splice(loc.i,1)[0];ploc.list.splice(ploc.i+1,0,b);});}}
+       apply(function(){var b=loc.list.splice(loc.i,1)[0];ploc.list.splice(ploc.i+1,0,b);});}
+     else return;}
    else if(dir==='in'&&loc.i>0){var prev=loc.list[loc.i-1];
      if(prev&&__BLOCKS[prev.type]&&__BLOCKS[prev.type].kids&&depthOf(S.script.blocks)<16)
-       apply(function(){var b=loc.list.splice(loc.i,1)[0];prev.children.push(b);});}
-   render();focusSel();}
+       apply(function(){var b=loc.list.splice(loc.i,1)[0];prev.children.push(b);});
+     else return;}
+   else return;
+   focusSel();}
  function moveTo(id,target){ // drag: target={before:{id}, into:id}
    var loc=findList(id);if(!loc)return;var b=loc.list[loc.i];
    var bad=false;walk([b],function(x){if(target.into&&x.id===target.into)bad=true;
      if(target.beforeId&&x.id===target.beforeId)bad=true;});
    if(bad)return;
+   S.sel=id;
    apply(function(s){loc.list.splice(loc.i,1);
      if(target.into){var host=find(target.into);if(host&&host.children)host.children.push(b);else loc.list.splice(loc.i,0,b);return;}
      if(target.beforeId){var t=findList(target.beforeId);if(t)t.list.splice(t.i,0,b);else loc.list.splice(loc.i,0,b);return;}
-     if(target.end)s.blocks.push(b);else loc.list.splice(loc.i,0,b);});
-   S.sel=id;render();}
+     if(target.end)s.blocks.push(b);else loc.list.splice(loc.i,0,b);});}
  function focusSel(){if(!S.sel)return;var el=document.querySelector('.blk[data-id="'+S.sel+'"]');
    if(el){el.focus();el.scrollIntoView({block:'nearest'});}}
+ function select(id){S.sel=id;S.insertInto=null;
+   document.querySelectorAll('.blk.sel').forEach(function(x){x.classList.remove('sel');});
+   if(id){var el=document.querySelector('.blk[data-id="'+id+'"]');
+     if(el)el.classList.add('sel');}
+   renderInspector();}
  // ---- selection + canvas events ----------------------------------------------
  T('canvasWrap').addEventListener('click',function(e){
    var ak=e.target.closest?e.target.closest('.addkid'):null;
@@ -8306,8 +8446,8 @@ def _studio_html():
        'It goes away along with anything inside it. Undo brings it back.',function(){delBlock(id0);});
      else dupBlock(id0);return;}
    var blk=e.target.closest?e.target.closest('.blk'):null;
-   if(blk){S.sel=blk.getAttribute('data-id');S.insertInto=null;render();}
-   else{S.sel=null;S.insertInto=null;render();}});
+   if(blk)select(blk.getAttribute('data-id'));
+   else select(null);});
  T('canvasWrap').addEventListener('keydown',function(e){
    var blk=e.target.closest?e.target.closest('.blk'):null;if(!blk)return;
    var id=blk.getAttribute('data-id');
@@ -8319,7 +8459,9 @@ def _studio_html():
    else if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();
      var all=[].slice.call(document.querySelectorAll('.blk'));
      var ix=all.indexOf(blk)+(e.key==='ArrowDown'?1:-1);
-     if(ix>=0&&ix<all.length){S.sel=all[ix].getAttribute('data-id');render();focusSel();}}
+     if(ix>=0&&ix<all.length){select(all[ix].getAttribute('data-id'));focusSel();}}
+   else if((e.key==='c'||e.key==='C')&&(e.ctrlKey||e.metaKey)){e.preventDefault();copyBlock(id);}
+   else if((e.key==='v'||e.key==='V')&&(e.ctrlKey||e.metaKey)){e.preventDefault();pasteBlock(id);}
    else if((e.key==='d'||e.key==='D')&&(e.ctrlKey||e.metaKey)){e.preventDefault();dupBlock(id);}});
  // ---- drag and drop ------------------------------------------------------------
  var drag={type:null,id:null};
@@ -8332,6 +8474,9 @@ def _studio_html():
    var dl=T('droplineEl');if(dl)dl.remove();}
  T('canvasWrap').addEventListener('dragover',function(e){
    if(!drag.type&&!drag.id)return;e.preventDefault();clearDropUI();
+   var wr0=T('canvasWrap'),wrr=wr0.getBoundingClientRect();
+   if(e.clientY<wrr.top+44)wr0.scrollTop-=16;
+   else if(e.clientY>wrr.bottom-44)wr0.scrollTop+=16;
    var blk=e.target.closest?e.target.closest('.blk'):null;
    if(blk){var r=blk.getBoundingClientRect();var b=find(blk.getAttribute('data-id'));
      var isCont=b&&__BLOCKS[b.type]&&__BLOCKS[b.type].kids;
@@ -8356,11 +8501,11 @@ def _studio_html():
    if(drag.type){var nb=newBlock(drag.type);
      if(countBlocks((S.script||{}).blocks||[])>=500){toast('Block limit reached (500).');return;}
      if(!S.script){toast('Open or create a script first.');return;}
+     S._animId=nb.id;
      apply(function(s){
-       if(target.into){var h=find(target.into);if(h&&h.children){h.children.push(nb);return;}}
-       if(target.beforeId){var t=findList(target.beforeId);if(t){t.list.splice(t.i,0,nb);return;}}
-       s.blocks.push(nb);});
-     S.sel=nb.id;render();}
+       if(target.into){var h=find(target.into);if(h&&h.children){h.children.push(nb);S.sel=nb.id;return;}}
+       if(target.beforeId){var t=findList(target.beforeId);if(t){t.list.splice(t.i,0,nb);S.sel=nb.id;return;}}
+       s.blocks.push(nb);S.sel=nb.id;});}
    else if(drag.id)moveTo(drag.id,target);
    drag={type:null,id:null};});
  document.addEventListener('dragend',clearDropUI);
@@ -8369,6 +8514,133 @@ def _studio_html():
    pc.addEventListener('click',function(){addBlock(pc.getAttribute('data-type'));});
    pc.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();addBlock(pc.getAttribute('data-type'));}});
    pc.addEventListener('mouseenter',function(){showHelpFor(pc.getAttribute('data-type'));});});
+ // ---- clipboard: copy/paste whole block trees (ids regenerated, params
+ //      re-clamped client-side; the Python validator still gates save/run) ----
+ var CLIP=null;
+ function sanitizeTree(src){if(!src||typeof src!=='object')return null;
+   var d=__BLOCKS[src.type];if(!d)return null;
+   var nb={id:freshId(),type:src.type,params:{}};
+   (d.params||[]).forEach(function(p){var v=(src.params||{})[p.key];
+     if(p.type==='int'){v=parseInt(v,10);if(isNaN(v))v=p['default'];
+       v=Math.max(p.range[0],Math.min(p.range[1],v));}
+     else if(p.type==='bool')v=!!v;
+     else if(p.type==='choice'){if(!p.choices.some(function(c){return c[0]===v;}))v=p['default'];}
+     else v=String(v==null?'':v).slice(0,p.max||200);
+     nb.params[p.key]=v;});
+   if(d.kids){nb.children=[];(src.children||[]).forEach(function(k){
+     var c=sanitizeTree(k);if(c)nb.children.push(c);});}
+   return nb;}
+ function copyBlock(id){var b=find(id);if(!b)return;
+   CLIP=JSON.parse(JSON.stringify(b));
+   var d=__BLOCKS[b.type]||{name:'block'};
+   toast('Copied '+d.name+'.');}
+ function pasteBlock(afterId){
+   if(!CLIP){toast('Nothing copied yet.');return;}
+   if(!S.script){toast('Open or create a script first.');return;}
+   var nb=sanitizeTree(CLIP);
+   if(!nb){toast('That copied block cannot be pasted here.','err');return;}
+   if(countBlocks(S.script.blocks)+countBlocks([nb])>500){toast('Block limit reached (500).','err');return;}
+   S._animId=nb.id;
+   apply(function(s){var tid=afterId||S.sel;
+     if(tid){var loc=findList(tid);if(loc){loc.list.splice(loc.i+1,0,nb);S.sel=nb.id;return;}}
+     s.blocks.push(nb);S.sel=nb.id;});
+   focusSel();}
+ // ---- context menu ----
+ var ctxEl=T('ctx');
+ function ctxAway(e){if(!ctxEl.contains(e.target))closeCtx();}
+ function closeCtx(){ctxEl.style.display='none';ctxEl.innerHTML='';
+   document.removeEventListener('mousedown',ctxAway,true);}
+ function openCtx(x,y,id){
+   var items=id?[
+     ['Duplicate','Ctrl+D',function(){dupBlock(id);}],
+     ['Copy','Ctrl+C',function(){copyBlock(id);}],
+     ['Paste after','Ctrl+V',function(){pasteBlock(id);},!CLIP],
+     null,
+     ['Move up','Alt+\u2191',function(){moveBlock(id,'up');}],
+     ['Move down','Alt+\u2193',function(){moveBlock(id,'down');}],
+     ['Nest into the block above','Alt+\u2192',function(){moveBlock(id,'in');}],
+     ['Un-nest','Alt+\u2190',function(){moveBlock(id,'out');}],
+     null,
+     ['Delete','Del',function(){delBlock(id);},false,true]]
+   :[
+     ['Add a block\u2026','/',function(){openQins(true);}],
+     ['Paste','Ctrl+V',function(){pasteBlock(null);},!CLIP]];
+   ctxEl.innerHTML='';
+   items.forEach(function(it){
+     if(!it){var sp=document.createElement('div');sp.className='sep';ctxEl.appendChild(sp);return;}
+     var b=document.createElement('button');b.type='button';b.setAttribute('role','menuitem');
+     b.innerHTML=esc(it[0])+'<span class="kbd">'+esc(it[1])+'</span>';
+     if(it[4])b.className='danger';
+     if(it[3])b.disabled=true;
+     b.onclick=function(){closeCtx();it[2]();};
+     ctxEl.appendChild(b);});
+   ctxEl.style.display='block';
+   var W=window.innerWidth,H=window.innerHeight,r=ctxEl.getBoundingClientRect();
+   ctxEl.style.left=Math.max(4,Math.min(x,W-r.width-8))+'px';
+   ctxEl.style.top=Math.max(4,Math.min(y,H-r.height-8))+'px';
+   document.addEventListener('mousedown',ctxAway,true);
+   var fb=ctxEl.querySelector('button:not(:disabled)');if(fb)fb.focus();}
+ T('canvasWrap').addEventListener('contextmenu',function(e){
+   e.preventDefault();
+   var blk=e.target.closest?e.target.closest('.blk'):null;
+   if(blk){select(blk.getAttribute('data-id'));openCtx(e.clientX,e.clientY,S.sel);}
+   else if(S.script)openCtx(e.clientX,e.clientY,null);});
+ document.addEventListener('keydown',function(e){
+   if(e.key==='Escape'&&ctxEl.style.display==='block')closeCtx();});
+ // ---- quick insert: press / and type the block's name ----
+ var qinsAtEnd=false,qinsSel=0;
+ function openQins(atEnd){qinsAtEnd=!!atEnd;qinsSel=0;
+   T('qins').classList.add('show');
+   var inp=T('qinsin');inp.value='';qinsRender('');inp.focus();}
+ function closeQins(){T('qins').classList.remove('show');}
+ function qinsMatches(q){q=q.toLowerCase();var out=[];
+   for(var t in __BLOCKS){var d=__BLOCKS[t];
+     if(!q||d.name.toLowerCase().indexOf(q)>=0||t.indexOf(q)>=0)out.push(t);}
+   return out;}
+ function qinsRender(q){var list=qinsMatches(q);var L=T('qinslist');
+   qinsSel=Math.max(0,Math.min(qinsSel,list.length-1));
+   L.innerHTML=list.map(function(t,i){var d=__BLOCKS[t];
+     return '<div class="qi'+(i===qinsSel?' on':'')+'" data-type="'+t+'" role="option"'+
+       (i===qinsSel?' aria-selected="true"':'')+'><span class="pico">'+d.icon+'</span>'+
+       esc(d.name)+'<span class="qgrp">'+d.group+'</span></div>';}).join('')
+     ||'<div class="qi" style="cursor:default;color:var(--dim)">No block matches that.</div>';
+   L.querySelectorAll('.qi[data-type]').forEach(function(el){
+     el.onclick=function(){qinsPick(el.getAttribute('data-type'));};});}
+ function qinsPick(t){closeQins();
+   if(qinsAtEnd){S.sel=null;S.insertInto=null;}
+   addBlock(t);}
+ (function(){var inp=T('qinsin');
+   inp.addEventListener('input',function(){qinsSel=0;qinsRender(inp.value.trim());});
+   inp.addEventListener('keydown',function(e){
+     var items=T('qinslist').querySelectorAll('.qi[data-type]');
+     if(e.key==='ArrowDown'){e.preventDefault();qinsSel=Math.min(items.length-1,qinsSel+1);qinsRender(inp.value.trim());}
+     else if(e.key==='ArrowUp'){e.preventDefault();qinsSel=Math.max(0,qinsSel-1);qinsRender(inp.value.trim());}
+     else if(e.key==='Enter'){e.preventDefault();var el=items[qinsSel];
+       if(el)qinsPick(el.getAttribute('data-type'));}
+     else if(e.key==='Escape'){closeQins();}});})();
+ document.addEventListener('keydown',function(e){
+   if(e.key!=='/'||e.ctrlKey||e.metaKey||e.altKey)return;
+   var tg=((e.target&&e.target.tagName)||'').toLowerCase();
+   if(tg==='input'||tg==='textarea'||tg==='select')return;
+   if(T('tplmodal').classList.contains('show')||T('cfmmodal').classList.contains('show'))return;
+   if(!S.script)return;
+   e.preventDefault();openQins(false);});
+ document.addEventListener('mousedown',function(e){var q=T('qins');
+   if(q.classList.contains('show')&&!q.contains(e.target))closeQins();});
+ (function(){var ae=T('addend');if(ae)ae.onclick=function(){openQins(true);};})();
+ // ---- palette filter ----
+ (function(){var pf=T('palfilter');if(!pf)return;
+   pf.addEventListener('input',function(){var q=pf.value.trim().toLowerCase();
+     document.querySelectorAll('.pcard').forEach(function(c){
+       var d=__BLOCKS[c.getAttribute('data-type')]||{name:''};
+       c.style.display=(!q||d.name.toLowerCase().indexOf(q)>=0)?'':'none';});
+     document.querySelectorAll('.pgroup').forEach(function(g){
+       var any=[].some.call(g.querySelectorAll('.pcard'),function(c){return c.style.display!=='none';});
+       g.style.display=any?'':'none';});});})();
+ // ---- hovering a canvas block explains it, same as the palette ----
+ T('canvasWrap').addEventListener('mouseover',function(e){
+   var blk=e.target.closest?e.target.closest('.blk'):null;
+   if(blk){var b=find(blk.getAttribute('data-id'));if(b)showHelpFor(b.type);}});
  // ---- help ------------------------------------------------------------------
  function md(t){t=String(t==null?'':t);var lines=t.split(/\r?\n/),out=[],list=null,para=[];
    var TAGS={raise:['↑','raise it if','up'],lower:['↓','lower it if','dn'],fixes:['⚑','fixes','fx'],pairs:['⇄','pairs with','ok'],healthy:['✓','healthy','ok'],climbing:['⚑','climbing?','fx'],fixpath:['→','fix path','up'],wrongif:['⚑','wrong if','fx'],owns:['→','its knobs','up'],when:['→','use it when','up']};
@@ -8422,7 +8694,8 @@ def _studio_html():
  window.loadScript=function(name){guardDirty(async function(){
    var r;try{r=await api().studio_get(name);}catch(e){return;}
    if(!r||!r.ok){toast((r&&r.error)||'Could not open it.');return;}
-   S.script=r.script;S.prevName=r.script.name;S.sel=null;S.undo=[];S.redo=[];S.dirty=false;
+   S.script=r.script;if(!Array.isArray(S.script.blocks))S.script.blocks=[];
+   S.prevName=r.script.name;S.sel=null;S.undo=[];S.redo=[];S.dirty=false;
    render();refreshLib(true);});};
  T('libsel').addEventListener('change',function(){var v=T('libsel').value;if(v)loadScript(v);});
  function uniqueName(base){var names={};S.lib.forEach(function(s){names[s.name]=1;});
@@ -8452,7 +8725,7 @@ def _studio_html():
    S.script.name=(T('scname').value||'').trim();S.script.description=T('scdesc').value;
    if(!S.script.name){toast('Give the script a name first.');T('scname').focus();return false;}
    var r;try{r=await api().studio_save(S.script,S.prevName);}catch(e){toast('Save failed.');return false;}
-   if(!r||!r.ok){renderProblems([(r&&r.error)||'Save failed.']);toast((r&&r.error)||'Save failed.');return false;}
+   if(!r||!r.ok){renderProblems([(r&&r.error)||'Save failed.']);toast((r&&r.error)||'Save failed.','err');return false;}
    S.prevName=r.name;S.dirty=false;document.body.classList.remove('isdirty');
    refreshLib(true);render();
    toast(r.problems&&r.problems.length?'Saved. Fix the flagged steps before running it.':'Saved.');
@@ -8468,7 +8741,7 @@ def _studio_html():
  T('strun').onclick=async function(){if(!S.script)return;
    var clean=await doSave();if(!clean){return;}
    var r;try{r=await api().studio_run(S.prevName);}catch(e){toast('Could not start.');return;}
-   if(!r||!r.ok){toast((r&&r.error)||'Could not start.');return;}
+   if(!r||!r.ok){toast((r&&r.error)||'Could not start.','err');return;}
    toast('Running. Click into Roblox so the game has focus. Esc stops.');pollState();};
  T('ststop').onclick=async function(){try{await api().studio_stop();}catch(e){}pollState();};
  T('undobtn').onclick=undo;T('redobtn').onclick=redo;

@@ -703,5 +703,14 @@ byte-compares six studio lockstep regions (app x4 + engine + ui schema).
   must be added there too (this bit Studio once).
 - The editor tour's seen-flag lives in `prospecting_scripts.json` meta, NOT localStorage
   (html-string secondary windows do not share reliable localStorage).
+- Schema changes: ADD params freely (old scripts are normalized with defaults at
+  every load boundary; saving stays strict); never rename type/param keys; bump
+  `STUDIO_SCHEMA_VERSION` only for changes older apps could not understand.
+- The scripts file keeps a rolling `.bak`; `_studio_load` falls back to it, so do
+  not "clean up" that file. `studio_list` is cached against the file stamp;
+  every write must go through `_studio_write` (it invalidates the cache).
+- Editor perf contract: selection is a light path (class swap + inspector);
+  only structural edits rebuild the canvas; `.blk` uses content-visibility:auto.
+  Measured at the 500-block cap: selection ~45 ms, edits ~80-100 ms.
 - One live-game Treasure pass is still owner-verification (built + proven against the
   deterministic detector/input stubs overnight; see EVALUATION.md).

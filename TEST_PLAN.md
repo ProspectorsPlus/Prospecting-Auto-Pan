@@ -75,3 +75,8 @@ Results are appended per run; the latest full run is authoritative.
 - 2026-07-16 (final): py_compile x8, tour_check ALL CHECKS PASS, finds_sim ALL SCENARIOS
   PASS, studio_tests ALL PASS, zip rebuilt + byte-matched, app-copy diff still exactly the
   two pre-existing platform hunks. Live-game pass = owner follow-up (EVALUATION.md).
+- 2026-07-16 (v1 review round): forward-compat + backup + cache tests added (all pass);
+  browser measurements at the 500-block cap: selection 310->45 ms, structural edits
+  330->80-100 ms, undo ~40 ms, DOM rebuild 9 ms; engine stress 0.8 us/tick x 50k ticks at
+  456 blocks/16 deep; full functional editor regression green; protocol green; zip
+  rebuilt + byte-matched; real app boot + clean quit re-verified.

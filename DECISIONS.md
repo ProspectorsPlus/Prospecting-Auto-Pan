@@ -83,3 +83,38 @@ Format: decision, why, date (2026-07-16 unless noted).
 30. **Windows-frozen script path:** `SCRIPT_JSON` travels inside the config file itself, so the
     frozen engine needs no new file access; `prospecting_scripts.json` lives in `_data_dir()`
     for the app only.
+
+## V1 review board round (2026-07-16, same session)
+
+31. **Normalize-then-validate at every load boundary.** Missing params/fields in stored or
+    imported scripts are filled with schema defaults on read (`_studio_normalize`); the
+    editor always writes complete data, so SAVING stays strict. Adding a block param never
+    needs a migration; `STUDIO_SCHEMA_VERSION` only gates files from genuinely newer apps
+    (refused at import with a clear message). Stored data is never mutated in place.
+32. **Rolling `.bak` on every scripts-file write + fallback on read.** A crash mid-write, a
+    truncated file, or a bad hand-edit can lose at most the very last change, never the
+    library. Config writes on the Studio-owned path became two-phase for the same reason.
+33. **`studio_list` cached against the scripts-file stamp** (mtime+size), invalidated by
+    every write. Big libraries stop re-validating on each tab click.
+34. **Selection is a light path.** Clicking or arrow-navigating swaps the `.sel` class and
+    re-renders only the inspector; the canvas DOM is rebuilt only on structural changes.
+    Measured at the 500-block cap: selection went from ~310 ms to ~45 ms.
+35. **`content-visibility:auto` on block cards.** Offscreen blocks skip layout, cutting
+    structural edits at the cap from ~330 ms to ~80-100 ms; progressive enhancement (older
+    WebKit simply ignores it). All mutation paths render exactly once (double renders
+    removed by moving selection updates inside `apply`).
+36. **Workflow surface: quick-insert (/) with fuzzy filter, block context menu, copy/paste
+    of whole subtrees, palette filter.** Pasted trees are re-clamped and re-idd client-side
+    (`sanitizeTree`) and still gated by the Python validator on save/run. Multi-select,
+    favorites, recents and parameter presets were REJECTED for v1: with 17 block types and
+    scripts under a few dozen blocks they add surface without saving real effort.
+37. **Worst-case lap estimate in the top bar** (`lap <= Ns`), computed from the same params
+    the interpreter clamps; declared "worst case" because cue waits can finish early. A full
+    dry-run simulator was rejected: the estimate plus the live block highlight covers the
+    real need at a fraction of the complexity.
+38. **The 500-block / 16-depth caps stay.** At the cap the interpreter costs 0.8 us per
+    tick (measured, stubbed I/O) and the editor stays responsive; raising the cap without a
+    virtualized canvas would sacrifice the guarantees for a use case that does not exist.
+39. **Deliberately NOT extracted:** the duplicated md() help renderer (main window vs
+    Studio window). Sharing it means surgery inside the tour-js lockstep region for a
+    cosmetic drift risk; revisit only if the tagged-help grammar changes.

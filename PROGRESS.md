@@ -1,8 +1,8 @@
 # Prospector Studio — Progress
 
-Updated: 2026-07-16 (end of the overnight implementation session)
+Updated: 2026-07-16 (after the v1 review-board round; see EVALUATION.md round 2)
 
-## Current status: COMPLETE (one owner-only follow-up)
+## Current status: V1 COMPLETE after an 11-pass review round (one owner-only follow-up)
 Every mandatory MVP item is implemented, integrated, mirrored and verified. The only open
 item is the live-game acceptance pass (Roblox + calibration were not available; the same
 path is proven against the deterministic detector + input stubs). See EVALUATION.md.
