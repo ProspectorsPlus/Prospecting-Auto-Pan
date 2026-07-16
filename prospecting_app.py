@@ -754,6 +754,104 @@ TOUR_DEFAULTS = {
    "body": "Stops after N pans so you do not keep panning into a full "
            "inventory. Set it near what your backpack holds. 0 is off."},
  ],
+ "studio": [
+  {"id": "st.intro", "tab": "studio", "center": True,
+   "title": "Studio: build your own mode",
+   "body": "Studio is your own version of the built-in modes. You snap "
+           "Prospecting blocks together (dig, walk until a prompt shows, "
+           "shake, wait) into a script, and the macro runs it with the same "
+           "calibration, stats and safety nets as Standard or Treasure. No "
+           "code anywhere."},
+  {"id": "st.library", "tab": "studio", "sel": "#stgrid",
+   "title": "Your script library",
+   "body": "Every script you save or import lives here: set one active, run "
+           "it, open it in the editor, duplicate it to experiment, export it "
+           "as a .ppscript file for a friend, or delete it. The green chip "
+           "marks the active script, the one the Start button runs."},
+  {"id": "st.open", "tab": "studio", "sel": "#stopen",
+   "title": "The Studio window",
+   "body": "Open Studio opens the editor in its own window, like Roblox "
+           "Studio next to Roblox: block palette on the left, your script in "
+           "the middle, the selected block's settings on the right. Its own "
+           "short walkthrough offers itself the first time and rebuilds the "
+           "Treasure script with you, step by step."},
+  {"id": "st.new", "tab": "studio", "sel": "#stnew",
+   "title": "Start from a template",
+   "body": "New script starts you from a template: the Standard loop or "
+           "Treasure rebuilt from blocks, or a blank canvas. Templates are "
+           "the fastest way to learn how the blocks snap together."},
+  {"id": "st.import", "tab": "studio", "sel": "#stimport",
+   "title": "Share scripts as one file",
+   "body": "Import script reads a friend's .ppscript file; Export on any "
+           "card writes yours. Imported files are checked block by block "
+           "before they can ever run, so a broken or tampered file is "
+           "refused with a clear reason instead of wrecking a run."},
+  {"id": "st.runtab", "tab": "run", "sel": "#scriptsel",
+   "title": "Running a script",
+   "body": "The Mode picker on the Run tab switches between the built-in "
+           "modes and your scripts. While a script is active it supersedes "
+           "the Treasure, Shards and Geodes toggles, and runs, stats and "
+           "History behave exactly like any other run. Esc and Ctrl+K "
+           "always stop it."},
+ ],
+ "studio_editor": [
+  {"id": "ste.hello", "center": True,
+   "title": "Build Treasure mode from blocks",
+   "body": "This two minute walkthrough rebuilds the real Treasure mode: "
+           "dig a Rubble Creek deposit, strafe to the sands until Collect "
+           "shows, dig, strafe back, repeat. By the end you will know every "
+           "part of Studio."},
+  {"id": "ste.new", "sel": "#stnewbtn",
+   "title": "Start from a template",
+   "body": "Press <b>New script</b> and pick <b>Treasure (Rubble Creek)</b> "
+           "to get the finished version to study, or <b>Blank</b> to build "
+           "it yourself as we go. You can keep this walkthrough open while "
+           "you click around."},
+  {"id": "ste.palette", "sel": "#pal",
+   "title": "The palette",
+   "body": "Every block the macro understands, in three families. "
+           "<b>Actions</b> send input: Dig click, Shake clicks, Wait. "
+           "<b>Sensing</b> reads the screen through your calibration: Wait "
+           "for cue, Wait for capacity, the If blocks. <b>Flow</b> "
+           "organises: Repeat, Group, Safe stop. Click a block to add it, "
+           "or drag it exactly where it belongs. Hover one and the help "
+           "panel on the right explains it."},
+  {"id": "ste.canvas", "sel": "#canvasWrap",
+   "title": "The canvas is your script",
+   "body": "Blocks run top to bottom, then the whole script repeats "
+           "forever; one full lap counts one pan. Treasure needs five "
+           "working blocks: <b>Dig click</b> at 8 ms, <b>Wait</b> 12000 ms "
+           "for the slow dig animation, <b>Wait for cue</b> holding D until "
+           "Collect Deposit shows, then the same dig and wait again, and a "
+           "final <b>Wait for cue</b> holding A to strafe back. Drag to "
+           "reorder; drop onto an If or Repeat to put a block inside."},
+  {"id": "ste.inspector", "sel": "#insp",
+   "title": "The inspector",
+   "body": "Select a block and its settings appear here: sliders with "
+           "known-safe ranges, dropdowns for prompts and keys, and a plain "
+           "sentence saying exactly what the block will do. For the two "
+           "strafe blocks, turn on <b>Leave the current prompt first</b> so "
+           "the spot you are still standing on does not count instantly."},
+  {"id": "ste.validate", "sel": "#valbtn",
+   "title": "Validate as you go",
+   "body": "The dot up here stays green while the script is runnable. "
+           "Problems show on the block and in a list at the bottom, each "
+           "naming the fix: empty containers, steps stuck after a Safe "
+           "stop, scripts that never send input. Everything is checked "
+           "again before a run ever starts."},
+  {"id": "ste.save", "sel": "#stsave",
+   "title": "Save it",
+   "body": "Save keeps the script in your library (Ctrl+S works too). "
+           "Drafts with problems save fine, they just cannot run until the "
+           "list is clear, so you never lose work."},
+  {"id": "ste.run", "sel": "#strun",
+   "title": "Run it",
+   "body": "Run saves, sets this script as the active mode and starts the "
+           "macro, exactly like the Start button. Click into Roblox so the "
+           "game has focus. Esc or Ctrl+K stops it, pans and digs count on "
+           "the Run tab, and the run lands in History under this script's "
+           "name. Have fun out there."},
+ ],
 }
 
 
@@ -2683,7 +2781,7 @@ class Api:
         d = _studio_load()
         prev = prev_name if (isinstance(prev_name, str)
                              and prev_name in d["scripts"]) else None
-        if name in d["scripts"] and prev != name and prev is not None:
+        if name in d["scripts"] and prev != name:
             return {"ok": False,
                     "error": "A script called '%s' already exists; pick a "
                              "different name." % name,
@@ -2925,6 +3023,19 @@ class Api:
         except Exception:
             pass
         return "hidden"
+
+    def studio_edit(self, name):
+        """Open the Studio window with one script loaded (library Open)."""
+        out = self.open_studio_window()
+        if isinstance(name, str) and name:
+            _studio_eval("window.loadScript&&loadScript(%s)" % json.dumps(name))
+        return out
+
+    def studio_new(self):
+        """Open the Studio window straight into the template picker."""
+        out = self.open_studio_window()
+        _studio_eval("window.newScript&&newScript()")
+        return out
 
     # ---- calibrate: wait for the user to mark a spot, capture its x/y + colour
     def cue_mask_status(self):
@@ -4025,6 +4136,9 @@ class Api:
                 except Exception:
                     pass
                 continue
+            if line.startswith("__SCRIPT__ "):
+                _studio_eval("window.scriptStep&&scriptStep(%s)" % line[11:])
+                continue
             if line.strip() == "__POPOUT__":
                 try:
                     self.toggle_popout()
@@ -4389,6 +4503,9 @@ def build_html():
         '<button type="button" id="stopbtn" class="big stop" '
         'disabled>Stop</button><span id="rstate" class="rstate">stopped</span>'
         '<span id="runflow" class="runflow" title="How the macro runs: hover for the full order of events">how it runs</span></div>'
+        '<div class="scriptbar" id="scriptbar"><span class="sblab">Mode</span>'
+        '<select id="scriptsel" title="Run a built-in mode or one of your Studio scripts"><option value="">Built-in modes</option></select>'
+        '<span id="scriptnote" class="scriptnote"></span></div>'
         '<div id="geodebar" class="geodebar" style="display:none"></div>'
         '<div class="statsbar">'
         '<div class="stat"><div class="sv" id="st_run">0:00</div><div class="sl">runtime</div></div>'
@@ -4597,6 +4714,21 @@ def build_html():
         '<p class="chint">Past runs and their stats, kept across restarts.</p></div>'
         '<button type="button" id="histrefresh" class="btn2" style="margin-bottom:12px">Refresh</button>'
         '<div id="histbox" class="histbox"></div></section>')
+
+    # Studio (custom block scripts)
+    nav("studio", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="13.5" width="8" height="6.5" rx="1.5"/><rect x="13" y="13.5" width="8" height="6.5" rx="1.5"/><rect x="8" y="4" width="8" height="6.5" rx="1.5"/></svg>', "Studio")
+    panels.append(
+        '<section class="panel" id="pstudio"><div class="phead"><h2>Studio</h2>'
+        '<p class="chint">Build your own farming mode from Prospecting blocks: '
+        'digs, walks, shakes, prompts and waits. No code needed, the safety '
+        'nets stay on, and a script runs and counts pans exactly like a '
+        'built-in mode. Share one as a single .ppscript file.</p></div>'
+        '<div class="stbtns">'
+        '<button type="button" id="stopen" class="btn">Open Studio</button>'
+        '<button type="button" id="stnew" class="btn2">New script\u2026</button>'
+        '<button type="button" id="stimport" class="btn2">Import script\u2026</button>'
+        '</div>'
+        '<div id="stgrid" class="stgrid"></div></section>')
 
     nav("keys", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 9.5h.01M9.5 9.5h.01M13 9.5h.01M16.5 9.5h.01M6.5 13.5h11"/></svg>', "Keybinds")
     _kbrows = [("HOTKEY_TOGGLE", "Start / Stop"), ("HOTKEY_PAUSE", "Pause / Resume (keeps session)"),
@@ -4838,7 +4970,7 @@ def build_html():
         'change and Ctrl+Y to redo. Undo covers slider, box and preset changes.</p>'
         '</section>')
     nav_html = {n["id"]: n["html"] for n in navs}
-    PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "keys", "settings"]
+    PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "studio", "keys", "settings"]
     GROUPS = [
         ("Modes", ["Treasure chest", "Shards", "Geodes"]),
         ("Tracking", ["Earnings", "Tracker"]),
@@ -5295,6 +5427,24 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .hc-hd b{font-size:14px;color:var(--txt)}
  .hbadge{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut);background:var(--field);border:1px solid var(--line2);border-radius:999px;padding:2px 9px}
  .hbadge.tracker{color:var(--accent2);border-color:var(--accent2)}
+ .hbadge.script{color:var(--accent-lit);border-color:var(--accent-lit)}
+ .stbtns{display:flex;gap:9px;margin-bottom:14px;flex-wrap:wrap}
+ .stgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+ .stcard{background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:13px 15px}
+ .stcard.active{border-color:var(--accent)}
+ .stcard h3{margin:0 0 3px;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+ .stchip{font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--green);border:1px solid var(--green);border-radius:99px;padding:1px 8px}
+ .stchip.issues{color:#c2924c;border-color:#c2924c}
+ .stdesc{color:var(--mut);font-size:12.5px;line-height:1.5;margin:0 0 6px;min-height:18px}
+ .stmeta{color:var(--dim);font-size:11.5px;margin-bottom:10px}
+ .strow{display:flex;gap:6px;flex-wrap:wrap}
+ .strow .btn2{padding:6px 10px;font-size:12px}
+ .stempty{border:2px dashed var(--line2);border-radius:12px;padding:26px;text-align:center;color:var(--mut);grid-column:1/-1;line-height:1.7}
+ .scriptbar{display:flex;gap:9px;align-items:center;margin:10px 2px 0;flex-wrap:wrap}
+ .scriptbar .sblab{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+ .scriptbar select{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:6px 9px;font:inherit;font-size:12px;max-width:280px}
+ .scriptbar select:focus{outline:none;border-color:var(--accent)}
+ .scriptnote{color:var(--mut);font-size:11.5px}
  .hc-rt{margin-left:auto;color:var(--accent-lit);font-weight:700;font-variant-numeric:tabular-nums;font-size:13px}
  .hc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
  .hc{background:var(--field);border-radius:9px;padding:8px 10px;text-align:center;box-shadow:inset 0 1px 2px rgba(0,0,0,.3)}
@@ -5895,10 +6045,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    function wsleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
    function raf2(){return new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(function(){r();});});});}
    function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-   var TOUR_LABEL={main:'Tour',calibrate:'Calibration',cycle:'Cycle tuning',recovery:'Recovery',modes:'Modes',tracking:'Tracking',builds:'Builds',relics:'Relics',alerts:'Alerts and limits'};
-   var TOUR_LIST=[['main','The full tour'],['calibrate','Calibration'],['cycle','Cycle tuning'],['recovery','Recovery and safety nets'],['modes','Modes: Treasure, Shards, Geodes'],['tracking','Tracking'],['builds','Builds'],['relics','Relics'],['alerts','Notifications and auto-stop']];
-   var TAB_TOURS={cal:'calibrate',cycle:'cycle',builds:'builds',relics:'relics','Earnings':'tracking','Tracker':'tracking','Notifications':'alerts','Auto-stop':'alerts','Treasure chest':'modes','Shards':'modes','Geodes':'modes'};
-   var PINNED_TABS={run:1,cycle:1,builds:1,cal:1,relics:1,hist:1,keys:1};
+   var TOUR_LABEL={main:'Tour',calibrate:'Calibration',cycle:'Cycle tuning',recovery:'Recovery',modes:'Modes',tracking:'Tracking',builds:'Builds',relics:'Relics',alerts:'Alerts and limits',studio:'Studio'};
+   var TOUR_LIST=[['main','The full tour'],['calibrate','Calibration'],['cycle','Cycle tuning'],['recovery','Recovery and safety nets'],['modes','Modes: Treasure, Shards, Geodes'],['tracking','Tracking'],['builds','Builds'],['relics','Relics'],['alerts','Notifications and auto-stop'],['studio','Studio: build your own mode']];
+   var TAB_TOURS={cal:'calibrate',cycle:'cycle',builds:'builds',relics:'relics','Earnings':'tracking','Tracker':'tracking','Notifications':'alerts','Auto-stop':'alerts','Treasure chest':'modes','Shards':'modes','Geodes':'modes',studio:'studio'};
+   var PINNED_TABS={run:1,cycle:1,builds:1,cal:1,relics:1,hist:1,studio:1,keys:1};
    var TOURS={},HELPMAP={},OWNER=false,LOADED=false,builtExplain=false;
    var TOUR=[],ti=0,curName='main',running=false;
    try{document.body.appendChild(T('tour'));}catch(e){}
@@ -6655,7 +6805,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      const cells=[['pans',r.cycles||0],['pans/hr',r.pans_per_hr||0],['digs',(r.digs!=null?r.digs:'-')],['clean',((r.clean_pct!=null&&r.cycles)?(r.clean_pct+'%'):'-')],['recoveries',r.recoveries||0],['nudges',r.nudges||0],['relics',r.relics_used||0],['finds',r.finds_count||0]];
      const grid=cells.map(c=>'<div class="hc"><div class="hcv">'+c[1]+'</div><div class="hcl">'+c[0]+'</div></div>').join('');
      const logbtn=r.log_file?('<button type="button" class="btn2 hlogbtn" data-log="'+_esc(r.log_file)+'">View full log</button>'):'<span class="hnolog">no saved log</span>';
-     return '<div class="hcard"><div class="hc-hd"><b>'+_esc(r.ended||'run')+'</b>'+(r.tracker?'<span class="hbadge tracker">Tracker</span>':'')+'<span class="hbadge">'+_esc(r.reason||r.stop_reason||'manual')+'</span><span class="hc-rt">'+rt+'</span></div>'+'<div class="hc-grid">'+grid+'</div>'+_earn(r)+_phases(r)+_whyLine(r)+_timeline(r)+'<div class="hc-foot">'+logbtn+'</div></div>';}).join('');
+     return '<div class="hcard"><div class="hc-hd"><b>'+_esc(r.ended||'run')+'</b>'+(r.tracker?'<span class="hbadge tracker">Tracker</span>':'')+(r.script?'<span class="hbadge script">'+_esc(r.script)+'</span>':'')+'<span class="hbadge">'+_esc(r.reason||r.stop_reason||'manual')+'</span><span class="hc-rt">'+rt+'</span></div>'+'<div class="hc-grid">'+grid+'</div>'+_earn(r)+_phases(r)+_whyLine(r)+_timeline(r)+'<div class="hc-foot">'+logbtn+'</div></div>';}).join('');
    box.querySelectorAll('.hlogbtn').forEach(b=>b.onclick=async()=>{let r;try{r=await window.pywebview.api.run_log(b.dataset.log);}catch(e){r={error:'failed to load'};}showLogModal((r&&r.text)?r.text:('('+((r&&r.error)||'no log')+')'),b.dataset.log);});}
  function showLogModal(text,name){var m=document.getElementById('logmodal');
    if(!m){m=document.createElement('div');m.id='logmodal';
@@ -6943,6 +7093,81 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
  $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched, Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
+ // ---- Studio: the script library on the tab + the Run-tab mode selector ----
+ (function(){
+   var grid=$('#stgrid');
+   function stDate(ts){if(!ts)return 'never';return new Date(ts*1000).toLocaleDateString();}
+   window.stRefresh=async function(){
+     var r;try{r=await window.pywebview.api.studio_list();}catch(e){r=null;}
+     if(r&&!r.ok)r=null;
+     var sel=$('#scriptsel');
+     if(sel){var cur=r?r.active:'';
+       sel.innerHTML='<option value="">Built-in modes</option>'+((r?r.scripts:[]).map(function(s){
+         return '<option value="'+_esc(s.name)+'"'+(s.active?' selected':'')+'>Script: '+_esc(s.name)+'</option>';}).join(''));
+       var note=$('#scriptnote');
+       if(note)note.textContent=cur?('"'+cur+'" runs instead of the built-in mode toggles.'):'';}
+     if(!grid)return;
+     if(!r||!r.scripts.length){grid.innerHTML='<div class="stempty"><b>No scripts yet.</b><br>'+
+       'Open Studio to build your first one from a template, or import a friend\'s .ppscript file.</div>';return;}
+     grid.innerHTML='';
+     r.scripts.forEach(function(s){
+       var c=document.createElement('div');c.className='stcard'+(s.active?' active':'');
+       c.innerHTML='<h3></h3><div class="stdesc"></div><div class="stmeta"></div>'+
+         '<div class="strow">'+
+         '<button type="button" class="btn2 stedit" title="Open this script in the Studio editor">Open</button>'+
+         '<button type="button" class="btn2 stact"></button>'+
+         '<button type="button" class="btn2 strun2" title="Set active and start the macro">Run</button>'+
+         '<button type="button" class="btn2 stdup">Duplicate</button>'+
+         '<button type="button" class="btn2 stexp" title="Save as a .ppscript file to share">Export</button>'+
+         '<button type="button" class="btn2 stdel" title="Delete this script">✕</button></div>';
+       c.querySelector('h3').innerHTML=_esc(s.name)+(s.active?' <span class="stchip">active</span>':'')+
+         (s.issues?' <span class="stchip issues">'+s.issues+' to fix</span>':'');
+       c.querySelector('.stdesc').textContent=s.description||'No description yet.';
+       c.querySelector('.stmeta').textContent=s.blocks+' block'+(s.blocks===1?'':'s')+' · edited '+stDate(s.updated);
+       c.querySelector('.stedit').onclick=function(){window.pywebview.api.studio_edit(s.name);};
+       var act=c.querySelector('.stact');act.textContent=s.active?'Deactivate':'Set active';
+       act.title=s.active?'Hand control back to the built-in modes':'Make this the mode the Start button runs';
+       act.onclick=async function(){var r2;
+         try{r2=await window.pywebview.api.studio_set_active(s.active?'':s.name);}catch(e){r2=null;}
+         if(r2&&r2.ok)toast(s.active?'Back to the built-in modes':'"'+s.name+'" is now the active mode');
+         else toast((r2&&r2.error)||'Could not set it active');
+         stRefresh();};
+       c.querySelector('.strun2').onclick=async function(){var r2;
+         try{r2=await window.pywebview.api.studio_run(s.name);}catch(e){r2=null;}
+         if(r2&&r2.ok){setRunning(true);toast('Running "'+s.name+'". Click into Roblox; Esc stops.');}
+         else toast((r2&&r2.error)||'Could not start');
+         stRefresh();};
+       c.querySelector('.stdup').onclick=async function(){
+         try{await window.pywebview.api.studio_duplicate(s.name);}catch(e){}
+         stRefresh();};
+       c.querySelector('.stexp').onclick=async function(){var r2;
+         try{r2=await window.pywebview.api.studio_export(s.name);}catch(e){r2=null;}
+         if(r2&&r2.ok)toast('Exported. Send the .ppscript file to a friend.');
+         else if(r2&&!r2.cancelled)toast((r2&&r2.error)||'Export failed');};
+       var del=c.querySelector('.stdel');
+       del.onclick=async function(){if(!del.dataset.arm){del.dataset.arm='1';del.textContent='sure?';
+           setTimeout(function(){del.dataset.arm='';del.textContent='✕';},2500);return;}
+         try{await window.pywebview.api.studio_delete(s.name);}catch(e){}
+         toast('Deleted "'+s.name+'"');stRefresh();};
+       grid.appendChild(c);});
+   };
+   var so=$('#stopen');if(so)so.onclick=function(){window.pywebview.api.open_studio_window();};
+   var sn=$('#stnew');if(sn)sn.onclick=function(){window.pywebview.api.studio_new();};
+   var si=$('#stimport');if(si)si.onclick=async function(){var r;
+     try{r=await window.pywebview.api.studio_import_dialog();}catch(e){r=null;}
+     if(r&&r.ok)toast('Imported "'+r.name+'"'+(r.problems&&r.problems.length?
+       '. Open it in Studio to fix '+r.problems.length+' thing(s) before it can run.':''));
+     else if(r&&!r.cancelled)toast((r&&r.error)||'Import failed');
+     stRefresh();};
+   var ss=$('#scriptsel');if(ss)ss.onchange=async function(){var v=ss.value,r;
+     try{r=await window.pywebview.api.studio_set_active(v);}catch(e){r=null;}
+     if(r&&r.ok)toast(v?('"'+v+'" is now the active mode'):'Back to the built-in modes');
+     else toast((r&&r.error)||'Could not set it active');
+     stRefresh();};
+   document.querySelectorAll('.tab[data-tab="studio"],.tab[data-tab="run"]').forEach(function(t){
+     t.addEventListener('click',function(){setTimeout(window.stRefresh,60);});});
+   stRefresh();
+ })();
  (function(){const b=$('#hudbtn');if(b)b.onclick=async()=>{
    try{const r=await window.pywebview.api.hud_toggle();
      toast(r==='shown'?'HUD on, drag it beside Roblox':'HUD hidden');}catch(e){}};})();
@@ -7607,6 +7832,717 @@ COACH_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
 </script></body></html>'''
 
 
+def _studio_eval(js):
+    """Run JS inside the Studio window (safe no-op when it is not open)."""
+    try:
+        if _studio_win is not None:
+            _studio_win.evaluate_js(js)
+    except Exception:
+        pass
+
+
+def _studio_html():
+    """The Prospector Studio editor window. The palette, ranges, defaults and
+    summaries are generated from STUDIO_BLOCKS (prospecting_ui.py) at render
+    time, so the editor can never drift from the schema the validator and the
+    engine interpreter enforce."""
+    palette = []
+    for gid, glabel in STUDIO_GROUPS:
+        cards = []
+        for t, d in STUDIO_BLOCKS.items():
+            if d.get("group") != gid:
+                continue
+            cards.append(
+                '<div class="pcard" tabindex="0" role="button" draggable="true"'
+                ' data-type="%s" aria-label="Add block: %s">'
+                '<span class="pico">%s</span><span>%s</span></div>'
+                % (t, d["name"], d["icon"], d["name"]))
+        palette.append('<div class="pgroup" data-group="%s">'
+                       '<div class="pgh">%s</div>%s</div>'
+                       % (gid, glabel, "".join(cards)))
+    blocks_json = json.dumps(
+        {t: {"name": d["name"], "group": d["group"], "icon": d["icon"],
+             "summary": d["summary"], "kids": t in STUDIO_CONTAINERS,
+             "params": d["params"]}
+         for t, d in STUDIO_BLOCKS.items()}).replace("</", "<\\/")
+    html = r'''<!doctype html><html><head><meta charset="utf-8"><style>
+ :root{--bg:#171310;--bg2:#1c1714;--panel:#221c18;--head:#181310;--line:#332a23;
+  --line2:#463a2f;--txt:#ece0d0;--mut:#9c8e7c;--dim:#6a5d4d;--accent:#a8794a;
+  --accent-lit:#caa06e;--accent2:#8a9b6a;--teal-lit:#9bc07e;--green:#7faf5d;
+  --field:#161210;--red:#d88a6a;--ease:cubic-bezier(.22,1,.36,1)}
+ *{box-sizing:border-box} html,body{height:100%;margin:0}
+ body{background:var(--bg);color:var(--txt);display:flex;flex-direction:column;
+  font:13.5px/1.5 "Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+  -webkit-user-select:none;user-select:none;overflow:hidden}
+ button{font:inherit;font-weight:600;border:0;border-radius:9px;padding:8px 13px;cursor:pointer;
+  transition:transform .12s var(--ease),filter .15s,background .15s;color:var(--txt)}
+ button:focus-visible,.pcard:focus-visible,.blk:focus-visible{outline:2px solid var(--accent-lit);outline-offset:2px}
+ .btn{background:var(--accent);color:#241a02} .btn:hover{filter:brightness(1.06)}
+ .btn2{background:#2a2418;color:#e9e0cf} .btn2:hover{background:#352d1c}
+ button:disabled{opacity:.42;cursor:default;transform:none !important;filter:none !important}
+ input,select,textarea{font:inherit;background:var(--field);color:var(--txt);
+  border:1px solid var(--line2);border-radius:8px;padding:7px 10px}
+ input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+ .topbar{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:11px 16px;
+  background:var(--head);border-bottom:1px solid var(--line)}
+ .brand{font-size:15px;font-weight:600;white-space:nowrap} .brand b{color:var(--accent-lit)}
+ .grow{flex:1}
+ .valdot{width:10px;height:10px;border-radius:50%;background:var(--dim);flex:none}
+ .valdot.ok{background:var(--green)} .valdot.warn{background:#c2924c} .valdot.err{background:var(--red)}
+ .valtxt{color:var(--mut);font-size:12px;white-space:nowrap}
+ .runpill{display:none;align-items:center;gap:7px;background:rgba(127,175,93,.12);
+  border:1px solid var(--green);border-radius:99px;padding:4px 12px;font-size:12px;color:var(--green);font-weight:700}
+ body.running .runpill{display:inline-flex}
+ .metabar{flex:0 0 auto;display:flex;gap:9px;align-items:center;padding:9px 16px;
+  background:var(--bg2);border-bottom:1px solid var(--line)}
+ .metabar label{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;font-weight:700}
+ #scname{width:230px;font-weight:700} #scdesc{flex:1;min-width:120px}
+ .dirty{color:var(--accent-lit);font-size:11.5px;font-weight:700;visibility:hidden;white-space:nowrap}
+ body.isdirty .dirty{visibility:visible}
+ .main{flex:1;display:grid;grid-template-columns:222px minmax(0,1fr) 302px;min-height:0}
+ @media (max-width:980px){.main{grid-template-columns:170px minmax(0,1fr) 236px}}
+ @media (max-width:760px){.main{grid-template-columns:150px minmax(0,1fr) 200px}}
+ .pal{border-right:1px solid var(--line);overflow-y:auto;padding:12px 10px;background:var(--bg2)}
+ .pgh{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;
+  font-weight:800;margin:12px 4px 6px} .pgroup:first-child .pgh{margin-top:0}
+ .pcard{display:flex;align-items:center;gap:9px;background:var(--panel);border:1px solid var(--line2);
+  border-radius:9px;padding:7px 10px;margin-bottom:5px;cursor:grab;font-weight:600;font-size:12.5px;color:var(--txt)}
+ .pcard:hover{border-color:var(--accent);background:#272019}
+ .pcard .pico{flex:none;width:16px;height:16px;opacity:.75;display:flex}
+ .pcard .pico svg{width:16px;height:16px}
+ .pgroup[data-group="action"] .pcard{border-left:3px solid var(--accent)}
+ .pgroup[data-group="sense"] .pcard{border-left:3px solid var(--teal-lit)}
+ .pgroup[data-group="flow"] .pcard{border-left:3px solid #6ba1b5}
+ .palhint{color:var(--dim);font-size:11px;line-height:1.5;margin:12px 4px 0}
+ .canvas{overflow-y:auto;padding:16px 18px 90px;position:relative}
+ .cvempty{border:2px dashed var(--line2);border-radius:14px;padding:38px 22px;text-align:center;color:var(--mut)}
+ .cvempty b{color:var(--txt)} .cvempty .btn2{margin-top:12px}
+ .looplab{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:11px;
+  text-transform:uppercase;letter-spacing:.06em;font-weight:800;margin:0 0 8px}
+ .looplab svg{width:14px;height:14px}
+ .loopwrap{border-left:3px solid var(--line2);padding-left:12px;margin-left:5px}
+ .blk{display:flex;align-items:flex-start;gap:9px;background:var(--panel);border:1px solid var(--line2);
+  border-radius:10px;padding:8px 10px;margin:0 0 6px;cursor:default;position:relative}
+ .blk[draggable="true"]{cursor:grab}
+ .blk:hover{border-color:#5a4c3d}
+ .blk.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+ .blk.live{border-color:var(--green);box-shadow:0 0 0 1px var(--green)}
+ .blk.issue{border-color:var(--red)}
+ .blk .bico{flex:none;width:16px;height:16px;margin-top:2px;opacity:.8}
+ .blk .bico svg{width:16px;height:16px}
+ .blk.g-action .bico{color:var(--accent-lit)} .blk.g-sense .bico{color:var(--teal-lit)} .blk.g-flow .bico{color:#6ba1b5}
+ .bmain{flex:1;min-width:0}
+ .bname{font-weight:700;font-size:12.5px}
+ .bsum{color:var(--mut);font-size:12px;line-height:1.45;overflow-wrap:break-word}
+ .bissue{color:var(--red);font-size:11.5px;margin-top:3px;font-weight:600}
+ .bbtns{flex:none;display:flex;gap:4px;opacity:0;transition:opacity .12s}
+ .blk:hover .bbtns,.blk.sel .bbtns,.blk:focus-within .bbtns{opacity:1}
+ .bb{background:transparent;color:var(--mut);padding:2px 6px;border-radius:6px;font-size:12px}
+ .bb:hover{background:#352d1c;color:var(--txt)}
+ .kids{margin:0 0 6px 14px;padding-left:10px;border-left:3px solid var(--line2)}
+ .blk.g-action + .kids,.kids.g-action{border-left-color:var(--accent)}
+ .kids.g-sense{border-left-color:var(--teal-lit)} .kids.g-flow{border-left-color:#6ba1b5}
+ .addkid{display:block;background:transparent;border:1px dashed var(--line2);color:var(--dim);
+  border-radius:8px;padding:4px 10px;font-size:11.5px;margin:2px 0 6px;width:auto}
+ .addkid:hover{color:var(--txt);border-color:var(--accent)}
+ .dropline{height:3px;border-radius:2px;background:var(--accent-lit);margin:2px 0 5px;display:none}
+ .dropline.show{display:block}
+ .blk.dropin{outline:2px dashed var(--accent-lit);outline-offset:2px}
+ .insp{border-left:1px solid var(--line);overflow-y:auto;background:var(--bg2);display:flex;flex-direction:column}
+ .inspbody{padding:14px;flex:0 0 auto}
+ .ihead{display:flex;align-items:center;gap:9px;margin-bottom:3px}
+ .ihead .bico{width:17px;height:17px;display:flex} .ihead .bico svg{width:17px;height:17px}
+ .ihead h3{margin:0;font-size:14.5px}
+ .ikind{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:9px}
+ .isum{background:var(--field);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;
+  padding:7px 10px;margin:0 0 13px;color:var(--mut);font-size:12.5px;line-height:1.5}
+ .isum b{color:var(--txt)}
+ .prow{margin-bottom:12px}
+ .prow .plab{display:block;color:var(--mut);font-size:12px;font-weight:600;margin-bottom:4px}
+ .prange{display:flex;gap:8px;align-items:center}
+ .prange input[type="range"]{flex:1;padding:0;accent-color:var(--accent);background:transparent;border:0}
+ .prange input[type="number"]{width:84px}
+ .prow select,.prow input[type="text"]{width:100%}
+ .switch{position:relative;display:inline-block;width:38px;height:22px;flex:none}
+ .switch input{opacity:0;width:0;height:0;position:absolute}
+ .switch .track{position:absolute;inset:0;background:#3a3128;border-radius:99px;transition:background .15s;cursor:pointer}
+ .switch .knob{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#8d8171;transition:left .15s,background .15s}
+ .switch input:checked + .track{background:var(--accent)} .switch input:checked + .track .knob{left:19px;background:#241a02}
+ .boolrow{display:flex;align-items:center;gap:10px}
+ .inone{color:var(--dim);padding:20px 14px;font-size:12.5px;line-height:1.6}
+ .helpbox{flex:1;border-top:1px solid var(--line);padding:13px 14px;min-height:120px}
+ .helpbox h3{margin:0 0 2px;font-size:13.5px}
+ .ph-kind{color:var(--dim);font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:8px}
+ .ph-body{font-size:12.5px;color:var(--mut);line-height:1.6}
+ .ph-body p{margin:0 0 9px} .ph-body b{color:var(--txt);font-weight:700} .ph-body i{color:var(--txt)}
+ .ph-body s{text-decoration:none;color:var(--red);font-weight:600}
+ .ph-body code{background:var(--field);padding:1px 5px;border-radius:4px;font:12px ui-monospace,Menlo,monospace;color:var(--accent-lit)}
+ .ph-body ul{margin:6px 0 10px;padding-left:18px} .ph-body li{margin:3px 0}
+ .ph-body .ph-call{background:var(--field);border-left:3px solid var(--accent);border-radius:0 8px 8px 0;padding:8px 11px;margin:9px 0;font-size:12px;line-height:1.55}
+ .ph-body .ph-call b{color:var(--accent-lit);margin-right:4px}
+ .ph-row{display:flex;gap:8px;margin:0 0 6px;align-items:flex-start}
+ .ph-tag{flex:none;width:76px;text-align:right;font-size:10px;font-weight:700;padding-top:1px}
+ .ph-tag i{font-style:normal;margin-right:3px}
+ .ph-tag.up{color:var(--accent-lit)} .ph-tag.dn{color:#5aa0bd} .ph-tag.fx{color:var(--red)} .ph-tag.ok{color:#8cc06a}
+ .ph-tx{flex:1;font-size:12px;color:var(--mut);line-height:1.5}
+ .ph-steps{margin:7px 0 9px}
+ .ph-step{display:flex;gap:8px;margin:0 0 5px;font-size:12px;color:var(--mut);line-height:1.5}
+ .ph-step i{font-style:normal;flex:none;width:17px;height:17px;border-radius:50%;background:var(--field);
+  color:var(--accent-lit);font-weight:800;font-size:10px;display:flex;align-items:center;justify-content:center;margin-top:1px}
+ .ph-lk{display:inline-block;background:#201b15;border:1px solid var(--line2);border-radius:5px;padding:1px 7px;font-size:10.5px;color:var(--accent-lit);margin:0 3px 3px 0}
+ .probbar{flex:0 0 auto;border-top:1px solid var(--line);background:var(--bg2);
+  max-height:130px;overflow-y:auto;padding:8px 16px;display:none}
+ .probbar.show{display:block}
+ .prob{display:flex;gap:8px;align-items:flex-start;font-size:12.5px;margin:3px 0;color:var(--mut);cursor:pointer}
+ .prob i{font-style:normal;flex:none;margin-top:1px}
+ .prob.err{color:var(--red)} .prob.warn{color:#c2924c}
+ .prob:hover{color:var(--txt)}
+ #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(8px);background:#2c2620;
+  border:1px solid var(--line2);border-radius:10px;padding:10px 18px;opacity:0;pointer-events:none;
+  transition:opacity .2s,transform .2s;z-index:60;font-weight:600;max-width:80vw}
+ #toast.show{opacity:1;transform:translateX(-50%)}
+ .modal{position:fixed;inset:0;background:rgba(10,8,6,.72);display:none;align-items:center;justify-content:center;z-index:50}
+ .modal.show{display:flex}
+ .mcard{background:var(--panel);border:1px solid var(--line2);border-radius:14px;padding:20px;width:min(560px,92vw);max-height:82vh;overflow-y:auto}
+ .mcard h3{margin:0 0 4px} .mcard .mhint{color:var(--mut);font-size:12.5px;margin:0 0 14px}
+ .tplcard{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--line2);border-radius:10px;
+  padding:12px 14px;margin-bottom:8px;cursor:pointer}
+ .tplcard:hover{border-color:var(--accent);background:#272019}
+ .tplcard h4{margin:0 0 3px;font-size:13.5px} .tplcard p{margin:0;color:var(--mut);font-size:12px;line-height:1.5}
+ .mbtns{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+ .offer{display:none;align-items:center;gap:10px;background:rgba(168,121,74,.12);border:1px solid var(--accent);
+  border-radius:10px;padding:9px 13px;margin:0 0 13px;font-size:12.5px}
+ .offer.show{display:flex}
+ .tour{position:fixed;inset:0;z-index:70;display:none}
+ .tourdim{position:absolute;inset:0;background:rgba(8,6,4,.55)}
+ .tourspot{position:absolute;border:2px solid var(--accent-lit);border-radius:12px;
+  box-shadow:0 0 0 9999px rgba(8,6,4,.55);pointer-events:none;transition:all .25s var(--ease)}
+ .tourpop{position:absolute;width:min(340px,86vw);background:var(--panel);border:1px solid var(--line2);
+  border-radius:13px;padding:15px 16px;box-shadow:0 14px 40px rgba(0,0,0,.5)}
+ .tourpop.center{left:50%;top:50%;transform:translate(-50%,-50%)}
+ .tourpop h3{margin:0 0 6px;font-size:14.5px}
+ .tourpop .tb{color:var(--mut);font-size:12.5px;line-height:1.6;-webkit-user-select:text;user-select:text}
+ .tourpop .tb b{color:var(--txt)}
+ .tstep{color:var(--dim);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+ .tbtns{display:flex;gap:8px;margin-top:12px;align-items:center}
+ .tbtns .grow{flex:1}
+ ::-webkit-scrollbar{width:9px;height:9px} ::-webkit-scrollbar-thumb{background:#3a3128;border-radius:6px}
+ ::-webkit-scrollbar-track{background:transparent}
+</style></head><body>
+ <div class="topbar">
+   <div class="brand"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" style="vertical-align:-2px"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#caa06e"/></svg> Prospector <b>Studio</b></div>
+   <select id="libsel" title="Open a saved script" aria-label="Open a saved script" style="max-width:190px"></select>
+   <button class="btn2" id="stnewbtn" title="Start a new script from a template">New script</button>
+   <span class="grow"></span>
+   <span class="runpill" id="runpill">&#9679; running</span>
+   <span class="valdot" id="valdot"></span><span class="valtxt" id="valtxt">no script</span>
+   <button class="btn2" id="undobtn" title="Undo (Ctrl+Z)" aria-label="Undo">&#8630;</button>
+   <button class="btn2" id="redobtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">&#8631;</button>
+   <button class="btn2" id="valbtn" title="Check the whole script for problems">Validate</button>
+   <button class="btn" id="stsave" title="Save this script (Ctrl+S)">Save</button>
+   <button class="btn2" id="strun" title="Save, set active and start the macro">&#9654; Run</button>
+   <button class="btn2" id="ststop" title="Stop the macro" disabled>&#9632; Stop</button>
+   <button class="btn2" id="sthelp" title="Replay the Studio walkthrough">&#10067;</button>
+ </div>
+ <div class="metabar">
+   <label for="scname">Name</label><input id="scname" maxlength="60" spellcheck="false" aria-label="Script name">
+   <label for="scdesc">Notes</label><input id="scdesc" maxlength="300" spellcheck="false" placeholder="what this script farms, for friends you share it with" aria-label="Script description">
+   <span class="dirty" id="dirtylab">unsaved changes</span>
+ </div>
+ <div class="main">
+   <aside class="pal" id="pal" aria-label="Block palette">{{PALETTE}}
+     <div class="palhint">Click a block to add it after the selected one, or drag it exactly where it should go. Drop onto an If, Repeat or Group to put it inside.</div>
+   </aside>
+   <section class="canvas" id="canvasWrap">
+     <div class="offer" id="touroffer"><span>New to Studio? A two minute walkthrough shows you how to build the Treasure script from blocks.</span><button class="btn" id="offeryes">Show me</button><button class="btn2" id="offerno">No thanks</button></div>
+     <div class="looplab" id="looplab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l3 3-3 3"/><path d="M20 5H7a4 4 0 0 0-4 4v1M7 22l-3-3 3-3"/><path d="M4 19h13a4 4 0 0 0 4-4v-1"/></svg> repeats forever while the macro runs</div>
+     <div class="loopwrap" id="loopwrap"><div id="canvas"></div></div>
+   </section>
+   <aside class="insp" id="insp" aria-label="Block inspector">
+     <div class="inspbody" id="inspbody"><div class="inone">Select a block on the canvas to edit what it does.</div></div>
+     <div class="helpbox" id="helpbox"></div>
+   </aside>
+ </div>
+ <div class="probbar" id="probbar"></div>
+ <div class="modal" id="tplmodal" role="dialog" aria-label="New script">
+   <div class="mcard"><h3>New script</h3><p class="mhint">Pick a starting point. Templates are the built-in cycles rebuilt from blocks, ready to tweak.</p>
+     <div id="tpllist"></div>
+     <div class="mbtns"><button class="btn2" id="tplcancel">Cancel</button></div>
+   </div>
+ </div>
+ <div class="modal" id="cfmmodal" role="dialog" aria-label="Confirm">
+   <div class="mcard"><h3 id="cfmtitle">Are you sure?</h3><p class="mhint" id="cfmbody"></p>
+     <div class="mbtns"><button class="btn2" id="cfmno">Cancel</button><button class="btn" id="cfmyes">Yes</button></div>
+   </div>
+ </div>
+ <div class="tour" id="sttour"><div class="tourdim"></div><div class="tourspot" id="sttourspot"></div>
+   <div class="tourpop" id="sttourpop"><div class="tstep" id="sttourstep"></div><h3 id="sttourtitle"></h3>
+     <div class="tb" id="sttourbody"></div>
+     <div class="tbtns"><button class="btn2" id="sttourskip">Skip</button><span class="grow"></span>
+       <button class="btn2" id="sttourback">Back</button><button class="btn" id="sttournext">Next</button></div></div>
+ </div>
+ <div id="toast" role="status"></div>
+<script>
+ var __BLOCKS={{BLOCKS}};
+ var api=function(){return window.pywebview&&window.pywebview.api;};
+ var T=function(id){return document.getElementById(id);};
+ function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+ var S={script:null,prevName:null,sel:null,undo:[],redo:[],dirty:false,insertInto:null,
+        problems:[],helpmap:{},templates:[],running:false,meta:{},lib:[]};
+ var GK={action:'g-action',sense:'g-sense',flow:'g-flow'};
+ function toast(m){var t=T('toast');t.textContent=m;t.classList.add('show');
+   clearTimeout(t._t);t._t=setTimeout(function(){t.classList.remove('show');},2600);}
+ // ---- tree helpers ---------------------------------------------------------
+ function walk(blocks,fn,parent,depth){blocks=blocks||[];for(var i=0;i<blocks.length;i++){
+   if(fn(blocks[i],blocks,i,parent,depth||0)===false)return false;
+   if(blocks[i].children&&walk(blocks[i].children,fn,blocks[i],(depth||0)+1)===false)return false;}return true;}
+ function find(id){var hit=null;if(!S.script)return null;
+   walk(S.script.blocks,function(b){if(b.id===id){hit=b;return false;}});return hit;}
+ function findList(id){var hit=null;if(!S.script)return null;
+   walk(S.script.blocks,function(b,lst,i){if(b.id===id){hit={list:lst,i:i};return false;}});return hit;}
+ function nextId(){var mx=0;walk(S.script.blocks,function(b){var m=/^b(\d+)$/.exec(b.id||'');
+   if(m)mx=Math.max(mx,parseInt(m[1],10));});return 'b'+(mx+1);}
+ function countBlocks(bl){var n=0;walk(bl,function(){n++;});return n;}
+ function depthOf(bl){var mx=1;walk(bl,function(b,l,i,p,d){mx=Math.max(mx,d+1);});return mx;}
+ function newBlock(type){var d=__BLOCKS[type];var b={id:nextId(),type:type,params:{}};
+   (d.params||[]).forEach(function(p){b.params[p.key]=p['default'];});
+   if(d.kids)b.children=[];return b;}
+ // ---- summaries -------------------------------------------------------------
+ function choiceLabel(d,key,val){var p=(d.params||[]).filter(function(x){return x.key===key;})[0];
+   if(!p||!p.choices)return String(val);
+   for(var i=0;i<p.choices.length;i++)if(p.choices[i][0]===val)return p.choices[i][1];
+   return String(val);}
+ function summarize(b){var d=__BLOCKS[b.type];if(!d)return b.type;var P=b.params||{};
+   if(b.type==='comment')return P.text?esc(P.text):'<i>(empty note; write one in the inspector)</i>';
+   if(b.type==='group')return esc(P.label||'Group')+': runs the steps inside, in order.';
+   var s=d.summary||d.name;
+   if(b.type==='shake')s=s.replace('{clicks_t}',P.clicks>0?('exactly '+P.clicks+' clicks'):'until the pan reads empty');
+   if(b.type==='click')s=s.replace('{at_t}',P.at==='center'?', at the screen centre':(P.at==='autopan'?', at the Auto Pan button':''));
+   if(b.type==='wait_cue'){s=s.replace('{hold_t}',(P.hold&&P.hold!=='none')?(', holding '+P.hold):'')
+     .replace('{fresh_t}',P.fresh?', after leaving the current one':'');}
+   ['cue','state','check','key','hold','at'].forEach(function(k){
+     if(P[k]!==undefined)s=s.split('{'+k+'_t}').join(esc(choiceLabel(d,k,P[k])));});
+   s=s.replace(/\{(\w+)\}/g,function(m,k){return P[k]!==undefined?esc(String(P[k])):m;});
+   return s;}
+ // ---- validation (client; the Python validator is authoritative on save) ----
+ function clientCheck(){var errs=[],probs=[];if(!S.script)return{errs:errs,probs:probs};
+   var bl=S.script.blocks||[];
+   if(!bl.length)probs.push({id:null,msg:'The script is empty; add blocks from the palette, or start from a template.'});
+   if(countBlocks(bl)>500)errs.push({id:null,msg:'Too many blocks (limit 500).'});
+   if(depthOf(bl)>16)errs.push({id:null,msg:'Blocks are nested deeper than 16 levels.'});
+   var anyAct=false;
+   walk(bl,function(b,lst,i,parent){var d=__BLOCKS[b.type];
+     if(!d){errs.push({id:b.id,msg:'Unknown block type.'});return;}
+     if(['dig','shake','hold_key','tap_key','click','relic'].indexOf(b.type)>=0)anyAct=true;
+     (d.params||[]).forEach(function(p){var v=(b.params||{})[p.key];
+       if(p.type==='int'){if(typeof v!=='number'||!isFinite(v)||v!==Math.round(v)||v<p.range[0]||v>p.range[1])
+         errs.push({id:b.id,msg:d.name+': "'+p.label+'" must be between '+p.range[0]+' and '+p.range[1]+'.'});}
+       else if(p.type==='choice'){if(!p.choices.some(function(c){return c[0]===v;}))
+         errs.push({id:b.id,msg:d.name+': pick a valid "'+p.label+'".'});}});
+     if(d.kids&&(!b.children||!b.children.length))
+       probs.push({id:b.id,msg:d.name+' is empty; give it at least one step inside, or remove it.'});
+     for(var j=0;j<i;j++)if(lst[j].type==='stop'){
+       probs.push({id:b.id,msg:d.name+' can never run: it sits after a Safe stop.'});break;}});
+   if(bl.length&&!anyAct)probs.push({id:null,msg:'This script never sends any input, so it would do nothing.'});
+   return{errs:errs,probs:probs};}
+ // ---- render -----------------------------------------------------------------
+ function blkHTML(b){var d=__BLOCKS[b.type]||{name:b.type,group:'flow',icon:''};
+   var iss=S._issueById[b.id];
+   var h='<div class="blk '+GK[d.group]+(S.sel===b.id?' sel':'')+(iss?' issue':'')+'" data-id="'+esc(b.id)+
+     '" tabindex="0" draggable="true" role="button" aria-label="'+esc(d.name)+'">'+
+     '<span class="bico">'+d.icon+'</span><div class="bmain"><div class="bname">'+esc(d.name)+'</div>'+
+     '<div class="bsum">'+summarize(b)+'</div>'+(iss?('<div class="bissue">'+esc(iss)+'</div>'):'')+
+     '</div><div class="bbtns">'+
+     '<button class="bb" data-act="dup" title="Duplicate this block" aria-label="Duplicate">&#10697;</button>'+
+     '<button class="bb" data-act="del" title="Delete this block" aria-label="Delete">&#10005;</button></div></div>';
+   if(d.kids){h+='<div class="kids '+GK[d.group]+'" data-kidsof="'+esc(b.id)+'">'+
+     (b.children||[]).map(blkHTML).join('')+
+     '<button class="addkid" data-into="'+esc(b.id)+'">+ step inside</button></div>';}
+   return h;}
+ function render(){var cv=T('canvas');
+   if(!S.script){cv.innerHTML='';T('loopwrap').style.display='none';T('looplab').style.display='none';
+     T('inspbody').innerHTML='<div class="inone">Open a script from the top left, or press New script.</div>';
+     setValidity();return;}
+   var chk=clientCheck();S.problems=chk;S._issueById={};
+   chk.errs.concat(chk.probs).forEach(function(p){if(p.id&&!S._issueById[p.id])S._issueById[p.id]=p.msg;});
+   T('looplab').style.display='';T('loopwrap').style.display='';
+   var bl=S.script.blocks||[];
+   cv.innerHTML=bl.length?bl.map(blkHTML).join(''):
+     '<div class="cvempty"><b>An empty canvas.</b><br>Add your first block from the palette on the left,'+
+     '<br>or start again from a template.<br><button class="btn2" id="cvtpl">Choose a template</button></div>';
+   var ct=T('cvtpl');if(ct)ct.onclick=function(){openTplModal(false);};
+   T('scname').value=S.script.name||'';T('scdesc').value=S.script.description||'';
+   document.body.classList.toggle('isdirty',S.dirty);
+   renderInspector();renderProblems();setValidity();
+   T('undobtn').disabled=!S.undo.length;T('redobtn').disabled=!S.redo.length;}
+ function setValidity(){var d=T('valdot'),t=T('valtxt');
+   if(!S.script){d.className='valdot';t.textContent='no script';return;}
+   var e=S.problems.errs.length,p=S.problems.probs.length;
+   if(e){d.className='valdot err';t.textContent=e+' error'+(e>1?'s':'');}
+   else if(p){d.className='valdot warn';t.textContent=p+' to fix before it can run';}
+   else{d.className='valdot ok';t.textContent='ready to run';}}
+ function renderProblems(extra){var pb=T('probbar');var items=[];
+   S.problems.errs.forEach(function(p){items.push({lv:'err',p:p});});
+   S.problems.probs.forEach(function(p){items.push({lv:'warn',p:p});});
+   (extra||[]).forEach(function(m){items.push({lv:'err',p:{id:null,msg:m}});});
+   if(!items.length){pb.className='probbar';pb.innerHTML='';return;}
+   pb.className='probbar show';
+   pb.innerHTML=items.map(function(x){return '<div class="prob '+x.lv+'" data-target="'+esc(x.p.id||'')+'">'+
+     '<i>'+(x.lv==='err'?'&#9888;':'&#9873;')+'</i><span>'+esc(x.p.msg)+'</span></div>';}).join('');}
+ function paramRow(b,p){var v=(b.params||{})[p.key];var id='pf_'+p.key;
+   if(p.type==='int'){var r=p.range;
+     return '<div class="prow"><label class="plab" for="'+id+'">'+esc(p.label)+'</label>'+
+       '<div class="prange"><input type="range" id="'+id+'r" min="'+r[0]+'" max="'+r[1]+'" step="'+r[2]+
+       '" value="'+v+'" data-pkey="'+p.key+'" aria-label="'+esc(p.label)+' slider">'+
+       '<input type="number" id="'+id+'" min="'+r[0]+'" max="'+r[1]+'" step="'+r[2]+'" value="'+v+
+       '" data-pkey="'+p.key+'"></div></div>';}
+   if(p.type==='bool'){
+     return '<div class="prow"><div class="boolrow"><span class="switch"><input type="checkbox" id="'+id+
+       '" data-pkey="'+p.key+'"'+(v?' checked':'')+' aria-label="'+esc(p.label)+'"><span class="track"><span class="knob"></span></span></span>'+
+       '<label class="plab" for="'+id+'" style="margin:0">'+esc(p.label)+'</label></div></div>';}
+   if(p.type==='choice'){
+     return '<div class="prow"><label class="plab" for="'+id+'">'+esc(p.label)+'</label>'+
+       '<select id="'+id+'" data-pkey="'+p.key+'">'+p.choices.map(function(c){
+         return '<option value="'+esc(c[0])+'"'+(c[0]===v?' selected':'')+'>'+esc(c[1])+'</option>';}).join('')+
+       '</select></div>';}
+   return '<div class="prow"><label class="plab" for="'+id+'">'+esc(p.label)+'</label>'+
+     '<input type="text" id="'+id+'" maxlength="'+(p.max||200)+'" value="'+esc(v)+'" data-pkey="'+p.key+'" spellcheck="false"></div>';}
+ function renderInspector(){var box=T('inspbody');var b=S.sel?find(S.sel):null;
+   if(!b){box.innerHTML='<div class="inone">Select a block on the canvas to edit what it does.<br><br>'+
+     'Keyboard: arrows move the selection, Alt+arrows move the block, Enter on a palette card adds it, Delete removes.</div>';
+     showHelpFor(null);return;}
+   var d=__BLOCKS[b.type];
+   var h='<div class="ihead"><span class="bico '+GK[d.group]+'">'+d.icon+'</span><h3>'+esc(d.name)+'</h3></div>'+
+     '<div class="ikind">'+(d.kids?'container block':'block')+'</div>'+
+     '<div class="isum" id="isum">'+summarize(b)+'</div>'+
+     (d.params||[]).map(function(p){return paramRow(b,p);}).join('');
+   box.innerHTML=h;
+   box.querySelectorAll('[data-pkey]').forEach(function(el){
+     var ev=(el.type==='range')?'input':'change';
+     el.addEventListener(ev,function(){onParam(b.id,el);});
+     if(el.type==='number')el.addEventListener('input',function(){onParam(b.id,el);});
+     if(el.type==='text')el.addEventListener('input',function(){onParam(b.id,el);});});
+   showHelpFor(b.type);}
+ function onParam(bid,el){var b=find(bid);if(!b)return;var d=__BLOCKS[b.type];var k=el.getAttribute('data-pkey');
+   var p=(d.params||[]).filter(function(x){return x.key===k;})[0];if(!p)return;
+   var v;
+   if(p.type==='int'){v=parseInt(el.value,10);if(isNaN(v))return;v=Math.max(p.range[0],Math.min(p.range[1],v));
+     var num=document.getElementById('pf_'+k),rng=document.getElementById('pf_'+k+'r');
+     if(num&&el!==num)num.value=v;if(rng&&el!==rng)rng.value=v;}
+   else if(p.type==='bool')v=!!el.checked;
+   else if(p.type==='choice')v=el.value;
+   else v=String(el.value).slice(0,p.max||200);
+   apply(function(s){var bb=find(bid);if(bb)bb.params[k]=v;},'p:'+bid+':'+k,true);
+   var bb=find(bid);var card=document.querySelector('.blk[data-id="'+bid+'"] .bsum');
+   if(card&&bb)card.innerHTML=summarize(bb);
+   var is=T('isum');if(is&&bb)is.innerHTML=summarize(bb);}
+ // ---- mutation + undo --------------------------------------------------------
+ function snapshot(){return JSON.stringify({b:S.script.blocks,n:S.script.name,d:S.script.description});}
+ function apply(fn,coalesce,light){if(!S.script)return;
+   var now=Date.now();
+   if(!(coalesce&&S._lastKey===coalesce&&now-(S._lastT||0)<900)){
+     S.undo.push(snapshot());if(S.undo.length>100)S.undo.shift();S.redo=[];}
+   S._lastKey=coalesce||null;S._lastT=now;
+   fn(S.script);S.dirty=true;
+   if(light){document.body.classList.add('isdirty');
+     var chk=clientCheck();S.problems=chk;renderProblems();setValidity();return;}
+   render();}
+ function restore(json){var o=JSON.parse(json);S.script.blocks=o.b;S.script.name=o.n;S.script.description=o.d;
+   if(S.sel&&!find(S.sel))S.sel=null;S.dirty=true;render();}
+ function undo(){if(!S.undo.length)return;S.redo.push(snapshot());restore(S.undo.pop());}
+ function redo(){if(!S.redo.length)return;S.undo.push(snapshot());restore(S.redo.pop());}
+ // ---- add / move / delete ----------------------------------------------------
+ function addBlock(type,at){if(!S.script){toast('Open or create a script first.');return;}
+   if(countBlocks(S.script.blocks)>=500){toast('Block limit reached (500).');return;}
+   var nb=newBlock(type);
+   apply(function(s){
+     if(at&&at.into){var host=find(at.into);if(host&&host.children){host.children.push(nb);return;}}
+     if(at&&at.before!==undefined&&at.list){at.list.splice(at.before,0,nb);return;}
+     if(S.sel){var loc=findList(S.sel);var selB=find(S.sel);
+       if(selB&&__BLOCKS[selB.type].kids&&S.insertInto===S.sel){selB.children.push(nb);return;}
+       if(loc){loc.list.splice(loc.i+1,0,nb);return;}}
+     s.blocks.push(nb);});
+   S.sel=nb.id;S.insertInto=null;render();focusSel();}
+ function delBlock(id){apply(function(s){var loc=findList(id);if(loc)loc.list.splice(loc.i,1);});
+   if(S.sel===id){S.sel=null;render();}}
+ function dupBlock(id){var b=find(id);if(!b)return;
+   var cp=JSON.parse(JSON.stringify(b));
+   (function reid(x){x.id=nextIdIn(cp,x);(x.children||[]).forEach(reid);})(cp);
+   function nextIdIn(root,x){S._dupN=(S._dupN||0)+1;return 'b'+Date.now().toString(36)+S._dupN;}
+   apply(function(s){var loc=findList(id);if(loc)loc.list.splice(loc.i+1,0,cp);});
+   S.sel=cp.id;render();focusSel();}
+ function moveBlock(id,dir){var loc=findList(id);if(!loc)return;
+   if(dir==='up'&&loc.i>0)apply(function(){loc.list.splice(loc.i-1,0,loc.list.splice(loc.i,1)[0]);});
+   else if(dir==='down'&&loc.i<loc.list.length-1)apply(function(){loc.list.splice(loc.i+1,0,loc.list.splice(loc.i,1)[0]);});
+   else if(dir==='out'){var parent=null;walk(S.script.blocks,function(b){
+       if(b.children&&b.children.indexOf(loc.list[loc.i])>=0){parent=b;return false;}});
+     if(parent){var ploc=findList(parent.id);
+       apply(function(){var b=loc.list.splice(loc.i,1)[0];ploc.list.splice(ploc.i+1,0,b);});}}
+   else if(dir==='in'&&loc.i>0){var prev=loc.list[loc.i-1];
+     if(prev&&__BLOCKS[prev.type]&&__BLOCKS[prev.type].kids&&depthOf(S.script.blocks)<16)
+       apply(function(){var b=loc.list.splice(loc.i,1)[0];prev.children.push(b);});}
+   render();focusSel();}
+ function moveTo(id,target){ // drag: target={before:{id}, into:id}
+   var loc=findList(id);if(!loc)return;var b=loc.list[loc.i];
+   var bad=false;walk([b],function(x){if(target.into&&x.id===target.into)bad=true;
+     if(target.beforeId&&x.id===target.beforeId)bad=true;});
+   if(bad)return;
+   apply(function(s){loc.list.splice(loc.i,1);
+     if(target.into){var host=find(target.into);if(host&&host.children)host.children.push(b);else loc.list.splice(loc.i,0,b);return;}
+     if(target.beforeId){var t=findList(target.beforeId);if(t)t.list.splice(t.i,0,b);else loc.list.splice(loc.i,0,b);return;}
+     if(target.end)s.blocks.push(b);else loc.list.splice(loc.i,0,b);});
+   S.sel=id;render();}
+ function focusSel(){if(!S.sel)return;var el=document.querySelector('.blk[data-id="'+S.sel+'"]');
+   if(el){el.focus();el.scrollIntoView({block:'nearest'});}}
+ // ---- selection + canvas events ----------------------------------------------
+ T('canvasWrap').addEventListener('click',function(e){
+   var ak=e.target.closest?e.target.closest('.addkid'):null;
+   if(ak){S.sel=ak.getAttribute('data-into');S.insertInto=S.sel;render();
+     toast('Now pick a block from the palette; it goes inside.');return;}
+   var bb=e.target.closest?e.target.closest('.bb'):null;
+   if(bb){var blk0=bb.closest('.blk');var id0=blk0.getAttribute('data-id');
+     if(bb.getAttribute('data-act')==='del')confirmBox('Delete this block?',
+       'It goes away along with anything inside it. Undo brings it back.',function(){delBlock(id0);});
+     else dupBlock(id0);return;}
+   var blk=e.target.closest?e.target.closest('.blk'):null;
+   if(blk){S.sel=blk.getAttribute('data-id');S.insertInto=null;render();}
+   else{S.sel=null;S.insertInto=null;render();}});
+ T('canvasWrap').addEventListener('keydown',function(e){
+   var blk=e.target.closest?e.target.closest('.blk'):null;if(!blk)return;
+   var id=blk.getAttribute('data-id');
+   if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();delBlock(id);}
+   else if(e.key==='ArrowUp'&&e.altKey){e.preventDefault();moveBlock(id,'up');}
+   else if(e.key==='ArrowDown'&&e.altKey){e.preventDefault();moveBlock(id,'down');}
+   else if(e.key==='ArrowLeft'&&e.altKey){e.preventDefault();moveBlock(id,'out');}
+   else if(e.key==='ArrowRight'&&e.altKey){e.preventDefault();moveBlock(id,'in');}
+   else if(e.key==='ArrowUp'||e.key==='ArrowDown'){e.preventDefault();
+     var all=[].slice.call(document.querySelectorAll('.blk'));
+     var ix=all.indexOf(blk)+(e.key==='ArrowDown'?1:-1);
+     if(ix>=0&&ix<all.length){S.sel=all[ix].getAttribute('data-id');render();focusSel();}}
+   else if((e.key==='d'||e.key==='D')&&(e.ctrlKey||e.metaKey)){e.preventDefault();dupBlock(id);}});
+ // ---- drag and drop ------------------------------------------------------------
+ var drag={type:null,id:null};
+ document.addEventListener('dragstart',function(e){
+   var pc=e.target.closest?e.target.closest('.pcard'):null;
+   if(pc){drag={type:pc.getAttribute('data-type'),id:null};e.dataTransfer.effectAllowed='copy';return;}
+   var blk=e.target.closest?e.target.closest('.blk'):null;
+   if(blk){drag={type:null,id:blk.getAttribute('data-id')};e.dataTransfer.effectAllowed='move';}});
+ function clearDropUI(){document.querySelectorAll('.blk.dropin').forEach(function(x){x.classList.remove('dropin');});
+   var dl=T('droplineEl');if(dl)dl.remove();}
+ T('canvasWrap').addEventListener('dragover',function(e){
+   if(!drag.type&&!drag.id)return;e.preventDefault();clearDropUI();
+   var blk=e.target.closest?e.target.closest('.blk'):null;
+   if(blk){var r=blk.getBoundingClientRect();var b=find(blk.getAttribute('data-id'));
+     var isCont=b&&__BLOCKS[b.type]&&__BLOCKS[b.type].kids;
+     var relY=(e.clientY-r.top)/r.height;
+     if(isCont&&relY>0.33&&relY<0.67){blk.classList.add('dropin');return;}
+     var dl=document.createElement('div');dl.id='droplineEl';dl.className='dropline show';
+     if(relY<=0.5)blk.parentNode.insertBefore(dl,blk);
+     else blk.parentNode.insertBefore(dl,blk.nextSibling&&blk.nextSibling.classList&&blk.nextSibling.classList.contains('kids')?blk.nextSibling.nextSibling:blk.nextSibling);
+     dl.setAttribute('data-before',relY<=0.5?blk.getAttribute('data-id'):(afterIdOf(blk)||''));}});
+ function afterIdOf(blk){var n=blk.nextSibling;
+   while(n&&(!n.classList||n.classList.contains('kids')||n.id==='droplineEl'))n=n.nextSibling;
+   return n&&n.classList&&n.classList.contains('blk')?n.getAttribute('data-id'):null;}
+ T('canvasWrap').addEventListener('drop',function(e){
+   if(!drag.type&&!drag.id)return;e.preventDefault();
+   var into=document.querySelector('.blk.dropin');
+   var dl=T('droplineEl');
+   var target=null;
+   if(into)target={into:into.getAttribute('data-id')};
+   else if(dl)target=dl.getAttribute('data-before')?{beforeId:dl.getAttribute('data-before')}:{end:true};
+   else target={end:true};
+   clearDropUI();
+   if(drag.type){var nb=newBlock(drag.type);
+     if(countBlocks((S.script||{}).blocks||[])>=500){toast('Block limit reached (500).');return;}
+     if(!S.script){toast('Open or create a script first.');return;}
+     apply(function(s){
+       if(target.into){var h=find(target.into);if(h&&h.children){h.children.push(nb);return;}}
+       if(target.beforeId){var t=findList(target.beforeId);if(t){t.list.splice(t.i,0,nb);return;}}
+       s.blocks.push(nb);});
+     S.sel=nb.id;render();}
+   else if(drag.id)moveTo(drag.id,target);
+   drag={type:null,id:null};});
+ document.addEventListener('dragend',clearDropUI);
+ // ---- palette ---------------------------------------------------------------
+ document.querySelectorAll('.pcard').forEach(function(pc){
+   pc.addEventListener('click',function(){addBlock(pc.getAttribute('data-type'));});
+   pc.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();addBlock(pc.getAttribute('data-type'));}});
+   pc.addEventListener('mouseenter',function(){showHelpFor(pc.getAttribute('data-type'));});});
+ // ---- help ------------------------------------------------------------------
+ function md(t){t=String(t==null?'':t);var lines=t.split(/\r?\n/),out=[],list=null,para=[];
+   var TAGS={raise:['↑','raise it if','up'],lower:['↓','lower it if','dn'],fixes:['⚑','fixes','fx'],pairs:['⇄','pairs with','ok'],healthy:['✓','healthy','ok'],climbing:['⚑','climbing?','fx'],fixpath:['→','fix path','up'],wrongif:['⚑','wrong if','fx'],owns:['→','its knobs','up'],when:['→','use it when','up']};
+   function il(s){return s.replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/\*([^*\n]+)\*/g,'<i>$1</i>').replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\{\{([^}]+)\}\}/g,'<s>$1</s>');}
+   function chips(s){return s.split('|').map(function(c){c=c.trim();if(!c)return '';return '<span class="ph-lk">'+il(c)+'</span>';}).join('');}
+   function fp(){if(para.length){out.push('<p>'+il(para.join(' '))+'</p>');para=[];}}
+   function fl(){if(list){out.push('<ul>'+list.join('')+'</ul>');list=null;}}
+   for(var i=0;i<lines.length;i++){var ln=lines[i].trim();
+     if(!ln){fp();fl();continue;}
+     var mh=ln.match(/^##\s+(.*)/);if(mh){fp();fl();out.push('<h4>'+il(mh[1])+'</h4>');continue;}
+     var mt=ln.match(/^(raise|lower|fixes|pairs|healthy|climbing|fixpath|wrongif|owns|when):\s*(.*)/i);
+     if(mt){fp();fl();var tg=TAGS[mt[1].toLowerCase()];var body=(mt[1].toLowerCase()==='pairs'||mt[1].toLowerCase()==='fixpath'||mt[1].toLowerCase()==='owns')?chips(mt[2]):il(mt[2]);
+       out.push('<div class="ph-row"><span class="ph-tag '+tg[2]+'"><i>'+tg[0]+'</i>'+tg[1]+'</span><span class="ph-tx">'+body+'</span></div>');continue;}
+     var ms=ln.match(/^steps:\s*(.*)/i);
+     if(ms){fp();fl();var st=ms[1].split('|');var sh='';for(var j=0;j<st.length;j++){if(st[j].trim())sh+='<div class="ph-step"><i>'+(j+1)+'</i><span>'+il(st[j].trim())+'</span></div>';}out.push('<div class="ph-steps">'+sh+'</div>');continue;}
+     var mb=ln.match(/^[-•]\s+(.*)/);if(mb){fp();if(!list)list=[];list.push('<li>'+il(mb[1])+'</li>');continue;}
+     var mc=ln.match(/^(Example|Tip|Note|Why)\s*:\s*(.*)/);if(mc){fp();fl();out.push('<div class="ph-call"><b>'+mc[1]+'</b> '+il(mc[2])+'</div>');continue;}
+     fl();para.push(ln);}
+   fp();fl();return out.join('')||'<p></p>';}
+ function showHelpFor(type){var hb=T('helpbox');
+   if(!type){hb.innerHTML='<h3>Prospector Studio</h3><div class="ph-kind">help</div><div class="ph-body">'+
+     '<p>Build your own farming mode from blocks. The macro runs your blocks top to bottom, then repeats forever, '+
+     'counting pans exactly like a built-in mode. Hover any palette block to read what it does.</p>'+
+     '<p>Esc and Ctrl+K always stop a running script, and the safety nets stay on.</p></div>';return;}
+   var d=__BLOCKS[type];var ent=S.helpmap['studio:'+type]||{};
+   hb.innerHTML='<h3>'+esc(d?d.name:type)+'</h3><div class="ph-kind">'+(d&&d.kids?'container block':'block')+'</div>'+
+     '<div class="ph-body">'+md(ent.body||'')+'</div>';}
+ // ---- problems bar click -> select the block ---------------------------------
+ T('probbar').addEventListener('click',function(e){var pr=e.target.closest?e.target.closest('.prob'):null;
+   if(!pr)return;var id=pr.getAttribute('data-target');if(id){S.sel=id;render();focusSel();}});
+ // ---- name/desc --------------------------------------------------------------
+ T('scname').addEventListener('input',function(){if(!S.script)return;
+   apply(function(s){s.name=T('scname').value;},'meta:name',true);});
+ T('scdesc').addEventListener('input',function(){if(!S.script)return;
+   apply(function(s){s.description=T('scdesc').value;},'meta:desc',true);});
+ // ---- confirm modal ------------------------------------------------------------
+ var cfmCb=null;
+ function confirmBox(title,body,cb){T('cfmtitle').textContent=title;T('cfmbody').textContent=body;
+   cfmCb=cb;T('cfmmodal').classList.add('show');T('cfmyes').focus();}
+ T('cfmyes').onclick=function(){T('cfmmodal').classList.remove('show');var cb=cfmCb;cfmCb=null;if(cb)cb();};
+ T('cfmno').onclick=function(){T('cfmmodal').classList.remove('show');cfmCb=null;};
+ // ---- library / templates ------------------------------------------------------
+ function guardDirty(cb){if(S.dirty&&S.script)confirmBox('Throw away unsaved changes?',
+   '"'+(S.script.name||'This script')+'" has edits that are not saved yet.',cb);else cb();}
+ async function refreshLib(keep){var r;try{r=await api().studio_list();}catch(e){return;}
+   if(!r||!r.ok)return;S.lib=r.scripts;var sel=T('libsel');
+   sel.innerHTML='<option value="">Open a script&hellip;</option>'+r.scripts.map(function(s){
+     return '<option value="'+esc(s.name)+'"'+(S.script&&s.name===S.prevName?' selected':'')+'>'+
+       esc(s.name)+(s.active?' (active)':'')+'</option>';}).join('');
+   if(keep&&S.prevName)sel.value=S.prevName;}
+ window.loadScript=function(name){guardDirty(async function(){
+   var r;try{r=await api().studio_get(name);}catch(e){return;}
+   if(!r||!r.ok){toast((r&&r.error)||'Could not open it.');return;}
+   S.script=r.script;S.prevName=r.script.name;S.sel=null;S.undo=[];S.redo=[];S.dirty=false;
+   render();refreshLib(true);});};
+ T('libsel').addEventListener('change',function(){var v=T('libsel').value;if(v)loadScript(v);});
+ function uniqueName(base){var names={};S.lib.forEach(function(s){names[s.name]=1;});
+   if(!names[base])return base;var i=2;while(names[base+' '+i])i++;return base+' '+i;}
+ async function openTplModal(cancelable){
+   if(!S.templates.length){try{var r=await api().studio_templates();S.templates=(r&&r.templates)||[];}catch(e){}}
+   var tl=T('tpllist');
+   tl.innerHTML=S.templates.map(function(t,i){
+     return '<div class="tplcard" tabindex="0" role="button" data-i="'+i+'"><div>'+
+       '<h4>'+esc(t.name)+'</h4><p>'+esc(t.description)+'</p></div></div>';}).join('');
+   tl.querySelectorAll('.tplcard').forEach(function(c){
+     function go(){useTemplate(parseInt(c.getAttribute('data-i'),10));}
+     c.onclick=go;c.onkeydown=function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();go();}};});
+   T('tplmodal').classList.add('show');}
+ function useTemplate(i){var t=S.templates[i];if(!t)return;
+   T('tplmodal').classList.remove('show');
+   guardDirty(function(){
+     var sc=JSON.parse(JSON.stringify(t));
+     sc.name=uniqueName(sc.name==='Blank'?'My script':sc.name);
+     S.script=sc;S.prevName=null;S.sel=null;S.undo=[];S.redo=[];S.dirty=true;render();
+     toast('New script. Press Save when you are happy with it.');});}
+ window.newScript=function(){openTplModal(true);};
+ T('stnewbtn').onclick=function(){openTplModal(true);};
+ T('tplcancel').onclick=function(){T('tplmodal').classList.remove('show');};
+ // ---- save / validate / run ------------------------------------------------------
+ async function doSave(){if(!S.script){toast('Nothing to save yet.');return false;}
+   S.script.name=(T('scname').value||'').trim();S.script.description=T('scdesc').value;
+   if(!S.script.name){toast('Give the script a name first.');T('scname').focus();return false;}
+   var r;try{r=await api().studio_save(S.script,S.prevName);}catch(e){toast('Save failed.');return false;}
+   if(!r||!r.ok){renderProblems([(r&&r.error)||'Save failed.']);toast((r&&r.error)||'Save failed.');return false;}
+   S.prevName=r.name;S.dirty=false;document.body.classList.remove('isdirty');
+   refreshLib(true);render();
+   toast(r.problems&&r.problems.length?'Saved. Fix the flagged steps before running it.':'Saved.');
+   return !(r.problems&&r.problems.length);}
+ T('stsave').onclick=doSave;
+ T('valbtn').onclick=async function(){if(!S.script)return;
+   S.script.name=(T('scname').value||'').trim()||S.script.name;
+   var r;try{r=await api().studio_validate(S.script);}catch(e){return;}
+   if(!r)return;
+   var extra=(r.errors||[]);render();renderProblems(extra);
+   toast(r.ok?((r.problems&&r.problems.length)?'Almost: '+r.problems.length+' thing(s) to fix.':'All good. Ready to run.')
+            :'Problems found; see the list below.');};
+ T('strun').onclick=async function(){if(!S.script)return;
+   var clean=await doSave();if(!clean){return;}
+   var r;try{r=await api().studio_run(S.prevName);}catch(e){toast('Could not start.');return;}
+   if(!r||!r.ok){toast((r&&r.error)||'Could not start.');return;}
+   toast('Running. Click into Roblox so the game has focus. Esc stops.');pollState();};
+ T('ststop').onclick=async function(){try{await api().studio_stop();}catch(e){}pollState();};
+ T('undobtn').onclick=undo;T('redobtn').onclick=redo;
+ document.addEventListener('keydown',function(e){
+   if((e.ctrlKey||e.metaKey)&&!e.shiftKey&&(e.key==='z'||e.key==='Z')){e.preventDefault();undo();}
+   else if((e.ctrlKey||e.metaKey)&&(e.key==='y'||e.key==='Y'||((e.key==='z'||e.key==='Z')&&e.shiftKey))){e.preventDefault();redo();}
+   else if((e.ctrlKey||e.metaKey)&&(e.key==='s'||e.key==='S')){e.preventDefault();doSave();}});
+ // ---- live state ------------------------------------------------------------------
+ var pollT=null;
+ async function pollState(){clearTimeout(pollT);
+   var r;try{r=await api().studio_state();}catch(e){r=null;}
+   if(r&&r.ok){S.running=!!r.running;document.body.classList.toggle('running',S.running);
+     T('strun').disabled=S.running;T('ststop').disabled=!S.running;
+     var rp=T('runpill');rp.innerHTML='&#9679; running'+(r.active?(': '+esc(r.active)):'');}
+   pollT=setTimeout(pollState,1500);}
+ window.scriptStep=function(info){if(!info)return;
+   document.querySelectorAll('.blk.live').forEach(function(x){x.classList.remove('live');});
+   var el=document.querySelector('.blk[data-id="'+esc(info.id||'')+'"]');
+   if(el)el.classList.add('live');};
+ // ---- walkthrough (steps come from the shared tutorial registry) --------------------
+ var TOUR=[],ti=0;
+ function tourPlace(){var st=TOUR[ti];if(!st)return;var tp=T('sttourpop'),sp=T('sttourspot');
+   T('sttourstep').textContent='Walkthrough · step '+(ti+1)+' of '+TOUR.length;
+   T('sttourtitle').textContent=st.title||'';T('sttourbody').innerHTML=st.body||'';
+   T('sttourback').style.visibility=ti>0?'visible':'hidden';
+   T('sttournext').textContent=ti===TOUR.length-1?'Finish':'Next';
+   var el=st.sel?document.querySelector(st.sel):null;var r=el?el.getBoundingClientRect():null;
+   if(!r||!(r.width>0)){sp.style.display='none';tp.classList.add('center');tp.style.left='';tp.style.top='';return;}
+   sp.style.display='block';tp.classList.remove('center');
+   sp.style.left=(r.left-7)+'px';sp.style.top=(r.top-7)+'px';
+   sp.style.width=(r.width+14)+'px';sp.style.height=(r.height+14)+'px';
+   var W=window.innerWidth,H=window.innerHeight,pw=Math.min(340,W*0.86),ph=tp.offsetHeight||220;
+   var x=r.right+18,y=r.top;
+   if(x+pw>W-10)x=Math.max(10,r.left-pw-18);
+   if(x+pw>W-10||x<10){x=Math.max(10,Math.min(W-pw-10,r.left));y=r.bottom+16;}
+   if(y+ph>H-10)y=Math.max(10,H-ph-10);
+   tp.style.left=x+'px';tp.style.top=y+'px';}
+ function tourShow(){if(!TOUR.length)return;T('sttour').style.display='block';tourPlace();}
+ function tourEnd(){T('sttour').style.display='none';try{api().studio_meta({editor_tour_seen:true});}catch(e){}}
+ T('sttournext').onclick=function(){if(ti>=TOUR.length-1){tourEnd();return;}ti++;tourPlace();};
+ T('sttourback').onclick=function(){if(ti>0){ti--;tourPlace();}};
+ T('sttourskip').onclick=tourEnd;
+ document.addEventListener('keydown',function(e){if(T('sttour').style.display==='block'){
+   if(e.key==='Escape')tourEnd();
+   else if(e.key==='ArrowRight')T('sttournext').click();
+   else if(e.key==='ArrowLeft')T('sttourback').click();}});
+ window.addEventListener('resize',function(){if(T('sttour').style.display==='block')tourPlace();});
+ async function startEditorTour(){
+   if(!TOUR.length){try{var c=await api().tutorial_content();
+     TOUR=(c&&c.tours&&c.tours.studio_editor)||[];S.helpmap=(c&&c.help)||S.helpmap;}catch(e){}}
+   if(!TOUR.length)return;ti=0;tourShow();}
+ T('sthelp').onclick=startEditorTour;
+ T('offeryes').onclick=function(){T('touroffer').classList.remove('show');startEditorTour();};
+ T('offerno').onclick=function(){T('touroffer').classList.remove('show');
+   try{api().studio_meta({editor_tour_seen:true});}catch(e){}};
+ // ---- boot -----------------------------------------------------------------------
+ async function boot(){
+   try{var c=await api().tutorial_content();S.helpmap=(c&&c.help)||{};
+     TOUR=(c&&c.tours&&c.tours.studio_editor)||[];}catch(e){}
+   try{var m=await api().studio_meta();S.meta=(m&&m.meta)||{};}catch(e){}
+   await refreshLib();
+   if(!S.script){
+     if(S.lib.length){loadScript(S.lib[0].name);}
+     else{render();openTplModal(true);}}
+   else render();
+   if(!S.meta.editor_tour_seen)T('touroffer').classList.add('show');
+   showHelpFor(null);pollState();}
+ window.__reload=function(){refreshLib(true);pollState();};
+ window.addEventListener('pywebviewready',boot);
+ setTimeout(function(){if(!S.helpmap||!Object.keys(S.helpmap).length)boot();},900);
+</script></body></html>'''
+    return (html.replace("{{PALETTE}}", "".join(palette))
+                .replace("{{BLOCKS}}", blocks_json))
+
+
 def _quit_everything(api):
     """Fully terminate the app AND the engine subprocess. The app owns several
     hidden helper windows (pill/HUD/overlay/coach/analytics); on macOS the
@@ -7634,7 +8570,7 @@ def _quit_everything(api):
 
 
 def main():
-    global _window, _pill, _overlay, _coach_win, _analytics_win, _hud
+    global _window, _pill, _overlay, _coach_win, _analytics_win, _hud, _studio_win
     # Frozen macro mode: the bundled exe re-invokes itself with --run-macro to
     # run the actual macro in-process (there is no separate python.exe).
     if FROZEN and "--run-macro" in sys.argv:
@@ -7711,6 +8647,14 @@ def main():
         _hide_on_close(_analytics_win)
     except Exception as _e:
         print("[analytics] precreate failed: %s" % _e)
+    print("[boot] analytics ok -> studio", flush=True)
+    try:
+        _studio_win = webview.create_window(
+            "Studio, Prospectors Plus", html=_studio_html(), js_api=api,
+            width=1200, height=800, min_size=(720, 540), hidden=True)
+        _hide_on_close(_studio_win)
+    except Exception as _e:
+        print("[studio] precreate failed: %s" % _e)
     # Ctrl+C / kill: a Python signal handler can NOT run while the native GUI
     # loop owns the main thread, so a custom handler here would never fire
     # (that is why Ctrl+C used to just hang). Use the OS default disposition

@@ -1631,6 +1631,34 @@ UI_HELP = {
     "coachin": "**Describe what you see**, like it shakes too early or it "
                "lands in the water. No setting names needed; the Coach finds "
                "the knob.",
+    # --- Studio (main-window tab) ------------------------------------------
+    "stopen": "**Opens the Studio editor window.** Block palette on the "
+              "left, your script in the middle, the selected block's "
+              "settings on the right.\n"
+              "steps: pick a template | tweak the blocks | Save, set "
+              "active, Run\n"
+              "Note: the editor offers its own short walkthrough the first "
+              "time; replay it any time with the question mark button up "
+              "top.",
+    "stnew": "**Starts a new script from a template.** Standard loop and "
+             "Treasure ship rebuilt from blocks so you can study or remix "
+             "them; Blank is an empty canvas.\n"
+             "when: a new meta appears and no built-in mode fits it.",
+    "stimport": "**Reads a friend's .ppscript file** into your library "
+                "through the normal file picker.\n"
+                "Note: imported files are checked block by block before "
+                "they can run; a broken or hand-edited file is refused "
+                "with a clear reason, never run as-is.",
+    "scriptsel": "**Switches what the Start button runs**: the built-in "
+                 "modes, or one of your Studio scripts.\n"
+                 "Note: while a script is active it supersedes the "
+                 "Treasure, Shards and Geodes toggles; pick Built-in modes "
+                 "here to hand control back.",
+    "stgrid": "**Your saved scripts.** Set one active, run it, open it in "
+              "Studio, duplicate it to experiment, export it to share, or "
+              "delete it.\n"
+              "Note: the green chip marks the active script; an amber chip "
+              "counts the problems to fix before that script can run.",
 }
 
 # Calibratable on-screen pixels: (key, label, description, default [x, y]).
