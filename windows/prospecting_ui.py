@@ -2109,7 +2109,7 @@ STUDIO2_MAX_HOOK_BLOCKS = 200
 STUDIO2_STR_MAX = 400
 STUDIO2_V2_ONLY_TYPES = ("branch", "while", "break_loop", "continue_loop",
                          "set_var", "detect_pixel", "move_mouse",
-                         "drag_mouse", "log", "hud_text")
+                         "drag_mouse", "log", "hud_text", "long_press")
 STUDIO2_TYPES = set(STUDIO_BLOCKS) | set(STUDIO2_V2_ONLY_TYPES)
 STUDIO2_CONTAINERS = set(STUDIO_CONTAINERS) | {"branch", "while",
                                                "detect_pixel"}

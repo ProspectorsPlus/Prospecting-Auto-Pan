@@ -148,7 +148,7 @@ def run_golden(path):
     state = {"budget_stop": False, "stop_reason": ""}
 
     def emit(ev, **kw):
-        e = {"t": int(clock.ms), "ev": ev}
+        e = {"t": int(round(clock.ms)), "ev": ev}
         e.update(kw)
         trace.append(e)
 
@@ -290,7 +290,7 @@ def run_golden(path):
         "trace": trace,
         "finalVars": final_vars,
         "passes": runner.passes,
-        "virtualMs": int(clock.ms),
+        "virtualMs": int(round(clock.ms)),
         "endReason": reason,
     }, None
 

@@ -5478,6 +5478,24 @@ class ScriptRunner:
             mouse_up()
         return None
 
+    def _do_long_press(self, det, p, kids):
+        """The geode shake: one long held click, optional W momentum."""
+        hold = self._pi(p, "hold_ms", 8000, 1, 30000)
+        hold_w = bool(p.get("momentum_w"))
+        self.pass_activity = True
+        if hold_w:
+            key_down(KEY_W)
+        try:
+            mouse_down()
+            try:
+                _script_sleep(hold)
+            finally:
+                mouse_up()
+        finally:
+            if hold_w:
+                key_up(KEY_W)
+        return None
+
     def _do_log(self, det, p, kids):
         msg = _sv_text(self._pv_eval(p.get("message", "")))[:200]
         log(msg)
@@ -5516,6 +5534,7 @@ _SCRIPT_HANDLERS_V2.update({
     "drag_mouse": ScriptRunner._do_drag_mouse,
     "log": ScriptRunner._do_log,
     "hud_text": ScriptRunner._do_hud_text,
+    "long_press": ScriptRunner._do_long_press,
 })
 
 
