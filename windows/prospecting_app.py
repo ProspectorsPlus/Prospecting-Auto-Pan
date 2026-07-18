@@ -124,6 +124,17 @@ def _builds_all():
     return b
 MACRO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prospecting_old.py")
 
+# Prospector Engine ipc client (Phase 04 C3). Optional: with the ENGINE_IPC
+# config flag off (the default) the app never touches it, and a missing
+# package (an older frozen build) simply pins the flag off.
+for _pr in (HERE, os.path.dirname(HERE)):
+    if _pr not in sys.path:
+        sys.path.append(_pr)
+try:
+    from prospector_engine.client import EngineClient as _EngineClient
+except Exception:
+    _EngineClient = None
+
 # First run when frozen: seed the writable config from the bundled default so the
 # baked-in webhook URL/secret are present without the user touching anything.
 if FROZEN and not os.path.exists(CONFIG_FILE):
@@ -1730,6 +1741,10 @@ def _machine_id():
 class Api:
     def __init__(self):
         self.proc = None
+        self.engine = None        # PPE1 EngineClient when ENGINE_IPC is on
+        self._ipc = False         # current launch runs the --ipc protocol
+        self._engine_paused = False
+        self._synthetic_stop = False
         self._sct = None
         self._scale = 1.0
         self._last_stats = None   # latest stats from the macro (for history)
@@ -3634,6 +3649,10 @@ class Api:
             cmd = [sys.executable, "--run-macro"]
         else:
             cmd = [sys.executable or "python", MACRO_FILE]
+        self._ipc = bool(_EngineClient is not None
+                         and load_saved().get("ENGINE_IPC", False))
+        if self._ipc:
+            return self._launch_ipc(cmd)
         self.proc = subprocess.Popen(
             cmd, cwd=DATA_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
@@ -3662,6 +3681,11 @@ class Api:
         entry = dict(st)
         entry["reason"] = reason or st.get("stop_reason") or "manual"
         entry["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        if self._synthetic_stop:
+            # host-synthesized after an engine crash (protocol section 9.2):
+            # never presented as an engine-emitted final
+            entry["synthetic"] = True
+            self._synthetic_stop = False
         # ---- detailed analytics: aggregate the telemetry events for this run ----
         evs = getattr(self, "_events", None) or []
         type_counts, reason_counts = {}, {}
@@ -3731,17 +3755,33 @@ class Api:
 
     def pause_toggle(self):
         """Session pause/resume -- keeps stats, relic timers and earnings."""
+        if self._ipc and self.engine is not None:
+            # ipc mode has no PAUSE_TOGGLE: the host knows the state from
+            # run.paused/run.resumed events and sends the explicit verb.
+            self.engine.fire("run.resume" if self._engine_paused
+                             else "run.pause")
+            return "ok"
         return self._engine_cmd("PAUSE_TOGGLE")
 
     def relic_reset(self):
         """Restart every relic timer at full (someone else placed one)."""
+        if self._ipc and self.engine is not None:
+            self.engine.fire("relic.resetAll")
+            return "ok"
         return self._engine_cmd("RELIC_RESET")
 
     def relic_reset_one(self, idx):
+        if self._ipc and self.engine is not None:
+            self.engine.fire("relic.resetOne", {"index": int(idx)})
+            return "ok"
         return self._engine_cmd("RELIC_RESET_ONE %d" % int(idx))
 
     def relic_set(self, idx, secs):
         """Set one relic's remaining time exactly (works while paused too)."""
+        if self._ipc and self.engine is not None:
+            self.engine.fire("relic.set", {"index": int(idx),
+                                           "seconds": int(secs)})
+            return "ok"
         return self._engine_cmd("RELIC_SET %d %d" % (int(idx), int(secs)))
 
     def analytics_data(self):
@@ -3773,6 +3813,20 @@ class Api:
         return "hidden"
 
     def stop(self):
+        if self._ipc and self.engine is not None:
+            # ipc mode: in-band shutdown (protocol section 10.1). The engine
+            # emits run.stopped with FRESH final stats -- history is saved
+            # from that event, never from stale 2 s data. The ladder
+            # (shutdown -> terminate -> kill) runs off-thread so the UI
+            # returns immediately, and a force-kill triggers the host-side
+            # input-release backstop (a dead engine cannot lift its keys).
+            client = self.engine
+            self._macro_status = "off"
+            threading.Thread(
+                target=lambda: client.shutdown(
+                    on_force_kill=_host_release_inputs),
+                daemon=True).start()
+            return "stopped"
         self._save_history()
         if self.proc is not None:
             try:
@@ -4532,6 +4586,258 @@ class Api:
         self._macro_status = "off"
         self._save_history()              # macro ended on its own (Esc / self-stop)
         _emit_state(False)
+
+    # ---- Prospector Engine ipc mode (Phase 04 C3) --------------------------
+    # With ENGINE_IPC on, the engine speaks PPE1 frames and these handlers
+    # feed the exact same UI surfaces the legacy _pump feeds. Statuses come
+    # only from structured events -- never from substring-matching log text
+    # (protocol section 2 forbids it in ipc mode).
+
+    def _launch_ipc(self, cmd):
+        self._engine_paused = False
+        client = _EngineClient(
+            cmd, home=DATA_DIR, host="lite", cwd=DATA_DIR,
+            on_event=self._on_engine_event, on_diag=self._on_engine_diag,
+            on_exit=self._on_engine_exit)
+        self.engine = client
+        client.spawn()
+        self.proc = client.proc
+        self._run_active = True
+        self._last_stats = None
+        self._events = []                     # detailed telemetry for this run
+        self._finds = []                      # analytics: logged finds
+        self._phase_samples = {}              # per-phase durations (ms)
+        self._phase_last = None
+        self._macro_status = "idle"
+        threading.Thread(target=self._ipc_ready_watch, args=(client,),
+                         daemon=True).start()
+        return "launched"
+
+    def _ipc_ready_watch(self, client):
+        if client.wait_ready():
+            eng = (client.hello or {}).get("engine", {})
+            _emit_log("[engine] ready: v%s fp=%s (ipc mode)"
+                      % (eng.get("version"), eng.get("sourceFingerprint")))
+            return
+        ref = client.refused or {}
+        tail = "\n".join(client.stderr_tail[-6:])
+        _emit_log("[engine] failed to start: %s -- %s\n%s"
+                  % (ref.get("code"), ref.get("message"), tail))
+
+    def _on_engine_diag(self, line):
+        # non-frame diagnostics: forward to the log surface verbatim, never
+        # interpreted (retires the legacy substring status machine)
+        _emit_log(line)
+        try:
+            if not hasattr(self, "_run_log"):
+                self._run_log = []
+            self._run_log.append(line)
+            if len(self._run_log) > 60000:
+                del self._run_log[:20000]
+        except Exception:
+            pass
+
+    def _on_engine_event(self, fr):
+        ev, d = fr["ev"], fr.get("data", {})
+        ts = float(fr.get("ts", 0.0))
+        if ev == "run.started":
+            # legacy __RESET__ + [RUNNING], keyed per run (protocol 3.2)
+            _hud_eval("window.hudReset&&hudReset()")
+            self._finds = []
+            self._last_stats = None
+            self._run_log = []
+            self._events = []
+            self._phase_samples = {}
+            self._phase_last = None
+            self._run_active = True
+            self._engine_paused = False
+            self._macro_status = "running"
+            _hud_eval("window.hudRun&&hudRun('run')")
+            _emit_paused(False)
+        elif ev == "run.stats":
+            flat = {}
+            flat.update(d.get("raw", {}))
+            flat.update(d.get("derived", {}))
+            flat.update(d.get("meta", {}))
+            js = json.dumps(flat)             # parse first, re-serialize:
+            _emit_stats(js)                   # never inject raw frame text
+            _hud_eval("window.hudStats&&hudStats(%s)" % js)
+            self._last_stats = flat
+            if self._macro_status in ("off", "idle"):
+                self._macro_status = "running"
+        elif ev == "find.new":
+            fv = {k: v for k, v in d.items() if k != "runId"}
+            _hud_eval("window.hudFind&&hudFind(%s)" % json.dumps(fv))
+            if not hasattr(self, "_finds") or self._finds is None:
+                self._finds = []
+            self._finds.append(fv)
+            if len(self._finds) > 500:
+                self._finds = self._finds[-500:]
+        elif ev == "find.updated":
+            fv = {k: v for k, v in d.items() if k not in ("runId", "final")}
+            fid = fv.get("id")
+            for i in range(len(getattr(self, "_finds", []) or [])):
+                if self._finds[i].get("id") == fid:
+                    self._finds[i] = fv
+                    break
+        elif ev == "safety.event":
+            rec = {"t": round(ts, 1), "type": d.get("type", "?"),
+                   "reason": d.get("reason", "")}
+            for k in ("where", "contents"):
+                if d.get(k):
+                    rec[k] = d[k]
+            _hud_eval("window.hudEvent&&hudEvent(%s)" % json.dumps(rec))
+            if not hasattr(self, "_events") or self._events is None:
+                self._events = []
+            self._events.append(rec)
+            if len(self._events) > 2000:
+                self._events = self._events[-2000:]
+        elif ev == "run.phase":
+            name = d.get("phase", "?")
+            _hud_eval("window.hudPhase&&hudPhase(%s)" % json.dumps(name))
+            # phase timings derive from engine-stamped ts (protocol 5.4),
+            # never from arrival wall-clock
+            _last = getattr(self, "_phase_last", None)
+            if _last:
+                _pn, _pt = _last
+                _d = (ts - _pt) * 1000.0
+                if 0 < _d < 120000:
+                    _ps = getattr(self, "_phase_samples", None)
+                    if _ps is None:
+                        _ps = self._phase_samples = {}
+                    _arr = _ps.setdefault(_pn, [])
+                    _arr.append(_d)
+                    if len(_arr) > 500:
+                        del _arr[:len(_arr) - 500]
+            self._phase_last = (name, ts)
+        elif ev == "geode.timer":
+            _gm = int(d.get("ms", 0) or 0)
+            _gl = json.dumps(d.get("label", ""))
+            _hud_eval("window.hudGeode&&hudGeode(%d,%s)" % (_gm, _gl))
+            try:
+                if _window is not None:
+                    _window.evaluate_js(
+                        "window.geodeTimer&&geodeTimer(%d,%s)" % (_gm, _gl))
+            except Exception:
+                pass
+        elif ev == "script.block":
+            payload = {k: v for k, v in d.items() if k != "runId"}
+            _studio_eval("window.scriptStep&&scriptStep(%s)"
+                         % json.dumps(payload))
+        elif ev == "script.hud":
+            _emit_log("[script] %s" % d.get("text", ""))
+        elif ev == "hotkey.popout":
+            try:
+                self.toggle_popout()
+            except Exception:
+                pass
+        elif ev == "run.paused":
+            self._engine_paused = True
+            self._macro_status = "paused"
+            _hud_eval("window.hudRun&&hudRun('pause')")
+            _emit_paused(True)
+        elif ev == "run.resumed":
+            self._engine_paused = False
+            self._macro_status = "running"
+            _hud_eval("window.hudRun&&hudRun('run')")
+            _emit_paused(False)
+        elif ev == "run.stopped":
+            self._engine_paused = False
+            self._macro_status = "stopped"
+            _hud_eval("window.hudRun&&hudRun('idle')")
+            _emit_paused(False)
+            fin = d.get("final") or {}
+            flat = {}
+            flat.update(fin.get("raw", {}))
+            flat.update(fin.get("derived", {}))
+            flat.update(fin.get("meta", {}))
+            if flat:
+                self._last_stats = flat       # fresh final, never stale 2 s
+            self._save_history()              # keys off run.stopped (sec 6)
+        elif ev == "safety.safePaused":
+            self._macro_status = "safe-pause"
+        elif ev == "safety.recovery":
+            if d.get("stage") == "start":
+                self._macro_status = "recovering"
+            elif self._macro_status == "recovering":
+                self._macro_status = "running"
+        elif ev == "safety.hardStopped":
+            self._macro_status = "stopped"
+        elif ev == "engine.log":
+            self._on_engine_diag(d.get("text", ""))
+        elif ev == "engine.bye":
+            if d.get("reason") == "fatal":
+                _emit_log("[engine] refused: %s -- %s"
+                          % (d.get("code"), d.get("message")))
+
+    def _on_engine_exit(self, info):
+        client = self.engine
+        if info.clean:
+            _emit_log("[macro exited, code %s]" % info.code)
+        else:
+            _emit_log("[engine crashed, code %s] stderr tail:\n%s"
+                      % (info.code,
+                         "\n".join((client.stderr_tail if client else [])[-6:])))
+            if getattr(self, "_run_active", False) and self._last_stats:
+                self._synthetic_stop = True   # crash record, marked synthetic
+            self._crash_report(client, info)
+            self._save_history(reason="engine-crashed")
+        self.proc = None
+        self.engine = None
+        self._macro_status = "off"
+        self._save_history()          # no-op if the run was already recorded
+        _emit_state(False)
+
+    def _crash_report(self, client, info):
+        """Persist stderr tail + recent events for diagnostics (9.2.3)."""
+        try:
+            import datetime
+            d = os.path.join(os.path.dirname(CONFIG_FILE),
+                             "engine_crash_reports")
+            os.makedirs(d, exist_ok=True)
+            fname = ("crash-"
+                     + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                     + ".json")
+            with open(os.path.join(d, fname), "w") as f:
+                json.dump({"exit_code": info.code,
+                           "stderr": list(client.stderr_tail) if client else [],
+                           "events": (client.recent_events[-200:]
+                                      if client else [])}, f, indent=2)
+            olds = sorted(x for x in os.listdir(d) if x.endswith(".json"))
+            for x in olds[:-20]:
+                try:
+                    os.remove(os.path.join(d, x))
+                except OSError:
+                    pass
+        except Exception:
+            pass
+
+
+def _host_release_inputs(vocab):
+    """Protocol section 10.1 backstop: after a force-kill the dead engine
+    cannot lift its held inputs, so the host itself issues OS-level
+    up-events for the whole injectable vocabulary (idempotent)."""
+    try:
+        from pynput.keyboard import Controller as _KC, Key as _K
+        from pynput.mouse import Controller as _MC, Button as _MB
+        kb, ms = _KC(), _MC()
+        for name in (vocab or {}).get("keys", []):
+            try:
+                if name == "Shift":
+                    kb.release(_K.shift)
+                elif name == "Space":
+                    kb.release(_K.space)
+                else:
+                    kb.release(name.lower())
+            except Exception:
+                pass
+        for _b in (vocab or {}).get("buttons", []):
+            try:
+                ms.release(_MB.left)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 _HK_DEFAULTS = {

@@ -362,6 +362,86 @@ def test_protocol_mismatch():
     chk(rc == 2, "ver.major-mismatch-refused: exit 2")
 
 
+def _make_client(scenario="interactive-run", allow_simulated=True,
+                 on_event=None):
+    from prospector_engine.client import EngineClient
+    return EngineClient(
+        [sys.executable, ENGINE], home=tempfile.mkdtemp(prefix="ppe-home-"),
+        host="lite-test", cwd=ROOT, allow_simulated=allow_simulated,
+        on_event=on_event,
+        extra_args=["--sim", os.path.join(ROOT, "engine_scenarios",
+                                          scenario + ".json")])
+
+
+def test_engine_client():
+    """C3: Lite's Python EngineClient drives the engine end to end."""
+    print("[contract] EngineClient (C3)")
+    evs = []
+    cli = _make_client(on_event=evs.append).spawn()
+    try:
+        chk(cli.wait_ready(), "client.ready: hello within the 10 s budget")
+        chk(bool(cli.vestibule) and cli.vestibule["major"] == 1,
+            "client.vestibule: stderr version line captured + parsed")
+        a = cli.request("engine.ping")
+        chk(a.get("ok") is True and "state" in a["result"],
+            "client.request: ping acked with state")
+        a = cli.request("relic.resetOne", {"index": 99})
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_PARAMS",
+            "client.request: engine NACK surfaces verbatim")
+        deadline = time.time() + 15
+        while time.time() < deadline and not any(
+                e["ev"] == "run.started" for e in evs):
+            time.sleep(0.1)
+        chk(any(e["ev"] == "run.started" for e in evs),
+            "client.events: run.started dispatched to on_event")
+        a = cli.request("run.pause")
+        chk(a.get("ok") is True, "client.request: run.pause ok mid-run")
+        a = cli.request("run.resume")
+        chk(a.get("ok") is True, "client.request: run.resume ok")
+        info = cli.shutdown()
+        chk(info is not None and info.clean and info.code == 0,
+            "client.shutdown: EOF-with-bye = clean exit, code 0")
+        chk(any(e["ev"] == "run.stopped"
+                and e["data"]["reason"] == "shutdown" for e in evs),
+            "client.shutdown: active run stopped with reason=shutdown")
+    finally:
+        cli.kill()
+
+
+def test_client_refuses_simulated():
+    """HOST-SIM-1: a shipping host refuses a simulated:true engine."""
+    print("[contract] host refuses simulated engine (HOST-SIM-1)")
+    cli = _make_client(allow_simulated=False).spawn()
+    try:
+        ok = cli.wait_ready()
+        chk(ok is False, "host-sim-1: wait_ready refuses simulated engine")
+        chk((cli.refused or {}).get("code") == "HOST_REFUSED",
+            "host-sim-1: refusal recorded")
+        cli._ended_evt.wait(10)
+        chk(not cli.alive(), "host-sim-1: refused engine is terminated")
+    finally:
+        cli.kill()
+
+
+def test_client_crash_taxonomy():
+    """Section 9: EOF without bye = crash; in-flight/late commands fail
+    ENGINE_EXITED (host-synthesized, never from the wire)."""
+    print("[contract] crash taxonomy + ENGINE_EXITED synthesis")
+    cli = _make_client().spawn()
+    try:
+        chk(cli.wait_ready(), "crash: engine ready")
+        cli.proc.kill()                       # simulated engine crash
+        cli._ended_evt.wait(10)
+        chk(cli.exit_info is not None and cli.exit_info.clean is False,
+            "life.crash-mid-run: EOF without bye classified as crash")
+        a = cli.request("engine.ping")
+        chk(a.get("ok") is False
+            and a["error"]["code"] == "ENGINE_EXITED",
+            "life.crash: post-exit command fails ENGINE_EXITED")
+    finally:
+        cli.kill()
+
+
 def test_legacy_replay():
     """Legacy mode must keep reproducing the C0 goldens byte-for-byte."""
     print("[contract] legacy golden replay (delegates to characterization)")
@@ -379,6 +459,9 @@ if __name__ == "__main__":
     test_heartbeat_and_eof()
     test_instance_lock()
     test_protocol_mismatch()
+    test_engine_client()
+    test_client_refuses_simulated()
+    test_client_crash_taxonomy()
     test_legacy_replay()
     print()
     if FAILS:
