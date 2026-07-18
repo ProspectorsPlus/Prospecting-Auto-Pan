@@ -15,13 +15,22 @@ try:
     import numpy as np
     import mss
     import Quartz
-    from pynput import keyboard
 except ImportError as e:
     sys.exit(
         f"Missing dependency: {e}\n"
         "Install with:\n"
         "  pip3 install pyobjc-framework-Quartz mss numpy pynput --break-system-packages"
     )
+# [C8] pynput is needed only by the ENGINE's hotkey listener. A host app
+# embedding the calibration sensing library must not die at import time
+# in an install whose pip set lacks pynput (ISS-131): the failure moves
+# to make_listener(), which the engine process reaches at startup --
+# still loud, same message, before any input is sent.
+try:
+    from pynput import keyboard
+except ImportError as _pynput_err:
+    keyboard = None
+    _PYNPUT_ERR = _pynput_err
 
 # Use the non-deprecated MSS class when available (falls back on old name).
 _MSS = getattr(mss, "MSS", None) or mss.mss
@@ -92,6 +101,43 @@ def find_window_origin():
     except Exception as e:
         print(f"[window] lookup failed: {e}")
     return None
+
+
+def find_roblox_window():
+    """[C8] The calibration sensing window lookup (protocol 4.15
+    calibration.detectWindow): the Roblox GAME window in PHYSICAL pixels,
+    as the legacy host dict {found:True,x,y,w,h,title} or
+    {found:False,error:...}. Moved verbatim from the mac app's
+    _roblox_rect (prospecting_app.py:1629); same owner-match semantics as
+    find_roblox_rect below, plus the window title and error text."""
+    try:
+        opt = (Quartz.kCGWindowListOptionOnScreenOnly
+               | Quartz.kCGWindowListExcludeDesktopElements)
+        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
+        with _MSS() as sct:
+            mainw = sct.monitors[1]["width"]
+        b = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
+        scale = mainw / b.size.width if b.size.width else 1.0
+        best, area, title = None, 0, ""
+        for w in wins or []:
+            owner = str(w.get("kCGWindowOwnerName", ""))
+            if "roblox" in owner.lower() and "studio" not in owner.lower():
+                bb = w.get("kCGWindowBounds", {})
+                ww, hh = bb.get("Width", 0), bb.get("Height", 0)
+                if ww * hh > area and ww >= 320 and hh >= 240:
+                    area, best, title = ww * hh, bb, owner
+        if best:
+            return {"found": True,
+                    "x": int(best["X"] * scale),
+                    "y": int(best["Y"] * scale),
+                    "w": int(best["Width"] * scale),
+                    "h": int(best["Height"] * scale),
+                    "title": title}
+        return {"found": False,
+                "error": "Roblox window not found. Open Prospecting in "
+                         "Roblox (not minimized) and try again."}
+    except Exception as e:
+        return {"found": False, "error": "Detection failed: %s" % e}
 
 
 def find_roblox_rect():
@@ -211,6 +257,13 @@ _MAC_DIGIT_IDX = {18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7,
 
 
 def make_listener():
+    if keyboard is None:
+        sys.exit(
+            f"Missing dependency: {_PYNPUT_ERR}\n"
+            "Install with:\n"
+            "  pip3 install pyobjc-framework-Quartz mss numpy pynput "
+            "--break-system-packages"
+        )
     mods = {"ctrl": False, "alt": False, "shift": False}
     CTRL = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
     ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
@@ -276,6 +329,10 @@ def make_listener():
 
 def calib_key_labeler(label, stop):
     """Labeler for log_calibration: Ctrl+1..4 tags the sample, Esc stops."""
+    if keyboard is None:
+        sys.exit(f"Missing dependency: {_PYNPUT_ERR}\n"
+                 "Install with:\n"
+                 "  pip3 install pynput --break-system-packages")
     LABELS = {18: "DIRT", 19: "LAVA", 20: "SHAKE", 21: "DIG"}  # vk of 1,2,3,4
     ctrl = {"down": False}
     CTRL_KEYS = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}

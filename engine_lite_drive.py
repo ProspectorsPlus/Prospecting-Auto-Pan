@@ -77,6 +77,32 @@ def drive_legacy(app):
         "legacy: stdin verb round-trip pumped to the app log")
     chk("start/stop" in log,
         "legacy: engine banner drained to the app log with the flush")
+    # C8: the calibration surface -- real Api handlers delegating to the
+    # ENGINE's sensing module in-process (screen reads run engine-side;
+    # a real full-screen grab happens here, zero input is injected)
+    r = api.detect_roblox()
+    chk(isinstance(r, dict) and "found" in r,
+        "legacy: detect_roblox via engine sensing (found=%r)" % r.get("found"))
+    r = api.sample_pixels()
+    chk(isinstance(r, dict) and ("pixels" in r or "error" in r),
+        "legacy: sample_pixels via engine sensing")
+    r = api.calibration_health()
+    chk(isinstance(r, dict) and "ok" in r, "legacy: calibration_health shape")
+    chk("cues" in api.cue_mask_status(), "legacy: cue_mask_status shape")
+    r = api.save_pixels({"DEPOSIT_PIX": [10, 20]})
+    cfg = json.load(open(app.CONFIG_FILE))
+    chk(r == "saved" and cfg.get("DEPOSIT_PIX") == [10, 20]
+        and cfg.get("AUTO_CALIBRATE") is False
+        and os.path.exists(app.CONFIG_FILE + ".bak"),
+        "legacy: save_pixels persists via the engine's atomic writer")
+    r = api.start_overlay_calibrate("DEPOSIT_PIX", "Deposit")
+    chk(r.get("ok") is True and str(getattr(api, "_shot_b64", ""))
+        .startswith("data:image/png"),
+        "legacy: overlay capture -> engine session + preview (real grab)")
+    r = api.overlay_pick(0.5, 0.5)
+    chk(isinstance(r, dict) and ("x" in r or "error" in r),
+        "legacy: overlay_pick reads the engine's stored session frame")
+    api.overlay_cancel()
     chk(api.stop() == "stopped", "legacy: Stop button stops")
     time.sleep(1.0)
     chk(api.proc is None, "legacy: process cleared after stop")

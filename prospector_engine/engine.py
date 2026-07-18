@@ -777,6 +777,7 @@ _plat.bind(sys.modules[__name__])
 get_scale = _plat.get_scale
 find_window_origin = _plat.find_window_origin
 find_roblox_rect = _plat.find_roblox_rect
+find_roblox_window = _plat.find_roblox_window   # [C8] sensing dict shape
 key_down = _plat.key_down
 key_up = _plat.key_up
 mouse_down = _plat.mouse_down
@@ -2796,7 +2797,7 @@ def _finds_ocr_array(arr, factor=3):
                 if callable(getattr(cand, "confidence", None)) \
                 else float(getattr(obs, "confidence", 1.0))
             out.append({"t": str(cand.string()), "cy": cy, "conf": conf,
-                        "h": hh})
+                        "h": hh, "oy": oy})
         except Exception:
             continue
     out.sort(key=lambda d: d["cy"])          # top -> bottom
@@ -6377,17 +6378,48 @@ def _cli_main(argv=None):
         if _IPC_MODE and _IPC_SERVER is not None:
             _IPC_SERVER.main_ended()
     else:
-        arg = _args[0] if _args else ""
-        if arg == "calibrate":
-            calibrate()
-        elif arg == "calibrate-text":
-            calibrate_text()
-        elif arg == "log":
-            log_calibration()
-        elif arg == "monitor":
-            monitor()
-        else:
+        # [C8, ISS-127] Legacy CLI dispatch. --home is honored for the
+        # diagnostic verbs too (log_calibration writes its CSV under the
+        # engine home); an unknown argument REFUSES instead of silently
+        # starting the full input-sending engine (the old fallthrough
+        # meant a typo like 'calibrte' began injecting input). The frozen
+        # re-exec aliases (--run-engine / legacy --run-macro) still run
+        # the engine, exactly as the app's re-exec path requires.
+        global _HOME_DIR
+
+        def _flag_val_legacy(name):
+            if name in _args:
+                _i = _args.index(name)
+                if _i + 1 < len(_args):
+                    return _args[_i + 1]
+            return None
+        _home = _flag_val_legacy("--home")
+        if _home:
+            _ENGINE_HOME = os.path.abspath(_home)
+            _HOME_DIR = _ENGINE_HOME
+            CONFIG_FILE = os.path.join(_ENGINE_HOME,
+                                       "prospecting_config.json")
+        _verbs = {"calibrate": calibrate, "calibrate-text": calibrate_text,
+                  "log": log_calibration, "monitor": monitor}
+        _pos = [a for a in _args
+                if not a.startswith("--") and a != (_home or "")]
+        arg = _pos[0] if _pos else ""
+        _flags = [a for a in _args if a.startswith("--")
+                  and a not in ("--home", "--run-macro", "--run-engine")]
+        if arg in _verbs and not _flags:
+            _verbs[arg]()
+        elif arg == "" and not _flags:
             main()
+        else:
+            _bad = _flags + ([arg] if arg and arg not in _verbs else [])
+            sys.stderr.write(
+                "prospector-engine: unknown argument(s): %s\n"
+                "  verbs: calibrate | calibrate-text | log | monitor"
+                "  (optionally with --home DIR)\n"
+                "  engine mode: no arguments, or --ipc [--home DIR] "
+                "[--host NAME] [--protocol N] [--sim SCENARIO]\n"
+                % " ".join(_bad))
+            sys.exit(2)
 
 
 if __name__ == "__main__":

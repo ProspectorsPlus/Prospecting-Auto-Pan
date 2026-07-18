@@ -239,7 +239,7 @@ def test_commands():
         _send(p, "c-5", "run.resume")
         _send(p, "c-6", "relic.set", {"index": 99, "seconds": 5})
         _send(p, "c-7", "totally.bogus")
-        _send(p, "c-8", "calibration.capture")  # known but pending
+        _send(p, "c-8", "calibration.capture")  # idle-only class, run active
         a, evs = _read_until_acks(p, ["c-4", "c-5", "c-6", "c-7", "c-8"])
         chk(a.get("c-4", {}).get("ok") is False
             and a["c-4"]["error"]["code"] == "BAD_STATE",
@@ -254,8 +254,9 @@ def test_commands():
             and a["c-7"]["error"]["code"] == "UNSUPPORTED",
             "frame.unknown-command: UNSUPPORTED NACK")
         chk(a.get("c-8", {}).get("ok") is False
-            and a["c-8"]["error"]["code"] == "UNSUPPORTED",
-            "cmd.pending-checkpoint: known-but-unserved command NACKs")
+            and a["c-8"]["error"]["code"] == "RUN_ACTIVE",
+            "cmd.calibration.run-active-rejected: sensing class refused "
+            "while a run exists (4.15 idle-only)")
         _send(p, "c-9", "engine.shutdown")
         a, evs = _read_until_acks(p, ["c-9"])
         chk(a.get("c-9", {}).get("ok") is True, "cmd.shutdown.clean: acked")
@@ -590,8 +591,11 @@ def test_settings_commands():
             "settings schema: GEODE_DIGS_TO_FILL default is the engine's "
             "acted-on 1 (architecture 6.1)")
         chk("run.start" in r.get("commands", [])
-            and "calibration.capture" not in r.get("commands", []),
-            "cmd.describe: served commands honest (no unserved verbs)")
+            and "calibration.capture" in r.get("commands", [])
+            and sorted(r.get("commands", []))
+            == sorted(protocol.COMMANDS),
+            "cmd.describe: full v1.0 vocabulary served incl. the 4.15 "
+            "calibration class (C8)")
         chk(r.get("injectable", {}).get("keys")
             == list(protocol.INJECTABLE_KEYS),
             "cmd.describe: injectable release vocabulary published")
@@ -706,6 +710,228 @@ def test_settings_commands():
         cli.kill()
 
 
+def test_calibration_commands():
+    """C8: the 4.15 calibration.* sensing class against the sim's
+    scripted screen (one cmd.calibration-* per verb, session semantics,
+    cueMask op cycle, savePixels derivations)."""
+    print("[contract] calibration sensing class (calibration-screen)")
+    evs = []
+    cli = _make_client("calibration-screen", on_event=evs.append).spawn()
+    try:
+        chk(cli.wait_ready(), "calibration: engine ready")
+        a = cli.request("calibration.pick", {"fx": 0.5, "fy": 0.5})
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_STATE"
+            and a["error"].get("data", {}).get("expected")
+            == "captureSession",
+            "cmd.calibration-pick.no-session: BAD_STATE "
+            "{expected:captureSession}")
+        a = cli.request("calibration.detectWindow")
+        chk(a.get("ok") and a["result"]["found"] is True
+            and a["result"]["rect"] == {"x": 100, "y": 50,
+                                        "w": 1200, "h": 800}
+            and a["result"].get("title") == "Roblox",
+            "cmd.calibration-detect-window: scripted rect + title")
+        a = cli.request("calibration.capture")
+        r = a.get("result") or {}
+        chk(a.get("ok") and r.get("fullW") == 1440 and r.get("fullH") == 900
+            and r.get("imageW", 9999) <= 1600
+            and str(r.get("image", "")).startswith("data:image/png;base64,"),
+            "cmd.calibration-capture: session + <=1600px preview")
+        fx, fy = 310 / 1440.0, 205 / 900.0
+        a = cli.request("calibration.pick", {"fx": fx, "fy": fy})
+        chk(a.get("ok") and a["result"]["rgb"] == [200, 10, 30]
+            and a["result"]["x"] == 310 and a["result"]["y"] == 205,
+            "cmd.calibration-pick: full-res read (red phase)")
+        time.sleep(9)          # virtual clock crosses the 5000 ms mutation
+        a = cli.request("calibration.pick", {"fx": fx, "fy": fy})
+        chk(a.get("ok") and a["result"]["rgb"] == [200, 10, 30],
+            "cmd.calibration-pick: STORED frame, not a fresh grab "
+            "(screen mutated, pick did not)")
+        a = cli.request("calibration.capture")
+        chk(a.get("ok"), "calibration: re-capture replaces the session")
+        a = cli.request("calibration.pick", {"fx": fx, "fy": fy})
+        chk(a.get("ok") and a["result"]["rgb"] == [30, 10, 200],
+            "cmd.calibration-capture: session replaced (blue phase)")
+        a = cli.request("calibration.crop",
+                        {"rect": {"x": 200, "y": 200, "w": 40, "h": 30}})
+        chk(a.get("ok") and a["result"]["w"] == 40 and a["result"]["h"] == 30
+            and str(a["result"]["image"]).startswith("data:image/png"),
+            "cmd.calibration-crop: full-res session crop")
+        a = cli.request("calibration.sampleSaved")
+        r = a.get("result") or {}
+        chk(a.get("ok") and r.get("capFull") is True
+            and r.get("whites", {}).get("DEPOSIT_PIX") is True
+            and r.get("whites", {}).get("PAN_PIX") is True
+            and r.get("whites", {}).get("SHAKE_PIX") is False
+            and r.get("pixels", {}).get("DEPOSIT_PIX")
+            == {"r": 255, "g": 255, "b": 255},
+            "cmd.calibration-sample-saved: 6x6 averages + engine "
+            "thresholds (capFull, whites)")
+        a = cli.request("calibration.detect", {"target": "capacityBar"})
+        r = a.get("result") or {}
+        chk(a.get("ok") and r.get("detected") is True
+            and r["proposal"]["left"] == [402, 740]
+            and r["proposal"]["right"] == [909, 740]
+            and r["proposal"]["rgb"] == [255, 200, 60],
+            "cmd.calibration-detect: capacityBar ends + solid-gold walk")
+        a = cli.request("calibration.detect",
+                        {"target": "cuePrompt", "cue": "PAN_PIX"})
+        r = a.get("result") or {}
+        px = (r.get("proposal") or {}).get("pixel") or [0, 0]
+        chk(a.get("ok") and r.get("detected") is True
+            and 430 <= px[0] <= 689 and 620 <= px[1] <= 643
+            and r["proposal"]["rgb"] == [255, 255, 255],
+            "cmd.calibration-detect: cuePrompt proposal inside the "
+            "scripted prompt")
+        a = cli.request("calibration.detect", {"target": "nope"})
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_PARAMS",
+            "cmd.calibration-detect: unknown target BAD_PARAMS")
+        a = cli.request("calibration.testRead", {"target": "find"})
+        chk(a.get("ok") and a["result"].get("lines")
+            == ["Stone Chunk", "Common", "312 kg"],
+            "cmd.calibration-test-read: find lines via the engine OCR "
+            "path (sim fixtures)")
+        a = cli.request("calibration.testRead", {"target": "earnings"})
+        chk(a.get("ok") and a["result"].get("money") == "1,204,500"
+            and a["result"].get("shards")
+            == "no text found -- widen the region",
+            "cmd.calibration-test-read: earnings parse + exact legacy "
+            "fallback string")
+        # cue-mask editor cycle (status/beginCapture/toggle/reset/save/clear)
+        a = cli.request("calibration.cueMask", {"op": "status"})
+        chk(a.get("ok") and a["result"]["cues"]["PAN"]["has"] is False,
+            "cmd.calibration-cue-mask: status shape, PAN absent")
+        a = cli.request("calibration.cueMask",
+                        {"op": "beginCapture", "cue": "PAN"})
+        r = a.get("result") or {}
+        chk(a.get("ok") and r.get("cueEdit") is True and r.get("px") == 200
+            and str(r.get("image", "")).startswith("data:image/png"),
+            "cmd.calibration-cue-mask: beginCapture white-grid at the "
+            "saved cue pixel (200 px: PAN + neighbouring DEPOSIT blob)")
+        tfx, tfy = 85 / 288.0, 30 / 60.0        # the DEPOSIT blob's centre
+        a = cli.request("calibration.cueMask",
+                        {"op": "toggle", "fx": tfx, "fy": tfy})
+        chk(a.get("ok") and a["result"].get("px") == 100,
+            "cmd.calibration-cue-mask: flood-fill toggle removed the "
+            "neighbour blob (200 -> 100 px)")
+        a = cli.request("calibration.cueMask", {"op": "reset"})
+        chk(a.get("ok") and a["result"].get("px") == 200,
+            "cmd.calibration-cue-mask: reset restores the grid")
+        cli.request("calibration.cueMask",
+                    {"op": "toggle", "fx": tfx, "fy": tfy})
+        a = cli.request("calibration.cueMask", {"op": "save"})
+        chk(a.get("ok") and a["result"].get("px") == 100
+            and str(a["result"].get("preview", "")).startswith("data:image"),
+            "cmd.calibration-cue-mask: save persists the edited mask")
+        chk(any(e["ev"] == "settings.changed"
+                and "CUE_MASKS" in e["data"].get("keys", [])
+                and "CALIB_WINDOW_RECT" in e["data"].get("keys", [])
+                for e in evs),
+            "ev.settings-changed.sources: cueMask save narrates the write")
+        a = cli.request("calibration.cueMask", {"op": "status"})
+        pan = (a.get("result") or {})["cues"]["PAN"]
+        chk(a.get("ok") and pan["has"] is True and pan["px"] == 100
+            and pan["w"] == 10 and pan["h"] == 10,
+            "cmd.calibration-cue-mask: saved mask visible in status")
+        a = cli.request("calibration.health")
+        chk(a.get("ok") and a["result"] == {"ok": True, "reason": ""},
+            "cmd.calibration-health: rect recorded by save matches live")
+        a = cli.request("calibration.cueMask", {"op": "clear", "cue": "PAN"})
+        chk(a.get("ok") and a["result"] == {"cleared": True},
+            "cmd.calibration-cue-mask: clear")
+        # auto: baked default profile placement + no-write unless apply
+        a = cli.request("calibration.auto", {})
+        r = a.get("result") or {}
+        chk(a.get("ok") and r.get("placed") is True and r.get("count") == 6
+            and r["pixels"]["CAP_FULL_PIXEL"] == [896, 754]
+            and r["window"] == {"x": 100, "y": 50, "w": 1200, "h": 800},
+            "cmd.calibration-auto: default-profile placement math")
+        g = cli.request("settings.get", {"keys": ["CAP_BAR_WIDTH"]})
+        chk(g["result"]["values"]["CAP_BAR_WIDTH"] == 440,
+            "cmd.calibration-auto: apply:false wrote nothing")
+        a = cli.request("calibration.auto", {"apply": True})
+        g = cli.request("settings.get",
+                        {"keys": ["CAP_BAR_WIDTH", "AUTO_CALIBRATE"]})
+        chk(a.get("ok") and g["result"]["values"]["CAP_BAR_WIDTH"] == 392
+            and g["result"]["values"]["AUTO_CALIBRATE"] is True,
+            "cmd.calibration-auto: apply persists derivation, does NOT "
+            "flip AUTO_CALIBRATE")
+        # savePixels: interactive derivations + the forced flags
+        a = cli.request("calibration.savePixels",
+                        {"pixels": {"CAP_FULL_PIXEL": [900, 760],
+                                    "CAP_LEFT_PIXEL": [500, 760],
+                                    "DEPOSIT_PIX": [640, 810]}})
+        g = cli.request("settings.get",
+                        {"keys": ["CAP_BAR_WIDTH", "AUTO_CALIBRATE",
+                                  "WINDOW_RELATIVE", "PIXEL_RATIOS",
+                                  "CALIB_WINDOW_RECT"]})
+        v = g["result"]["values"]
+        chk(a.get("ok") and "CAP_BAR_WIDTH" in a["result"]["saved"]
+            and v["CAP_BAR_WIDTH"] == 400
+            and v["AUTO_CALIBRATE"] is False
+            and v["WINDOW_RELATIVE"] is False
+            and v["CALIB_WINDOW_RECT"] == [100, 50, 1200, 800]
+            and v["PIXEL_RATIOS"]["CAP_FULL_PIXEL"] == [0.66667, 0.8875],
+            "cmd.calibration-save-pixels: bar-width + ratio derivations, "
+            "flags forced exactly as the manual save")
+        # import path: explicit ratios/windowRect, NO flag forcing
+        cli.request("settings.set", {"values": {"AUTO_CALIBRATE": True}})
+        a = cli.request("calibration.savePixels",
+                        {"pixels": {"PAN_PIX": [700, 810]},
+                         "ratios": {"PAN_PIX": [0.5, 0.95]},
+                         "windowRect": [1, 2, 3, 4]})
+        g = cli.request("settings.get",
+                        {"keys": ["AUTO_CALIBRATE", "PIXEL_RATIOS",
+                                  "CALIB_WINDOW_RECT"]})
+        v = g["result"]["values"]
+        chk(a.get("ok") and v["AUTO_CALIBRATE"] is True
+            and v["PIXEL_RATIOS"] == {"PAN_PIX": [0.5, 0.95]}
+            and v["CALIB_WINDOW_RECT"] == [1, 2, 3, 4],
+            "cmd.calibration-save-pixels: explicit ratios/windowRect "
+            "(import path) adopted, auto-calibrate flags untouched")
+        chk(any(e["ev"] == "settings.changed"
+                and "PIXEL_RATIOS" in e["data"].get("keys", [])
+                for e in evs),
+            "ev.settings-changed.sources: savePixels narrates the write")
+        cli.shutdown()
+    finally:
+        cli.kill()
+
+
+def test_calibration_capability_gate():
+    """C8: testRead where the platform capability is false -> UNSUPPORTED
+    {capability}; session dropped by run.start (idle-command)."""
+    print("[contract] calibration capability gate + run.start session drop")
+    cli = _make_client("calibration-nocap").spawn()
+    try:
+        chk(cli.wait_ready(), "nocap: engine ready")
+        chk(cli.hello["capabilities"]["findsOcr"] is False,
+            "nocap: sim scripts findsOcr=false (win parity)")
+        a = cli.request("calibration.testRead", {"target": "find"})
+        chk(a.get("ok") is False and a["error"]["code"] == "UNSUPPORTED"
+            and a["error"].get("data", {}).get("capability") == "findsOcr",
+            "cmd.calibration-test-read.unsupported: capability NACK")
+        cli.shutdown()
+    finally:
+        cli.kill()
+    cli = _make_client("idle-command").spawn()
+    try:
+        chk(cli.wait_ready(), "session-drop: engine ready")
+        a = cli.request("calibration.capture")
+        chk(a.get("ok") is True, "session-drop: capture while idle ok")
+        a = cli.request("run.start", {"mode": "auto"})
+        chk(a.get("ok") is True, "session-drop: run started")
+        cli.request("run.stop")
+        a = cli.request("calibration.pick", {"fx": 0.5, "fy": 0.5})
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_STATE"
+            and a["error"].get("data", {}).get("expected")
+            == "captureSession",
+            "cmd.calibration-capture: run.start dropped the session")
+        cli.shutdown()
+    finally:
+        cli.kill()
+
+
 def test_settings_migration_unit():
     """C5: pure migration semantics over the real engine schema."""
     print("[contract] settings migration (in-process, real schema)")
@@ -815,6 +1041,8 @@ if __name__ == "__main__":
     test_run_commands()
     test_mode_derivation()
     test_relic_hotkey_events()
+    test_calibration_commands()
+    test_calibration_capability_gate()
     test_settings_commands()
     test_settings_migration_unit()
     test_schema_too_new_refusal()

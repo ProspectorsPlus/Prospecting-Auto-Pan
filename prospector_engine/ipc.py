@@ -16,10 +16,29 @@ import sys
 import threading
 
 from . import protocol
+from . import sensing as sensing_mod
 from . import settings as settings_mod
 from . import ENGINE_VERSION
 
 HEARTBEAT_S = 2.0
+
+
+def capabilities(po, simulated):
+    """The one capability truth (hello + describe). A sim scenario may
+    override flags via po._SIM_CAPS (simulated engines only -- the world
+    scripts platform capabilities the test host can't reach, e.g. the
+    windows no-Vision testRead refusal on a mac test machine)."""
+    caps = {"findsOcr": sys.platform == "darwin",
+            "earningsOcr": sys.platform == "darwin",
+            "inputLagProbe": hasattr(po, "_LAG"),
+            "fastTravelRecovery": True,
+            "simulated": bool(simulated)}
+    if simulated:
+        try:
+            caps.update(getattr(po, "_SIM_CAPS", None) or {})
+        except Exception:
+            pass
+    return caps
 
 
 def _lock_dir():
@@ -160,11 +179,7 @@ class FrameEmit(object):
     # -- lifecycle --------------------------------------------------------
     def hello(self, home):
         po = self.po
-        caps = {"findsOcr": sys.platform == "darwin",
-                "earningsOcr": sys.platform == "darwin",
-                "inputLagProbe": hasattr(po, "_LAG"),
-                "fastTravelRecovery": True,
-                "simulated": bool(self.simulated)}
+        caps = capabilities(po, self.simulated)
         self._ev("engine.hello", {
             "protocol": {"major": protocol.PROTOCOL_MAJOR,
                          "minor": protocol.PROTOCOL_MINOR},
@@ -325,6 +340,27 @@ class FrameEmit(object):
                                 "text": "Stopped, all inputs released."})
 
 
+class _ServerStore(object):
+    """Sensing's settings access in ipc mode: reads/writes the server's
+    settings document under its lock through the single atomic writer,
+    and narrates every calibration write with settings.changed."""
+
+    def __init__(self, server):
+        self.server = server
+
+    def get(self):
+        with self.server._settings_lock:
+            return dict(self.server.settings_doc)
+
+    def write(self, doc, changed_keys, source):
+        srv = self.server
+        with srv._settings_lock:
+            srv.settings_doc = dict(doc)
+            settings_mod.atomic_write(srv.po.CONFIG_FILE, srv.settings_doc)
+        if changed_keys:
+            srv.emit.settings_changed(sorted(changed_keys), source)
+
+
 class Server(object):
     """Owns the ipc threads. bootstrap() runs the section 11.2 startup
     order and returns the Server, or exits the process on refusal."""
@@ -350,8 +386,10 @@ class Server(object):
         self.settings_schema = settings_mod.schema(po)
         self.settings_doc = {}
         self._settings_lock = threading.Lock()
-        self.served = sorted(c for c in protocol.COMMANDS
-                             if not c.startswith("calibration."))
+        self.served = sorted(protocol.COMMANDS)
+        # C8: the calibration sensing class (protocol 4.15) -- the one
+        # implementation, bound to the server's settings document.
+        self.sensing = sensing_mod.Sensing(po, _ServerStore(self))
 
     # -- startup ----------------------------------------------------------
     # Section 11.2 order: stderr vestibule -> --protocol check -> instance
@@ -502,6 +540,7 @@ class Server(object):
                 return
             self.emit._next_origin = req["origin"]
             self._start_inflight = req
+            self.sensing.drop_session()   # protocol 4.15: run.start drops it
             try:
                 # re-bind config per run start (ipc only): settings.set
                 # while idle/running becomes effective at the next run
@@ -716,11 +755,7 @@ class Server(object):
             self._ack_ok(cid, {"applied": True})
         elif cmd == "engine.describe":
             po_f = source_fingerprint(po.__file__)
-            caps = {"findsOcr": sys.platform == "darwin",
-                    "earningsOcr": sys.platform == "darwin",
-                    "inputLagProbe": hasattr(po, "_LAG"),
-                    "fastTravelRecovery": True,
-                    "simulated": bool(self.emit.simulated)}
+            caps = capabilities(po, self.emit.simulated)
             sch = [{"key": k, "type": s["type"], "default": s["default"],
                     "applies": s["applies"]}
                    for k, s in sorted(self.settings_schema.items())]
@@ -902,13 +937,167 @@ class Server(object):
                     return
             self.emit.settings_changed(sorted(writes), "cmd")
             self._ack_ok(cid, {"active": name})
-        elif cmd in protocol.COMMANDS:
-            self._ack_err(cid, protocol.E_UNSUPPORTED,
-                          "command lands at a later extraction checkpoint",
-                          {"pending": cmd})
+        elif cmd.startswith("calibration.") and cmd in protocol.COMMANDS:
+            self._dispatch_calibration(cid, cmd, params)
         else:
             self._ack_err(cid, protocol.E_UNSUPPORTED,
                           "unknown command", {"cmd": cmd})
+
+    def _dispatch_calibration(self, cid, cmd, params):
+        """The 4.15 sensing class: idle-only (RUN_ACTIVE while any run
+        substate exists), control-thread execution, never touches the run
+        state machine. Session ops without a live capture session NACK
+        BAD_STATE {expected:"captureSession"}."""
+        po = self.po
+        st = po.State
+        if st.running or st.paused:
+            self._ack_err(cid, protocol.E_RUN_ACTIVE,
+                          "idle-only while a run exists",
+                          {"state": self._state()})
+            return
+        s = self.sensing
+        try:
+            if cmd == "calibration.detectWindow":
+                r = s.detect_window()
+                out = {"found": bool(r.get("found"))}
+                if r.get("found"):
+                    out["rect"] = {"x": r["x"], "y": r["y"],
+                                   "w": r["w"], "h": r["h"]}
+                    if r.get("title"):
+                        out["title"] = r["title"]
+                self._ack_ok(cid, out)
+            elif cmd == "calibration.capture":
+                self._ack_ok(cid, s.capture())
+            elif cmd == "calibration.pick":
+                fx, fy = params.get("fx"), params.get("fy")
+                if not isinstance(fx, (int, float)) \
+                        or not isinstance(fy, (int, float)):
+                    self._ack_err(cid, protocol.E_BAD_PARAMS,
+                                  "fx and fy fractions required", None)
+                    return
+                self._ack_ok(cid, s.pick(fx, fy))
+            elif cmd == "calibration.crop":
+                rect = params.get("rect")
+                if not (isinstance(rect, dict)
+                        and all(isinstance(rect.get(k), (int, float))
+                                for k in ("x", "y", "w", "h"))):
+                    self._ack_err(cid, protocol.E_BAD_PARAMS,
+                                  "rect {x,y,w,h} required", None)
+                    return
+                self._ack_ok(cid, s.crop(rect, params.get("zoom")))
+            elif cmd == "calibration.sampleSaved":
+                r = s.sample_saved()
+                if "error" in r:
+                    self._ack_err(cid, protocol.E_INTERNAL, r["error"], None)
+                    return
+                self._ack_ok(cid, r)
+            elif cmd == "calibration.detect":
+                target = params.get("target")
+                if target not in ("capacityBar", "cuePrompt"):
+                    self._ack_err(cid, protocol.E_BAD_PARAMS,
+                                  'target must be "capacityBar" or '
+                                  '"cuePrompt"', {"target": target})
+                    return
+                self._ack_ok(cid, s.detect(target, params.get("cue")))
+            elif cmd == "calibration.testRead":
+                target = params.get("target")
+                if target not in ("find", "earnings"):
+                    self._ack_err(cid, protocol.E_BAD_PARAMS,
+                                  'target must be "find" or "earnings"',
+                                  {"target": target})
+                    return
+                caps = capabilities(po, self.emit.simulated)
+                cap_key = ("findsOcr" if target == "find"
+                           else "earningsOcr")
+                if not caps.get(cap_key):
+                    self._ack_err(cid, protocol.E_UNSUPPORTED,
+                                  "OCR not available on this platform",
+                                  {"capability": cap_key})
+                    return
+                self._ack_ok(cid, s.test_read(target))
+            elif cmd == "calibration.cueMask":
+                self._dispatch_cue_mask(cid, params)
+            elif cmd == "calibration.health":
+                self._ack_ok(cid, s.health())
+            elif cmd == "calibration.auto":
+                self._ack_ok(cid, s.auto(apply=bool(params.get("apply"))))
+            elif cmd == "calibration.savePixels":
+                pixels = params.get("pixels")
+                if not isinstance(pixels, dict):
+                    self._ack_err(cid, protocol.E_BAD_PARAMS,
+                                  "pixels object required", None)
+                    return
+                try:
+                    r = s.save_pixels(pixels, colors=params.get("colors"),
+                                      fr=params.get("fr"),
+                                      ratios=params.get("ratios"),
+                                      window_rect=params.get("windowRect"))
+                except OSError as e:
+                    self._ack_err(cid, protocol.E_IO_ERROR, str(e), None)
+                    return
+                self._ack_ok(cid, r)
+        except sensing_mod.SensingError as e:
+            self._ack_err(cid, e.code, e.message, e.data)
+        except Exception as e:
+            self._ack_err(cid, protocol.E_INTERNAL,
+                          "sensing failure: %r" % (e,), None)
+
+    def _dispatch_cue_mask(self, cid, params):
+        s = self.sensing
+        op = params.get("op")
+        if op == "status":
+            self._ack_ok(cid, s.cue_status())
+        elif op == "beginCapture":
+            cue = params.get("cue")
+            if cue not in sensing_mod.CUE_PIXEL_KEY:
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "cue must be PAN, SHAKE or DEPOSIT",
+                              {"cue": cue})
+                return
+            self._ack_ok(cid, s.cue_begin(cue, params.get("thresh")))
+        elif op == "toggle":
+            fx, fy = params.get("fx"), params.get("fy")
+            if not isinstance(fx, (int, float)) \
+                    or not isinstance(fy, (int, float)):
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "fx and fy fractions required", None)
+                return
+            r = s.cue_toggle(fx, fy)
+            if "error" in r:
+                self._ack_err(cid, protocol.E_BAD_STATE, r["error"],
+                              {"expected": "captureSession"})
+                return
+            self._ack_ok(cid, r)
+        elif op == "reset":
+            r = s.cue_reset()
+            if "error" in r:
+                self._ack_err(cid, protocol.E_BAD_STATE, r["error"],
+                              {"expected": "captureSession"})
+                return
+            self._ack_ok(cid, r)
+        elif op == "save":
+            r = s.cue_save()
+            if "error" in r:
+                data = ({"expected": "captureSession"}
+                        if r["error"] == "not editing" else None)
+                self._ack_err(cid, protocol.E_BAD_STATE, r["error"], data)
+                return
+            self._ack_ok(cid, r)
+        elif op == "clear":
+            cue = params.get("cue")
+            if not isinstance(cue, str) or not cue:
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "cue required", None)
+                return
+            r = s.cue_clear(cue)
+            if not r.get("ok"):
+                self._ack_err(cid, protocol.E_IO_ERROR,
+                              r.get("error", "write failed"), None)
+                return
+            self._ack_ok(cid, {"cleared": True})
+        else:
+            self._ack_err(cid, protocol.E_BAD_PARAMS,
+                          "unknown cueMask op", {"op": op})
 
 
 def bootstrap(po, home, host, requested_protocol, simulated):

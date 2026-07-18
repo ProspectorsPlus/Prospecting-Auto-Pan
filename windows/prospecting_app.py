@@ -135,6 +135,32 @@ try:
 except Exception:
     _EngineClient = None
 
+# Calibration sensing (Phase 04 C8, protocol 4.15 / ISS-137): capture,
+# pixel sampling, detection, OCR test reads and the semantic calibration
+# writes all live in the ENGINE's sensing module now -- this host never
+# reads the screen or derives calibration values itself. The app embeds
+# the one implementation in-process (both ENGINE_IPC states -- the wire
+# verbs serve external hosts and the contract/parity suites); a missing
+# engine dependency degrades to per-call errors instead of killing the
+# app (the legacy per-handler import-guard behavior).
+_SENSING = None
+_SENSING_ERR = None
+
+
+def _sensing():
+    global _SENSING, _SENSING_ERR
+    if _SENSING is None and _SENSING_ERR is None:
+        try:
+            from prospector_engine import engine as _ppe_engine
+            from prospector_engine import sensing as _ppe_sensing
+            _SENSING = _ppe_sensing.Sensing(
+                _ppe_engine, _ppe_sensing.FileStore(CONFIG_FILE))
+        except (Exception, SystemExit) as e:
+            _SENSING_ERR = "engine sensing unavailable: %s" % e
+    if _SENSING is not None:
+        _SENSING.store.path = CONFIG_FILE
+    return _SENSING
+
 # First run when frozen: seed the writable config from the bundled default so the
 # baked-in webhook URL/secret are present without the user touching anything.
 if FROZEN and not os.path.exists(CONFIG_FILE):
@@ -1626,68 +1652,10 @@ def _dpi_aware():
         pass
 
 
-def _roblox_rect():
-    """Find the Roblox GAME window and return its client area in screen pixels.
-
-    Returns {found:True, x, y, w, h, title} (client top-left + size), or
-    {found:False, error:"..."}. We scan all visible top-level windows instead of
-    matching an exact title, because the title isn't always exactly "Roblox" and
-    FindWindow is brittle. The Roblox player's window class is WINDOWSCLIENT; we
-    also accept any visible window whose title contains "Roblox" (but not
-    "Roblox Studio"), and pick the largest such window."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-        _dpi_aware()
-        u = ctypes.windll.user32
-        candidates = []
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        def _cb(hwnd, _lp):
-            try:
-                if not u.IsWindowVisible(hwnd):
-                    return True
-                n = u.GetWindowTextLengthW(hwnd)
-                tbuf = ctypes.create_unicode_buffer(n + 1)
-                u.GetWindowTextW(hwnd, tbuf, n + 1)
-                title = tbuf.value or ""
-                cbuf = ctypes.create_unicode_buffer(256)
-                u.GetClassNameW(hwnd, cbuf, 256)
-                cls = cbuf.value or ""
-                is_rbx = (cls == "WINDOWSCLIENT" or
-                          ("Roblox" in title and "Studio" not in title))
-                if not is_rbx:
-                    return True
-                rc = wintypes.RECT()
-                if not u.GetClientRect(hwnd, ctypes.byref(rc)):
-                    return True
-                w, h = rc.right - rc.left, rc.bottom - rc.top
-                if w < 320 or h < 240:           # skip tiny/loading windows
-                    return True
-                pt = wintypes.POINT(0, 0)
-                u.ClientToScreen(hwnd, ctypes.byref(pt))
-                candidates.append((w * h, {"found": True, "x": int(pt.x),
-                                   "y": int(pt.y), "w": int(w), "h": int(h),
-                                   "title": title or cls}))
-            except Exception:
-                pass
-            return True
-
-        u.EnumWindows(_cb, 0)
-        if candidates:
-            candidates.sort(key=lambda c: c[0], reverse=True)
-            return candidates[0][1]
-        return {"found": False,
-                "error": "Roblox window not found. Open Prospecting in Roblox "
-                         "(not minimized) and try again."}
-    except Exception as e:
-        return {"found": False, "error": "Detection failed: %s" % e}
-
-
-def _window_origin():
-    """Roblox client top-left [x,y] in physical px, or [0,0]. (Back-compat.)"""
-    r = _roblox_rect()
-    return [r["x"], r["y"]] if r.get("found") else [0, 0]
+# _roblox_rect / _window_origin moved engine-side at Phase 04 C8: the
+# window lookup is prospector_engine.platform_mac/platform_win
+# .find_roblox_window() (protocol 4.15 calibration.detectWindow). Zero
+# app-side callers remained after the sensing delegation below.
 
 
 # ============================================================================
@@ -2106,77 +2074,15 @@ class Api:
                 "error": "That code isn't valid. Double-check and try again."}
 
     def save_pixels(self, pixels, colors=None, fr=None):
-        """Save calibrated pixel coordinates; derive CAP_BAR_WIDTH from the bar
-        ends. Only the real macro pixel keys are written (CAP_LEFT_PIXEL is a
-        helper used just to compute the width)."""
-        cur = load_saved()
-        # save EVERY schema pixel key (PIXEL_FIELDS is the source of truth) --
-        # a hardcoded list here silently dropped newly added pixels (the
-        # money/shards corners saved only their COLOR, never their position)
-        _schema_keys = [k for (k, _l, _d, _def) in PIXEL_FIELDS] or [
-            "CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
-            "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
-        for key in _schema_keys:
-            if key != "CAP_LEFT_PIXEL" and key in pixels:
-                cur[key] = [int(pixels[key][0]), int(pixels[key][1])]
-        # remember the left end (for the UI) and compute the bar width
-        if "CAP_LEFT_PIXEL" in pixels:
-            cur["CAP_LEFT_PIXEL"] = [int(pixels["CAP_LEFT_PIXEL"][0]),
-                                     int(pixels["CAP_LEFT_PIXEL"][1])]
-        if "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
-            w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
-            if w > 20:
-                cur["CAP_BAR_WIDTH"] = w
-        # If Roblox is open, record the window rect AND express every calibrated
-        # pixel as a fraction of the game window. Those ratios are what let
-        # Auto-calibrate place the pixels for anyone, at any window size/position.
-        rect = _roblox_rect()
-        if rect.get("found"):
-            cur["CALIB_WINDOW_ORIGIN"] = [rect["x"], rect["y"]]
-            cur["CALIB_WINDOW_RECT"] = [rect["x"], rect["y"], rect["w"], rect["h"]]
-            ratios = cur.get("PIXEL_RATIOS", {}) or {}
-            for key in _schema_keys:
-                if key in cur and isinstance(cur[key], (list, tuple)):
-                    fx = (cur[key][0] - rect["x"]) / float(rect["w"])
-                    fy = (cur[key][1] - rect["y"]) / float(rect["h"])
-                    ratios[key] = [round(fx, 5), round(fy, 5)]
-            cur["PIXEL_RATIOS"] = ratios
-        else:
-            cur["CALIB_WINDOW_ORIGIN"] = _window_origin()
-        if colors:
-            cur["PIXEL_COLORS"] = {k: str(v) for k, v in colors.items()}
-        if fr:
-            if fr.get("FR_OPEN_PIXEL"):
-                cur["FR_OPEN_PIXEL"] = [int(fr["FR_OPEN_PIXEL"][0]),
-                                        int(fr["FR_OPEN_PIXEL"][1])]
-            if fr.get("FR_SCAN_X") is not None:
-                cur["FR_SCAN_X"] = int(fr["FR_SCAN_X"])
-            if fr.get("FR_TEXT_RGB"):
-                cur["FR_TEXT_RGB"] = [int(c) for c in fr["FR_TEXT_RGB"][:3]]
-            if fr.get("SR_TEXT_RGB"):
-                cur["SR_TEXT_RGB"] = [int(c) for c in fr["SR_TEXT_RGB"][:3]]
-            if fr.get("AUTOPAN_BTN_PIXEL"):
-                cur["AUTOPAN_BTN_PIXEL"] = [int(fr["AUTOPAN_BTN_PIXEL"][0]),
-                                            int(fr["AUTOPAN_BTN_PIXEL"][1])]
-            if fr.get("AUTOPAN_ON_RGB"):
-                cur["AUTOPAN_ON_RGB"] = [int(c) for c in fr["AUTOPAN_ON_RGB"][:3]]
-            if fr.get("AUTOPAN_OFF_RGB"):
-                cur["AUTOPAN_OFF_RGB"] = [int(c) for c in fr["AUTOPAN_OFF_RGB"][:3]]
-            if fr.get("FR_BOX_TOP") is not None:
-                cur["FR_BOX_TOP"] = int(fr["FR_BOX_TOP"])
-            if fr.get("FR_BOX_BOTTOM") is not None:
-                cur["FR_BOX_BOTTOM"] = int(fr["FR_BOX_BOTTOM"])
-            if fr.get("FR_HOME_PIXEL"):
-                cur["FR_HOME_PIXEL"] = [int(fr["FR_HOME_PIXEL"][0]),
-                                        int(fr["FR_HOME_PIXEL"][1])]
-        # You have now calibrated for YOUR screen, so the saved pixels are
-        # authoritative -- stop the macro re-deriving them from the built-in
-        # ratio profile at startup (that profile is the dev's screen and is what
-        # made digs miss after a good calibration).
-        cur["AUTO_CALIBRATE"] = False
-        cur["WINDOW_RELATIVE"] = False
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
+        """Save calibrated pixel coordinates. [Phase 04 C8] The semantic
+        calibration write -- pixel persistence, CAP_BAR_WIDTH derivation,
+        window rect/origin + PIXEL_RATIOS capture, the FR/autopan group
+        and the AUTO_CALIBRATE / WINDOW_RELATIVE force -- runs in the
+        engine's one implementation (protocol 4.15 savePixels)."""
+        s = _sensing()
+        if s is None:
+            return _SENSING_ERR
+        s.save_pixels(pixels, colors=colors, fr=fr)
         return "saved"
 
     # ---- calibration export / import ----
@@ -2227,7 +2133,6 @@ class Api:
             data = json.loads(text)
         except Exception:
             return {"ok": False, "error": "Not a valid calibration file."}
-        cur = load_saved()
         px = data.get("pixels") or {}
         keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
                 "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
@@ -2235,26 +2140,29 @@ class Api:
         for k in keys:
             v = px.get(k)
             if isinstance(v, (list, tuple)) and len(v) == 2:
-                cur[k] = [int(v[0]), int(v[1])]
-                applied[k] = cur[k]
+                applied[k] = [int(v[0]), int(v[1])]
         if not applied:
             return {"ok": False, "error": "No pixel data in that file."}
-        if isinstance(data.get("PIXEL_RATIOS"), dict):
-            cur["PIXEL_RATIOS"] = data["PIXEL_RATIOS"]
-        if isinstance(data.get("CALIB_WINDOW_RECT"), (list, tuple)):
-            cur["CALIB_WINDOW_RECT"] = list(data["CALIB_WINDOW_RECT"])
-        if isinstance(data.get("PIXEL_COLORS"), dict):
-            cur["PIXEL_COLORS"] = {k: str(v) for k, v in data["PIXEL_COLORS"].items()}
-        if "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
-            w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
-            if w > 20:
-                cur["CAP_BAR_WIDTH"] = w
-        elif data.get("CAP_BAR_WIDTH"):
-            cur["CAP_BAR_WIDTH"] = int(data["CAP_BAR_WIDTH"])
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
+        # [Phase 04 C8] the import-path derivations (explicit ratio/rect
+        # adoption, CAP_BAR_WIDTH from the merged ends or the file value,
+        # colors) run in the engine's one calibration writer. Import does
+        # NOT force the auto-calibrate flags -- shipped semantics.
+        ratios = (data["PIXEL_RATIOS"]
+                  if isinstance(data.get("PIXEL_RATIOS"), dict) else None)
+        wrect = (list(data["CALIB_WINDOW_RECT"])
+                 if isinstance(data.get("CALIB_WINDOW_RECT"), (list, tuple))
+                 else None)
+        colors = (data["PIXEL_COLORS"]
+                  if isinstance(data.get("PIXEL_COLORS"), dict) else None)
+        s.save_pixels(applied, colors=colors, ratios=ratios,
+                      window_rect=wrect,
+                      cap_bar_width_fallback=data.get("CAP_BAR_WIDTH"),
+                      derive_from_window=False)
         return {"ok": True, "pixels": applied,
-                "colors": cur.get("PIXEL_COLORS", {})}
+                "colors": load_saved().get("PIXEL_COLORS", {})}
 
     def run_log(self, name):
         # Return the saved full log for a past run (run_logs/<name>).
@@ -2493,186 +2401,74 @@ class Api:
 
     # ---- window detection + auto-calibrate ----
     def detect_roblox(self):
-        """For the UI: report whether the Roblox window is found and where."""
-        return _roblox_rect()
+        """For the UI: report whether the Roblox window is found and where.
+        [Phase 04 C8] engine-side lookup (4.15 detectWindow)."""
+        s = _sensing()
+        if s is None:
+            return {"found": False, "error": _SENSING_ERR}
+        return s.detect_window()
 
     def auto_calibrate(self):
         """Place every pixel automatically from the detected Roblox window using
-        the saved ratio profile. No clicking required. Returns a result the UI
-        can show, including a clear message if something's missing."""
-        rect = _roblox_rect()
+        the saved ratio profile. No clicking required. [Phase 04 C8] the
+        placement math runs engine-side (4.15 auto); persistence keeps the
+        manual-save semantics exactly as before (via save_pixels)."""
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
+        rect = s.detect_window()
         if not rect.get("found"):
             return {"ok": False, "error": rect.get("error", "Roblox not found")}
-        cur = load_saved()
-        ratios = cur.get("PIXEL_RATIOS") or PIXEL_RATIOS_DEFAULT
-        if not ratios:
+        r = s.auto(apply=False)
+        if not r.get("placed") or not r.get("pixels"):
             return {"ok": False, "needs_manual": True, "window": rect,
                     "error": "No calibration profile yet. Calibrate the spots "
                              "once with Roblox open (just this first time) and "
                              "Auto-calibrate will handle it from then on."}
-        pixels = {}
-        for key, (fx, fy) in ratios.items():
-            pixels[key] = [int(round(rect["x"] + fx * rect["w"])),
-                           int(round(rect["y"] + fy * rect["h"]))]
+        pixels = r["pixels"]
         # persist them exactly like a manual save (incl. bar width)
         self.save_pixels(pixels)
         return {"ok": True, "pixels": pixels, "window": rect,
                 "count": len(pixels)}
 
     def sample_pixels(self):
-        """Live readout for the Calibrate 'Test detection' tool: sample every
-        calibrated pixel and say whether the capacity reads FULL and whether the
-        cue pixels are visible -- using the SAME thresholds as the macro so what
-        you see here is what the macro sees."""
-        try:
-            import mss
-            import numpy as np
-        except Exception as e:
-            return {"error": str(e)}
-        cur = load_saved()
-        keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
-                "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
-        out = {}
-        try:
-            with mss.mss() as sct:
-                m = sct.monitors[0]
-                L, T = m["left"], m["top"]
-                Rg, Bg = L + m["width"], T + m["height"]
-                for k in keys:
-                    v = cur.get(k)
-                    if not (isinstance(v, (list, tuple)) and len(v) == 2):
-                        continue
-                    x, y = int(v[0]), int(v[1])
-                    bx = min(max(x - 3, L), Rg - 6)
-                    by = min(max(y - 3, T), Bg - 6)
-                    img = np.asarray(sct.grab(
-                        {"left": bx, "top": by, "width": 6, "height": 6}))[:, :, :3]
-                    b, g, r = [int(c) for c in img.reshape(-1, 3).mean(0)]
-                    out[k] = {"r": r, "g": g, "b": b}
-        except Exception as e:
-            return {"error": str(e)}
-
-        def white(p):
-            return p["r"] >= 175 and p["g"] >= 175 and p["b"] >= 175
-
-        def yellow(p):
-            return (p["r"] >= 140 and p["g"] >= 140
-                    and p["b"] <= min(p["r"], p["g"]) - 45)
-        res = {"pixels": out}
-        if "CAP_FULL_PIXEL" in out:
-            res["cap_full"] = yellow(out["CAP_FULL_PIXEL"])
-        for k in ("DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX"):
-            if k in out:
-                res[k + "_white"] = white(out[k])
+        """Live readout for the Calibrate 'Test detection' tool. [Phase 04
+        C8] sampling runs engine-side with the ENGINE's own is_white /
+        is_yellow thresholds (4.15 sampleSaved -- the same 175/140/45
+        values this handler previously inlined); this maps the verb
+        result back onto the legacy JS shape."""
+        s = _sensing()
+        if s is None:
+            return {"error": _SENSING_ERR}
+        r = s.sample_saved()
+        if "error" in r:
+            return {"error": r["error"]}
+        res = {"pixels": r.get("pixels", {})}
+        if "capFull" in r:
+            res["cap_full"] = r["capFull"]
+        for k, v in (r.get("whites") or {}).items():
+            res[k + "_white"] = v
         return res
 
     def test_find_read(self):
         """OCR the find pop-up region ONCE and show raw lines + what parsed,
-        instant calibration check, no run needed."""
-        cur = load_saved()
-        tl, br = cur.get("FIND_TL_PIXEL") or [0, 0], cur.get("FIND_BR_PIXEL") or [0, 0]
-        try:
-            x0, y0, x1, y1 = int(tl[0]), int(tl[1]), int(br[0]), int(br[1])
-        except Exception:
-            return {"error": "bad corners"}
-        if x1 - x0 < 20 or y1 - y0 < 10:
-            return {"error": "region not calibrated (pick both corners)"}
-        try:
-            import mss, mss.tools, numpy as np
-            from Foundation import NSData
-            import Vision
-            with mss.mss() as sct:
-                img = sct.grab({"left": x0, "top": y0,
-                                "width": x1 - x0, "height": y1 - y0})
-            arr = np.frombuffer(img.rgb, dtype=np.uint8).reshape(
-                img.height, img.width, 3)
-            big = arr.repeat(3, axis=0).repeat(3, axis=1)
-            png = mss.tools.to_png(big.tobytes(), (img.width * 3, img.height * 3))
-            data = NSData.dataWithBytes_length_(png, len(png))
-            handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(data, None)
-            req = Vision.VNRecognizeTextRequest.alloc().init()
-            try:
-                req.setRecognitionLevel_(0); req.setUsesLanguageCorrection_(False)
-            except Exception:
-                pass
-            handler.performRequests_error_([req], None)
-            raw = []
-            for obs in (req.results() or []):
-                try:
-                    raw.append(str(obs.topCandidates_(1)[0].string()))
-                except Exception:
-                    pass
-            return {"lines": raw}
-        except ImportError as e:
-            return {"error": "missing package: %s" % e}
-        except Exception as e:
-            return {"error": "error: %r" % (e,)}
+        instant calibration check, no run needed. [Phase 04 C8] the grab +
+        OCR run through the ENGINE's Vision path (4.15 testRead) -- this
+        removed the app-side duplicate of the engine's finds OCR."""
+        s = _sensing()
+        if s is None:
+            return {"error": _SENSING_ERR}
+        return s.test_read("find")
 
     def test_earn_read(self):
         """Run the earnings OCR ONCE on the calibrated money/shards regions
-        and return what it sees -- instant verification, no run needed."""
-        cur = load_saved()
-        out = {}
-        for name, tlk, brk in (("money", "MONEY_TL_PIXEL", "MONEY_BR_PIXEL"),
-                               ("shards", "SHARDS_TL_PIXEL", "SHARDS_BR_PIXEL")):
-            tl, br = cur.get(tlk) or [0, 0], cur.get(brk) or [0, 0]
-            try:
-                x0, y0, x1, y1 = int(tl[0]), int(tl[1]), int(br[0]), int(br[1])
-            except Exception:
-                out[name] = "bad corners"
-                continue
-            if x1 - x0 < 12 or y1 - y0 < 8:
-                out[name] = "region not calibrated (pick both corners)"
-                continue
-            try:
-                import mss, mss.tools
-                import numpy as np
-                with mss.mss() as sct:
-                    img = sct.grab({"left": x0, "top": y0,
-                                    "width": x1 - x0, "height": y1 - y0})
-                arr = np.frombuffer(img.rgb, dtype=np.uint8).reshape(
-                    img.height, img.width, 3)
-                big = arr.repeat(3, axis=0).repeat(3, axis=1)
-                png = mss.tools.to_png(big.tobytes(),
-                                       (img.width * 3, img.height * 3))
-                from Foundation import NSData
-                import Vision
-                data = NSData.dataWithBytes_length_(png, len(png))
-                handler = Vision.VNImageRequestHandler.alloc(
-                    ).initWithData_options_(data, None)
-                req = Vision.VNRecognizeTextRequest.alloc().init()
-                try:
-                    req.setRecognitionLevel_(0)
-                    req.setUsesLanguageCorrection_(False)
-                except Exception:
-                    pass
-                handler.performRequests_error_([req], None)
-                seen, best, best_y = [], None, None
-                for obs in (req.results() or []):
-                    try:
-                        s = str(obs.topCandidates_(1)[0].string())
-                    except Exception:
-                        continue
-                    seen.append(s)
-                    if "+" in s:
-                        continue
-                    digs = "".join(c for c in s if c.isdigit())
-                    if not digs:
-                        continue
-                    y = float(obs.boundingBox().origin.y)
-                    if best is None or y < best_y:
-                        best, best_y = int(digs), y
-                if best is not None:
-                    out[name] = "{:,}".format(best)
-                elif seen:
-                    out[name] = "saw text but no number: " + " | ".join(seen[:3])
-                else:
-                    out[name] = "no text found -- widen the region"
-            except ImportError as e:
-                out[name] = "missing package: %s" % e
-            except Exception as e:
-                out[name] = "error: %r" % (e,)
-        return out
+        and return what it sees -- instant verification, no run needed.
+        [Phase 04 C8] engine-side OCR (4.15 testRead), exact legacy
+        fallback strings preserved in the one implementation."""
+        s = _sensing()
+        if s is None:
+            return {"money": _SENSING_ERR, "shards": _SENSING_ERR}
+        return s.test_read("earnings")
 
     def webhook_get(self):
         try:
@@ -2877,31 +2673,13 @@ class Api:
         return "ok"
 
     def calibration_health(self):
-        """Compare the LIVE Roblox window to the size it was calibrated at. If it
-        changed, pixel masks misalign and pixels may need re-setting -> the app
-        shows a red 'recalibrate' flag with the reason."""
-        cur = load_saved()
-        cal = cur.get("CALIB_WINDOW_RECT")
-        if not (isinstance(cal, (list, tuple)) and len(cal) == 4 and cal[2] and cal[3]):
+        """Compare the LIVE Roblox window to the size it was calibrated at.
+        [Phase 04 C8] the check + exact message composition run
+        engine-side (4.15 health)."""
+        s = _sensing()
+        if s is None:
             return {"ok": True, "reason": ""}
-        rect = _roblox_rect()
-        if not rect.get("found"):
-            return {"ok": True, "reason": ""}
-        cw, ch = int(cal[2]), int(cal[3])
-        if abs(rect["w"] - cw) <= 4 and abs(rect["h"] - ch) <= 4:
-            return {"ok": True, "reason": ""}
-        adv = bool(cur.get("ADVANCED_CUES"))
-        auto = bool(cur.get("AUTO_CALIBRATE", True))
-        parts = ["The Roblox window is %d\u00d7%d now but you calibrated at %d\u00d7%d."
-                 % (rect["w"], rect["h"], cw, ch)]
-        if adv:
-            parts.append("Advanced cue masks are OFF until you re-capture them "
-                         "(Calibrate \u2192 Advanced cue matching).")
-        if not auto:
-            parts.append("Re-calibrate the pixels so detection lines up.")
-        elif not adv:
-            parts.append("Pixels auto-adapt, but re-check calibration if detection seems off.")
-        return {"ok": False, "reason": " ".join(parts)}
+        return s.health()
 
     def set_advanced_cues(self, on):
         cur = load_saved()
@@ -3428,111 +3206,27 @@ class Api:
 
     # ---- calibrate: wait for the user to mark a spot, capture its x/y + colour
     def cue_mask_status(self):
-        cur = load_saved()
-        masks = cur.get("CUE_MASKS") or {}
-        out = {"advanced": bool(cur.get("ADVANCED_CUES")),
-               "masks_only": bool(cur.get("CUE_MASKS_ONLY")), "cues": {}}
-        for cue in ("PAN", "SHAKE", "DEPOSIT"):
-            m = masks.get(cue) or {}
-            out["cues"][cue] = {"has": bool(m.get("bits")),
-                                "px": int(m.get("px", 0)),
-                                "w": int(m.get("w", 0)), "h": int(m.get("h", 0)),
-                                "preview": m.get("preview", "")}
-        return out
+        s = _sensing()
+        if s is None:
+            return {"advanced": False, "masks_only": False, "cues": {}}
+        return s.cue_status()
 
     def clear_cue_mask(self, cue):
-        cur = load_saved()
-        masks = cur.get("CUE_MASKS") or {}
-        if cue in masks:
-            del masks[cue]
-            cur["CUE_MASKS"] = masks
-            try:
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
-            except OSError as e:
-                return {"ok": False, "error": str(e)}
-        return {"ok": True}
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
+        return s.cue_clear(cue)
 
     def capture_cue_mask(self, cue, thresh=None):
-        """ADVANCED CALIBRATION: grab a generous box around the calibrated cue
-        pixel, auto-select every white pixel of the cue word, and store that exact
-        shape as the cue's mask (spoof-proof matching). Needs Roblox open with the
-        cue on screen."""
-        pk = {"PAN": "PAN_PIX", "SHAKE": "SHAKE_PIX", "DEPOSIT": "DEPOSIT_PIX"}.get(cue)
-        if not pk:
-            return {"ok": False, "error": "Unknown cue."}
-        try:
-            import numpy as np, mss, base64
-        except Exception as e:
-            return {"ok": False, "error": "Image libraries missing: %s" % e}
-        cur = load_saved()
-        px = cur.get(pk)
-        if not (isinstance(px, (list, tuple)) and len(px) == 2):
-            return {"ok": False, "error": "Calibrate the %s pixel first (click it "
-                    "on the Calibrate page), then capture." % cue}
-        rect = _roblox_rect()
-        if not rect.get("found"):
-            return {"ok": False, "error": rect.get("error", "Roblox window not found.")}
-        x, y, w, h = rect["x"], rect["y"], rect["w"], rect["h"]
-        gw = max(90, int(0.20 * w))            # wide enough for 'Collect Deposit'
-        gh = max(26, int(0.06 * h))
-        cx, cy = int(px[0]), int(px[1])
-        left, top = cx - gw // 2, cy - gh // 2
-        try:
-            with mss.mss() as sct:
-                img = np.asarray(sct.grab({"left": left, "top": top,
-                                           "width": gw, "height": gh}))[:, :, :3].astype(np.int16)
-        except Exception as e:
-            return {"ok": False, "error": "Capture failed: %s" % e}
-        b, g, r = img[:, :, 0], img[:, :, 1], img[:, :, 2]
-        lo = np.minimum(np.minimum(r, g), b)
-        hi = np.maximum(np.maximum(r, g), b)
-        tmin = int(thresh) if thresh else int(cur.get("CUE_WHITE_MIN", 160))
-        white = (lo >= tmin) & ((hi - lo) <= 70)
-        ys, xs = np.where(white)
-        if len(xs) < 12:
-            return {"ok": False, "error": "No white cue text found there. Make sure "
-                    "the %s cue is visible on screen, then capture." % cue}
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
-        x0 = max(0, x0 - 1); y0 = max(0, y0 - 1)
-        x1 = min(gw, x1 + 1); y1 = min(gh, y1 + 1)
-        mask = white[y0:y1, x0:x1]
-        mw, mh = int(x1 - x0), int(y1 - y0)
-        bits = np.packbits(mask.astype(np.uint8).ravel())
-        b64 = base64.b64encode(bits.tobytes()).decode("ascii")
-        abs_left, abs_top = left + x0, top + y0
-        ratio = [round((abs_left - x) / float(w), 5),
-                 round((abs_top - y) / float(h), 5),
-                 round(mw / float(w), 6), round(mh / float(h), 6)]
-        masks = cur.get("CUE_MASKS") or {}
-        masks[cue] = {"ratio": ratio, "w": mw, "h": mh, "bits": b64,
-                      "px": int(mask.sum())}
-        cur["CUE_MASKS"] = masks
-        cur["CALIB_WINDOW_RECT"] = [x, y, w, h]
-        try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cur, f, indent=2)
-        except OSError as e:
-            return {"ok": False, "error": str(e)}
-        # zoomed preview: the exact captured region, background DIMMED and every
-        # selected (masked) pixel painted bright green, so the user can SEE the
-        # letter shape that was captured and confirm it looks like the cue word.
-        preview = ""
-        try:
-            import mss.tools, base64 as _b64
-            tight = img[y0:y1, x0:x1].clip(0, 255).astype(np.uint8)   # BGR
-            prev = (tight.astype(np.float32) * 0.30).astype(np.uint8)
-            prev[mask] = np.array([40, 235, 40], np.uint8)            # BGR green
-            zoom = max(2, min(9, 380 // max(1, mw)))
-            big = prev.repeat(zoom, axis=0).repeat(zoom, axis=1)
-            rgb = np.ascontiguousarray(big[:, :, ::-1])               # BGR -> RGB
-            png = mss.tools.to_png(rgb.tobytes(), (rgb.shape[1], rgb.shape[0]))
-            preview = "data:image/png;base64," + _b64.b64encode(png).decode("ascii")
-        except Exception:
-            preview = ""
-        return {"ok": True, "cue": cue, "px": int(mask.sum()),
-                "w": mw, "h": mh, "preview": preview}
+        """ADVANCED CALIBRATION: one-shot capture of the cue word around the
+        calibrated cue pixel. [Phase 04 C8] the grab, white-select, mask
+        packing and persistence run engine-side (the sensing module's
+        one-shot path; superseded in the UI by the interactive overlay
+        flow but preserved as a shipped surface)."""
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
+        return s.capture_cue_mask(cue, thresh)
 
     def calibrate_capture(self):
         """Wait for the user to mark a spot, then return its position + colour.
@@ -3897,27 +3591,20 @@ class Api:
 
     def start_overlay_calibrate(self, key, label=""):
         """Open a full-screen overlay (a snapshot of your screen). Click the
-        target pixel, see a marker + colour + coords, Confirm to save."""
+        target pixel, see a marker + colour + coords, Confirm to save.
+        [Phase 04 C8] the frame lives in the ENGINE's capture session
+        (4.15 capture); this host keeps only overlay-window state and the
+        stride-downsampled preview the engine hands back."""
         global _overlay
+        s = _sensing()
+        if s is None:
+            return {"error": _SENSING_ERR}
         try:
-            import mss
-            import mss.tools
-            import base64
-            import numpy as np
+            cap = s.capture()
         except Exception as e:
             return {"error": str(e)}
-        try:
-            with mss.mss() as sct:
-                raw = sct.grab(sct.monitors[1])
-            self._shot = np.asarray(raw)
-            self._shot_h, self._shot_w = self._shot.shape[0], self._shot.shape[1]
-            step = max(1, int(round(self._shot_w / 1600.0)))
-            disp = self._shot[::step, ::step]
-            rgb = disp[:, :, (2, 1, 0)].tobytes()
-            png = mss.tools.to_png(rgb, (disp.shape[1], disp.shape[0]))
-            self._shot_b64 = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-        except Exception as e:
-            return {"error": str(e)}
+        self._shot_w, self._shot_h = cap["fullW"], cap["fullH"]
+        self._shot_b64 = cap["image"]
         self._overlay_key = key
         self._overlay_label = label or key
         self._overlay_pending = None
@@ -3970,10 +3657,12 @@ class Api:
             return d
         if key and str(key).startswith("CUEMASK:"):
             d["cue_mode"] = getattr(self, "_cm_mode", "locate")
-            if d["cue_mode"] == "edit" and getattr(self, "_cm_mask", None) is not None:
+            if d["cue_mode"] == "edit":
                 try:
-                    d["cue_img"] = self._cm_render()
-                    d["cue_px"] = int(self._cm_mask.sum())
+                    st = _sensing().cue_edit_state()
+                    if st:
+                        d["cue_img"] = st["image"]
+                        d["cue_px"] = st["px"]
                 except Exception:
                     pass
             return d
@@ -3986,6 +3675,9 @@ class Api:
         return d
 
     def overlay_pick(self, fx, fy):
+        # [Phase 04 C8] all pixel math runs on the engine's stored session
+        # frame (4.15 pick / the cue editor's white-grid) -- never a fresh
+        # host grab.
         key = getattr(self, "_overlay_key", None)
         if key and str(key).startswith("REGION:"):
             return {"error": "region mode"}   # region uses drag, not clicks
@@ -3996,53 +3688,40 @@ class Api:
                 w, h = self._shot_w, self._shot_h
                 cx = max(0, min(w - 1, int(round(float(fx) * w))))
                 cy = max(0, min(h - 1, int(round(float(fy) * h))))
-                white = self._cm_white_grid(cx, cy)
-                if white is None or int(white.sum()) < 12:
+                r = _sensing().cue_begin(self._cm_cue, self._cm_thresh,
+                                         at=(cx, cy))
+                if not r.get("cueEdit"):
                     return {"error": "No white cue text there -- click right on the cue word."}
-                self._cm_mask = white.copy()
                 self._cm_mode = "edit"
-                return {"cue_edit": True, "img": self._cm_render(),
-                        "px": int(self._cm_mask.sum())}
+                return {"cue_edit": True, "img": r["image"], "px": r["px"]}
             except Exception as e:
                 return {"error": str(e)}
         try:
-            w, h = self._shot_w, self._shot_h
-            x = max(0, min(w - 1, int(round(float(fx) * w))))
-            y = max(0, min(h - 1, int(round(float(fy) * h))))
-            px = self._shot[y, x]
-            b, g, r = int(px[0]), int(px[1]), int(px[2])
-            hexv = "#%02x%02x%02x" % (r, g, b)
-            self._overlay_pending = {"x": x, "y": y, "r": r, "g": g, "b": b, "hex": hexv}
+            r = _sensing().pick(fx, fy)
+            rr, gg, bb = r["rgb"]
+            self._overlay_pending = {"x": r["x"], "y": r["y"], "r": rr,
+                                     "g": gg, "b": bb, "hex": r["hex"]}
             return self._overlay_pending
         except Exception as e:
             return {"error": str(e)}
 
     def _region_preview_save(self, base, reg):
-        """Crop the confirmed drag box out of the stored screenshot and stash a
-        zoomed PNG preview (+ pixel size) in REGION_PREVIEWS[base], so the
-        calibration rows can show exactly what was captured (like cue masks)."""
+        """Stash a zoomed PNG preview of the confirmed drag box in
+        REGION_PREVIEWS[base]. [Phase 04 C8] the crop + zoom run on the
+        engine's session frame (4.15 crop); the preview blob itself stays
+        a HOST-only key (protocol: REGION_PREVIEWS is setOpaque-class,
+        never read by the engine)."""
         try:
-            import numpy as np, base64, mss.tools
-            arr = getattr(self, "_shot", None)
             tl, br = reg.get("tl"), reg.get("br")
-            if arr is None or not tl or not br:
+            if not tl or not br:
                 return
             x0, y0 = int(min(tl[0], br[0])), int(min(tl[1], br[1]))
             x1, y1 = int(max(tl[0], br[0])), int(max(tl[1], br[1]))
-            h, w = arr.shape[0], arr.shape[1]
-            x0 = max(0, min(w - 1, x0)); x1 = max(x0 + 1, min(w, x1))
-            y0 = max(0, min(h - 1, y0)); y1 = max(y0 + 1, min(h, y1))
-            crop = arr[y0:y1, x0:x1, :3]
-            cw, ch = int(x1 - x0), int(y1 - y0)
-            zoom = max(1, min(6, 520 // max(1, cw)))
-            if zoom > 1:
-                crop = crop.repeat(zoom, 0).repeat(zoom, 1)
-            rgb = np.ascontiguousarray(crop[:, :, ::-1])
-            png = mss.tools.to_png(rgb.tobytes(), (rgb.shape[1], rgb.shape[0]))
-            prev = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+            r = _sensing().crop({"x": x0, "y": y0,
+                                 "w": x1 - x0, "h": y1 - y0})
             cur = load_saved()
             rp = cur.get("REGION_PREVIEWS") or {}
-            rp[base] = {"preview": prev, "w": cw, "h": ch}
+            rp[base] = {"preview": r["image"], "w": r["w"], "h": r["h"]}
             cur["REGION_PREVIEWS"] = rp
             with open(CONFIG_FILE, "w") as f:
                 json.dump(cur, f, indent=2)
@@ -4070,7 +3749,7 @@ class Api:
             return {"ok": True}
         if key and str(key).startswith("CUEMASK:"):
             try:
-                self._cm_save()
+                _sensing().cue_save()
             except Exception:
                 pass
             self._close_overlay()
@@ -4122,28 +3801,24 @@ class Api:
     def start_cue_mask_capture(self, cue, thresh=None):
         """Open the calibration OVERLAY to capture a cue mask: first LOCATE (click
         the cue word on the game), then EDIT (click each letter / the mouse to
-        include or exclude it), then Confirm. Same visual system as guided
-        calibration."""
+        include or exclude it), then Confirm. [Phase 04 C8] the frame goes
+        into the ENGINE's capture session; locate/edit pixel math runs
+        engine-side (4.15 cueMask); this host keeps overlay state."""
         global _overlay
         if cue not in ("PAN", "SHAKE", "DEPOSIT"):
             return {"ok": False, "error": "Unknown cue."}
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
         try:
-            import base64, mss.tools
-            arr = self._grab_full()
+            cap = s.capture()
         except Exception as e:
             return {"ok": False, "error": str(e)}
         self._cm_cue = cue
-        self._cm_shot = arr
         self._cm_thresh = int(thresh) if thresh else 160
         self._cm_mode = "locate"
-        self._cm_box = self._cm_white = self._cm_mask = self._cm_rgb = None
-        self._shot = arr
-        self._shot_h, self._shot_w = arr.shape[0], arr.shape[1]
-        step = max(1, int(round(self._shot_w / 1600.0)))
-        disp = arr[::step, ::step]
-        png = mss.tools.to_png(disp[:, :, (2, 1, 0)].tobytes(),
-                               (disp.shape[1], disp.shape[0]))
-        self._shot_b64 = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        self._shot_w, self._shot_h = cap["fullW"], cap["fullH"]
+        self._shot_b64 = cap["image"]
         self._overlay_key = "CUEMASK:" + cue
         names = {"PAN": "Pan", "SHAKE": "Shake", "DEPOSIT": "Collect Deposit"}
         self._overlay_label = "Click on the \u201c%s\u201d cue word" % names[cue]
@@ -4155,128 +3830,25 @@ class Api:
             return {"ok": False, "error": str(e)}
         return {"ok": True}
 
-    def _cm_white_grid(self, cx, cy):
-        """Grab a box around (cx,cy) on the stored shot; store the white grid +
-        box RGB. Box is generous so a whole word + mouse fits."""
-        import numpy as np
-        arr = self._cm_shot
-        H, W = arr.shape[0], arr.shape[1]
-        rect = _roblox_rect()
-        ww = rect["w"] if rect.get("found") else W
-        wh = rect["h"] if rect.get("found") else H
-        gw = max(110, int(0.24 * ww)); gh = max(30, int(0.075 * wh))
-        left = max(0, cx - gw // 2); top = max(0, cy - gh // 2)
-        right = min(W, left + gw); bottom = min(H, top + gh)
-        box = arr[top:bottom, left:right, :3].astype(np.int16)   # BGR
-        b, g, r = box[:, :, 0], box[:, :, 1], box[:, :, 2]
-        lo = np.minimum(np.minimum(r, g), b)
-        hi = np.maximum(np.maximum(r, g), b)
-        white = (lo >= self._cm_thresh) & ((hi - lo) <= 70)
-        self._cm_box = {"left": left, "top": top,
-                        "w": box.shape[1], "h": box.shape[0]}
-        self._cm_white = white
-        self._cm_rgb = box
-        return white
-
-    def _cm_floodfill(self, py, px):
-        """Connected white component (4-neighbour) containing (py,px), or None."""
-        import numpy as np
-        white = self._cm_white
-        if white is None or not white[py, px]:
-            return None
-        h, w = white.shape
-        comp = np.zeros((h, w), bool)
-        stack = [(py, px)]
-        while stack:
-            y, x = stack.pop()
-            if y < 0 or x < 0 or y >= h or x >= w or comp[y, x] or not white[y, x]:
-                continue
-            comp[y, x] = True
-            stack.append((y + 1, x)); stack.append((y - 1, x))
-            stack.append((y, x + 1)); stack.append((y, x - 1))
-        return comp
-
-    def _cm_render(self):
-        """Composite the box: background dimmed, GREEN where the mask is set,
-        zoomed up. Data URL for the overlay editor."""
-        import numpy as np, mss.tools, base64
-        box = self._cm_rgb.clip(0, 255).astype(np.uint8)          # BGR
-        prev = (box.astype(np.float32) * 0.28).astype(np.uint8)
-        if self._cm_mask is not None:
-            prev[self._cm_mask] = np.array([40, 235, 40], np.uint8)
-        h, w = prev.shape[0], prev.shape[1]
-        zoom = max(3, min(12, 1000 // max(1, w)))
-        big = prev.repeat(zoom, 0).repeat(zoom, 1)
-        rgb = np.ascontiguousarray(big[:, :, ::-1])               # BGR->RGB
-        png = mss.tools.to_png(rgb.tobytes(), (rgb.shape[1], rgb.shape[0]))
-        self._cm_zoom = zoom
-        return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-
     def cue_toggle(self, fx, fy):
         """EDIT mode: toggle the connected white region (a letter / the mouse)
-        under the click in/out of the mask."""
+        under the click in/out of the mask. [Phase 04 C8] flood-fill +
+        rendering run engine-side (4.15 cueMask toggle)."""
         try:
-            if getattr(self, "_cm_mode", None) != "edit" or self._cm_white is None:
+            if getattr(self, "_cm_mode", None) != "edit":
                 return {"error": "not editing"}
-            import numpy as np
-            h, w = self._cm_white.shape
-            px = max(0, min(w - 1, int(round(float(fx) * w))))
-            py = max(0, min(h - 1, int(round(float(fy) * h))))
-            comp = self._cm_floodfill(py, px)
-            if comp is not None:
-                if self._cm_mask[comp].mean() > 0.5:
-                    self._cm_mask[comp] = False        # was in -> remove letter
-                else:
-                    self._cm_mask[comp] = True         # was out -> add letter
-            return {"img": self._cm_render(), "px": int(self._cm_mask.sum())}
+            r = _sensing().cue_toggle(fx, fy)
+            if "error" in r:
+                return {"error": r["error"]}
+            return {"img": r["image"], "px": r["px"]}
         except Exception as e:
             return {"error": str(e)}
 
     def cue_reset(self):
+        # back to LOCATE: the engine session keeps the frame; the next
+        # locate click re-runs the engine's white-grid there
         self._cm_mode = "locate"
-        self._cm_mask = self._cm_white = self._cm_box = self._cm_rgb = None
         return {"ok": True}
-
-    def _cm_save(self):
-        """Crop the mask to its bbox, store it (bits + window ratio + a preview
-        image) in CUE_MASKS[cue]."""
-        import numpy as np, base64, mss.tools
-        mask = self._cm_mask
-        if mask is None or int(mask.sum()) < 8:
-            return False
-        rect = _roblox_rect()
-        if not rect.get("found"):
-            return False
-        ys, xs = np.where(mask)
-        x0, x1 = int(xs.min()), int(xs.max()) + 1
-        y0, y1 = int(ys.min()), int(ys.max()) + 1
-        tight = mask[y0:y1, x0:x1]
-        mw, mh = int(x1 - x0), int(y1 - y0)
-        bits = np.packbits(tight.astype(np.uint8).ravel())
-        b64 = base64.b64encode(bits.tobytes()).decode("ascii")
-        box = self._cm_box
-        wx, wy, ww, wh = rect["x"], rect["y"], rect["w"], rect["h"]
-        abs_left, abs_top = box["left"] + x0, box["top"] + y0
-        ratio = [round((abs_left - wx) / float(ww), 5),
-                 round((abs_top - wy) / float(wh), 5),
-                 round(mw / float(ww), 6), round(mh / float(wh), 6)]
-        rgbbox = self._cm_rgb[y0:y1, x0:x1].clip(0, 255).astype(np.uint8)
-        prev = (rgbbox.astype(np.float32) * 0.28).astype(np.uint8)
-        prev[tight] = np.array([40, 235, 40], np.uint8)
-        zoom = max(3, min(10, 360 // max(1, mw)))
-        big = prev.repeat(zoom, 0).repeat(zoom, 1)
-        rgb = np.ascontiguousarray(big[:, :, ::-1])
-        png = mss.tools.to_png(rgb.tobytes(), (rgb.shape[1], rgb.shape[0]))
-        preview = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-        cur = load_saved()
-        masks = cur.get("CUE_MASKS") or {}
-        masks[self._cm_cue] = {"ratio": ratio, "w": mw, "h": mh, "bits": b64,
-                               "px": int(tight.sum()), "preview": preview}
-        cur["CUE_MASKS"] = masks
-        cur["CALIB_WINDOW_RECT"] = [wx, wy, ww, wh]
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
-        return True
 
     def _close_overlay(self):
         global _overlay
@@ -4286,162 +3858,77 @@ class Api:
         except Exception:
             pass
 
-    def _grab_full(self):
-        import mss
-        import numpy as np
-        with mss.mss() as sct:
-            raw = sct.grab(sct.monitors[1])
-        return np.asarray(raw)            # (h, w, 4) BGRA
+    # _grab_full / _detect_capacity_px / _detect_cue_px moved engine-side
+    # at Phase 04 C8 (prospector_engine.sensing): the wizard's grabs and
+    # detection run in the engine's capture session (protocol 4.15
+    # calibration.detect); the dormant empty-bar-diff branch was not
+    # carried into v1.0 (no shipped call site).
 
     def wizard_capture_empty(self):
-        """Remember a snapshot of the screen with the capacity bar EMPTY. The
-        full step compares against it: whatever turns gold is the bar."""
+        """Remember a snapshot of the screen with the capacity bar EMPTY.
+        [Phase 04 C8] the empty-bar diff refinement was dropped from the
+        detector (dormant -- no shipped call site); the grab still runs
+        through the engine session so the handler keeps its shape."""
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
         try:
-            import numpy as np
-            self._cap_empty = self._grab_full().astype(np.int16)
+            s.capture()
             return {"ok": True, "msg": "Captured the empty bar"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def _detect_capacity_px(self, arr):
-        import numpy as np
-        H, W = arr.shape[0], arr.shape[1]
-        b = arr[:, :, 0].astype(np.int16)
-        g = arr[:, :, 1].astype(np.int16)
-        r = arr[:, :, 2].astype(np.int16)
-        # bright, saturated GOLD (brighter than sandy beach, not pale)
-        gold = (r >= 150) & (g >= 135) & (b <= np.minimum(r, g) - 45)
-        # only look in the lower-centre band where the Pan Fill bar lives
-        region = np.zeros((H, W), dtype=bool)
-        y0, y1 = int(H * 0.70), int(H * 0.91)
-        x0, x1 = int(W * 0.20), int(W * 0.80)
-        region[y0:y1, x0:x1] = True
-        cand = gold & region
-        emp = getattr(self, "_cap_empty", None)
-        if emp is not None and emp.shape == arr.shape:
-            diff = (np.abs(r - emp[:, :, 2]) + np.abs(g - emp[:, :, 1])
-                    + np.abs(b - emp[:, :, 0]))
-            changed = cand & (diff > 60)
-            if int(changed.sum(axis=1).max() if changed.any() else 0) >= 50:
-                cand = changed
-        counts = cand.sum(axis=1)
-        y = int(counts.argmax())
-        if int(counts[y]) < 50:
-            return {"ok": False, "error": "no full bar found"}
-        xs = np.where(cand[y])[0]
-        seg = max(np.split(xs, np.where(np.diff(xs) > 6)[0] + 1), key=len)
-        left, right = int(seg[0]), int(seg[-1])
-        if right - left < 50:
-            return {"ok": False, "error": "bar too short"}
-
-        # The macro's full-bar test (is_yellow) needs SOLID gold; the literal
-        # edge pixel is a pale anti-aliased blend that fails it. Walk both ends
-        # inward to a solidly-gold pixel, plus a small margin off the edge.
-        def _solid(x):
-            pr, pg, pb = int(r[y, x]), int(g[y, x]), int(b[y, x])
-            return pr >= 140 and pg >= 140 and pb <= min(pr, pg) - 55
-        xr = right
-        while xr > left and not _solid(xr):
-            xr -= 1
-        right = max(left + 4, xr - 6)
-        xl = left
-        while xl < right and not _solid(xl):
-            xl += 1
-        left = min(right - 4, xl + 6)
-        return {"ok": True, "left": [left, y], "right": [right, y]}
-
-    def _detect_cue_px(self, arr, which):
-        """Locate the prompt by finding the BOTTOM-MOST block of centred white
-        text (the Pan / Shake / Collect Deposit word, which sits just below the
-        Pan Fill bar and above the hotbar), then take the LEFTMOST white blob on
-        that line -- the mouse icon to the left of the word."""
-        import numpy as np
-        H, W = arr.shape[0], arr.shape[1]
-        b = arr[:, :, 0].astype(np.int16)
-        g = arr[:, :, 1].astype(np.int16)
-        r = arr[:, :, 2].astype(np.int16)
-        lo = np.minimum(np.minimum(r, g), b)
-        hi = np.maximum(np.maximum(r, g), b)
-        white = (lo >= 225) & ((hi - lo) <= 26)
-        # centre-bottom search zone: below the bar, above the hotbar; the right
-        # side is trimmed so "Auto Sell" never competes with the prompt
-        mask = np.zeros((H, W), dtype=bool)
-        y0, y1 = int(H * 0.68), int(H * 0.86)
-        x0, x1 = int(W * 0.25), int(W * 0.62)
-        mask[y0:y1, x0:x1] = white[y0:y1, x0:x1]
-        rows = mask.sum(axis=1)
-        rws = np.where(rows >= 6)[0]
-        if len(rws) == 0:
-            return {"ok": False, "error": "prompt not visible"}
-        # the prompt is the LOWEST white text line in the zone
-        bottom = int(rws.max())
-        pb0 = max(0, bottom - 60)
-        band = np.zeros((H, W), dtype=bool)
-        band[pb0:bottom + 1] = mask[pb0:bottom + 1]
-        cols = np.where(band.any(axis=0))[0]
-        if len(cols) == 0:
-            return {"ok": False, "error": "no prompt row"}
-        min_x = int(cols[0])
-        end = min_x
-        for c in cols:                       # first blob from the left = mouse icon
-            if int(c) - end <= 12:
-                end = int(c)
-            else:
-                break
-        ys, xs = np.where(band)
-        sel = (xs >= min_x) & (xs <= end)
-        mxs, mys = xs[sel], ys[sel]
-        if len(mxs) < 3:
-            return {"ok": False, "error": "mouse icon unclear"}
-        cx, cy = float(mxs.mean()), float(mys.mean())
-        k = int(((mxs - cx) ** 2 + (mys - cy) ** 2).argmin())
-        return {"ok": True, "pixel": [int(mxs[k]), int(mys[k])]}
-
     def wizard_propose(self, kind, label=""):
         """Auto-detect a spot, then OPEN THE OVERLAY pre-marked with a red X at
         the guess so the user can Confirm or Redo. Nothing is saved until they
-        confirm. If detection fails, the overlay opens for a plain manual pick."""
+        confirm. If detection fails, the overlay opens for a plain manual pick.
+        [Phase 04 C8] detection + the frame run engine-side (4.15 detect:
+        the fresh grab becomes the capture session)."""
         global _overlay
-        try:
-            import base64
-            import mss.tools
-            import numpy as np
-        except Exception as e:
-            return {"error": str(e)}
-        try:
-            arr = self._grab_full()
-        except Exception as e:
-            return {"error": str(e)}
+        s = _sensing()
+        if s is None:
+            return {"error": _SENSING_ERR}
         if kind in ("CAP", "CAP_RIGHT", "CAP_LEFT"):
-            det = self._detect_capacity_px(arr)
+            target, cue = "capacityBar", None
         elif kind in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
-            det = self._detect_cue_px(arr, kind)
+            target, cue = "cuePrompt", kind
         else:
-            det = {"ok": False, "error": "unknown target"}
-        self._shot = arr
-        self._shot_h, self._shot_w = arr.shape[0], arr.shape[1]
-        step = max(1, int(round(self._shot_w / 1600.0)))
-        disp = arr[::step, ::step]
-        png = mss.tools.to_png(disp[:, :, (2, 1, 0)].tobytes(),
-                               (disp.shape[1], disp.shape[0]))
-        self._shot_b64 = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+            target, cue = None, None
+        try:
+            if target:
+                det = s.detect(target, cue)
+                cap = s.session_preview()
+            else:
+                det = {"detected": False, "message": "unknown target"}
+                cap = s.capture()
+        except Exception as e:
+            return {"error": str(e)}
+        self._shot_w, self._shot_h = cap["fullW"], cap["fullH"]
+        self._shot_b64 = cap["image"]
         self._overlay_key = kind
         self._overlay_label = label or kind
         self._overlay_pending = None
         self._overlay_proposed = None
         self._overlay_cap_left = None
-        if det.get("ok"):
+        if det.get("detected"):
+            p = det.get("proposal") or {}
             if kind in ("CAP", "CAP_RIGHT"):
-                tx, ty = det["right"]
-                self._overlay_cap_left = det.get("left")
+                tx, ty = p["right"]
+                self._overlay_cap_left = p.get("left")
+                rr, gg, bb = p["rgb"]
+                hexv = p["hex"]
             elif kind == "CAP_LEFT":
-                tx, ty = det["left"]
+                tx, ty = p["left"]
+                pk = s.pick(tx / float(cap["fullW"]),
+                            ty / float(cap["fullH"]))
+                rr, gg, bb = pk["rgb"]
+                hexv = pk["hex"]
             else:
-                tx, ty = det["pixel"]
-            px = arr[ty, tx]
-            self._overlay_pending = {"x": tx, "y": ty, "r": int(px[2]),
-                                     "g": int(px[1]), "b": int(px[0]),
-                                     "hex": "#%02x%02x%02x" % (int(px[2]), int(px[1]), int(px[0]))}
+                tx, ty = p["pixel"]
+                rr, gg, bb = p["rgb"]
+                hexv = p["hex"]
+            self._overlay_pending = {"x": tx, "y": ty, "r": rr,
+                                     "g": gg, "b": bb, "hex": hexv}
             self._overlay_proposed = dict(self._overlay_pending)
         try:
             if _overlay is not None:
@@ -4449,7 +3936,8 @@ class Api:
                 _overlay.show()
         except Exception as e:
             return {"error": str(e)}
-        return {"ok": True, "detected": bool(self._overlay_proposed), "msg": det.get("error")}
+        return {"ok": True, "detected": bool(self._overlay_proposed),
+                "msg": det.get("message")}
 
     def restore(self):
         """Show the main window again and hide the pill."""

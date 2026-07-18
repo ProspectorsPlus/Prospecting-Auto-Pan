@@ -25,6 +25,18 @@ Scenario files live in engine_scenarios/*.json:
     "duration_ms": 600000                   # hard safety stop for the loop
   }
 Actions: toggle | pause | soft | quit  (exactly the listener's vocabulary).
+
+[Phase 04 C8] Calibration-sensing scenarios (protocol 4.15) may also script:
+    "screen":  [{"rect": [x,y,w,h], "rgb": [r,g,b],
+                 "from_ms": 0, "until_ms": null}, ...]   # painted rects
+    "ocr":     {"find": [{"t": "...", "cy": 0.4, "conf": 1.0,
+                          "h": 0.1, "oy": 0.5}], "money": [...], ...}
+    "capabilities": {"findsOcr": false}     # sim-only capability override
+Screen rects overlay the dark base (time-windowed on the virtual clock, so
+a stored capture session provably differs from a later fresh grab); "ocr"
+fixtures replace the engine's Vision OCR seam per calibrated region; the
+capability override reaches hello/describe via po._SIM_CAPS (simulated
+engines only).
 """
 import io
 import json
@@ -183,6 +195,23 @@ class FakeSct(object):
                 "width": max(x + w, 1440), "height": max(y + h, 900)}
         return [full, dict(full)]
 
+    def _screen_rect_at(self, px, py):
+        """Scenario-scripted screen content (C8 calibration scenarios):
+        last matching time-windowed rect wins; None -> default painting."""
+        ms = self._c.ms
+        hit = None
+        for r in self._scen.get("screen", ()):
+            x, y, w, h = r["rect"]
+            if not (x <= px < x + w and y <= py < y + h):
+                continue
+            if ms < r.get("from_ms", 0):
+                continue
+            until = r.get("until_ms")
+            if until is not None and ms >= until:
+                continue
+            hit = tuple(r["rgb"])
+        return hit
+
     def _rgb_for(self, px, py):
         po, scen, ms = self._po, self._scen, self._c.ms
         white = (255, 255, 255)
@@ -201,25 +230,52 @@ class FakeSct(object):
             frac = _cap_at(scen, ms)
             if px <= (fx - bw) + bw * frac:
                 return (255, 200, 60)
+        sr = self._screen_rect_at(px, py)
+        if sr is not None:
+            return sr
         return (16, 16, 16)
 
     def grab(self, region):
         import numpy as np
         left = int(region["left"]); top = int(region["top"])
         w = max(1, int(region["width"])); h = max(1, int(region["height"]))
+        self.last_region = {"left": left, "top": top,
+                            "width": w, "height": h}
         arr = np.zeros((h, w, 4), dtype=np.uint8)
         arr[:, :, 3] = 255
         base = self._rgb_for(left + w // 2, top + h // 2)
         arr[:, :, 0] = base[2]   # B
         arr[:, :, 1] = base[1]   # G
         arr[:, :, 2] = base[0]   # R
-        # capacity strip needs per-column detail inside one grab
+        # capacity strip needs per-column detail inside one grab. The
+        # whole-COLUMN fill is correct for the legacy sensors' small
+        # boxes (goldens depend on it) but would curtain a full-frame
+        # calibration grab, so scenarios that script "screen" rects get
+        # their detail from those rects instead (C8).
         po = self._po
         fx, fy = po.__dict__.get("CAP_FULL_PIXEL", (0, 0))
-        if top <= fy < top + h:
+        if top <= fy < top + h and not self._scen.get("screen"):
             for col in range(w):
                 r, g, b = self._rgb_for(left + col, fy)
                 arr[:, col, 0] = b; arr[:, col, 1] = g; arr[:, col, 2] = r
+        # C8: scripted screen rects painted with per-pixel accuracy (the
+        # sensing verbs grab full frames; the uniform base above cannot
+        # carry rect edges). Only calibration scenarios define "screen".
+        ms = self._c.ms
+        for rrec in self._scen.get("screen", ()):
+            if ms < rrec.get("from_ms", 0):
+                continue
+            until = rrec.get("until_ms")
+            if until is not None and ms >= until:
+                continue
+            x, y, rw, rh = rrec["rect"]
+            ix0 = max(x, left); iy0 = max(y, top)
+            ix1 = min(x + rw, left + w); iy1 = min(y + rh, top + h)
+            if ix0 >= ix1 or iy0 >= iy1:
+                continue
+            rr, gg, bb = rrec["rgb"]
+            sl = arr[iy0 - top:iy1 - top, ix0 - left:ix1 - left]
+            sl[:, :, 0] = bb; sl[:, :, 1] = gg; sl[:, :, 2] = rr
         return arr
 
 
@@ -368,6 +424,12 @@ class World(object):
         po.find_roblox_rect = lambda: w
         po.find_window_origin = lambda: (w[0], w[1])
         po.get_scale = lambda sct=None: 1.0
+        # C8: the sensing window lookup (dict shape) scripts the same rect
+        po.find_roblox_window = lambda: {
+            "found": True, "x": w[0], "y": w[1], "w": w[2], "h": w[3],
+            "title": "Roblox"}
+        # C8: sim-only capability overrides (hello/describe, ipc mode)
+        po._SIM_CAPS = dict(scen.get("capabilities") or {})
 
         sct = FakeSct(po, scen, clock)
         po._MSS = FakeMSS(sct)
@@ -378,6 +440,30 @@ class World(object):
             self.webhooks.append((int(round(clock.ms)), event, message))
         po.post_webhook = _post_webhook
         po._grab_screenshot_b64 = lambda *a, **k: ""
+
+        # C8: scripted OCR (calibration.testRead runs gameless). The fake
+        # resolves WHICH calibrated region was grabbed from the sim sct's
+        # last region against the scenario config's corner keys, and
+        # returns that region's fixture lines verbatim.
+        if scen.get("ocr") is not None:
+            cfg = scen["config"]
+
+            def _region_name():
+                lr = getattr(sct, "last_region", None) or {}
+                for name, tlk in (("find", "FIND_TL_PIXEL"),
+                                  ("money", "MONEY_TL_PIXEL"),
+                                  ("shards", "SHARDS_TL_PIXEL")):
+                    tl = cfg.get(tlk)
+                    if (isinstance(tl, (list, tuple)) and len(tl) == 2
+                            and lr.get("left") == int(tl[0])
+                            and lr.get("top") == int(tl[1])):
+                        return name
+                return None
+
+            def _fake_ocr(arr, factor=3):
+                name = _region_name()
+                return [dict(l) for l in scen["ocr"].get(name or "", [])]
+            po._finds_ocr_array = _fake_ocr
 
         # config: the scenario's own file, never the user's real one. When
         # the engine was spawned with --home (its CONFIG_FILE already points

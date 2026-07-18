@@ -1,0 +1,17 @@
+{"cmd": "calibration.detectWindow", "ok": true, "r": {"found": true, "rect": {"h": 800, "w": 1200, "x": 100, "y": 50}, "title": "Roblox"}}
+{"cmd": "calibration.capture", "ok": true, "r": {"fullH": 900, "fullW": 1440, "image": "<png>", "imageH": 900, "imageW": 1440}}
+{"cmd": "calibration.pick", "ok": true, "r": {"hex": "#c80a1e", "rgb": [200, 10, 30], "x": 310, "y": 205}}
+{"cmd": "calibration.crop", "ok": true, "r": {"h": 30, "image": "<png>", "w": 40}}
+{"cmd": "calibration.sampleSaved", "ok": true, "r": {"capFull": true, "pixels": {"CAP_FULL_PIXEL": {"b": 60, "g": 200, "r": 255}, "CAP_LEFT_PIXEL": {"b": 60, "g": 200, "r": 255}, "DEPOSIT_PIX": {"b": 255, "g": 255, "r": 255}, "DIG_TRIGGER_PIXEL": {"b": 16, "g": 16, "r": 16}, "PAN_PIX": {"b": 255, "g": 255, "r": 255}, "SHAKE_PIX": {"b": 16, "g": 16, "r": 16}}, "whites": {"DEPOSIT_PIX": true, "PAN_PIX": true, "SHAKE_PIX": false}}}
+{"cmd": "calibration.detect", "ok": true, "r": {"detected": true, "proposal": {"hex": "#ffc83c", "left": [402, 740], "rgb": [255, 200, 60], "right": [909, 740]}}}
+{"cmd": "calibration.detect", "ok": true, "r": {"detected": true, "proposal": {"hex": "#ffffff", "pixel": [559, 631], "rgb": [255, 255, 255]}}}
+{"cmd": "calibration.testRead", "ok": true, "r": {"lines": ["Stone Chunk", "Common", "312 kg"]}}
+{"cmd": "calibration.testRead", "ok": true, "r": {"money": "1,204,500", "shards": "no text found -- widen the region"}}
+{"cmd": "calibration.cueMask", "ok": true, "r": {"advanced": false, "cues": {"DEPOSIT": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}, "PAN": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}, "SHAKE": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}}, "masks_only": false}}
+{"cmd": "calibration.cueMask", "ok": true, "r": {"cueEdit": true, "image": "<png>", "px": 200}}
+{"cmd": "calibration.cueMask", "ok": true, "r": {"image": "<png>", "px": 100}}
+{"cmd": "calibration.cueMask", "ok": true, "r": {"preview": "<png>", "px": 100}}
+{"cmd": "calibration.health", "ok": true, "r": {"ok": true, "reason": ""}}
+{"cmd": "calibration.auto", "ok": true, "r": {"count": 6, "pixels": {"CAP_FULL_PIXEL": [896, 754], "CAP_LEFT_PIXEL": [504, 754], "DEPOSIT_PIX": [611, 814], "DIG_TRIGGER_PIXEL": [998, 480], "PAN_PIX": [667, 814], "SHAKE_PIX": [653, 814]}, "placed": true, "window": {"h": 800, "w": 1200, "x": 100, "y": 50}}}
+{"cmd": "calibration.savePixels", "ok": true, "r": {"saved": ["AUTO_CALIBRATE", "CALIB_WINDOW_ORIGIN", "CALIB_WINDOW_RECT", "CAP_BAR_WIDTH", "CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "PIXEL_RATIOS", "WINDOW_RELATIVE"]}}
+{"cmd": "calibration.pick", "ok": true, "r": {"hex": "#101010", "rgb": [16, 16, 16], "x": 1426, "y": 891}}

@@ -35,7 +35,7 @@ hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant", "mss.windows
 # prospector_engine.client for ipc mode. In the repo the package sits one
 # level up (pathex below); in the extracted zip it sits next to this spec.
 hiddenimports += ["prospector_engine", "prospector_engine.client",
-                  "prospector_engine.protocol",
+                  "prospector_engine.protocol", "prospector_engine.sensing",
                   # [C7] the engine itself + its Windows platform layer (the
                   # runpy'd prospecting_old.py shim imports them at runtime)
                   "prospector_engine.engine", "prospector_engine.ipc",

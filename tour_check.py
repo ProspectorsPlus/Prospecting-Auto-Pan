@@ -32,7 +32,8 @@ print('[1] py_compile')
 import py_compile
 for f in ['prospecting_app.py', 'prospecting_old.py',
           'prospector_engine/engine.py', 'prospector_engine/platform_mac.py',
-          'prospector_engine/platform_win.py', 'prospecting_ui.py',
+          'prospector_engine/platform_win.py', 'prospector_engine/sensing.py',
+          'prospecting_ui.py',
           'prospecting_assistant.py',
           'windows/prospecting_app.py', 'windows/prospecting_old.py',
           'windows/prospecting_ui.py', 'windows/prospecting_assistant.py']:

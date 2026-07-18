@@ -75,6 +75,60 @@ def get_scale(sct):
 
 
 # ---- Window-relative capture (opt-in) ---------------------------------------
+def find_roblox_window():
+    """[C8] The calibration sensing window lookup (protocol 4.15
+    calibration.detectWindow): the Roblox client area in screen pixels,
+    as the legacy host dict {found:True,x,y,w,h,title} or
+    {found:False,error:...}. Moved verbatim from the windows app's
+    _roblox_rect (windows/prospecting_app.py:1629): scans all visible
+    top-level windows (class WINDOWSCLIENT, or title containing 'Roblox'
+    but not 'Studio') and picks the largest."""
+    try:
+        u = ctypes.windll.user32
+        candidates = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def _cb(hwnd, _lp):
+            try:
+                if not u.IsWindowVisible(hwnd):
+                    return True
+                n = u.GetWindowTextLengthW(hwnd)
+                tbuf = ctypes.create_unicode_buffer(n + 1)
+                u.GetWindowTextW(hwnd, tbuf, n + 1)
+                title = tbuf.value or ""
+                cbuf = ctypes.create_unicode_buffer(256)
+                u.GetClassNameW(hwnd, cbuf, 256)
+                cls = cbuf.value or ""
+                is_rbx = (cls == "WINDOWSCLIENT" or
+                          ("Roblox" in title and "Studio" not in title))
+                if not is_rbx:
+                    return True
+                rc = wintypes.RECT()
+                if not u.GetClientRect(hwnd, ctypes.byref(rc)):
+                    return True
+                w, h = rc.right - rc.left, rc.bottom - rc.top
+                if w < 320 or h < 240:           # skip tiny/loading windows
+                    return True
+                pt = wintypes.POINT(0, 0)
+                u.ClientToScreen(hwnd, ctypes.byref(pt))
+                candidates.append((w * h, {"found": True, "x": int(pt.x),
+                                   "y": int(pt.y), "w": int(w), "h": int(h),
+                                   "title": title or cls}))
+            except Exception:
+                pass
+            return True
+
+        u.EnumWindows(_cb, 0)
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            return candidates[0][1]
+        return {"found": False,
+                "error": "Roblox window not found. Open Prospecting in "
+                         "Roblox (not minimized) and try again."}
+    except Exception as e:
+        return {"found": False, "error": "Detection failed: %s" % e}
+
+
 def find_roblox_rect():
     """Roblox game client area as (x, y, w, h) in physical px, or None. Scans all
     visible top-level windows (class WINDOWSCLIENT, or title containing 'Roblox'
