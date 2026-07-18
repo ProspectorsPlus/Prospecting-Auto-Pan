@@ -383,10 +383,17 @@ class World(object):
         # the engine was spawned with --home (its CONFIG_FILE already points
         # away from the repo default), write the scenario config THERE so
         # the ipc settings surface and the sim world agree on one file.
+        # [C6 hardening] The engine's default home is the USER'S real config
+        # directory (post-C6 the launcher-shim dir, exposed as _HOME_DIR --
+        # NOT the package dir of __file__). The sim may write a config ONLY
+        # to a spawner-provided --home (argv-parsed _ENGINE_HOME non-empty
+        # AND CONFIG_FILE moved off the default); anything else goes to the
+        # sim's own tmpdir. Never write the user's real file.
         cfg_default = os.path.join(
-            os.path.dirname(os.path.abspath(po.__file__)),
+            getattr(po, "_HOME_DIR",
+                    os.path.dirname(os.path.abspath(po.__file__))),
             "prospecting_config.json")
-        if po.CONFIG_FILE != cfg_default:
+        if po.CONFIG_FILE != cfg_default and getattr(po, "_ENGINE_HOME", ""):
             cfg_path = po.CONFIG_FILE
         else:
             cfg_path = os.path.join(self._tmpdir, "prospecting_config.json")
