@@ -35,9 +35,15 @@ def chk(cond, msg):
 
 
 def scenario_names():
-    return sorted(os.path.splitext(os.path.basename(p))[0]
-                  for p in glob.glob(os.path.join(engine_sim.SCENARIO_DIR,
-                                                  "*.json")))
+    names = []
+    for p in sorted(glob.glob(os.path.join(engine_sim.SCENARIO_DIR,
+                                           "*.json"))):
+        name = os.path.splitext(os.path.basename(p))[0]
+        # interactive scenarios pace the virtual clock against real time
+        # for spawned command tests; they are not golden material
+        if not engine_sim.load_scenario(name).get("interactive"):
+            names.append(name)
+    return names
 
 
 def run_one(name, tag=""):

@@ -787,6 +787,15 @@ except Exception:
 _user32 = ctypes.windll.user32
 
 
+# ---- Phase 04: engine process flags (set by __main__ argv parsing) ----------
+_IPC_MODE = False
+_IPC_HOST = ""
+_IPC_PROTOCOL = None
+_ENGINE_HOME = ""
+_SIM_MODE = False
+_IPC_SERVER = None
+
+
 def _as_ref_list(spec):
     """Accept a single (r,g,b) tuple OR a list of them; return a list."""
     if len(spec) and isinstance(spec[0], (int, float)):
@@ -938,7 +947,7 @@ def log(msg):
     now = time.perf_counter()
     if _log_t0 is None:
         _log_t0 = now
-    print(f"[{now - _log_t0:7.2f}s] {msg}", flush=True)
+    EMIT.log_line(now - _log_t0, msg)
 
 
 # any of these events means the current cycle wasn't perfectly smooth
@@ -947,11 +956,104 @@ _DIRTY_EVENTS = {"shake_fail", "shake_start_retry", "nudge", "recover",
                  "hard_stop", "fr_recover", "recenter"}
 
 
+class _LegacyEmit(object):
+    """The engine's single emission seam (Phase 04 C2). Legacy mode prints
+    exactly the bytes the app has always parsed; --ipc swaps this object
+    for the PPE1 frame emitter (prospector_engine.ipc.FrameEmit). Every
+    marker/status emission routes through one EMIT method, so the two
+    encodings can never drift apart structurally."""
+
+    def reset(self, origin="hotkey"):
+        print("__RESET__", flush=True)
+
+    def stats(self, d):
+        print("__STATS__ " + json.dumps(d), flush=True)
+
+    def event(self, etype, rec):
+        print("__EVENT__ " + json.dumps(rec), flush=True)
+
+    def phase(self, name):
+        print("__PHASE__ " + name, flush=True)
+
+    def find(self, rec):
+        print("__FIND__ " + json.dumps(rec), flush=True)
+
+    def find_upd(self, rec):
+        print("__FIND_UPD__ " + json.dumps(rec), flush=True)
+
+    def geode(self, ms, label):
+        print("__GEODE__ " + json.dumps({"ms": int(ms), "label": label}),
+              flush=True)
+
+    def script_block(self, payload):
+        print("__SCRIPT__ " + json.dumps(payload), flush=True)
+
+    def script_hud(self, payload):
+        print("__SCRIPTHUD__ " + json.dumps(payload), flush=True)
+
+    def popout(self):
+        print("__POPOUT__", flush=True)
+
+    def log_line(self, dt, msg):
+        print(f"[{dt:7.2f}s] {msg}", flush=True)
+
+    def toggle_status(self, running):
+        print(f"[{'RUNNING' if running else 'STOPPED'}]")
+
+    def paused(self, origin="hotkey"):
+        print("[PAUSED] session paused -- stats, relic timers and earnings "
+              "all kept; press the pause key to resume", flush=True)
+
+    def resumed(self, origin="hotkey"):
+        print("[RUNNING] resumed from pause (stats & timers kept)",
+              flush=True)
+
+    def stopped(self, reason, final):
+        pass          # legacy narrates terminal stops via the STOPPED log
+
+    def quit_(self):
+        print("[QUIT]")
+
+    def softstop(self):
+        print("[MANUAL SOFT-STOP]")
+
+    def relic_reset(self, flushed):
+        print("[RELIC TIMERS RESET]", flush=flushed)
+
+    def relic_one(self, index, origin):
+        pass          # legacy prints nothing for a single-relic reset
+
+    def relic_set(self, index, seconds, origin):
+        pass          # legacy prints nothing for a relic-set
+
+    def safe_pause(self, msg, reason, attempt, max_retries, retry_s):
+        print(f"\n*** SAFE PAUSE: {msg} ***")
+
+    def hard_stop(self, reason):
+        print(f"\n*** HARD STOP: {reason} ***  "
+              "(Ctrl+K to resume, Esc to quit)")
+
+    def sr_recovered(self, reason):
+        print("\n*** STARFALL RIVER RECOVERY: %s -> resumed ***" % reason)
+
+    def fr_recovered(self, reason):
+        print("\n*** FORTUNE RIVER RECOVERY: %s -> resumed ***" % reason)
+
+    def interrupted(self):
+        print("\n[interrupted -- exiting]", flush=True)
+
+    def stopped_final_line(self):
+        print("Stopped, all inputs released.")
+
+
+EMIT = _LegacyEmit()
+
+
 def emit_phase(name):
     """__PHASE__ <name> line: the app times each phase (dig / water / shake)
     for the per-phase analytics. Print-only; never affects the macro."""
     try:
-        print("__PHASE__ " + name, flush=True)
+        EMIT.phase(name)
     except Exception:
         pass
 
@@ -969,7 +1071,7 @@ def emit_event(etype, reason="", where="", contents=""):
             rec["contents"] = contents
         if etype in _DIRTY_EVENTS:
             State.cycle_dirty = True         # this cycle wasn't clean
-        print("__EVENT__ " + json.dumps(rec), flush=True)
+        EMIT.event(etype, rec)
     except Exception:
         pass
 
@@ -2631,7 +2733,7 @@ class FindsWatcher:
                 st.loot_value += value
                 if lc:
                     st.finds_lowconf += 1
-            print("__FIND__ " + json.dumps(rec), flush=True)
+            EMIT.find(rec)
             log("[finds] %s%s %skg %s%s%s"
                 % ((mod + " ") if mod else "", name, kg, rarity,
                    (" ~$%s" % f"{int(value):,}") if value else "",
@@ -2652,7 +2754,7 @@ class FindsWatcher:
                 if lc != prevrec.get("lc", False):
                     st.finds_lowconf = max(
                         0, st.finds_lowconf + (1 if lc else -1))
-            print("__FIND_UPD__ " + json.dumps(rec), flush=True)
+            EMIT.find_upd(rec)
         tc["emitted"] = {"name": name, "mod": mod, "kg": kg,
                          "rarity": rarity, "value_f": float(value), "lc": lc}
 
@@ -3173,7 +3275,7 @@ def safe_stop(reason, hard=False):
             State.safe_retries = 0
             State.want_reset = True
             emit_event("sr_recover", "success after: %s" % reason)
-            print("\n*** STARFALL RIVER RECOVERY: %s -> resumed ***" % reason)
+            EMIT.sr_recovered(reason)
             post_webhook("safe_stop",
                          "\U0001f30a Starfall River recovery (%s) -> resumed"
                          % reason,
@@ -3190,7 +3292,7 @@ def safe_stop(reason, hard=False):
             State.safe_retries = 0
             State.want_reset = True
             emit_event("fr_recover", "success after: %s" % reason)
-            print("\n*** FORTUNE RIVER RECOVERY: %s -> resumed ***" % reason)
+            EMIT.fr_recovered(reason)
             post_webhook("safe_stop",
                          "\U0001f9ed Fortune River recovery (%s) -> resumed" % reason,
                          State.stats.as_dict() if State.stats else None, shot=True)
@@ -3212,7 +3314,8 @@ def safe_stop(reason, hard=False):
         State.safe_retries += 1
         msg = (f"{reason} - retrying in {SAFE_STOP_RETRY_SEC}s "
                f"(attempt {State.safe_retries}/{SAFE_STOP_MAX_RETRIES})")
-        print(f"\n*** SAFE PAUSE: {msg} ***")
+        EMIT.safe_pause(msg, reason, State.safe_retries,
+                        SAFE_STOP_MAX_RETRIES, SAFE_STOP_RETRY_SEC)
         post_webhook("safe_stop", f"⚠️ Safe-paused: {msg}",
                      State.stats.as_dict() if State.stats else None, shot=True)
         _beep(False)
@@ -3227,7 +3330,7 @@ def safe_stop(reason, hard=False):
     if State.stats:
         State.stats.hard_stops += 1
         State.stats.stop_reason = "safe-stop"
-    print(f"\n*** HARD STOP: {reason} ***  (Ctrl+K to resume, Esc to quit)")
+    EMIT.hard_stop(reason)
     post_webhook("stop", f"🛑 Hard-stopped: {reason}",
                  State.stats.as_dict() if State.stats else None, shot=True)
     _beep(True)
@@ -3957,7 +4060,7 @@ def emit_geode_timer(ms, label=""):
     """__GEODE__ marker -> drives the live delay countdown in the HUD + Run page.
     ms>0 starts/refreshes the countdown; ms=0 clears it."""
     try:
-        print("__GEODE__ " + json.dumps({"ms": int(ms), "label": label}), flush=True)
+        EMIT.geode(ms, label)
     except Exception:
         pass
 
@@ -4821,9 +4924,9 @@ class ScriptRunner:
             return
         self.last_emit_t = now
         try:
-            print("__SCRIPT__ " + json.dumps(
+            EMIT.script_block(
                 {"id": str(b.get("id", "")), "type": str(b.get("type", "")),
-                 "pass": self.passes}), flush=True)
+                 "pass": self.passes})
         except Exception:
             pass
 
@@ -5367,7 +5470,7 @@ class ScriptRunner:
 
     def _emit_hud(self, txt):
         try:
-            print("__SCRIPTHUD__ " + json.dumps({"text": txt}), flush=True)
+            EMIT.script_hud({"text": txt})
         except Exception:
             pass
 
@@ -5897,8 +6000,7 @@ def engine_pause():
         State.stats.pause_started = time.perf_counter()
         State.stats.pauses += 1
     release_all()
-    print("[PAUSED] session paused -- stats, relic timers and earnings all "
-          "kept; press the pause key to resume", flush=True)
+    EMIT.paused()
 
 
 def engine_resume():
@@ -5914,7 +6016,7 @@ def engine_resume():
     State.paused = False
     State.last_progress = time.perf_counter()    # don't trip no-progress
     State.running = True
-    print("[RUNNING] resumed from pause (stats & timers kept)", flush=True)
+    EMIT.resumed()
 
 
 class _HotkeyPoller:
@@ -5950,7 +6052,7 @@ class _HotkeyPoller:
                         and bool(spec.get("shift")) == shift)
                 if down and not prev[name]:
                     if name == "quit":
-                        print("[QUIT]")
+                        EMIT.quit_()
                         State.running = False
                         State.alive = False
                         release_all()
@@ -5960,7 +6062,7 @@ class _HotkeyPoller:
                             engine_resume()
                         else:
                             State.running = not State.running
-                            print(f"[{'RUNNING' if State.running else 'STOPPED'}]")
+                            EMIT.toggle_status(State.running)
                             if not State.running:
                                 release_all()
                     elif name == "pause":
@@ -5968,12 +6070,12 @@ class _HotkeyPoller:
                     elif name == "rreset":
                         if State.relics_ref is not None:
                             State.relics_ref.reset()
-                        print("[RELIC TIMERS RESET]")
+                        EMIT.relic_reset(False)
                     elif name == "soft":
                         State.want_safe_stop = True
-                        print("[MANUAL SOFT-STOP]")
+                        EMIT.softstop()
                     elif name == "popout":
-                        print("__POPOUT__", flush=True)
+                        EMIT.popout()
                 prev[name] = down
             time.sleep(0.03)
 
@@ -6111,7 +6213,7 @@ def main():
             release_all()
         except Exception:
             pass
-        print("\n[interrupted -- exiting]", flush=True)
+        EMIT.interrupted()
         os._exit(0)
     try:
         signal.signal(signal.SIGINT, _sigint)
@@ -6119,6 +6221,11 @@ def main():
     except Exception:
         pass
     load_config()                 # apply UI overrides from prospecting_config.json
+    if _IPC_MODE:
+        from prospector_engine import ipc as _ppe_ipc
+        globals()["_IPC_SERVER"] = _ppe_ipc.bootstrap(
+            sys.modules[__name__], _ENGINE_HOME, _IPC_HOST,
+            _IPC_PROTOCOL, _SIM_MODE)
     if not apply_auto_calibrate():  # place pixels from the live window (if profile)
         apply_window_offset()       # else shift pixels if the window moved (opt-in)
     place_cue_masks()               # advanced cue matching: place captured masks
@@ -6144,7 +6251,7 @@ def main():
                 elif _c == "RELIC_RESET":
                     if State.relics_ref is not None:
                         State.relics_ref.reset()
-                    print("[RELIC TIMERS RESET]", flush=True)
+                    EMIT.relic_reset(True)
                 elif _c.startswith("RELIC_SET "):
                     try:
                         _p = _c.split()
@@ -6162,7 +6269,8 @@ def main():
                         pass
         except Exception:
             pass
-    threading.Thread(target=_stdin_ctl, daemon=True).start()
+    if not _IPC_MODE:
+        threading.Thread(target=_stdin_ctl, daemon=True).start()
 
     gc.enable()   # keep GC ON: disabling it grew memory + slowed long runs
     with _MSS() as sct:
@@ -6179,9 +6287,10 @@ def main():
         last_wh_stats = 0.0
         try:
             while State.alive:
+                State.tick_beat = time.perf_counter()
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
-                        print("__RESET__", flush=True)   # tell the app to clear
+                        EMIT.reset()   # tell the app to clear
                         sup.reset()                      # finds/analytics
                         State.script_runner = None   # fresh Studio walker
                         State.t_side = 0
@@ -6228,7 +6337,7 @@ def main():
                         last_emit = now
                         _d = State.stats.as_dict()
                         _d["relics"] = relics.remaining()
-                        print("__STATS__ " + json.dumps(_d), flush=True)
+                        EMIT.stats(_d)
                     # periodic webhook stats update
                     if (WEBHOOK_STATS_MIN > 0
                             and now - last_wh_stats >= WEBHOOK_STATS_MIN * 60):
@@ -6284,6 +6393,13 @@ def main():
                         if State.stats:
                             State.stats.stop_reason = reason
                         log(f"=== STOPPED ({reason}) ===")
+                        _fd = State.stats.as_dict() if State.stats else {}
+                        try:
+                            _fd["relics"] = relics.remaining()
+                            _fd["input_lag"] = _LAG.snapshot()
+                        except Exception:
+                            pass
+                        EMIT.stopped(reason, _fd)
                         if reason == "manual" and State.stats:
                             post_webhook("stop", "⏹️ Macro stopped (manual)",
                                          State.stats.as_dict())
@@ -6298,7 +6414,7 @@ def main():
         finally:
             release_all()
             gc.enable()
-            print("Stopped, all inputs released.")
+            EMIT.stopped_final_line()
 
 
 def monitor():
@@ -6328,14 +6444,51 @@ def monitor():
 
 
 if __name__ == "__main__":
-    arg = sys.argv[1] if len(sys.argv) > 1 else ""
-    if arg == "calibrate":
-        calibrate()
-    elif arg == "calibrate-text":
-        calibrate_text()
-    elif arg == "log":
-        log_calibration()
-    elif arg == "monitor":
-        monitor()
-    else:
+    _args = sys.argv[1:]
+    if "--ipc" in _args or "--sim" in _args:
+        # Phase 04 process surface: --ipc [--home DIR] [--host NAME]
+        # [--protocol N] [--sim SCENARIO]. Legacy CLI verbs keep the
+        # positional form below; legacy behavior is untouched.
+        _dir_self = os.path.dirname(os.path.abspath(__file__))
+        for _pr in (_dir_self, os.path.dirname(_dir_self)):
+            if _pr not in sys.path:
+                sys.path.append(_pr)
+
+        def _flag_val(name):
+            if name in _args:
+                _i = _args.index(name)
+                if _i + 1 < len(_args):
+                    return _args[_i + 1]
+            return None
+        _IPC_MODE = "--ipc" in _args
+        _IPC_HOST = _flag_val("--host") or "unknown"
+        _home = _flag_val("--home")
+        if _home:
+            _ENGINE_HOME = os.path.abspath(_home)
+            CONFIG_FILE = os.path.join(_ENGINE_HOME,
+                                       "prospecting_config.json")
+        else:
+            _ENGINE_HOME = os.path.dirname(CONFIG_FILE)
+        _proto = _flag_val("--protocol")
+        _IPC_PROTOCOL = int(_proto) if _proto else None
+        _scen = _flag_val("--sim")
+        if _scen:
+            _SIM_MODE = True
+            import engine_sim as _ppe_sim
+            _ppe_sim.World(sys.modules[__name__],
+                           _ppe_sim.load_scenario(_scen))
         main()
+        if _IPC_MODE and _IPC_SERVER is not None:
+            _IPC_SERVER.main_ended()
+    else:
+        arg = sys.argv[1] if len(sys.argv) > 1 else ""
+        if arg == "calibrate":
+            calibrate()
+        elif arg == "calibrate-text":
+            calibrate_text()
+        elif arg == "log":
+            log_calibration()
+        elif arg == "monitor":
+            monitor()
+        else:
+            main()

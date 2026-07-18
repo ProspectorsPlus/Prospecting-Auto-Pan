@@ -1,0 +1,30 @@
+{
+ "capacity": [
+  [
+   0,
+   0.0
+  ]
+ ],
+ "config": {
+  "RELICS_ENABLED": false,
+  "SCRIPT_ACTIVE": "looper",
+  "SCRIPT_JSON": "{\"version\":1,\"name\":\"looper\",\"blocks\":[{\"id\":\"b1\",\"type\":\"tap_key\",\"params\":{\"key\":\"1\",\"hold_ms\":40},\"children\":[]},{\"id\":\"b2\",\"type\":\"wait\",\"params\":{\"ms\":1000},\"children\":[]}]}",
+  "SCRIPT_MODE": true
+ },
+ "cues": {},
+ "duration_ms": 36000000,
+ "interactive": true,
+ "name": "interactive-run",
+ "schedule": [
+  [
+   500,
+   "toggle"
+  ]
+ ],
+ "window": [
+  0,
+  0,
+  1440,
+  900
+ ]
+}

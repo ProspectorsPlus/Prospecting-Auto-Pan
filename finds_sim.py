@@ -62,6 +62,14 @@ def build_ns():
         "log": lambda m: _LOGS.append(str(m)),
         "emit_event": lambda e, reason="", **k: _EVENTS.append((e, reason)),
         "print": lambda *a, **k: _LINES.append(" ".join(str(x) for x in a)),
+        # Phase 04 C2: the engine's emission seam. The slice's FindsWatcher
+        # emits finds through EMIT; reproduce the legacy lines verbatim.
+        "EMIT": type("_EmitStub", (), {
+            "find": staticmethod(lambda rec: _LINES.append(
+                "__FIND__ " + json.dumps(rec))),
+            "find_upd": staticmethod(lambda rec: _LINES.append(
+                "__FIND_UPD__ " + json.dumps(rec))),
+        })(),
         # engine defaults (the slice references these module globals)
         "FINDS_TRACK": True, "FINDS_FAST_MS": 40, "FINDS_OCR_MS": 200,
         "FINDS_STACK_NEWEST": "bottom", "FINDS_MIN_CONF": 0.30,

@@ -81,8 +81,9 @@ class TimeShim(object):
     virtual clock; sleep advances it; time() is pinned (same constant the
     conformance suite uses)."""
 
-    def __init__(self, clock):
+    def __init__(self, clock, real_pace=False):
         self._c = clock
+        self._real_pace = real_pace
 
     def perf_counter(self):
         return self._c.ms / 1000.0
@@ -92,6 +93,9 @@ class TimeShim(object):
 
     def sleep(self, s):
         self._c.adv(float(s) * 1000.0)
+        if self._real_pace:
+            import time as _rt
+            _rt.sleep(min(float(s), 0.05))
 
 
 class InputLog(object):
@@ -271,14 +275,15 @@ class World(object):
         self._install()
         self._schedule_ops()
 
-    # -- operator actions: exactly what the pynput listener does ---------
+    # -- operator actions: exactly what the pynput listener does (via the
+    # same EMIT seam the listener uses since checkpoint C2) ---------------
     def _op_toggle(self):
         po = self.po
         if po.State.paused:
             po.engine_resume()
             return
         po.State.running = not po.State.running
-        print("[%s]" % ("RUNNING" if po.State.running else "STOPPED"))
+        po.EMIT.toggle_status(po.State.running)
         if not po.State.running:
             po.release_all()
 
@@ -288,11 +293,11 @@ class World(object):
 
     def _op_soft(self):
         self.po.State.want_safe_stop = True
-        print("[MANUAL SOFT-STOP]")
+        self.po.EMIT.softstop()
 
     def _op_quit(self):
         po = self.po
-        print("[QUIT]")
+        po.EMIT.quit_()
         po.State.running = False
         po.State.alive = False
         po.release_all()
@@ -309,7 +314,7 @@ class World(object):
     # -- install ----------------------------------------------------------
     def _install(self):
         po, scen, clock, inputs = self.po, self.scen, self.clock, self.inputs
-        po.time = TimeShim(clock)
+        po.time = TimeShim(clock, real_pace=bool(scen.get("interactive")))
         po.sleep_ms = lambda ms: clock.adv(ms)
 
         def _sleep_until(target):
