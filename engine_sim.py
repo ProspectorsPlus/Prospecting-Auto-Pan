@@ -275,38 +275,45 @@ class World(object):
         self._install()
         self._schedule_ops()
 
-    # -- operator actions: exactly what the pynput listener does (via the
-    # same EMIT seam the listener uses since checkpoint C2) ---------------
+    # -- operator actions: exactly what the hotkey listener does, through
+    # the same request_* entries the listener uses since checkpoint C4
+    # (legacy mode: verbatim today's listener bodies; ipc mode: the
+    # server-serialized CAS transitions) ----------------------------------
     def _op_toggle(self):
-        po = self.po
-        if po.State.paused:
-            po.engine_resume()
-            return
-        po.State.running = not po.State.running
-        po.EMIT.toggle_status(po.State.running)
-        if not po.State.running:
-            po.release_all()
+        self.po.request_toggle()
 
     def _op_pause(self):
-        po = self.po
-        (po.engine_resume() if po.State.paused else po.engine_pause())
+        self.po.request_pause_toggle()
 
     def _op_soft(self):
-        self.po.State.want_safe_stop = True
-        self.po.EMIT.softstop()
+        self.po.request_soft()
 
     def _op_quit(self):
+        self.po.request_quit()
+
+    def _op_rreset(self):
         po = self.po
-        po.EMIT.quit_()
-        po.State.running = False
-        po.State.alive = False
-        po.release_all()
+        if po.State.relics_ref is not None:
+            po.State.relics_ref.reset()
+        po.EMIT.relic_reset(False)
+
+    def _op_rrone(self, idx):
+        po = self.po
+        if po.State.relics_ref is not None:
+            po.State.relics_ref.reset_one(idx)
+            po.EMIT.relic_one(idx, "hotkey")
 
     def _schedule_ops(self):
         ops = {"toggle": self._op_toggle, "pause": self._op_pause,
-               "soft": self._op_soft, "quit": self._op_quit}
+               "soft": self._op_soft, "quit": self._op_quit,
+               "rreset": self._op_rreset}
         for ms, action in self.scen["schedule"]:
-            self.clock.schedule(ms, ops[str(action)])
+            action = str(action)
+            if action.startswith("rrone:"):
+                idx = int(action.split(":", 1)[1])
+                self.clock.schedule(ms, lambda i=idx: self._op_rrone(i))
+                continue
+            self.clock.schedule(ms, ops[action])
         # backstop: if the scenario forgot to quit, end the loop at the
         # duration ceiling so main() always returns
         self.clock.schedule(float(self.scen["duration_ms"]), self._op_quit)

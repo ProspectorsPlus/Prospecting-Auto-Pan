@@ -111,6 +111,8 @@ class FrameEmit(object):
     def __init__(self, po, simulated=False):
         self.po = po
         self.simulated = simulated
+        self.server = None            # backref for tick-committed acks (C4)
+        self._next_origin = None      # origin for the next run.started
         self._wlock = threading.Lock()
         self._seq = 0
         self._t0 = po.time.perf_counter()
@@ -186,14 +188,23 @@ class FrameEmit(object):
         self._ev("engine.bye", d)
 
     # -- EMIT seam methods (same names/signatures as _LegacyEmit) ----------
-    def reset(self, origin="hotkey"):
+    def reset(self, origin=None):
         self._run_counter += 1
         self.run_id = "r%d" % self._run_counter
         po = self.po
+        if origin is None:
+            origin = self._next_origin or "hotkey"
+        self._next_origin = None
         d = {"mode": self._mode_label(), "origin": origin}
         if d["mode"] == "script":
             d["script"] = getattr(po, "SCRIPT_ACTIVE", "")
         self._ev("run.started", self._rd(d))
+
+    def run_init_committed(self):
+        # the tick thread's run.start commit point (protocol section 2):
+        # fresh-init is complete and the run substate is running
+        if self.server is not None:
+            self.server.on_run_init_committed()
 
     def stats(self, flat):
         self._ev("run.stats", self._rd(protocol.split_stats(flat)))
@@ -253,9 +264,14 @@ class FrameEmit(object):
         wire = {"manual": "hotkey"}.get(reason, reason)
         if wire not in protocol.STOP_REASONS:
             wire = "hotkey"
-        self._ev("run.stopped", self._rd(
+        rid = self.run_id
+        seq = self._ev("run.stopped", self._rd(
             {"reason": wire, "final": protocol.split_stats(final or {})}))
         self.run_id = None
+        if self.server is not None:
+            # run.stop's tick-committed ack: terminal event emitted and
+            # inputs released is the commit point (protocol section 4.4)
+            self.server.on_run_stopped(rid, seq)
 
     def quit_(self):
         self._ev("engine.log", {"level": "info", "text": "[QUIT]"})
@@ -311,8 +327,16 @@ class Server(object):
         self.home = home
         self.host = host
         self.emit = FrameEmit(po, simulated=simulated)
+        self.emit.server = self
         self.lock = InstanceLock(host)
         self._shutdown = threading.Event()
+        # C4 transition serialization (protocol section 2): every run-state
+        # mutation happens under this one mutex with its source-state guard
+        # re-checked at execution -- commands, hotkeys, and the tick hook.
+        self.state_lock = threading.Lock()
+        self._pending_start = None    # {"cid": str|None, "origin": str}
+        self._start_inflight = None   # awaiting run_init_committed()
+        self._stop_inflight = None    # awaiting on_run_stopped()
 
     # -- startup ----------------------------------------------------------
     def start(self, requested_protocol):
@@ -347,8 +371,119 @@ class Server(object):
         if getattr(st, "paused", False):
             return "paused"
         if getattr(st, "running", False):
+            if getattr(st, "safe_paused", False):
+                return "safePaused"
             return "running"
         return "idle"
+
+    # -- C4: serialized run-state transitions ------------------------------
+    # Hotkeys (listener/poller thread) and the sim world's scheduled
+    # operator actions land here in ipc mode instead of flipping state
+    # cross-thread; commands land here from the control thread. Guards are
+    # re-checked under the mutex, so an ack can never misreport committed
+    # state and every transition emits exactly one lifecycle event.
+
+    def req_toggle(self, origin="hotkey"):
+        po = self.po
+        with self.state_lock:
+            st = po.State
+            if st.paused:
+                po.engine_resume(origin)
+                return
+            if st.running:
+                self._begin_stop_locked(None, None, origin)
+                return
+            if self._pending_start is None and self._start_inflight is None:
+                self._pending_start = {"cid": None, "origin": origin}
+
+    def req_pause_toggle(self, origin="hotkey"):
+        po = self.po
+        with self.state_lock:
+            st = po.State
+            if st.paused:
+                po.engine_resume(origin)
+            elif st.running and not getattr(st, "safe_paused", False):
+                po.engine_pause(origin)
+            else:
+                self.emit.log_line(0, "[ipc] pause hotkey dropped: state=%s"
+                                   % self._state())
+
+    def req_soft(self, origin="hotkey"):
+        po = self.po
+        with self.state_lock:
+            st = po.State
+            if st.running and not st.paused \
+                    and not getattr(st, "safe_paused", False):
+                st.want_safe_stop = True
+                self.emit.softstop()
+            else:
+                self.emit.log_line(0, "[ipc] soft-stop hotkey dropped: "
+                                      "state=%s" % self._state())
+
+    def req_quit(self, origin="hotkey"):
+        po = self.po
+        with self.state_lock:
+            po.EMIT.quit_()
+            po.State.running = False
+            po.State.paused = False
+            po.State.alive = False
+            po.release_all()
+
+    def _begin_stop_locked(self, cid, reason, origin):
+        """The abort primitive (section 7): flip the running flag so every
+        hold/wait unwinds; the tick thread then reaches its stop edge,
+        emits run.stopped, and the ack (if any) completes there."""
+        po = self.po
+        st = po.State
+        if reason and st.stats is not None:
+            st.stats.stop_reason = reason
+        if reason:
+            st.stop_reason = reason
+        st.want_reset = False           # no stale supervisor reset (4.4)
+        st.safe_wait_skip = True        # interrupt a safe-pause wait now
+        st.paused = False
+        st.running = False
+        po.EMIT.toggle_status(False)    # legacy [STOPPED] breadcrumb
+        po.release_all()
+        if cid is not None:
+            self._stop_inflight = {"cid": cid}
+
+    def tick_hook(self):
+        """Runs on the tick thread at each loop top: consumes a queued
+        start request at its commit boundary (fresh-init runs in this same
+        iteration; run_init_committed() writes the ack)."""
+        with self.state_lock:
+            req = self._pending_start
+            if req is None:
+                return
+            self._pending_start = None
+            st = self.po.State
+            if st.running or st.paused:
+                # CAS source state gone by consumption time (section 2)
+                if req["cid"] is not None:
+                    self._ack_err(req["cid"], protocol.E_BAD_STATE,
+                                  "not idle at commit",
+                                  {"state": self._state()})
+                else:
+                    self.emit.log_line(0, "[ipc] start hotkey dropped: "
+                                          "state=%s" % self._state())
+                return
+            self.emit._next_origin = req["origin"]
+            self._start_inflight = req
+            st.running = True
+            self.po.EMIT.toggle_status(True)   # legacy [RUNNING] breadcrumb
+
+    def on_run_init_committed(self):
+        with self.state_lock:
+            req, self._start_inflight = self._start_inflight, None
+        if req is not None and req.get("cid") is not None:
+            self._ack_ok(req["cid"], {"runId": self.emit.run_id})
+
+    def on_run_stopped(self, run_id, seq):
+        with self.state_lock:
+            req, self._stop_inflight = self._stop_inflight, None
+        if req is not None and req.get("cid") is not None:
+            self._ack_ok(req["cid"], {"runId": run_id, "finalSeq": seq})
 
     def _heartbeat_loop(self):
         while not self._shutdown.is_set():
@@ -441,20 +576,65 @@ class Server(object):
         elif cmd == "engine.shutdown":
             self._ack_ok(cid, {})
             self.shutdown("engine.shutdown command")
+        elif cmd == "run.start":
+            if params.get("mode") != "auto":
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              'run.start requires {"mode":"auto"} in v1.0',
+                              {"mode": params.get("mode")})
+                return
+            with self.state_lock:
+                if st.running or st.paused or self._pending_start is not None \
+                        or self._start_inflight is not None:
+                    self._ack_err(cid, protocol.E_BAD_STATE, "not idle",
+                                  {"state": self._state()})
+                    return
+                # tick-committed (section 4.3): the tick thread consumes the
+                # request, runs fresh-init, and acks at init commit
+                self._pending_start = {"cid": cid, "origin": "cmd"}
+        elif cmd == "run.stop":
+            with self.state_lock:
+                if not (st.running or st.paused):
+                    self._ack_err(cid, protocol.E_BAD_STATE, "no run active",
+                                  {"state": self._state()})
+                    return
+                self._begin_stop_locked(cid, str(params.get("reason")
+                                                 or "user"), "cmd")
+        elif cmd == "run.softStop":
+            with self.state_lock:
+                if not st.running or st.paused \
+                        or getattr(st, "safe_paused", False):
+                    self._ack_err(cid, protocol.E_BAD_STATE,
+                                  "no running run to soft-stop",
+                                  {"state": self._state()})
+                    return
+                # ack commits LADDER ENTRY, not the ladder's outcome -- the
+                # one section 3.3 exception (4.6); outcome arrives as
+                # safety.* events on the tick thread
+                st.want_safe_stop = True
+                self.emit.softstop()
+                self._ack_ok(cid, {"runId": self.emit.run_id})
         elif cmd == "run.pause":
-            if not st.running or st.paused:
-                self._ack_err(cid, protocol.E_BAD_STATE, "no run to pause",
-                              {"state": self._state()})
-                return
-            po.engine_pause()
-            self._ack_ok(cid, {"runId": self.emit.run_id})
+            with self.state_lock:
+                if not st.running or st.paused \
+                        or getattr(st, "safe_paused", False):
+                    self._ack_err(cid, protocol.E_BAD_STATE,
+                                  "no run to pause",
+                                  {"state": self._state()})
+                    return
+                po.engine_pause("cmd")
+                self._ack_ok(cid, {"runId": self.emit.run_id})
         elif cmd == "run.resume":
-            if not st.paused:
-                self._ack_err(cid, protocol.E_BAD_STATE, "not paused",
-                              {"state": self._state()})
-                return
-            po.engine_resume()
-            self._ack_ok(cid, {"runId": self.emit.run_id})
+            with self.state_lock:
+                if st.paused:
+                    po.engine_resume("cmd")
+                    self._ack_ok(cid, {"runId": self.emit.run_id})
+                elif getattr(st, "safe_paused", False):
+                    # legal in safePaused: skip the rest of the wait (4.5)
+                    st.safe_wait_skip = True
+                    self._ack_ok(cid, {"runId": self.emit.run_id})
+                else:
+                    self._ack_err(cid, protocol.E_BAD_STATE, "not paused",
+                                  {"state": self._state()})
         elif cmd == "relic.resetAll":
             if st.relics_ref is None:
                 self._ack_err(cid, protocol.E_BAD_STATE,

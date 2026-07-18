@@ -1,0 +1,34 @@
+[config] applied 2 setting(s) from prospecting_config.json
+
+Prospecting auto-pan macro for macOS.
+
+THE TWO BARS
+    DIG BAR (vertical, right of the player) -- a TIMED skill bar.
+        Hold LMB; a white line bounces along the bar. Release when the white
+        line is on the GREEN end so it "lands" on green. The macro watches the
+        green pixel and releases the instant the white line crosses it.
+    CAPACITY BAR (horizontal, gray -> yellow, bottom centre) -- NOT timed.
+        Each dig adds yellow. May take one or several digs to fill. When it is
+        FULL (all yellow) we run the empty sequence.
+
+ONE FULL LOOP
+    repeat:
+        dig_once()                 # hold LMB, release when white hits green
+        if capacity_full():        # yellow reached the end of the capacity bar
+            empty_sequence()       # S back into water, W forward + LMB shake,
+                                   # then hold LMB to empty the pan
+    # otherwise keep digging until the capacity bar fills
+
+Hotkeys:
+    F8   -> start / stop the loop
+    Esc  -> quit (always releases keys/mouse first)
+
+
+Dig trigger pixel (1078, 532) (white-line release).
+Capacity-full pixel (1120, 900) (yellow = full).
+Press Ctrl+K to start/stop, Escape to quit.
+
+[RELIC TIMERS RESET]
+[   0.00s] === RELIC 'Relic B' timer RESET to full ===
+[QUIT]
+Stopped, all inputs released.

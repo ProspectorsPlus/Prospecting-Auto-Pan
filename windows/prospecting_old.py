@@ -966,6 +966,9 @@ class _LegacyEmit(object):
     def reset(self, origin="hotkey"):
         print("__RESET__", flush=True)
 
+    def run_init_committed(self):
+        pass          # ipc writes the run.start tick-committed ack here
+
     def stats(self, d):
         print("__STATS__ " + json.dumps(d), flush=True)
 
@@ -1114,12 +1117,14 @@ def _send(inp):
 
 
 def key_down(code):
+    _HELD_KEYS.add(code)
     inp = _INPUT(type=INPUT_KEYBOARD,
                  u=_INPUTunion(ki=_KEYBDINPUT(0, code, KEYEVENTF_SCANCODE, 0, 0)))
     _send(inp)
 
 
 def key_up(code):
+    _HELD_KEYS.discard(code)
     inp = _INPUT(type=INPUT_KEYBOARD,
                  u=_INPUTunion(ki=_KEYBDINPUT(0, code,
                               KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0, 0)))
@@ -1551,6 +1556,8 @@ class State:
     stats = None             # SessionStats while running
     last_progress = 0.0      # perf_counter of the last real progress (pan emptied / dig hit)
     want_safe_stop = False   # manual soft-stop test keybind -> trip a safe stop
+    safe_paused = False      # inside the safe-pause retry wait (safePaused)
+    safe_wait_skip = False   # run.resume during safePaused -> retry now
     detector = None          # live Detector (for Fortune River recovery)
     scale = 1.0              # screen scale (physical px / points) for cursor moves
     fr_cur = None            # tracked cursor pos during Fortune River recovery
@@ -3069,10 +3076,25 @@ def post_webhook(event, message, stats=None, shot=False):
     threading.Thread(target=_send, daemon=True).start()
 
 
+_HELD_KEYS = set()      # section 10.1 held-set registry (every injected
+                        # press records itself; every release removes itself)
+
+
 def release_all():
+    """Full input release (protocol section 10.1): everything in the
+    held-set registry, then the whole injectable vocabulary as an
+    idempotent floor -- never a static shortlist. Every termination path
+    (stop edges, safe/hard stop, quit, shutdown, host-death EOF, signal
+    handlers) funnels through this one function."""
+    codes = set(_HELD_KEYS)
+    codes.update((KEY_W, KEY_A, KEY_S, KEY_D, KEY_SHIFT, KEY_SPACE))
+    codes.update(SLOT_KEYCODES[d] for d in range(1, 10))
+    for c in codes:
+        try:
+            key_up(c)
+        except Exception:
+            pass
     try:
-        key_up(KEY_W)
-        key_up(KEY_S)
         mouse_up()
     except Exception:
         pass
@@ -3319,9 +3341,14 @@ def safe_stop(reason, hard=False):
         post_webhook("safe_stop", f"⚠️ Safe-paused: {msg}",
                      State.stats.as_dict() if State.stats else None, shot=True)
         _beep(False)
+        State.safe_paused = True
+        State.safe_wait_skip = False
         end = time.perf_counter() + SAFE_STOP_RETRY_SEC
-        while time.perf_counter() < end and State.running and State.alive:
+        while (time.perf_counter() < end and State.running and State.alive
+               and not State.safe_wait_skip):
             time.sleep(0.2)
+        State.safe_paused = False
+        State.safe_wait_skip = False
         State.want_reset = True
         return
     State.running = False
@@ -5989,7 +6016,7 @@ def _hk_label(spec):
     return "+".join(p)
 
 
-def engine_pause():
+def engine_pause(origin="hotkey"):
     """Session PAUSE: freeze all inputs but keep the session alive -- stats,
     relic timers, earnings, telemetry all survive. Resume picks up mid-run."""
     if State.paused or not State.running:
@@ -6000,10 +6027,10 @@ def engine_pause():
         State.stats.pause_started = time.perf_counter()
         State.stats.pauses += 1
     release_all()
-    EMIT.paused()
+    EMIT.paused(origin)
 
 
-def engine_resume():
+def engine_resume(origin="hotkey"):
     if not State.paused:
         return
     span = 0.0
@@ -6016,7 +6043,48 @@ def engine_resume():
     State.paused = False
     State.last_progress = time.perf_counter()    # don't trip no-progress
     State.running = True
-    EMIT.resumed()
+    EMIT.resumed(origin)
+
+
+def request_toggle(origin="hotkey"):
+    """The start/stop toggle edge (Ctrl+K). Legacy mode: exactly today's
+    listener body, on the calling thread. ipc mode: a guarded CAS
+    transition serialized by the server (protocol section 2)."""
+    if _IPC_SERVER is not None:
+        _IPC_SERVER.req_toggle(origin)
+        return
+    if State.paused:                 # toggling out of pause = resume
+        engine_resume()
+        return
+    State.running = not State.running
+    EMIT.toggle_status(State.running)
+    if not State.running:
+        release_all()
+
+
+def request_pause_toggle(origin="hotkey"):
+    if _IPC_SERVER is not None:
+        _IPC_SERVER.req_pause_toggle(origin)
+        return
+    (engine_resume() if State.paused else engine_pause())
+
+
+def request_soft(origin="hotkey"):
+    if _IPC_SERVER is not None:
+        _IPC_SERVER.req_soft(origin)
+        return
+    State.want_safe_stop = True
+    EMIT.softstop()
+
+
+def request_quit(origin="hotkey"):
+    if _IPC_SERVER is not None:
+        _IPC_SERVER.req_quit(origin)
+        return
+    EMIT.quit_()
+    State.running = False
+    State.alive = False
+    release_all()
 
 
 class _HotkeyPoller:
@@ -6040,6 +6108,7 @@ class _HotkeyPoller:
                 if _dn and not prev.get(_k):
                     if State.relics_ref is not None:
                         State.relics_ref.reset_one(_d - 1)
+                        EMIT.relic_one(_d - 1, "hotkey")
                 prev[_k] = _dn
             for name, spec in binds:
                 vk = _code_to_vk_win((spec or {}).get("code", ""))
@@ -6052,28 +6121,18 @@ class _HotkeyPoller:
                         and bool(spec.get("shift")) == shift)
                 if down and not prev[name]:
                     if name == "quit":
-                        EMIT.quit_()
-                        State.running = False
-                        State.alive = False
-                        release_all()
+                        request_quit()
                         return
                     if name == "toggle":
-                        if State.paused:         # toggling out of pause = resume
-                            engine_resume()
-                        else:
-                            State.running = not State.running
-                            EMIT.toggle_status(State.running)
-                            if not State.running:
-                                release_all()
+                        request_toggle()
                     elif name == "pause":
-                        (engine_resume() if State.paused else engine_pause())
+                        request_pause_toggle()
                     elif name == "rreset":
                         if State.relics_ref is not None:
                             State.relics_ref.reset()
                         EMIT.relic_reset(False)
                     elif name == "soft":
-                        State.want_safe_stop = True
-                        EMIT.softstop()
+                        request_soft()
                     elif name == "popout":
                         EMIT.popout()
                 prev[name] = down
@@ -6288,6 +6347,8 @@ def main():
         try:
             while State.alive:
                 State.tick_beat = time.perf_counter()
+                if _IPC_SERVER is not None:
+                    _IPC_SERVER.tick_hook()
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
                         EMIT.reset()   # tell the app to clear
@@ -6318,6 +6379,7 @@ def main():
                         log("=== RUNNING (live trace below) ===")
                         post_webhook("start", "▶️ Macro started",
                                      State.stats.as_dict())
+                        EMIT.run_init_committed()
                     if State.want_safe_stop:
                         State.want_safe_stop = False
                         safe_stop("manual soft-stop (test)")
@@ -6405,6 +6467,9 @@ def main():
                                          State.stats.as_dict())
                         State.stop_reason = ""
                         State.safe_retries = 0
+                        if _IPC_SERVER is not None:
+                            State.want_reset = False      # section 4.4
+                            State.want_safe_stop = False  # 4.6 voiding
                     was_running = False
                     time.sleep(0.02)
         except Exception as _e:

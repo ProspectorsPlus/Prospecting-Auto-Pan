@@ -221,6 +221,9 @@ def test_commands():
                 continue
             started = (kind == "frame" and obj.get("t") == "ev"
                        and obj["ev"] == "run.started")
+            if started:
+                chk(obj["data"].get("origin") == "hotkey",
+                    "ev.run-started.origin-hotkey: sim chord tagged hotkey")
         chk(started, "run started via scheduled sim hotkey")
         _send(p, "c-2", "run.resume")           # not paused -> BAD_STATE
         _send(p, "c-3", "run.pause")
@@ -274,7 +277,10 @@ def test_commands():
 def test_heartbeat_and_eof():
     """Heartbeats flow; stdin EOF = host death -> release + bye + exit."""
     print("[contract] heartbeat + host-death EOF")
-    p = spawn("interactive-run")
+    # idle-command idles at real pace (no scheduled toggle), so liveness
+    # is observable deterministically -- interactive-run races its virtual
+    # clock to the duration backstop within seconds once the run starts
+    p = spawn("idle-command")
     try:
         deadline = time.time() + 15
         beats = 0
@@ -442,6 +448,129 @@ def test_client_crash_taxonomy():
         cli.kill()
 
 
+def test_run_commands():
+    """C4: run.start / run.stop / run.softStop -- tick-committed acks,
+    origins, safe-pause interruption, run identity."""
+    print("[contract] run lifecycle commands (idle-command)")
+    evs = []
+    cli = _make_client("idle-command", on_event=evs.append).spawn()
+    try:
+        chk(cli.wait_ready(), "run-cmd: engine ready")
+        a = cli.request("run.start", {})
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_PARAMS",
+            "cmd.run-start: params exhaustive (missing mode -> BAD_PARAMS)")
+        a = cli.request("run.start", {"mode": "auto"})
+        chk(a.get("ok") is True and a["result"].get("runId"),
+            "cmd.run-start.ack-after-init: tick-committed ok {runId}")
+        rid = (a.get("result") or {}).get("runId")
+        starts = [e for e in evs if e["ev"] == "run.started"]
+        chk(bool(starts) and starts[0]["data"]["origin"] == "cmd"
+            and starts[0]["data"].get("runId") == rid,
+            "ev.run-started.origin-cmd: origin cmd, same runId as ack")
+        chk(starts and starts[0]["data"]["mode"] == "script",
+            "cmd.run-start.mode-derivation: SCRIPT_MODE config -> script")
+        a = cli.request("run.start", {"mode": "auto"})
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_STATE",
+            "cmd.run-start.bad-state: refused while running")
+        t0 = time.time()
+        a = cli.request("run.softStop")
+        chk(a.get("ok") is True and (time.time() - t0) < 3.0,
+            "cmd.soft-stop.ack-on-entry: fast-class ack, ladder not awaited")
+        deadline = time.time() + 30
+        while time.time() < deadline and not any(
+                e["ev"] == "safety.event"
+                and e["data"].get("type") == "safe_stop" for e in evs):
+            time.sleep(0.1)
+        chk(any(e["ev"] == "safety.event"
+                and e["data"].get("type") == "safe_stop" for e in evs),
+            "cmd.soft-stop.ladder: safety.event safe_stop narrated")
+        pt0 = time.time()
+        p = cli.request("engine.ping")
+        chk(p.get("ok") is True and (time.time() - pt0) < 3.0,
+            "cmd.ping.during-blocked-tick: serviceable during the ladder")
+        a = cli.request("run.stop", {"reason": "user"})
+        chk(a.get("ok") is True and a["result"].get("runId") == rid
+            and isinstance(a["result"].get("finalSeq"), int),
+            "cmd.run-stop: ack {runId, finalSeq} after terminal emit")
+        stops = [e for e in evs if e["ev"] == "run.stopped"]
+        chk(bool(stops) and stops[-1]["data"]["reason"] == "user",
+            "cmd.run-stop.interrupts-safe-pause: reason user, stopped now")
+        chk(stops and stops[-1]["seq"] == a["result"]["finalSeq"],
+            "cmd.run-stop: finalSeq is the run.stopped seq")
+        fin = stops[-1]["data"].get("final") or {}
+        chk(set(fin.get("raw", {})) == set(protocol.STATS_RAW_KEYS),
+            "ev.run-stopped.final-stats-fresh: full raw partition present")
+        a = cli.request("run.stop")
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_STATE",
+            "cmd.run-stop.idle-bad-state")
+        a = cli.request("run.softStop")
+        chk(a.get("ok") is False and a["error"]["code"] == "BAD_STATE",
+            "cmd.soft-stop: BAD_STATE while idle")
+        a = cli.request("run.start", {"mode": "auto"})
+        chk(a.get("ok") is True and a["result"].get("runId")
+            and a["result"]["runId"] != rid,
+            "run identity: new start -> new runId (section 3.2)")
+        a = cli.request("run.pause")
+        chk(a.get("ok") is True, "cmd.pause: ok while running")
+        pevs = [e for e in evs if e["ev"] == "run.paused"]
+        chk(bool(pevs) and pevs[-1]["data"].get("origin") == "cmd",
+            "ev.pause-resume.origins: command pause tagged origin=cmd")
+        a = cli.request("run.stop")
+        chk(a.get("ok") is True, "cmd.run-stop: valid from paused")
+        cli.shutdown()
+    finally:
+        cli.kill()
+
+
+def test_mode_derivation():
+    """Section 4.3 precedence: tracker > script > treasure > geode >
+    shards > standard (unit-level over the emitter's label logic)."""
+    print("[contract] run.start mode derivation precedence")
+    import time as _t
+    from prospector_engine.ipc import FrameEmit
+
+    class _NS(object):
+        pass
+
+    def label(**flags):
+        ns = _NS()
+        ns.time = _t
+        ns.__file__ = ENGINE
+        for k, v in flags.items():
+            setattr(ns, k, v)
+        return FrameEmit(ns)._mode_label()
+
+    chk(label(TRACKER_MODE=True, SCRIPT_MODE=True, TREASURE_MODE=True,
+              GEODE_MODE=True, SHARDS_DIG_CLICKS=3) == "tracker",
+        "cmd.run-start.mode-derivation: tracker wins over all")
+    chk(label(SCRIPT_MODE=True, TREASURE_MODE=True, GEODE_MODE=True) ==
+        "script", "cmd.run-start.mode-derivation: script > treasure")
+    chk(label(TREASURE_MODE=True, GEODE_MODE=True) == "treasure",
+        "cmd.run-start.mode-derivation: treasure > geode")
+    chk(label(GEODE_MODE=True, SHARDS_DIG_CLICKS=3) == "geode",
+        "cmd.run-start.mode-derivation: geode over shards when both set")
+    chk(label(SHARDS_DIG_CLICKS=3) == "shards",
+        "cmd.run-start.mode-derivation: shards from dig clicks")
+    chk(label() == "standard",
+        "cmd.run-start.mode-derivation: standard fallback")
+
+
+def test_relic_hotkey_events():
+    """ISS-154: engine-owned relic hotkeys emit relic.changed in ipc mode."""
+    print("[contract] relic hotkey chords emit relic.changed (relic-hotkeys)")
+    out, _err, rc = run_batch("relic-hotkeys")
+    frames, _d, perr = parse_stream(out)
+    chk(rc == 0 and perr == 0, "relic-hotkeys: clean framed run")
+    ch = events(frames, "relic.changed")
+    chk(any(e["data"].get("kind") == "resetAll"
+            and e["data"].get("origin") == "hotkey" for e in ch),
+        "ev.relic-changed.origins: hotkey reset-all chord emits")
+    chk(any(e["data"].get("kind") == "resetOne"
+            and e["data"].get("index") == 1
+            and e["data"].get("origin") == "hotkey" for e in ch),
+        "ev.relic-changed.origins: hotkey reset-one chord emits (ISS-154)")
+
+
 def test_legacy_replay():
     """Legacy mode must keep reproducing the C0 goldens byte-for-byte."""
     print("[contract] legacy golden replay (delegates to characterization)")
@@ -459,6 +588,9 @@ if __name__ == "__main__":
     test_heartbeat_and_eof()
     test_instance_lock()
     test_protocol_mismatch()
+    test_run_commands()
+    test_mode_derivation()
+    test_relic_hotkey_events()
     test_engine_client()
     test_client_refuses_simulated()
     test_client_crash_taxonomy()
