@@ -1,0 +1,15 @@
+{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "simulated": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 0}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
+{"data": {"level": "info", "text": "[RUNNING]"}, "ev": "engine.log", "seq": 2}
+{"data": {"mode": "script", "origin": "hotkey", "runId": "r1", "script": "bagguard"}, "ev": "run.started", "seq": 3}
+{"data": {"level": "info", "text": "=== RUNNING (live trace below) ==="}, "ev": "engine.log", "seq": 4}
+{"data": {"level": "info", "text": "=== CUSTOM SCRIPT: bagguard ==="}, "ev": "engine.log", "seq": 5}
+{"data": {"id": "b1", "pass": 0, "runId": "r1", "type": "tap_key"}, "ev": "script.block", "seq": 6}
+{"data": {"id": "b1", "pass": 1, "runId": "r1", "type": "tap_key"}, "ev": "script.block", "seq": 7}
+{"data": {"id": "b1", "pass": 2, "runId": "r1", "type": "tap_key"}, "ev": "script.block", "seq": 8}
+{"data": {"id": "b1", "pass": 3, "runId": "r1", "type": "tap_key"}, "ev": "script.block", "seq": 9}
+{"data": {"level": "info", "text": "=== STOP after 3 pans (bag-full guard) ==="}, "ev": "engine.log", "seq": 10}
+{"data": {"level": "info", "text": "=== STOPPED (bag-full) ==="}, "ev": "engine.log", "seq": 11}
+{"data": {"final": {"derived": {"clean_pct": 100.0, "clicks_per_pan": 0.0, "cyc_last_s": 0.55, "cyc_mean_s": 0.55, "cyc_p50_s": 0.55, "cyc_p95_s": 0.55, "digs_per_pan": 0.0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0, "shards_per_hr": 0, "shards_per_pan": 0.0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "bagguard", "stop_reason": "bag-full", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 3, "cycles": 3, "dig_clicks": 0, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 0, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 1, "safe_stops": 0, "shake_misses": 0, "shards_earned": 0}}, "reason": "bag-full", "runId": "r1"}, "ev": "run.stopped", "seq": 12}
+{"data": {"level": "info", "text": "[QUIT]"}, "ev": "engine.log", "seq": 13}
+{"data": {"level": "info", "text": "Stopped, all inputs released."}, "ev": "engine.log", "seq": 14}
+{"data": {"message": "engine main loop ended", "reason": "shutdown"}, "ev": "engine.bye", "seq": 15}

@@ -1,0 +1,236 @@
+{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "simulated": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 0}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
+{"data": {"level": "info", "text": "[RUNNING]"}, "ev": "engine.log", "seq": 2}
+{"data": {"mode": "standard", "origin": "hotkey", "runId": "r1"}, "ev": "run.started", "seq": 3}
+{"data": {"level": "info", "text": "=== RUNNING (live trace below) ==="}, "ev": "engine.log", "seq": 4}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 5}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 6}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 7}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 8}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 9}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 10}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 11}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 12}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 13}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 14}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 15}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 16}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=1)"}, "ev": "engine.log", "seq": 17}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 15, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 5, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 6, "safe_stops": 0, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 18}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 19}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #1 (click to empty) **"}, "ev": "engine.log", "seq": 20}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 21}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 22}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 23}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 24}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 25}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 26}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 27}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 28}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 29}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 30}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 31}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 32}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 33}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 34}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 35}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=2)"}, "ev": "engine.log", "seq": 36}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 30, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 10, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 13, "safe_stops": 0, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 37}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 38}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #2 (click to empty) **"}, "ev": "engine.log", "seq": 39}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 40}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 41}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 42}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 43}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 44}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 45}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 46}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 47}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 48}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 49}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 50}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 51}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 52}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 53}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 54}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=3)"}, "ev": "engine.log", "seq": 55}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 45, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 15, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 21, "safe_stops": 0, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 56}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 57}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #3 (click to empty) **"}, "ev": "engine.log", "seq": 58}
+{"data": {"dirty": true, "reason": "no progress -- stuck (shake glitch?)", "runId": "r1", "type": "safe_stop"}, "ev": "safety.event", "seq": 59}
+{"data": {"attempt": 1, "maxAttempts": 3, "reason": "no progress -- stuck (shake glitch?)", "retryInS": 60, "runId": "r1"}, "ev": "safety.safePaused", "seq": 60}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 45, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 15, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 81, "safe_stops": 1, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 61}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 62}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 63}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 64}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 65}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 66}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 67}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 68}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 69}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 70}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 71}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 72}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 73}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=1)"}, "ev": "engine.log", "seq": 74}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 60, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 20, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 87, "safe_stops": 1, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 75}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 76}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #1 (click to empty) **"}, "ev": "engine.log", "seq": 77}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 78}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 79}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 80}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 81}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 82}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 83}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 84}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 85}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 86}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 87}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 88}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 89}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 90}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 91}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 92}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=2)"}, "ev": "engine.log", "seq": 93}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 75, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 25, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 95, "safe_stops": 1, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 94}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 95}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #2 (click to empty) **"}, "ev": "engine.log", "seq": 96}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 97}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 98}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 99}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 100}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 101}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 102}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 103}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 104}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 105}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 106}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 107}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 108}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 109}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 110}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 111}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=3)"}, "ev": "engine.log", "seq": 112}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 90, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 30, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 102, "safe_stops": 1, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 113}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 114}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #3 (click to empty) **"}, "ev": "engine.log", "seq": 115}
+{"data": {"dirty": true, "reason": "no progress -- stuck (shake glitch?)", "runId": "r1", "type": "safe_stop"}, "ev": "safety.event", "seq": 116}
+{"data": {"attempt": 2, "maxAttempts": 3, "reason": "no progress -- stuck (shake glitch?)", "retryInS": 60, "runId": "r1"}, "ev": "safety.safePaused", "seq": 117}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 90, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 30, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 162, "safe_stops": 2, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 118}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 119}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 120}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 121}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 122}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 123}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 124}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 125}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 126}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 127}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 128}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 129}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 130}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=1)"}, "ev": "engine.log", "seq": 131}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 105, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 35, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 169, "safe_stops": 2, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 132}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 133}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #1 (click to empty) **"}, "ev": "engine.log", "seq": 134}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 135}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 136}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 137}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 138}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 139}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 140}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 141}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 142}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 143}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 144}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 145}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 146}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 147}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 148}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 149}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=2)"}, "ev": "engine.log", "seq": 150}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 120, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 40, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 176, "safe_stops": 2, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 151}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 152}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #2 (click to empty) **"}, "ev": "engine.log", "seq": 153}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 154}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 155}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 156}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 157}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 158}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 159}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 160}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 161}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 162}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 163}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 164}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 165}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 166}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 167}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 168}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=3)"}, "ev": "engine.log", "seq": 169}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 135, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 45, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 183, "safe_stops": 2, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 170}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 171}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #3 (click to empty) **"}, "ev": "engine.log", "seq": 172}
+{"data": {"dirty": true, "reason": "no progress -- stuck (shake glitch?)", "runId": "r1", "type": "safe_stop"}, "ev": "safety.event", "seq": 173}
+{"data": {"attempt": 3, "maxAttempts": 3, "reason": "no progress -- stuck (shake glitch?)", "retryInS": 60, "runId": "r1"}, "ev": "safety.safePaused", "seq": 174}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 135, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 45, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 243, "safe_stops": 3, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 175}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 176}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 177}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 178}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 179}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 180}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 181}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 182}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 183}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 184}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 185}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 186}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 187}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=1)"}, "ev": "engine.log", "seq": 188}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 150, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 50, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 250, "safe_stops": 3, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 189}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 190}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #1 (click to empty) **"}, "ev": "engine.log", "seq": 191}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 192}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 193}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 194}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 195}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 196}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 197}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 198}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 199}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 200}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 201}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 202}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 203}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 204}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 205}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 206}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=2)"}, "ev": "engine.log", "seq": 207}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 165, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 55, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 257, "safe_stops": 3, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 208}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 209}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #2 (click to empty) **"}, "ev": "engine.log", "seq": 210}
+{"data": {"level": "info", "text": "    ** BREAK-OUT: click to finish any active shake, then reposition **"}, "ev": "engine.log", "seq": 211}
+{"data": {"contents": "EMPTY", "dirty": true, "reason": "stuck at LIMBO/EMPTY, forcing an escape", "runId": "r1", "type": "break_out", "where": "LIMBO"}, "ev": "safety.event", "seq": 212}
+{"data": {"level": "info", "text": "    break-out: reposition W fwd"}, "ev": "engine.log", "seq": 213}
+{"data": {"level": "info", "text": "LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)"}, "ev": "engine.log", "seq": 214}
+{"data": {"phase": "dig", "runId": "r1"}, "ev": "run.phase", "seq": 215}
+{"data": {"level": "info", "text": "    no dig registered (round 1) -> nudge W fwd"}, "ev": "engine.log", "seq": 216}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 217}
+{"data": {"level": "info", "text": "    no dig registered (round 2) -> nudge W fwd"}, "ev": "engine.log", "seq": 218}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 219}
+{"data": {"level": "info", "text": "    no dig registered (round 3) -> nudge W fwd"}, "ev": "engine.log", "seq": 220}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 221}
+{"data": {"level": "info", "text": "    no dig registered (round 4) -> nudge W fwd"}, "ev": "engine.log", "seq": 222}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 223}
+{"data": {"level": "info", "text": "    no dig registered (round 5) -> nudge W fwd"}, "ev": "engine.log", "seq": 224}
+{"data": {"dirty": true, "reason": "no dig registered, nudging forward to find land", "runId": "r1", "type": "nudge"}, "ev": "safety.event", "seq": 225}
+{"data": {"level": "info", "text": "    dig-probe: no land after 5 rounds (land_fails=3)"}, "ev": "engine.log", "seq": 226}
+{"data": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 180, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 0, "loot_value": 0, "money_earned": 0, "nudges": 60, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 264, "safe_stops": 3, "shake_misses": 0, "shards_earned": 0}, "runId": "r1"}, "ev": "run.stats", "seq": 227}
+{"data": {"dirty": true, "reason": "nothing completed for 5s, click-to-empty recovery", "runId": "r1", "type": "no_progress"}, "ev": "safety.event", "seq": 228}
+{"data": {"level": "info", "text": "** no progress for 5s -> break-out #3 (click to empty) **"}, "ev": "engine.log", "seq": 229}
+{"data": {"dirty": true, "reason": "no progress -- stuck (shake glitch?)", "runId": "r1", "type": "safe_stop"}, "ev": "safety.event", "seq": 230}
+{"data": {"reason": "no progress -- stuck (shake glitch?)", "retriesExhausted": true, "runId": "r1"}, "ev": "safety.hardStopped", "seq": 231}
+{"data": {"level": "info", "text": "=== STOPPED (safe-stop) ==="}, "ev": "engine.log", "seq": 232}
+{"data": {"final": {"derived": {"clean_pct": 0, "clicks_per_pan": 0, "cyc_last_s": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "digs_per_pan": 0, "loot_per_hr": 0, "money_per_hr": 0, "money_per_pan": 0, "pans_per_hr": 0.0, "shards_per_hr": 0.0, "shards_per_pan": 0, "total_per_hr": 0}, "meta": {"input_lag": {"max_ms": 0.0, "mean_ms": 0.0, "n": 0}, "relics": [], "script": "", "stop_reason": "safe-stop", "tracker": false}, "raw": {"best_kg": 0.0, "by_mod": {}, "by_rarity": {}, "clean_cycles": 0, "cycles": 0, "dig_clicks": 180, "digs": 0, "find_kg": 0.0, "finds_count": 0, "finds_lowconf": 0, "finds_stack": 0, "hard_stops": 1, "loot_value": 0, "money_earned": 0, "nudges": 60, "pauses": 0, "recoveries": 0, "relics_used": 0, "runtime_s": 264, "safe_stops": 4, "shake_misses": 0, "shards_earned": 0}}, "reason": "safe-stop", "runId": "r1"}, "ev": "run.stopped", "seq": 233}
+{"data": {"level": "info", "text": "[QUIT]"}, "ev": "engine.log", "seq": 234}
+{"data": {"level": "info", "text": "Stopped, all inputs released."}, "ev": "engine.log", "seq": 235}
+{"data": {"message": "engine main loop ended", "reason": "shutdown"}, "ev": "engine.bye", "seq": 236}
