@@ -31,7 +31,8 @@ def load(path, name):
 print('[1] py_compile')
 import py_compile
 for f in ['prospecting_app.py', 'prospecting_old.py',
-          'prospector_engine/engine.py', 'prospecting_ui.py',
+          'prospector_engine/engine.py', 'prospector_engine/platform_mac.py',
+          'prospector_engine/platform_win.py', 'prospecting_ui.py',
           'prospecting_assistant.py',
           'windows/prospecting_app.py', 'windows/prospecting_old.py',
           'windows/prospecting_ui.py', 'windows/prospecting_assistant.py']:
@@ -183,8 +184,6 @@ for name, a, b in REGIONS:
             print('   ', d[:160])
 
 EXTRA = [
-    ('prospector_engine/engine.py', 'windows/prospecting_old.py',
-     [('studio-engine', '# CUSTOM SCRIPTS (Prospector Studio)', '\ndef treasure_tick')]),
     ('prospecting_ui.py', 'windows/prospecting_ui.py',
      [('studio-schema', '# PROSPECTOR STUDIO -- the block schema', '\ndef render(')]),
 ]
@@ -197,6 +196,21 @@ for mpath, wpath, regs in EXTRA:
         if sm is None or sw is None: continue
         if sm == sw: ok(f'{name}: identical ({len(sm)} bytes)')
         else: fail(f'{name}: DIFFERS (mac {len(sm)} vs win {len(sw)} bytes)')
+
+# [Phase 04 C7] the engine is single-source: the studio-engine block lives only
+# in prospector_engine/engine.py. The old mac<->win engine-mirror lockstep is
+# replaced by: launcher shims byte-identical + no second engine body under
+# windows/ (platform I/O lives in prospector_engine/platform_mac|win.py).
+print('[5b] engine single-source (shims identical, no windows engine copy)')
+_sm = open('prospecting_old.py', encoding='utf-8').read()
+_sw = open('windows/prospecting_old.py', encoding='utf-8').read()
+if _sm == _sw: ok(f'launcher shims identical ({len(_sm)} bytes)')
+else: fail('launcher shims differ between mac and windows')
+if 'def treasure_tick' in _sw or 'CUSTOM SCRIPTS (Prospector Studio)' in _sw:
+    fail('windows/prospecting_old.py contains an engine body (second copy)')
+elif 'def treasure_tick' not in open('prospector_engine/engine.py', encoding='utf-8').read():
+    fail('prospector_engine/engine.py lost the studio-engine block')
+else: ok('single engine source (block present once, in the package)')
 
 print()
 print('RESULT:', 'ALL CHECKS PASS' if not FAILS else f'{len(FAILS)} FAILURES')

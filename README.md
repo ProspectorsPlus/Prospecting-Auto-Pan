@@ -11,7 +11,7 @@ and machine-locked access codes. The complete architecture map lives in
 python3 prospecting_app.py
 ```
 Fully quit and reopen to reload UI changes. The Windows copies live under `windows/` and stay
-byte-identical for all shared code; `Prospectors Plus Windows.zip` is the 14-file bundle.
+byte-identical for all shared code; `Prospectors Plus Windows.zip` is the 22-file bundle (incl. prospector_engine/).
 
 ## Prospector Studio
 Studio is the built-in visual scripting system: users compose custom farming modes from

@@ -147,7 +147,7 @@ for those platform layers. This "lockstep" is a hard rule (§18).
 `build.bat`, `Install.bat`, `Prospectors Plus.bat`, `README.txt`, `icon.ico`, plus the mirrored
 `prospecting_app.py` / `prospecting_old.py` / `prospecting_ui.py` / `prospecting_assistant.py` and
 seed `prospecting_config.json` / `prospecting_prices.json`. The `Prospectors Plus Windows.zip` is a
-14-file bundle rebuilt whenever anything under `windows/` changes.
+22-file bundle (windows/ + prospector_engine/) rebuilt whenever anything under `windows/` or `prospector_engine/` changes.
 
 **Data / state (JSON):**
 - `prospecting_config.json` — saved settings (the 144 keys) + calibration.
@@ -548,7 +548,7 @@ copy; shared code stays byte-identical. Only the input/capture layer and a few p
 3. Confirm exactly **144** unique `data-key` settings render.
 4. `python3 finds_sim.py` → "ALL SCENARIOS PASS".
 5. Confirm mac/Windows lockstep (slice-compare the shared blocks).
-6. Rebuild `Prospectors Plus Windows.zip` (14 files) if anything under `windows/` changed.
+6. Rebuild `Prospectors Plus Windows.zip` (22 files: the 14 windows/ files + the 8 prospector_engine/ modules, added from the repo root) if anything under `windows/` or `prospector_engine/` changed.
 
 The assistant keeps reusable one-off Python checkers for these (JS extraction + node --check + key
 count + target resolution + lockstep). Always green before moving on.

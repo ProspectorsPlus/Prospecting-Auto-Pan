@@ -36,6 +36,18 @@ SETUP
     4.  Run:
           python3 prospecting_macro.py
         Tab into Roblox, press F8 to start, F8 to pause, Esc to quit.
+
+SETUP (WINDOWS)
+    1.  Run Install.bat (installs Python + the needed packages), or:
+          pip install mss numpy pywebview
+    2.  Open the app (Prospectors Plus) or run:  python prospecting_app.py
+    3.  Calibrate the pixels for YOUR screen in the app's Calibrate tab.
+    4.  Tab into Roblox, press Ctrl+K to start/stop, Esc to quit.
+
+NOTE [Phase 04 C7]: one engine source serves both platforms. Input uses Quartz
+CGEvents on macOS and SendInput scancodes on Windows; hotkeys use pynput (mac)
+or GetAsyncKeyState polling (win); screen capture uses mss on both. The
+platform layer lives in prospector_engine/platform_mac.py / platform_win.py.
 """
 
 import sys
@@ -54,8 +66,18 @@ from collections import namedtuple
 # (prospecting_config.json next to the launcher shim) must not move with it.
 # The shim exports its own directory; standalone imports fall back to the
 # package's parent, which is the same directory in every shipped layout.
-_HOME_DIR = (os.environ.get("PPENGINE_HOME")
-             or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# [C7] Frozen Windows bundles (PyInstaller) keep the config in a writable
+# per-user folder, matching prospecting_app.py's data dir.
+if getattr(sys, "frozen", False):
+    _HOME_DIR = os.path.join(os.environ.get("LOCALAPPDATA")
+                             or os.path.expanduser("~"), "Prospectors Plus")
+else:
+    _HOME_DIR = (os.environ.get("PPENGINE_HOME")
+                 or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+try:
+    os.makedirs(_HOME_DIR, exist_ok=True)
+except OSError:
+    pass
 CONFIG_FILE = os.path.join(_HOME_DIR, "prospecting_config.json")
 
 
@@ -710,24 +732,10 @@ FR_WALK_MAX_MS     = 6000         # max W walk to reach the water/dig spot (ms)
 FR_END_A_MS        = 300          # hold A this long once on land, before restarting
 FR_CROSS_CONFIRM   = 3            # consecutive cue reads to confirm water-cross / arrival
 
-# --- Keys (macOS ANSI virtual keycodes) --------------------------------------
-KEY_W = 13
-KEY_S = 1
-KEY_A = 0
-KEY_D = 2
-KEY_SHIFT = 56          # left Shift (open Fast Travel)
-KEY_SPACE = 49          # Space (jump; Studio scripts)
-# Hotbar slot number -> macOS virtual keycode (digits 1..0).
-SLOT_KEYCODES = {1: 18, 2: 19, 3: 20, 4: 21, 5: 23,
-                 6: 22, 7: 26, 8: 28, 9: 25, 0: 29}
-
-# --- Hotkeys -----------------------------------------------------------------
-# Toggle start/stop = Ctrl + (TOGGLE_VK).  Quit = Esc.
-# F-keys are unreliable on macOS (media keys), so we use a Ctrl chord.
-# TOGGLE_VK is the macOS virtual keycode of the second key: K=40, J=38, P=35.
-TOGGLE_VK = 40          # 'K'  -> Ctrl+K toggles
-TOGGLE_NAME = "Ctrl+K"
-SOFTSTOP_VK = 38        # 'J' -> Ctrl+J = manual soft-stop (test)
+# --- Keys / hotkeys: platform keycode tables [Phase 04 C7] -------------------
+# KEY_*, SLOT_KEYCODES and the platform hotkey constants (macOS TOGGLE_VK /
+# SOFTSTOP_VK / _CODE_VK_MAC, Windows VK_*) live in the platform layer and are
+# re-exported into this module by the platform glue below.
 
 # Customisable hotkeys (set in the app Keybinds tab). Each is a combo dict:
 # {ctrl, alt, shift, code} where code is a JS KeyboardEvent.code (e.g. "KeyK").
@@ -744,26 +752,40 @@ RELIC_LAND_MAX_S   = 45     # give up waiting for land after this and place
 RELIC_RELATIVE     = True   # relic timers follow REAL time (the in-game buff
                             # keeps burning while the macro is paused). Off =
                             # timers freeze with the pause.
-_CODE_VK_MAC = {"KeyA":0,"KeyB":11,"KeyC":8,"KeyD":2,"KeyE":14,"KeyF":3,"KeyG":5,"KeyH":4,"KeyI":34,"KeyJ":38,"KeyK":40,"KeyL":37,"KeyM":46,"KeyN":45,"KeyO":31,"KeyP":35,"KeyQ":12,"KeyR":15,"KeyS":1,"KeyT":17,"KeyU":32,"KeyV":9,"KeyW":13,"KeyX":7,"KeyY":16,"KeyZ":6,"Digit1":18,"Digit2":19,"Digit3":20,"Digit4":21,"Digit5":23,"Digit6":22,"Digit7":26,"Digit8":28,"Digit9":25,"Digit0":29,"Escape":53,"Space":49,"F1":122,"F2":120,"F3":99,"F4":118,"F5":96,"F6":97,"F7":98,"F8":100,"F9":101,"F10":109,"F11":103,"F12":111}
 
 # ============================================================================
 # Below here you normally don't need to edit.
 # ============================================================================
 
-try:
-    import numpy as np
-    import mss
-    import Quartz
-    from pynput import keyboard
-except ImportError as e:
-    sys.exit(
-        f"Missing dependency: {e}\n"
-        "Install with:\n"
-        "  pip3 install pyobjc-framework-Quartz mss numpy pynput --break-system-packages"
-    )
+# ---- Platform layer [Phase 04 C7] -------------------------------------------
+# One shared engine source. All per-platform I/O (input synthesis, window
+# lookup, display scale, hotkey listening, dependency guards) lives in
+# prospector_engine/platform_mac.py / platform_win.py. The names re-exported
+# below stay ENGINE-module globals so tests and the sim world keep patching
+# this module; platform code reads engine state back through bind().
+if sys.platform == "win32":
+    from prospector_engine import platform_win as _plat
+else:
+    from prospector_engine import platform_mac as _plat
 
-# Use the non-deprecated MSS class when available (falls back on old name).
-_MSS = getattr(mss, "MSS", None) or mss.mss
+np = _plat.np
+mss = _plat.mss
+_MSS = _plat._MSS
+globals().update(_plat.ENGINE_GLOBALS)
+globals().update(_plat.PLATFORM_SEAMS)
+_plat.bind(sys.modules[__name__])
+get_scale = _plat.get_scale
+find_window_origin = _plat.find_window_origin
+find_roblox_rect = _plat.find_roblox_rect
+key_down = _plat.key_down
+key_up = _plat.key_up
+mouse_down = _plat.mouse_down
+mouse_up = _plat.mouse_up
+drag_alive = _plat.drag_alive
+move_cursor = _plat.move_cursor
+scroll_down = _plat.scroll_down
+fr_move_to = _plat.fr_move_to
+make_listener = _plat.make_listener
 
 
 # ---- Phase 04: engine process flags (set by __main__ argv parsing) ----------
@@ -782,62 +804,7 @@ def _as_ref_list(spec):
     return [tuple(c) for c in spec]
 
 
-# ---- Retina scale (detection in physical px; CGEvent in points) -------------
-def get_scale(sct):
-    main = sct.monitors[1]
-    bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
-    logical_w = bounds.size.width
-    return main["width"] / logical_w if logical_w else 1.0
-
-
-# ---- Window-relative capture (opt-in) ---------------------------------------
-def find_window_origin():
-    """(x, y) of the Roblox game viewport's top-left in PHYSICAL pixels, or None.
-    macOS best-effort via the window list; returns None if not found."""
-    try:
-        opt = (Quartz.kCGWindowListOptionOnScreenOnly
-               | Quartz.kCGWindowListExcludeDesktopElements)
-        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
-        with _MSS() as sct:
-            scale = get_scale(sct)
-        best, area = None, 0
-        for w in wins or []:
-            owner = str(w.get("kCGWindowOwnerName", ""))
-            if ROBLOX_TITLE.lower() in owner.lower():
-                b = w.get("kCGWindowBounds", {})
-                a = b.get("Width", 0) * b.get("Height", 0)
-                if a > area:
-                    area, best = a, b
-        if best:
-            return (int(best["X"] * scale), int(best["Y"] * scale))
-    except Exception as e:
-        print(f"[window] lookup failed: {e}")
-    return None
-
-
-def find_roblox_rect():
-    """Roblox game client area as (x, y, w, h) in PHYSICAL pixels, or None.
-    macOS: largest on-screen window whose owner is 'Roblox' (not Studio)."""
-    try:
-        opt = (Quartz.kCGWindowListOptionOnScreenOnly
-               | Quartz.kCGWindowListExcludeDesktopElements)
-        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
-        with _MSS() as sct:
-            scale = get_scale(sct)
-        best, area = None, 0
-        for w in wins or []:
-            owner = str(w.get("kCGWindowOwnerName", ""))
-            if "roblox" in owner.lower() and "studio" not in owner.lower():
-                b = w.get("kCGWindowBounds", {})
-                ww, hh = b.get("Width", 0), b.get("Height", 0)
-                if ww * hh > area and ww >= 320 and hh >= 240:
-                    area, best = ww * hh, b
-        if best:
-            return (int(best["X"] * scale), int(best["Y"] * scale),
-                    int(best["Width"] * scale), int(best["Height"] * scale))
-    except Exception as e:
-        print(f"[window] lookup failed: {e}")
-    return None
+# ---- Display scale + window lookup: platform layer [C7] ----------------------
 
 
 def apply_auto_calibrate():
@@ -1112,24 +1079,7 @@ def emit_event(etype, reason="", where="", contents=""):
         pass
 
 
-# ---- Input engine (Quartz CGEvent, HID level) -------------------------------
-HID = Quartz.kCGHIDEventTap
-
-
-def _post(ev):
-    Quartz.CGEventPost(HID, ev)
-
-
-def key_down(code):
-    _HELD_KEYS.add(code)
-    _post(Quartz.CGEventCreateKeyboardEvent(None, code, True))
-
-
-def key_up(code):
-    _HELD_KEYS.discard(code)
-    _post(Quartz.CGEventCreateKeyboardEvent(None, code, False))
-
-
+# ---- Input engine: platform layer [C7] (key/mouse posting, cursor, drags) ---
 def tap_key(code, ms=40):
     """Press and release a key (e.g. a hotbar number)."""
     if code is None:
@@ -1139,23 +1089,6 @@ def tap_key(code, ms=40):
     key_up(code)
 
 
-def _cursor_point():
-    return Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-
-
-def _mouse_event(kind):
-    p = _cursor_point()
-    _post(Quartz.CGEventCreateMouseEvent(None, kind, p, Quartz.kCGMouseButtonLeft))
-
-
-def mouse_down():
-    _mouse_event(Quartz.kCGEventLeftMouseDown)
-
-
-def mouse_up():
-    _mouse_event(Quartz.kCGEventLeftMouseUp)
-
-
 def mouse_tap(ms):
     mouse_down()
     sleep_ms(ms)
@@ -1163,30 +1096,10 @@ def mouse_tap(ms):
 
 
 # ---- Cursor move / click-at / scroll / sample (Fortune River recovery) ------
-def move_cursor(x, y):
-    """Warp the cursor to a PHYSICAL-pixel screen coord (calibration space)."""
-    s = State.scale or 1.0
-    px, py = x / s, y / s
-    try:
-        Quartz.CGWarpMouseCursorPosition((px, py))
-        _post(Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventMouseMoved, (px, py), Quartz.kCGMouseButtonLeft))
-    except Exception:
-        pass
-
-
 def click_at(x, y, ms=40):
     move_cursor(x, y)
     sleep_ms(30)
     mouse_tap(ms)
-
-
-def scroll_down(steps=3):
-    try:
-        _post(Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitLine, 1, -abs(int(steps))))
-    except Exception:
-        pass
 
 
 def rgb_at(sct, x, y):
@@ -1204,29 +1117,6 @@ def fr_reset_home():
     State.fr_cur = [int(FR_HOME_PIXEL[0]), int(FR_HOME_PIXEL[1])]
 
 
-def fr_move_to(x, y):
-    """Move the cursor toward (x, y) from the calibrated home (screen centre
-    where the cursor rests with shift-lock off), in small steps."""
-    if State.fr_cur is None:
-        fr_reset_home()
-    tx, ty = int(x), int(y)
-    cx, cy = State.fr_cur
-    step = max(1, FR_MOVE_STEP)
-    s = State.scale or 1.0
-    while cx != tx or cy != ty:
-        cx += max(-step, min(step, tx - cx))
-        cy += max(-step, min(step, ty - cy))
-        try:
-            Quartz.CGWarpMouseCursorPosition((cx / s, cy / s))
-            _post(Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventMouseMoved, (cx / s, cy / s),
-                Quartz.kCGMouseButtonLeft))
-        except Exception:
-            pass
-        sleep_ms(4)
-    State.fr_cur = [tx, ty]
-
-
 def hold_mouse(ms, stop_fn=None, confirm=2, min_ms=200):
     """Hold LMB up to ms, keeping the press 'alive' with periodic drag events so
     the game registers a sustained hold (a static down can get dropped).
@@ -1238,9 +1128,7 @@ def hold_mouse(ms, stop_fn=None, confirm=2, min_ms=200):
     hits = 0
     stopped = False
     while time.perf_counter() < end and State.running:
-        p = _cursor_point()
-        _post(Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventLeftMouseDragged, p, Quartz.kCGMouseButtonLeft))
+        drag_alive()
         if stop_fn is not None and (time.perf_counter() - start) * 1000 >= min_ms:
             hits = hits + 1 if stop_fn() else 0
             if hits >= confirm:
@@ -1256,9 +1144,7 @@ def _drag_for(ms, stop_fn=None):
     True if stop_fn fired. (Caller does mouse_down/up around this.)"""
     end = time.perf_counter() + ms / 1000.0
     while time.perf_counter() < end and State.running:
-        _post(Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventLeftMouseDragged, _cursor_point(),
-            Quartz.kCGMouseButtonLeft))
+        drag_alive()
         if stop_fn is not None and stop_fn():
             return True
         sleep_ms(16)
@@ -3605,9 +3491,7 @@ def timed_empty(detector=None):
     end = time.perf_counter() + SHAKE_HOLD_MS / 1000.0
     while time.perf_counter() < end and State.running:
         if not SHAKE_PLAIN_HOLD:
-            p = _cursor_point()
-            _post(Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventLeftMouseDragged, p, Quartz.kCGMouseButtonLeft))
+            drag_alive()
         if not started and detector.on_shake():
             started = True
         if detector.pan_empty():
@@ -6011,9 +5895,6 @@ def loop_step(detector):
 # Toggle is a Ctrl chord so it never types into the game and avoids macOS
 # media-key F-keys. We track Ctrl state and match the second key by virtual
 # keycode (robust even though Ctrl turns the char into a control code).
-def _code_to_vk(code):
-    return _CODE_VK_MAC.get(code or "")
-
 
 def _hk_label(spec):
     spec = spec or {}
@@ -6105,72 +5986,8 @@ def request_quit(origin="hotkey"):
     release_all()
 
 
-_MAC_DIGIT_IDX = {18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7,
-                  25: 8}          # macOS vk for 1..9 -> relic index
-
-
-def make_listener():
-    mods = {"ctrl": False, "alt": False, "shift": False}
-    CTRL = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
-    ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
-    SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
-    binds = [("toggle", HOTKEY_TOGGLE), ("soft", HOTKEY_SOFTSTOP),
-             ("quit", HOTKEY_QUIT), ("popout", HOTKEY_POPOUT),
-             ("pause", HOTKEY_PAUSE), ("rreset", HOTKEY_RELIC_RESET)]
-
-    def on_press(key):
-        if key in CTRL:
-            mods["ctrl"] = True
-            return
-        if key in ALT:
-            mods["alt"] = True
-            return
-        if key in SHIFT:
-            mods["shift"] = True
-            return
-        vk = getattr(key, "vk", None)
-        if key == keyboard.Key.esc and vk is None:
-            vk = 53
-        # Ctrl+Shift+1..9 -> reset THAT relic's timer alone
-        if mods["ctrl"] and mods["shift"] and vk in _MAC_DIGIT_IDX:
-            if State.relics_ref is not None:
-                State.relics_ref.reset_one(_MAC_DIGIT_IDX[vk])
-                EMIT.relic_one(_MAC_DIGIT_IDX[vk], "hotkey")
-            return
-        for name, spec in binds:
-            tv = _code_to_vk((spec or {}).get("code", ""))
-            if tv is None or vk != tv:
-                continue
-            if (bool(spec.get("ctrl")) != mods["ctrl"]
-                    or bool(spec.get("alt")) != mods["alt"]
-                    or bool(spec.get("shift")) != mods["shift"]):
-                continue
-            if name == "quit":
-                request_quit()
-                return False
-            if name == "toggle":
-                request_toggle()
-            elif name == "pause":
-                request_pause_toggle()
-            elif name == "rreset":
-                if State.relics_ref is not None:
-                    State.relics_ref.reset()
-                EMIT.relic_reset(False)
-            elif name == "soft":
-                request_soft()
-            elif name == "popout":
-                EMIT.popout()
-            return
-
-    def on_release(key):
-        if key in CTRL:
-            mods["ctrl"] = False
-        elif key in ALT:
-            mods["alt"] = False
-        elif key in SHIFT:
-            mods["shift"] = False
-
-    return keyboard.Listener(on_press=on_press, on_release=on_release)
+# make_listener: platform layer [C7] (pynput listener on macOS, a
+# GetAsyncKeyState poller on Windows), re-exported above.
 
 
 # ---- Calibration ------------------------------------------------------------
@@ -6245,28 +6062,8 @@ def log_calibration():
     import os
     path = os.path.join(_HOME_DIR, "prospecting_calib_log.csv")
     label = {"v": "?"}
-    LABELS = {18: "DIRT", 19: "LAVA", 20: "SHAKE", 21: "DIG"}  # vk of 1,2,3,4
-    ctrl = {"down": False}
     stop = {"v": False}
-    CTRL_KEYS = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
-
-    def on_press(key):
-        if key in CTRL_KEYS:
-            ctrl["down"] = True
-            return
-        if key == keyboard.Key.esc:
-            stop["v"] = True
-            return False
-        vk = getattr(key, "vk", None)
-        if ctrl["down"] and vk in LABELS:
-            label["v"] = LABELS[vk]
-            print(f"\n[label = {label['v']}]")
-
-    def on_release(key):
-        if key in CTRL_KEYS:
-            ctrl["down"] = False
-
-    keyboard.Listener(on_press=on_press, on_release=on_release).start()
+    _plat.calib_key_labeler(label, stop)   # Ctrl+1..4 label, Esc stop [C7]
 
     tl, tt, tw, th = TEXT_REGION
     treg = {"left": tl, "top": tt, "width": tw, "height": th}
