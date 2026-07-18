@@ -2680,10 +2680,25 @@ class Api:
         except Exception:
             return {"url": ""}
 
+    def _engine_settings_set(self, values, opaque=False):
+        """C5 single-writer rule: while an ipc engine is alive it owns the
+        config file, so writes go through settings.set/setOpaque. Returns
+        the ack, or None when no live engine (caller writes directly --
+        today's behavior, safe because no concurrent writer exists)."""
+        if not (self._ipc and self.engine is not None
+                and self.engine.alive()):
+            return None
+        cmd = "settings.setOpaque" if opaque else "settings.set"
+        return self.engine.request(cmd, {"values": values})
+
     def webhook_set(self, url):
         try:
+            val = str(url or "").strip()
+            ack = self._engine_settings_set({"WEBHOOK_URL": val})
+            if ack is not None:
+                return {"ok": bool(ack.get("ok"))}
             cur = load_saved()
-            cur["WEBHOOK_URL"] = str(url or "").strip()
+            cur["WEBHOOK_URL"] = val
             with open(CONFIG_FILE, "w") as f:
                 json.dump(cur, f, indent=2)
             return {"ok": True}
@@ -2692,13 +2707,15 @@ class Api:
 
     def save_config(self, data):
         """Write scalar settings, PRESERVING relic keys already in the file."""
+        vals = {k: _coerce(t, data[k]) for k, t in TYPES.items() if k in data}
+        ack = self._engine_settings_set(vals) if vals else None
+        if ack is not None and ack.get("ok"):
+            return len(vals)
         cur = load_saved()
-        for k, t in TYPES.items():
-            if k in data:
-                cur[k] = _coerce(t, data[k])
+        cur.update(vals)
         with open(CONFIG_FILE, "w") as f:
             json.dump(cur, f, indent=2)
-        return len([k for k in TYPES if k in data])
+        return len(vals)
 
     def save_relics(self, relics, enabled):
         cur = load_saved()
@@ -2711,6 +2728,10 @@ class Api:
                               "clicks": max(1, int(r.get("clicks", 2)))})
             except (ValueError, TypeError):
                 continue
+        ack = self._engine_settings_set({"RELICS": clean,
+                                         "RELICS_ENABLED": bool(enabled)})
+        if ack is not None and ack.get("ok"):
+            return len(clean)
         cur["RELICS"] = clean
         cur["RELICS_ENABLED"] = bool(enabled)
         with open(CONFIG_FILE, "w") as f:

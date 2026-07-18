@@ -16,6 +16,7 @@ import sys
 import threading
 
 from . import protocol
+from . import settings as settings_mod
 from . import ENGINE_VERSION
 
 HEARTBEAT_S = 2.0
@@ -243,6 +244,12 @@ class FrameEmit(object):
     def popout(self):
         self._ev("hotkey.popout", {})
 
+    def settings_changed(self, keys, source):
+        self._ev("settings.changed", {"keys": sorted(keys),
+                                       "source": source,
+                                       "schemaVersion":
+                                       settings_mod.SCHEMA_VERSION})
+
     def log_line(self, dt, msg):
         self._ev("engine.log", {"level": "info", "text": str(msg)})
 
@@ -337,8 +344,20 @@ class Server(object):
         self._pending_start = None    # {"cid": str|None, "origin": str}
         self._start_inflight = None   # awaiting run_init_committed()
         self._stop_inflight = None    # awaiting on_run_stopped()
+        # C5: engine-owned settings. The schema snapshots the BAKED
+        # module globals (bootstrap runs before load_config mutates
+        # them), so defaults are the engine's acted-on values (6.1).
+        self.settings_schema = settings_mod.schema(po)
+        self.settings_doc = {}
+        self._settings_lock = threading.Lock()
+        self.served = sorted(c for c in protocol.COMMANDS
+                             if not c.startswith("calibration."))
 
     # -- startup ----------------------------------------------------------
+    # Section 11.2 order: stderr vestibule -> --protocol check -> instance
+    # lock -> config load + migration -> hello. The lock comes BEFORE any
+    # config work (ISS-156), and go() runs only after the engine module has
+    # bound its config (main() calls load_config between the two halves).
     def start(self, requested_protocol):
         po = self.po
         fp = source_fingerprint(po.__file__)
@@ -359,6 +378,19 @@ class Server(object):
                           data={"ownerPid": owner.get("pid"),
                                 "ownerHost": owner.get("host")})
             os._exit(2)
+        try:
+            self.settings_doc, _chg = settings_mod.migrate_file(
+                po.CONFIG_FILE, self.settings_schema)
+        except settings_mod.SchemaTooNew as e:
+            self.emit.bye("fatal", code=protocol.BYE_SCHEMA_TOO_NEW,
+                          message="config file is from a newer engine",
+                          data={"found": e.found, "supported": e.supported})
+            self.lock.release()
+            os._exit(2)
+        return self
+
+    def go(self):
+        po = self.po
         po.State.tick_beat = po.time.perf_counter()
         self.emit.hello(self.home)
         threading.Thread(target=self._heartbeat_loop, daemon=True).start()
@@ -470,6 +502,14 @@ class Server(object):
                 return
             self.emit._next_origin = req["origin"]
             self._start_inflight = req
+            try:
+                # re-bind config per run start (ipc only): settings.set
+                # while idle/running becomes effective at the next run
+                # without a respawn (fixes bake-at-spawn; legacy mode
+                # keeps its single process-start bind untouched)
+                self.po.load_config()
+            except Exception:
+                pass
             st.running = True
             self.po.EMIT.toggle_status(True)   # legacy [RUNNING] breadcrumb
 
@@ -674,6 +714,194 @@ class Server(object):
             st.relics_ref.set_left(i, float(s))
             self.emit.relic_set(i, float(s), "cmd")
             self._ack_ok(cid, {"applied": True})
+        elif cmd == "engine.describe":
+            po_f = source_fingerprint(po.__file__)
+            caps = {"findsOcr": sys.platform == "darwin",
+                    "earningsOcr": sys.platform == "darwin",
+                    "inputLagProbe": hasattr(po, "_LAG"),
+                    "fastTravelRecovery": True,
+                    "simulated": bool(self.emit.simulated)}
+            sch = [{"key": k, "type": s["type"], "default": s["default"],
+                    "applies": s["applies"]}
+                   for k, s in sorted(self.settings_schema.items())]
+            self._ack_ok(cid, {
+                "protocol": {"major": protocol.PROTOCOL_MAJOR,
+                             "minor": protocol.PROTOCOL_MINOR},
+                "engine": {"version": ENGINE_VERSION,
+                           "sourceFingerprint": po_f,
+                           "platform": "win" if sys.platform == "win32"
+                           else "mac"},
+                "capabilities": caps,
+                "settingsSchema": sch,
+                "commands": list(self.served),
+                "events": list(protocol.EVENTS),
+                "injectable": {"keys": list(protocol.INJECTABLE_KEYS),
+                               "buttons": list(protocol.INJECTABLE_BUTTONS)}})
+        elif cmd == "settings.get":
+            keys = params.get("keys")
+            with self._settings_lock:
+                if keys is None:
+                    vals = {k: self.settings_doc.get(k)
+                            for k in self.settings_schema}
+                else:
+                    vals = {k: self.settings_doc.get(k) for k in keys
+                            if k in self.settings_schema}
+            self._ack_ok(cid, {"values": vals,
+                               "schemaVersion": settings_mod.SCHEMA_VERSION})
+        elif cmd in ("settings.set", "settings.setOpaque"):
+            values = params.get("values")
+            if not isinstance(values, dict) or not values:
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "values must be a non-empty object", None)
+                return
+            opaque = cmd == "settings.setOpaque"
+            per_key = settings_mod.validate(self.settings_schema, values,
+                                            opaque=opaque)
+            if per_key:
+                self._ack_err(cid, protocol.E_VALIDATION_FAILED,
+                              "invalid settings write (nothing written)",
+                              {"perKey": per_key})
+                return
+            with self._settings_lock:
+                for k, v in values.items():
+                    if opaque:
+                        self.settings_doc[k] = v
+                    else:
+                        t = self.settings_schema[k]["type"]
+                        self.settings_doc[k] = settings_mod.coerce(t, v)
+                try:
+                    settings_mod.atomic_write(po.CONFIG_FILE,
+                                              self.settings_doc)
+                except OSError as e:
+                    self._ack_err(cid, protocol.E_IO_ERROR, str(e), None)
+                    return
+            applied = sorted(values)
+            self.emit.settings_changed(applied, "cmd")
+            if opaque:
+                self._ack_ok(cid, {"applied": applied})
+            else:
+                run_active = bool(st.running or st.paused)
+                self._ack_ok(cid, {
+                    "applied": applied,
+                    "effective": "next-run" if run_active else "now",
+                    "schemaVersion": settings_mod.SCHEMA_VERSION})
+        elif cmd == "settings.validate":
+            values = params.get("values")
+            if not isinstance(values, dict):
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "values must be an object", None)
+                return
+            per_key = settings_mod.validate(self.settings_schema, values)
+            r = {"ok": not per_key}
+            if per_key:
+                r["perKey"] = per_key
+            self._ack_ok(cid, r)
+        elif cmd == "settings.reload":
+            if st.running or st.paused:
+                self._ack_err(cid, protocol.E_RUN_ACTIVE,
+                              "idle-only while a run exists",
+                              {"state": self._state()})
+                return
+            with self._settings_lock:
+                old = dict(self.settings_doc)
+                try:
+                    self.settings_doc, _c = settings_mod.migrate_file(
+                        po.CONFIG_FILE, self.settings_schema)
+                except settings_mod.SchemaTooNew as e:
+                    self._ack_err(cid, protocol.E_SCHEMA_TOO_NEW,
+                                  "config file is from a newer engine",
+                                  {"found": e.found,
+                                   "supported": e.supported})
+                    return
+                changed = sorted(k for k in
+                                 set(old) | set(self.settings_doc)
+                                 if old.get(k) != self.settings_doc.get(k))
+            if changed:
+                self.emit.settings_changed(changed, "reload")
+            self._ack_ok(cid, {"schemaVersion": settings_mod.SCHEMA_VERSION,
+                               "changedKeys": changed})
+        elif cmd == "settings.import":
+            if st.running or st.paused:
+                self._ack_err(cid, protocol.E_RUN_ACTIVE,
+                              "idle-only while a run exists",
+                              {"state": self._state()})
+                return
+            from_dir = params.get("fromDir")
+            if not isinstance(from_dir, str) or not from_dir:
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "fromDir required", None)
+                return
+            fpath = os.path.join(from_dir, "prospecting_config.json")
+            if not os.path.exists(fpath):
+                self._ack_err(cid, protocol.E_IO_ERROR,
+                              "no config at %s" % fpath, None)
+                return
+            foreign, corrupt = settings_mod.read_doc(fpath)
+            if corrupt:
+                self._ack_err(cid, protocol.E_IO_ERROR,
+                              "foreign config unreadable", None)
+                return
+            try:
+                merged = settings_mod.migrate_doc(foreign,
+                                                  self.settings_schema)
+            except settings_mod.SchemaTooNew as e:
+                self._ack_err(cid, protocol.E_SCHEMA_TOO_NEW,
+                              "foreign config is from a newer engine",
+                              {"found": e.found, "supported": e.supported})
+                return
+            with self._settings_lock:
+                old = dict(self.settings_doc)
+                self.settings_doc = merged
+                try:
+                    settings_mod.atomic_write(po.CONFIG_FILE,
+                                              self.settings_doc)
+                except OSError as e:
+                    self.settings_doc = old
+                    self._ack_err(cid, protocol.E_IO_ERROR, str(e), None)
+                    return
+                changed = sorted(k for k in
+                                 set(old) | set(self.settings_doc)
+                                 if old.get(k) != self.settings_doc.get(k))
+            self.emit.settings_changed(changed, "import")
+            self._ack_ok(cid, {"schemaVersion": settings_mod.SCHEMA_VERSION,
+                               "changedKeys": changed})
+        elif cmd == "script.setActive":
+            if st.running or st.paused:
+                self._ack_err(cid, protocol.E_RUN_ACTIVE,
+                              "idle-only while a run exists",
+                              {"state": self._state()})
+                return
+            name = params.get("name")
+            script = params.get("script")
+            if name is not None and not isinstance(name, str):
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "name must be a string or null", None)
+                return
+            writes = {}
+            if name is None:
+                writes["SCRIPT_MODE"] = False
+            else:
+                if script is not None:
+                    raw = json.dumps(script)
+                    runner = po.ScriptRunner(raw, name)
+                    if runner.dead:
+                        self._ack_err(cid, protocol.E_VALIDATION_FAILED,
+                                      "script rejected: %s" % runner.dead,
+                                      {"reason": runner.dead})
+                        return
+                    writes["SCRIPT_JSON"] = raw
+                writes["SCRIPT_MODE"] = True
+                writes["SCRIPT_ACTIVE"] = name
+            with self._settings_lock:
+                self.settings_doc.update(writes)
+                try:
+                    settings_mod.atomic_write(po.CONFIG_FILE,
+                                              self.settings_doc)
+                except OSError as e:
+                    self._ack_err(cid, protocol.E_IO_ERROR, str(e), None)
+                    return
+            self.emit.settings_changed(sorted(writes), "cmd")
+            self._ack_ok(cid, {"active": name})
         elif cmd in protocol.COMMANDS:
             self._ack_err(cid, protocol.E_UNSUPPORTED,
                           "command lands at a later extraction checkpoint",
@@ -684,8 +912,10 @@ class Server(object):
 
 
 def bootstrap(po, home, host, requested_protocol, simulated):
-    """Called by the engine's main() when --ipc is on, after load_config.
-    Swaps EMIT and starts the server threads. Returns the Server."""
+    """Called by the engine's main() when --ipc is on, BEFORE load_config
+    (section 11.2 startup order; the lock precedes config work -- ISS-156).
+    Swaps EMIT, runs vestibule/protocol/lock/migration. main() then binds
+    config (load_config) and calls .go() for hello + threads."""
     srv = Server(po, home, host, simulated)
     po.EMIT = srv.emit
     return srv.start(requested_protocol)

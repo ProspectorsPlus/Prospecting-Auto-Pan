@@ -239,7 +239,7 @@ def test_commands():
         _send(p, "c-5", "run.resume")
         _send(p, "c-6", "relic.set", {"index": 99, "seconds": 5})
         _send(p, "c-7", "totally.bogus")
-        _send(p, "c-8", "settings.get")         # known but pending
+        _send(p, "c-8", "calibration.capture")  # known but pending
         a, evs = _read_until_acks(p, ["c-4", "c-5", "c-6", "c-7", "c-8"])
         chk(a.get("c-4", {}).get("ok") is False
             and a["c-4"]["error"]["code"] == "BAD_STATE",
@@ -571,6 +571,229 @@ def test_relic_hotkey_events():
         "ev.relic-changed.origins: hotkey reset-one chord emits (ISS-154)")
 
 
+
+
+def test_settings_commands():
+    """C5: engine-owned settings over the wire (idle-command)."""
+    print("[contract] settings commands (idle-command)")
+    evs = []
+    cli = _make_client("idle-command", on_event=evs.append).spawn()
+    try:
+        chk(cli.wait_ready(), "settings: engine ready")
+        a = cli.request("engine.describe")
+        chk(a.get("ok") is True, "cmd.describe.shape: acked")
+        r = a.get("result") or {}
+        sch = {s["key"]: s for s in r.get("settingsSchema", [])}
+        chk(len(sch) > 100, "cmd.describe: settingsSchema populated (%d keys)"
+            % len(sch))
+        chk(sch.get("GEODE_DIGS_TO_FILL", {}).get("default") == 1,
+            "settings schema: GEODE_DIGS_TO_FILL default is the engine's "
+            "acted-on 1 (architecture 6.1)")
+        chk("run.start" in r.get("commands", [])
+            and "calibration.capture" not in r.get("commands", []),
+            "cmd.describe: served commands honest (no unserved verbs)")
+        chk(r.get("injectable", {}).get("keys")
+            == list(protocol.INJECTABLE_KEYS),
+            "cmd.describe: injectable release vocabulary published")
+        a = cli.request("settings.get")
+        vals = (a.get("result") or {}).get("values") or {}
+        chk(a.get("ok") is True
+            and (a["result"].get("schemaVersion") == 1)
+            and vals.get("GEODE_DIGS_TO_FILL") == 1,
+            "cmd.settings-get.defaults-filled")
+        a = cli.request("settings.get", {"keys": ["AUTOSTOP_MINUTES"]})
+        chk(a.get("ok") and list((a["result"] or {}).get("values", {}))
+            == ["AUTOSTOP_MINUTES"], "cmd.settings-get.subset-keys")
+        cfg = os.path.join(cli.home, "prospecting_config.json")
+        a = cli.request("settings.validate",
+                        {"values": {"NOPE_KEY": 1}})
+        chk(a.get("ok") and a["result"]["ok"] is False
+            and a["result"]["perKey"]["NOPE_KEY"] == "UNKNOWN_KEY",
+            "cmd.settings-validate: unknown key flagged, pure")
+        a = cli.request("settings.set",
+                        {"values": {"AUTOSTOP_MINUTES": "42"}})
+        chk(a.get("ok") is True and a["result"]["effective"] == "now"
+            and a["result"]["applied"] == ["AUTOSTOP_MINUTES"],
+            "cmd.settings-set: coerced write, effective now while idle")
+        a = cli.request("settings.set",
+                        {"values": {"AUTOSTOP_MINUTES": 5, "NOPE": 1}})
+        chk(a.get("ok") is False
+            and a["error"]["code"] == "VALIDATION_FAILED"
+            and a["error"]["data"]["perKey"]["NOPE"] == "UNKNOWN_KEY",
+            "cmd.settings-set.validation-all-or-nothing")
+        a = cli.request("settings.get", {"keys": ["AUTOSTOP_MINUTES"]})
+        chk(a.get("ok") and a["result"]["values"]["AUTOSTOP_MINUTES"] == 42,
+            "cmd.settings-set: rejected batch wrote nothing (still 42)")
+        a = cli.request("settings.setOpaque",
+                        {"values": {"ACCESS_TOKEN_TEST": "opaque-v"}})
+        chk(a.get("ok") is True, "cmd.settings-opaque: host-only key stored")
+        a = cli.request("settings.setOpaque",
+                        {"values": {"AUTOSTOP_MINUTES": 9}})
+        chk(a.get("ok") is False
+            and a["error"]["data"]["perKey"]["AUTOSTOP_MINUTES"]
+            == "ENGINE_KEY",
+            "cmd.settings-opaque.engine-key-rejected")
+        import json as _j
+        doc = _j.load(open(cfg))
+        chk(doc.get("CONFIG_SCHEMA") == 1 and doc.get("AUTOSTOP_MINUTES") == 42
+            and doc.get("ACCESS_TOKEN_TEST") == "opaque-v",
+            "settings writer: migrated v1 file holds engine + opaque writes")
+        chk(os.path.exists(cfg + ".bak"),
+            "cmd.settings-set.persist-atomic: rolling .bak kept")
+        chk(any(e["ev"] == "settings.changed"
+                and e["data"].get("source") == "cmd" for e in evs),
+            "ev.settings-changed.sources: cmd writes emit")
+        # external edit + reload
+        doc["AUTOSTOP_MINUTES"] = 7
+        open(cfg, "w").write(_j.dumps(doc))
+        a = cli.request("settings.reload")
+        chk(a.get("ok") and "AUTOSTOP_MINUTES" in a["result"]["changedKeys"],
+            "cmd.settings-reload.external-edit")
+        # import from a foreign v0 home
+        import tempfile as _tf
+        fdir = _tf.mkdtemp(prefix="ppe-import-")
+        open(os.path.join(fdir, "prospecting_config.json"), "w").write(
+            _j.dumps({"AUTOSTOP_MINUTES": "15", "MY_UNKNOWN": "kept"}))
+        a = cli.request("settings.import", {"fromDir": fdir})
+        chk(a.get("ok") and a["result"]["schemaVersion"] == 1,
+            "cmd.settings-import.from-macro-dir")
+        a = cli.request("settings.get", {"keys": ["AUTOSTOP_MINUTES"]})
+        chk(a.get("ok") and a["result"]["values"]["AUTOSTOP_MINUTES"] == 15,
+            "cmd.settings-import: migrated value adopted (str '15' -> 15)")
+        toonew = _tf.mkdtemp(prefix="ppe-toonew-")
+        open(os.path.join(toonew, "prospecting_config.json"), "w").write(
+            _j.dumps({"CONFIG_SCHEMA": 99}))
+        a = cli.request("settings.import", {"fromDir": toonew})
+        chk(a.get("ok") is False
+            and a["error"]["code"] == "SCHEMA_TOO_NEW",
+            "cmd.settings-import.too-new-refused")
+        # script.setActive
+        good = {"version": 1, "name": "s2", "blocks": [
+            {"id": "b1", "type": "wait", "params": {"ms": 100},
+             "children": []}]}
+        a = cli.request("script.setActive", {"name": "s2", "script": good})
+        chk(a.get("ok") is True and a["result"]["active"] == "s2",
+            "cmd.script-activate.validated: good script accepted")
+        a = cli.request("script.setActive",
+                        {"name": "bad", "script": {"version": 1,
+                                                   "blocks": "nope"}})
+        chk(a.get("ok") is False
+            and a["error"]["code"] == "VALIDATION_FAILED",
+            "cmd.script-activate.validated: bad script rejected")
+        a = cli.request("script.setActive", {"name": None})
+        chk(a.get("ok") is True and a["result"]["active"] is None,
+            "cmd.script-activate.null-deactivates")
+        a = cli.request("script.setActive", {"name": "s2"})
+        chk(a.get("ok") is True,
+            "cmd.script-activate: re-activate by name (kept script)")
+        # run-active guards + next-run effectivity
+        a = cli.request("run.start", {"mode": "auto"})
+        chk(a.get("ok") is True, "settings: run started for guards")
+        a = cli.request("run.start", {"mode": "auto"}) if False else None
+        a = cli.request("settings.set", {"values": {"AUTOSTOP_MINUTES": 3}})
+        chk(bool(a) and a.get("ok") is True
+            and a["result"]["effective"] == "next-run",
+            "cmd.settings-set.next-run-while-running")
+        a = cli.request("settings.reload")
+        chk(a.get("ok") is False and a["error"]["code"] == "RUN_ACTIVE",
+            "cmd.settings-reload.run-active-rejected")
+        a = cli.request("script.setActive", {"name": None})
+        chk(a.get("ok") is False and a["error"]["code"] == "RUN_ACTIVE",
+            "cmd.script-activate.run-active-rejected")
+        cli.request("run.stop")
+        cli.shutdown()
+    finally:
+        cli.kill()
+
+
+def test_settings_migration_unit():
+    """C5: pure migration semantics over the real engine schema."""
+    print("[contract] settings migration (in-process, real schema)")
+    import engine_sim
+    from prospector_engine import settings as S
+    po = engine_sim.load_engine("pmig_unit")
+    sch = S.schema(po)
+    v0 = {"AUTOSTOP_MINUTES": "15", "WEBHOOK_URL": "",
+          "SOME_FUTURE_KEY": {"nested": True}}
+    v1 = S.migrate_doc(v0, sch)
+    chk(v1["CONFIG_SCHEMA"] == 1, "settings.migrate: stamps CONFIG_SCHEMA 1")
+    chk(v1["AUTOSTOP_MINUTES"] == 15,
+        "settings.migrate: legacy _coerce semantics (str '15' -> 15)")
+    chk(v1["SOME_FUTURE_KEY"] == {"nested": True},
+        "settings.migrate: unknown keys preserved verbatim")
+    chk(v1["GEODE_DIGS_TO_FILL"] == 1,
+        "settings.migrate.v0-fixtures: missing GEODE_DIGS_TO_FILL -> 1")
+    missing_zeroed = [k for k, s in sch.items()
+                     if k not in v0 and v1.get(k) != s["default"]]
+    chk(not missing_zeroed,
+        "settings.migrate: no missing key zeroed (all materialized to baked "
+        "defaults)")
+    chk(S.migrate_doc(v1, sch) == v1, "settings.migrate.idempotent")
+    try:
+        S.migrate_doc({"CONFIG_SCHEMA": 99}, sch)
+        chk(False, "ver.schema-too-new: raised")
+    except S.SchemaTooNew:
+        chk(True, "ver.schema-too-new: migration refuses a future config")
+    # easy-layering: stored values never contain offsets; bind-time math
+    # applies stored + offset; rebinding a materialized file cannot creep
+    import tempfile, json as _j
+    home = tempfile.mkdtemp(prefix="ppe-easy-")
+    cfg = os.path.join(home, "prospecting_config.json")
+    open(cfg, "w").write(_j.dumps({"EASY_WATER_BACK_MS": 100,
+                                   "WATER_EXTRA_BACK_MS": 50}))
+    doc, _ = S.migrate_file(cfg, sch)
+    chk(doc["WATER_EXTRA_BACK_MS"] == 50 and doc["EASY_WATER_BACK_MS"] == 100,
+        "settings.migrate.easy-layering: stored values stay stored")
+    po2 = engine_sim.load_engine("pmig_easy")
+    po2.CONFIG_FILE = cfg
+    po2.load_config()
+    chk(po2.WATER_EXTRA_BACK_MS == 150,
+        "settings.migrate.easy-layering: bind acts on stored + offset (150)")
+    po2.load_config()
+    chk(po2.WATER_EXTRA_BACK_MS == 150,
+        "settings.migrate.easy-layering: re-bind of a materialized v1 file "
+        "does not creep (still 150)")
+    # corrupt config -> defaults + preserved original
+    open(cfg, "w").write("{corrupt json")
+    doc, _ = S.migrate_file(cfg, sch)
+    chk(doc["CONFIG_SCHEMA"] == 1 and os.path.exists(cfg + ".corrupt.bak"),
+        "settings.migrate: corrupt -> defaults + .corrupt.bak (no silent "
+        "reset)")
+
+
+def test_schema_too_new_refusal():
+    """Startup refusal: engine.bye fatal SCHEMA_TOO_NEW, exit 2, no hello."""
+    print("[contract] SCHEMA_TOO_NEW startup refusal")
+    out, _err, rc = run_batch("schema-too-new")
+    frames, _d, _e = parse_stream(out)
+    byes = events(frames, "engine.bye")
+    chk(len(byes) == 1 and byes[0]["data"].get("code") == "SCHEMA_TOO_NEW"
+        and byes[0]["data"]["data"].get("found") == 99,
+        "ver.schema-too-new: bye fatal SCHEMA_TOO_NEW at startup")
+    chk(not events(frames, "engine.hello"),
+        "ver.schema-too-new: no hello on refusal")
+    chk(rc == 2, "ver.schema-too-new: exit 2")
+
+
+def test_egress_and_headless():
+    """Engine egress rule + headless constraint (static)."""
+    print("[contract] only-webhook egress + headless imports (static)")
+    eng = open(ENGINE, encoding="utf-8").read()
+    win = open(os.path.join(ROOT, "windows", "prospecting_old.py"),
+               encoding="utf-8").read()
+    chk("SYNC_URL" not in eng and "SYNC_URL" not in win,
+        "engine.network.only-webhook: baked fallback URL gone (ISS-157)")
+    pkg = ""
+    pkg_dir = os.path.join(ROOT, "prospector_engine")
+    for f in os.listdir(pkg_dir):
+        if f.endswith(".py"):
+            pkg += open(os.path.join(pkg_dir, f), encoding="utf-8").read()
+    bad = [m for m in ("import webview", "import pywebview", "electron",
+                       "tkinter") if m in pkg]
+    chk(not bad, "engine.headless.no-ui-imports: package imports no UI "
+        "modules (%r)" % bad)
+
+
 def test_legacy_replay():
     """Legacy mode must keep reproducing the C0 goldens byte-for-byte."""
     print("[contract] legacy golden replay (delegates to characterization)")
@@ -591,6 +814,10 @@ if __name__ == "__main__":
     test_run_commands()
     test_mode_derivation()
     test_relic_hotkey_events()
+    test_settings_commands()
+    test_settings_migration_unit()
+    test_schema_too_new_refusal()
+    test_egress_and_headless()
     test_engine_client()
     test_client_refuses_simulated()
     test_client_crash_taxonomy()

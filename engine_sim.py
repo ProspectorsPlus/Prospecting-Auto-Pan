@@ -379,8 +379,17 @@ class World(object):
         po.post_webhook = _post_webhook
         po._grab_screenshot_b64 = lambda *a, **k: ""
 
-        # config: the scenario's own file, never the user's real one
-        cfg_path = os.path.join(self._tmpdir, "prospecting_config.json")
+        # config: the scenario's own file, never the user's real one. When
+        # the engine was spawned with --home (its CONFIG_FILE already points
+        # away from the repo default), write the scenario config THERE so
+        # the ipc settings surface and the sim world agree on one file.
+        cfg_default = os.path.join(
+            os.path.dirname(os.path.abspath(po.__file__)),
+            "prospecting_config.json")
+        if po.CONFIG_FILE != cfg_default:
+            cfg_path = po.CONFIG_FILE
+        else:
+            cfg_path = os.path.join(self._tmpdir, "prospecting_config.json")
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(scen["config"], f)
         po.CONFIG_FILE = cfg_path

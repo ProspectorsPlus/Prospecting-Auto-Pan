@@ -1,0 +1,7 @@
+{
+ "name": "schema-too-new",
+ "interactive": true,
+ "config": {"CONFIG_SCHEMA": 99},
+ "schedule": [[2000, "quit"]],
+ "duration_ms": 10000
+}

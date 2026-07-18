@@ -599,14 +599,8 @@ RELIC_PRE_MS       = 120   # settle after releasing movement, before switching s
 
 # --- DISCORD WEBHOOK / NOTIFICATIONS -----------------------------------------
 # Posts to WEBHOOK_URL on events (start, safe-stop, bag full, periodic stats).
-# When WEBHOOK_URL is empty it falls back to SYNC_URL, the webhook every
-# shipped build carries in its config, so notifications work out of the box.
-# Renders on a plain Discord webhook as content + an embed (user/event/stats
-# as embed fields, since Discord drops unknown JSON keys) AND still carries
-# the raw "event"/"user"/"stats" fields for a custom relay bot.
-WEBHOOK_ENABLED    = False
-WEBHOOK_URL        = ""  # set in config only; no secret is ever baked into source
-SYNC_URL           = ""  # injected into shipped configs; fallback delivery URL
+# The engine performs no network egress except the user's own configured
+# webhook (architecture section 8, ISS-121/ISS-157).
 WEBHOOK_SECRET     = ""  # set in config only; no secret is ever baked into source
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
@@ -3051,9 +3045,10 @@ def _webhook_send(url, payload, img_b64=None):
 
 
 def post_webhook(event, message, stats=None, shot=False):
-    """Fire a notification (non-blocking). Uses WEBHOOK_URL, or SYNC_URL when
-    that is empty, so shipped builds notify without extra setup. Honours the
-    per-event NOTIFY_* toggles so users get only the DMs they want."""
+    """Fire a notification (non-blocking). Uses the user's WEBHOOK_URL and
+    nothing else -- the engine's only sanctioned network egress (ISS-157).
+    Honours the per-event NOTIFY_* toggles so users get only the DMs they
+    want."""
     url = (WEBHOOK_URL or "").strip()
     if not WEBHOOK_ENABLED or not url:
         if WEBHOOK_ENABLED and not url:
@@ -6279,12 +6274,17 @@ def main():
         signal.signal(signal.SIGTERM, _sigint)
     except Exception:
         pass
-    load_config()                 # apply UI overrides from prospecting_config.json
     if _IPC_MODE:
+        # section 11.2 startup order: vestibule -> protocol -> instance
+        # lock -> config migration (ISS-156: lock BEFORE config work);
+        # hello + threads start in .go() once config is bound below
         from prospector_engine import ipc as _ppe_ipc
         globals()["_IPC_SERVER"] = _ppe_ipc.bootstrap(
             sys.modules[__name__], _ENGINE_HOME, _IPC_HOST,
             _IPC_PROTOCOL, _SIM_MODE)
+    load_config()                 # apply UI overrides from prospecting_config.json
+    if _IPC_MODE:
+        _IPC_SERVER.go()
     if not apply_auto_calibrate():  # place pixels from the live window (if profile)
         apply_window_offset()       # else shift pixels if the window moved (opt-in)
     place_cue_masks()               # advanced cue matching: place captured masks
