@@ -3285,29 +3285,10 @@ def safe_stop(reason, hard=False):
     _beep(True)
 
 
-def append_history(stats, reason):
-    """Append a finished run's summary to run_history.json (kept to last 100) so
-    the user can review past runs after the app/macro closes."""
-    try:
-        import datetime
-        path = os.path.join(_DATA_DIR, "run_history.json")
-        hist = []
-        if os.path.exists(path):
-            try:
-                hist = json.load(open(path))
-            except Exception:
-                hist = []
-        d = stats.as_dict() if stats else {}
-        d["reason"] = reason
-        d["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        hist.append(d)
-        with open(path, "w") as f:
-            json.dump(hist[-100:], f, indent=2)
-    except Exception as e:
-        print("[history] save failed:", e)
+# append_history removed [Phase 04, ISS-105]: orphaned engine-side
+# run_history.json writer (zero callers; the app owns history via
+# _save_history and ipc mode keys it off run.stopped).
 
-
-# ---- Smart adaptive timing (trial & error; opt-in) --------------------------
 def smart_adapt():
     """Hill-climb two timings from real miss rates. Direction defaults to MORE
     distance (go deeper into the water / further onto land); if a step makes the
