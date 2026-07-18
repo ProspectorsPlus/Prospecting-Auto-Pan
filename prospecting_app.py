@@ -9425,7 +9425,9 @@ def main():
     global _window, _pill, _overlay, _coach_win, _analytics_win, _hud, _studio_win
     # Frozen macro mode: the bundled exe re-invokes itself with --run-macro to
     # run the actual macro in-process (there is no separate python.exe).
-    if FROZEN and "--run-macro" in sys.argv:
+    # [Phase 04 C6] --run-engine is the same re-exec under the engine's own
+    # name; the legacy --run-macro alias is kept.
+    if FROZEN and ("--run-macro" in sys.argv or "--run-engine" in sys.argv):
         import runpy
         runpy.run_path(_resource("prospecting_old.py"), run_name="__main__")
         return

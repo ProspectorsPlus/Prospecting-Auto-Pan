@@ -22,7 +22,7 @@ import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE = os.path.join(HERE, "prospecting_old.py")
+ENGINE = os.path.join(HERE, "prospector_engine", "engine.py")
 
 # ---------------------------------------------------------------- namespace
 _LINES, _LOGS, _EVENTS = [], [], []
@@ -53,7 +53,7 @@ def build_ns():
     src = open(ENGINE).read()
     i = src.find("_RARITIES = (")
     j = src.find("# which per-event toggle gates each event name")
-    assert 0 < i < j, "finds slice markers not found in prospecting_old.py"
+    assert 0 < i < j, "finds slice markers not found in prospector_engine/engine.py"
     ns = {
         "np": np, "json": json, "os": os, "time": time,
         "threading": threading,

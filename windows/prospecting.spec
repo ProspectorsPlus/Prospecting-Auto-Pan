@@ -31,12 +31,17 @@ datas += [
     ("icon.png", "."),
 ]
 hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant", "mss.windows"]
+# [Phase 04 C6] the shared engine package: the app imports
+# prospector_engine.client for ipc mode. In the repo the package sits one
+# level up (pathex below); in the extracted zip it sits next to this spec.
+hiddenimports += ["prospector_engine", "prospector_engine.client",
+                  "prospector_engine.protocol"]
 
 block_cipher = None
 
 a = Analysis(
     ["prospecting_app.py"],
-    pathex=[],
+    pathex=[".."],  # [C6] resolve prospector_engine/ from the repo root
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,

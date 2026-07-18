@@ -32,6 +32,10 @@ for f in prospecting_app.py prospecting_old.py prospecting_ui.py \
          prospecting_assistant.py prospecting_prices.json icon.png; do
   [ -e "$f" ] && cp "$f" "$APPDIR/Contents/Resources/app/" || true
 done
+# [Phase 04 C6] the engine package (prospector_engine/) ships next to the
+# launcher shim; __pycache__ must not ride along
+cp -R prospector_engine "$APPDIR/Contents/Resources/app/prospector_engine"
+find "$APPDIR/Contents/Resources/app/prospector_engine" -name __pycache__ -type d -prune -exec rm -rf {} +
 # ship a CLEAN default config (never your personal one with unlock/webhook)
 python3 - "$APPDIR/Contents/Resources/app/prospecting_config.json" <<'PY'
 import json, sys

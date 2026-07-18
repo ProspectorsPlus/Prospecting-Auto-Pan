@@ -37,7 +37,7 @@ def load(path, name):
 
 
 app = load(os.path.join(ROOT, "prospecting_app.py"), "papp_t")
-po = load(os.path.join(ROOT, "prospecting_old.py"), "pold_t")
+po = load(os.path.join(ROOT, "prospector_engine", "engine.py"), "pold_t")
 
 # =============================================================================
 print("[1] validator + sanitizer + templates")

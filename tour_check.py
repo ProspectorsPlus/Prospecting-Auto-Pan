@@ -30,7 +30,8 @@ def load(path, name):
 # ---- 1. compile ------------------------------------------------------------
 print('[1] py_compile')
 import py_compile
-for f in ['prospecting_app.py', 'prospecting_old.py', 'prospecting_ui.py',
+for f in ['prospecting_app.py', 'prospecting_old.py',
+          'prospector_engine/engine.py', 'prospecting_ui.py',
           'prospecting_assistant.py',
           'windows/prospecting_app.py', 'windows/prospecting_old.py',
           'windows/prospecting_ui.py', 'windows/prospecting_assistant.py']:
@@ -182,7 +183,7 @@ for name, a, b in REGIONS:
             print('   ', d[:160])
 
 EXTRA = [
-    ('prospecting_old.py', 'windows/prospecting_old.py',
+    ('prospector_engine/engine.py', 'windows/prospecting_old.py',
      [('studio-engine', '# CUSTOM SCRIPTS (Prospector Studio)', '\ndef treasure_tick')]),
     ('prospecting_ui.py', 'windows/prospecting_ui.py',
      [('studio-schema', '# PROSPECTOR STUDIO -- the block schema', '\ndef render(')]),

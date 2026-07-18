@@ -778,7 +778,8 @@ def test_schema_too_new_refusal():
 def test_egress_and_headless():
     """Engine egress rule + headless constraint (static)."""
     print("[contract] only-webhook egress + headless imports (static)")
-    eng = open(ENGINE, encoding="utf-8").read()
+    eng = open(os.path.join(ROOT, "prospector_engine", "engine.py"),
+               encoding="utf-8").read()
     win = open(os.path.join(ROOT, "windows", "prospecting_old.py"),
                encoding="utf-8").read()
     chk("SYNC_URL" not in eng and "SYNC_URL" not in win,

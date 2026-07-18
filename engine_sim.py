@@ -399,7 +399,7 @@ def load_engine(alias):
     """Load a fresh copy of the real engine module under a unique alias
     (module globals mutate at run time; goldens need a clean module)."""
     import importlib.util
-    path = os.path.join(SIM_DIR, "prospecting_old.py")
+    path = os.path.join(SIM_DIR, "prospector_engine", "engine.py")
     spec = importlib.util.spec_from_file_location(alias, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[alias] = mod
