@@ -1,0 +1,17 @@
+{
+ "config": {},
+ "duration_ms": 10000,
+ "name": "start-idle-quit",
+ "schedule": [
+  [
+   3000,
+   "quit"
+  ]
+ ],
+ "window": [
+  0,
+  0,
+  1440,
+  900
+ ]
+}

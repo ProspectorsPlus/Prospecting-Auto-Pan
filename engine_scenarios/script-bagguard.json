@@ -1,0 +1,32 @@
+{
+ "config": {
+  "SCRIPT_ACTIVE": "bagguard",
+  "SCRIPT_JSON": "{\"version\":1,\"name\":\"bagguard\",\"blocks\":[{\"id\":\"b1\",\"type\":\"tap_key\",\"params\":{\"key\":\"1\",\"hold_ms\":40},\"children\":[]},{\"id\":\"b2\",\"type\":\"wait\",\"params\":{\"ms\":500},\"children\":[]}]}",
+  "SCRIPT_MODE": true,
+  "STOP_AFTER_PANS": 3
+ },
+ "duration_ms": 60000,
+ "expect": {
+  "webhook_events_include": [
+   "start",
+   "bag_full"
+  ]
+ },
+ "name": "script-bagguard",
+ "schedule": [
+  [
+   500,
+   "toggle"
+  ],
+  [
+   30000,
+   "quit"
+  ]
+ ],
+ "window": [
+  0,
+  0,
+  1440,
+  900
+ ]
+}

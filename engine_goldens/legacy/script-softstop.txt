@@ -1,0 +1,97 @@
+[config] applied 3 setting(s) from prospecting_config.json
+
+Prospecting auto-pan macro for macOS.
+
+THE TWO BARS
+    DIG BAR (vertical, right of the player) -- a TIMED skill bar.
+        Hold LMB; a white line bounces along the bar. Release when the white
+        line is on the GREEN end so it "lands" on green. The macro watches the
+        green pixel and releases the instant the white line crosses it.
+    CAPACITY BAR (horizontal, gray -> yellow, bottom centre) -- NOT timed.
+        Each dig adds yellow. May take one or several digs to fill. When it is
+        FULL (all yellow) we run the empty sequence.
+
+ONE FULL LOOP
+    repeat:
+        dig_once()                 # hold LMB, release when white hits green
+        if capacity_full():        # yellow reached the end of the capacity bar
+            empty_sequence()       # S back into water, W forward + LMB shake,
+                                   # then hold LMB to empty the pan
+    # otherwise keep digging until the capacity bar fills
+
+Hotkeys:
+    F8   -> start / stop the loop
+    Esc  -> quit (always releases keys/mouse first)
+
+
+Dig trigger pixel (1078, 532) (white-line release).
+Capacity-full pixel (1120, 900) (yellow = full).
+Press Ctrl+K to start/stop, Escape to quit.
+
+[RUNNING]
+__RESET__
+[   0.00s] === RUNNING (live trace below) ===
+[   0.00s] === CUSTOM SCRIPT: looper ===
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 0}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 1}
+__STATS__ {"cycles": 1, "recoveries": 0, "clean_cycles": 1, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 2, "pans_per_hr": 0, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 2}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 3}
+__STATS__ {"cycles": 3, "recoveries": 0, "clean_cycles": 3, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 1.05, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 4, "pans_per_hr": 2577.6, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 4}
+[MANUAL SOFT-STOP]
+__EVENT__ {"type": "safe_stop", "reason": "manual soft-stop (test)", "t": 5.2}
+
+*** SAFE PAUSE: manual soft-stop (test) - retrying in 60s (attempt 1/3) ***
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 4}
+__STATS__ {"cycles": 4, "recoveries": 0, "clean_cycles": 4, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 1.05, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 65, "pans_per_hr": 220.6, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 5}
+__STATS__ {"cycles": 5, "recoveries": 0, "clean_cycles": 5, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 16.31, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 62.09, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 67, "pans_per_hr": 267.3, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 6}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 7}
+__STATS__ {"cycles": 7, "recoveries": 0, "clean_cycles": 7, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 11.22, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 69, "pans_per_hr": 363.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 8}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 9}
+__STATS__ {"cycles": 9, "recoveries": 0, "clean_cycles": 9, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 8.68, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 71, "pans_per_hr": 453.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 10}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 11}
+__STATS__ {"cycles": 11, "recoveries": 0, "clean_cycles": 11, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 7.15, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 73, "pans_per_hr": 537.8, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 12}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 13}
+__STATS__ {"cycles": 13, "recoveries": 0, "clean_cycles": 13, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 6.14, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 75, "pans_per_hr": 618.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 14}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 15}
+__STATS__ {"cycles": 15, "recoveries": 0, "clean_cycles": 15, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 5.41, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 77, "pans_per_hr": 693.8, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 16}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 17}
+__STATS__ {"cycles": 17, "recoveries": 0, "clean_cycles": 17, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 4.87, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 79, "pans_per_hr": 765.7, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 18}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 19}
+__STATS__ {"cycles": 19, "recoveries": 0, "clean_cycles": 19, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 4.44, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 82, "pans_per_hr": 833.8, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 20}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 21}
+__STATS__ {"cycles": 21, "recoveries": 0, "clean_cycles": 21, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 4.1, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 84, "pans_per_hr": 898.6, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 22}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 23}
+__STATS__ {"cycles": 23, "recoveries": 0, "clean_cycles": 23, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 3.82, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 86, "pans_per_hr": 960.2, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 24}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 25}
+__STATS__ {"cycles": 25, "recoveries": 0, "clean_cycles": 25, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 3.59, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 88, "pans_per_hr": 1018.9, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 26}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 27}
+__STATS__ {"cycles": 27, "recoveries": 0, "clean_cycles": 27, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 3.4, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 90, "pans_per_hr": 1074.9, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 28}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 29}
+__STATS__ {"cycles": 29, "recoveries": 0, "clean_cycles": 29, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 3.23, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 92, "pans_per_hr": 1128.3, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 30}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 31}
+__STATS__ {"cycles": 31, "recoveries": 0, "clean_cycles": 31, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 3.08, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 94, "pans_per_hr": 1179.3, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 32}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 33}
+__STATS__ {"cycles": 33, "recoveries": 0, "clean_cycles": 33, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 2.96, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 96, "pans_per_hr": 1228.2, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 34}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 35}
+__STATS__ {"cycles": 35, "recoveries": 0, "clean_cycles": 35, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 2.85, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 98, "pans_per_hr": 1274.9, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 36}
+[QUIT]
+Stopped, all inputs released.

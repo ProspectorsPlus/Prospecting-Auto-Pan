@@ -1,0 +1,35 @@
+{
+ "config": {
+  "SCRIPT_ACTIVE": "looper",
+  "SCRIPT_JSON": "{\"version\":1,\"name\":\"looper\",\"blocks\":[{\"id\":\"b1\",\"type\":\"tap_key\",\"params\":{\"key\":\"1\",\"hold_ms\":40},\"children\":[]},{\"id\":\"b2\",\"type\":\"wait\",\"params\":{\"ms\":1000},\"children\":[]}]}",
+  "SCRIPT_MODE": true
+ },
+ "duration_ms": 200000,
+ "expect": {
+  "webhook_events_include": [
+   "start",
+   "safe_stop"
+  ]
+ },
+ "name": "script-softstop",
+ "schedule": [
+  [
+   500,
+   "toggle"
+  ],
+  [
+   5000,
+   "soft"
+  ],
+  [
+   100000,
+   "quit"
+  ]
+ ],
+ "window": [
+  0,
+  0,
+  1440,
+  900
+ ]
+}

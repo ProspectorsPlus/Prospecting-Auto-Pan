@@ -1,0 +1,43 @@
+[config] applied 3 setting(s) from prospecting_config.json
+
+Prospecting auto-pan macro for macOS.
+
+THE TWO BARS
+    DIG BAR (vertical, right of the player) -- a TIMED skill bar.
+        Hold LMB; a white line bounces along the bar. Release when the white
+        line is on the GREEN end so it "lands" on green. The macro watches the
+        green pixel and releases the instant the white line crosses it.
+    CAPACITY BAR (horizontal, gray -> yellow, bottom centre) -- NOT timed.
+        Each dig adds yellow. May take one or several digs to fill. When it is
+        FULL (all yellow) we run the empty sequence.
+
+ONE FULL LOOP
+    repeat:
+        dig_once()                 # hold LMB, release when white hits green
+        if capacity_full():        # yellow reached the end of the capacity bar
+            empty_sequence()       # S back into water, W forward + LMB shake,
+                                   # then hold LMB to empty the pan
+    # otherwise keep digging until the capacity bar fills
+
+Hotkeys:
+    F8   -> start / stop the loop
+    Esc  -> quit (always releases keys/mouse first)
+
+
+Dig trigger pixel (1078, 532) (white-line release).
+Capacity-full pixel (1120, 900) (yellow = full).
+Press Ctrl+K to start/stop, Escape to quit.
+
+[RUNNING]
+__RESET__
+[   0.00s] === RUNNING (live trace below) ===
+[   0.00s] === CUSTOM SCRIPT: looper ===
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 0}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 1}
+__STATS__ {"cycles": 1, "recoveries": 0, "clean_cycles": 1, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 2, "pans_per_hr": 0, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 2}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 3}
+__STATS__ {"cycles": 3, "recoveries": 0, "clean_cycles": 3, "clean_pct": 100.0, "digs": 0, "tracker": false, "script": "looper", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 0, "digs_per_pan": 0.0, "clicks_per_pan": 0.0, "pauses": 0, "cyc_mean_s": 1.05, "cyc_p50_s": 1.05, "cyc_p95_s": 1.05, "cyc_last_s": 1.05, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 4, "pans_per_hr": 2577.6, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__SCRIPT__ {"id": "b1", "type": "tap_key", "pass": 4}
+[QUIT]
+Stopped, all inputs released.

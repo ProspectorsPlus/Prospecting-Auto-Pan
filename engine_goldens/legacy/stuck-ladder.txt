@@ -1,0 +1,267 @@
+[config] applied 0 setting(s) from prospecting_config.json
+
+Prospecting auto-pan macro for macOS.
+
+THE TWO BARS
+    DIG BAR (vertical, right of the player) -- a TIMED skill bar.
+        Hold LMB; a white line bounces along the bar. Release when the white
+        line is on the GREEN end so it "lands" on green. The macro watches the
+        green pixel and releases the instant the white line crosses it.
+    CAPACITY BAR (horizontal, gray -> yellow, bottom centre) -- NOT timed.
+        Each dig adds yellow. May take one or several digs to fill. When it is
+        FULL (all yellow) we run the empty sequence.
+
+ONE FULL LOOP
+    repeat:
+        dig_once()                 # hold LMB, release when white hits green
+        if capacity_full():        # yellow reached the end of the capacity bar
+            empty_sequence()       # S back into water, W forward + LMB shake,
+                                   # then hold LMB to empty the pan
+    # otherwise keep digging until the capacity bar fills
+
+Hotkeys:
+    F8   -> start / stop the loop
+    Esc  -> quit (always releases keys/mouse first)
+
+
+Dig trigger pixel (1078, 532) (white-line release).
+Capacity-full pixel (1120, 900) (yellow = full).
+Press Ctrl+K to start/stop, Escape to quit.
+
+[RUNNING]
+__RESET__
+[   0.00s] === RUNNING (live trace below) ===
+[   0.00s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[   1.26s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 1.3}
+[   2.63s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 2.6}
+[   4.00s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 4.0}
+[   5.37s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 5.4}
+[   6.74s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 6.7}
+[   6.91s]     dig-probe: no land after 5 rounds (land_fails=1)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 15, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 6, "pans_per_hr": 0.0, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 5, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 6.9}
+[   6.91s] ** no progress for 5s -> break-out #1 (click to empty) **
+[   6.91s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 6.9, "where": "LIMBO", "contents": "EMPTY"}
+[   6.91s]     break-out: reposition W fwd
+[   7.07s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[   8.33s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 8.3}
+[   9.70s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 9.7}
+[  11.07s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 11.1}
+[  12.44s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 12.4}
+[  13.81s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 13.8}
+[  13.98s]     dig-probe: no land after 5 rounds (land_fails=2)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 30, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 13, "pans_per_hr": 0.0, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 10, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 14.0}
+[  13.98s] ** no progress for 5s -> break-out #2 (click to empty) **
+[  13.98s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 14.0, "where": "LIMBO", "contents": "EMPTY"}
+[  13.98s]     break-out: reposition W fwd
+[  14.14s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[  15.40s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 15.4}
+[  16.77s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 16.8}
+[  18.14s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 18.1}
+[  19.51s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 19.5}
+[  20.88s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 20.9}
+[  21.05s]     dig-probe: no land after 5 rounds (land_fails=3)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 45, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 21, "pans_per_hr": 0.0, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 15, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 21.1}
+[  21.05s] ** no progress for 5s -> break-out #3 (click to empty) **
+__EVENT__ {"type": "safe_stop", "reason": "no progress -- stuck (shake glitch?)", "t": 21.1}
+
+*** SAFE PAUSE: no progress -- stuck (shake glitch?) - retrying in 60s (attempt 1/3) ***
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 45, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 81, "pans_per_hr": 0.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 15, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+[  81.05s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[  82.31s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 82.3}
+[  83.68s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 83.7}
+[  85.05s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 85.0}
+[  86.42s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 86.4}
+[  87.79s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 87.8}
+[  87.96s]     dig-probe: no land after 5 rounds (land_fails=1)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 60, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 87, "pans_per_hr": 0.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 20, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 88.0}
+[  87.96s] ** no progress for 5s -> break-out #1 (click to empty) **
+[  87.96s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 88.0, "where": "LIMBO", "contents": "EMPTY"}
+[  87.96s]     break-out: reposition W fwd
+[  88.12s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[  89.38s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 89.4}
+[  90.75s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 90.8}
+[  92.12s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 92.1}
+[  93.49s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 93.5}
+[  94.86s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 94.9}
+[  95.03s]     dig-probe: no land after 5 rounds (land_fails=2)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 75, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 95, "pans_per_hr": 0.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 25, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 95.0}
+[  95.03s] ** no progress for 5s -> break-out #2 (click to empty) **
+[  95.03s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 95.0, "where": "LIMBO", "contents": "EMPTY"}
+[  95.03s]     break-out: reposition W fwd
+[  95.19s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[  96.45s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 96.5}
+[  97.82s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 97.8}
+[  99.19s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 99.2}
+[ 100.56s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 100.6}
+[ 101.93s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 101.9}
+[ 102.10s]     dig-probe: no land after 5 rounds (land_fails=3)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 90, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 102, "pans_per_hr": 0.0, "safe_stops": 1, "hard_stops": 0, "relics_used": 0, "nudges": 30, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 102.1}
+[ 102.10s] ** no progress for 5s -> break-out #3 (click to empty) **
+__EVENT__ {"type": "safe_stop", "reason": "no progress -- stuck (shake glitch?)", "t": 102.1}
+
+*** SAFE PAUSE: no progress -- stuck (shake glitch?) - retrying in 60s (attempt 2/3) ***
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 90, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 162, "pans_per_hr": 0.0, "safe_stops": 2, "hard_stops": 0, "relics_used": 0, "nudges": 30, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+[ 162.10s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[ 163.36s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 163.4}
+[ 164.73s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 164.7}
+[ 166.10s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 166.1}
+[ 167.47s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 167.5}
+[ 168.84s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 168.8}
+[ 169.01s]     dig-probe: no land after 5 rounds (land_fails=1)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 105, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 169, "pans_per_hr": 0.0, "safe_stops": 2, "hard_stops": 0, "relics_used": 0, "nudges": 35, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 169.0}
+[ 169.01s] ** no progress for 5s -> break-out #1 (click to empty) **
+[ 169.01s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 169.0, "where": "LIMBO", "contents": "EMPTY"}
+[ 169.01s]     break-out: reposition W fwd
+[ 169.17s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[ 170.43s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 170.4}
+[ 171.80s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 171.8}
+[ 173.17s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 173.2}
+[ 174.54s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 174.5}
+[ 175.91s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 175.9}
+[ 176.08s]     dig-probe: no land after 5 rounds (land_fails=2)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 120, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 176, "pans_per_hr": 0.0, "safe_stops": 2, "hard_stops": 0, "relics_used": 0, "nudges": 40, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 176.1}
+[ 176.08s] ** no progress for 5s -> break-out #2 (click to empty) **
+[ 176.08s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 176.1, "where": "LIMBO", "contents": "EMPTY"}
+[ 176.08s]     break-out: reposition W fwd
+[ 176.24s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[ 177.50s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 177.5}
+[ 178.87s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 178.9}
+[ 180.24s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 180.2}
+[ 181.61s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 181.6}
+[ 182.98s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 183.0}
+[ 183.15s]     dig-probe: no land after 5 rounds (land_fails=3)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 135, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 183, "pans_per_hr": 0.0, "safe_stops": 2, "hard_stops": 0, "relics_used": 0, "nudges": 45, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 183.2}
+[ 183.15s] ** no progress for 5s -> break-out #3 (click to empty) **
+__EVENT__ {"type": "safe_stop", "reason": "no progress -- stuck (shake glitch?)", "t": 183.2}
+
+*** SAFE PAUSE: no progress -- stuck (shake glitch?) - retrying in 60s (attempt 3/3) ***
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 135, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 243, "pans_per_hr": 0.0, "safe_stops": 3, "hard_stops": 0, "relics_used": 0, "nudges": 45, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+[ 243.15s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[ 244.41s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 244.4}
+[ 245.78s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 245.8}
+[ 247.15s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 247.2}
+[ 248.52s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 248.5}
+[ 249.89s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 249.9}
+[ 250.06s]     dig-probe: no land after 5 rounds (land_fails=1)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 150, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 250, "pans_per_hr": 0.0, "safe_stops": 3, "hard_stops": 0, "relics_used": 0, "nudges": 50, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 250.1}
+[ 250.06s] ** no progress for 5s -> break-out #1 (click to empty) **
+[ 250.06s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 250.1, "where": "LIMBO", "contents": "EMPTY"}
+[ 250.06s]     break-out: reposition W fwd
+[ 250.22s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[ 251.48s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 251.5}
+[ 252.85s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 252.8}
+[ 254.22s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 254.2}
+[ 255.59s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 255.6}
+[ 256.96s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 257.0}
+[ 257.13s]     dig-probe: no land after 5 rounds (land_fails=2)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 165, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 257, "pans_per_hr": 0.0, "safe_stops": 3, "hard_stops": 0, "relics_used": 0, "nudges": 55, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 257.1}
+[ 257.13s] ** no progress for 5s -> break-out #2 (click to empty) **
+[ 257.13s]     ** BREAK-OUT: click to finish any active shake, then reposition **
+__EVENT__ {"type": "break_out", "reason": "stuck at LIMBO/EMPTY, forcing an escape", "t": 257.1, "where": "LIMBO", "contents": "EMPTY"}
+[ 257.13s]     break-out: reposition W fwd
+[ 257.29s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[ 258.55s]     no dig registered (round 1) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 258.6}
+[ 259.92s]     no dig registered (round 2) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 259.9}
+[ 261.29s]     no dig registered (round 3) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 261.3}
+[ 262.66s]     no dig registered (round 4) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 262.7}
+[ 264.03s]     no dig registered (round 5) -> nudge W fwd
+__EVENT__ {"type": "nudge", "reason": "no dig registered, nudging forward to find land", "t": 264.0}
+[ 264.20s]     dig-probe: no land after 5 rounds (land_fails=3)
+__STATS__ {"cycles": 0, "recoveries": 0, "clean_cycles": 0, "clean_pct": 0, "digs": 0, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0.0, "money_per_pan": 0, "shards_per_pan": 0, "dig_clicks": 180, "digs_per_pan": 0, "clicks_per_pan": 0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 264, "pans_per_hr": 0.0, "safe_stops": 3, "hard_stops": 0, "relics_used": 0, "nudges": 60, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+__EVENT__ {"type": "no_progress", "reason": "nothing completed for 5s, click-to-empty recovery", "t": 264.2}
+[ 264.20s] ** no progress for 5s -> break-out #3 (click to empty) **
+__EVENT__ {"type": "safe_stop", "reason": "no progress -- stuck (shake glitch?)", "t": 264.2}
+
+*** HARD STOP: no progress -- stuck (shake glitch?) ***  (Ctrl+K to resume, Esc to quit)
+[ 264.20s] === STOPPED (safe-stop) ===
+[QUIT]
+Stopped, all inputs released.
