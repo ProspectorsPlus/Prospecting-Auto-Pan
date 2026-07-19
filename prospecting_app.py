@@ -44,6 +44,13 @@ def _data_dir():
     """Where read/write files (config, builds) live. When frozen we can't write
     next to the .exe (Program Files is read-only for normal users), so use
     %LOCALAPPDATA%\\Prospectors Plus. In dev it's just the script folder."""
+    d = os.environ.get("PP_DATA_DIR")
+    if d:
+        # Embedded launches (Prospector Studio bundles this app) choose the
+        # data folder explicitly so config/builds/history live where the
+        # host decided -- never inside the bundle.
+        os.makedirs(d, exist_ok=True)
+        return d
     if FROZEN:
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
         d = os.path.join(base, "Prospectors Plus")
@@ -65,6 +72,36 @@ BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
 TUTORIAL_FILE = os.path.join(DATA_DIR, "tutorial_content.json")        # owner edits
 TUTORIAL_CACHE = os.path.join(DATA_DIR, "tutorial_remote_cache.json")  # site copy
 SCRIPTS_FILE = os.path.join(DATA_DIR, "prospecting_scripts.json")   # Studio scripts
+
+# ---- Prospector Studio embedded launch --------------------------------------
+# Studio bundles this exact app and opens it as "the macro" window. The env
+# contract (all optional; standalone Lite sets none of these and behaves
+# byte-for-byte the same):
+#   PP_DATA_DIR       where config/builds/scripts/history live
+#   PP_THEME=studio   recolour every window to Studio's Assayer's Bench palette
+#   PP_STUDIO_LAUNCH=1  show the Classic | Studio-build switch on the Run tab
+#   PP_STUDIO_SCRIPT  the script name Studio published for this launch
+STUDIO_LAUNCH = os.environ.get("PP_STUDIO_LAUNCH") == "1"
+STUDIO_SCRIPT = os.environ.get("PP_STUDIO_SCRIPT", "")
+APP_THEME = os.environ.get("PP_THEME", "")
+
+_STUDIO_THEME_CSS = """<style id="pps-studio-theme">
+:root{--bg:#0e1312;--bg2:#0b100f;--panel:#131917;--head:#0e1312;--line:#1e2624;
+ --line2:#2a3431;--txt:#eae7dc;--mut:#8b948b;--dim:#6a746c;--accent:#d9a441;
+ --accent-lit:#efc063;--accent2:#45c4a9;--teal-lit:#45c4a9;--green:#3fae94;
+ --field:#0b100f;--nav:#0b100f;--sand-dim:rgba(217,164,65,.14);
+ --sand-glow:rgba(217,164,65,.26)}
+body,.cwrap,.topbar,.side,.content,.awrap{background-image:none !important}
+</style>"""
+
+
+def _themed(html):
+    """Inject the Studio palette override when launched by Prospector Studio
+    (PP_THEME=studio). Only the shared CSS variables are re-mapped; layout,
+    markup, and behavior are untouched. Standalone Lite returns html as-is."""
+    if APP_THEME != "studio" or "</head>" not in html:
+        return html
+    return html.replace("</head>", _STUDIO_THEME_CSS + "</head>", 1)
 
 # Bundled default builds -- these SHIP with the app so every download has a
 # ready geode setup on the Builds page (user builds of the same name override
@@ -1745,7 +1782,8 @@ class Api:
                 "builds": self.list_builds(), "pixels": pixels,
                 "colors": saved.get("PIXEL_COLORS", {}),
                 "region_previews": saved.get("REGION_PREVIEWS", {}),
-                "autobuild": saved.get("AUTOBUILD", {})}
+                "autobuild": saved.get("AUTOBUILD", {}),
+                "studio_launch": STUDIO_LAUNCH, "studio_script": STUDIO_SCRIPT}
 
     # ---- tutorial + help content (owner-editable) ----
     def tutorial_content(self):
@@ -4664,6 +4702,10 @@ def build_html():
         '<section class="panel active" id="prun"><div class="phead"><h2>Run</h2>'
         '<p class="chint">Start the macro, tab into Roblox. Ctrl+K also '
         'starts/stops; Esc quits.</p></div>'
+        '<div class="stlaunch" id="stlaunch" style="display:none">'
+        '<button type="button" class="slbtn" id="sl_classic">Classic cycle</button>'
+        '<button type="button" class="slbtn" id="sl_studio">Studio build</button>'
+        '<span class="slnote" id="slnote"></span></div>'
         '<div class="calbanner" id="calbanner"></div>'
         '<div class="runbtns"><button type="button" id="startbtn" class="big go">'
         'Start macro</button><button type="button" id="pausebtn" class="big pause">'
@@ -5613,6 +5655,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .scriptbar select{background:var(--bg2);border:1px solid var(--line2);border-radius:7px;color:var(--txt);padding:6px 9px;font:inherit;font-size:12px;max-width:280px}
  .scriptbar select:focus{outline:none;border-color:var(--accent)}
  .scriptnote{color:var(--mut);font-size:11.5px}
+ .stlaunch{display:flex;gap:8px;align-items:center;margin:0 2px 12px;flex-wrap:wrap}
+ .slbtn{background:var(--bg2);border:1px solid var(--line2);border-radius:9px;color:var(--txt);padding:9px 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:border-color .15s}
+ .slbtn:hover{border-color:var(--accent)}
+ .slbtn.on{background:var(--sand-dim);border-color:var(--accent);color:var(--accent-lit)}
+ .slnote{color:var(--mut);font-size:11.5px}
  .hc-rt{margin-left:auto;color:var(--accent-lit);font-weight:700;font-variant-numeric:tabular-nums;font-size:13px}
  .hc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
  .hc{background:var(--field);border-radius:9px;padding:8px 10px;text-align:center;box-shadow:inset 0 1px 2px rgba(0,0,0,.3)}
@@ -7336,6 +7383,42 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      t.addEventListener('click',function(){setTimeout(window.stRefresh,60);});});
    stRefresh();
  })();
+ // ---- Studio-launch: the Classic | Studio-build switch on the Run tab ----
+ // Visible only when Prospector Studio launched this app (PP_STUDIO_LAUNCH).
+ // It drives the SAME plumbing as the Mode dropdown: studio_set_active('')
+ // for the classic built-in cycle, studio_set_active(<pushed script>) for
+ // the build Studio published at launch.
+ (function(){
+   var wrap=$('#stlaunch');if(!wrap)return;
+   async function slRefresh(){var st;try{st=await window.pywebview.api.get_state();}catch(e){return;}
+     if(!st||!st.studio_launch)return;
+     wrap.style.display='flex';
+     var r;try{r=await window.pywebview.api.studio_list();}catch(e){r=null;}
+     if(r&&r.ok===false)r=null;
+     var active=(r&&r.active)||'';
+     var name=st.studio_script||'';
+     var sb=$('#sl_studio');
+     if(sb)sb.textContent='Studio build'+(name?': '+name:'');
+     $('#sl_classic').classList.toggle('on',!active);
+     if(sb)sb.classList.toggle('on',!!active);
+     var note=$('#slnote');
+     if(note)note.textContent=active?('"'+active+'" runs when you press Start.'):'The built-in cycle runs when you press Start.';}
+   $('#sl_classic').onclick=async function(){var r;
+     try{r=await window.pywebview.api.studio_set_active('');}catch(e){r=null;}
+     if(r&&r.ok)toast('Classic cycle \u2014 the built-in mode toggles are in charge');
+     else toast((r&&r.error)||'Could not switch');
+     if(window.stRefresh)window.stRefresh();slRefresh();};
+   $('#sl_studio').onclick=async function(){var st;try{st=await window.pywebview.api.get_state();}catch(e){st=null;}
+     var name=(st&&st.studio_script)||'';var r=null;
+     if(name){try{r=await window.pywebview.api.studio_set_active(name);}catch(e){r=null;}}
+     if(r&&r.ok)toast('"'+name+'" from Studio is the active mode');
+     else toast((r&&r.error)||'No Studio build was pushed for this launch \u2014 open the Studio tab to pick a script');
+     if(window.stRefresh)window.stRefresh();slRefresh();};
+   var ss=$('#scriptsel');if(ss)ss.addEventListener('change',function(){setTimeout(slRefresh,150);});
+   window.slRefresh=slRefresh;
+   window.addEventListener('pywebviewready',function(){setTimeout(slRefresh,120);});
+   setTimeout(slRefresh,900);slRefresh();
+ })();
  (function(){const b=$('#hudbtn');if(b)b.onclick=async()=>{
    try{const r=await window.pywebview.api.hud_toggle();
      toast(r==='shown'?'HUD on, drag it beside Roblox':'HUD hidden');}catch(e){}};})();
@@ -8956,7 +9039,7 @@ def main():
     except Exception:
         pass
     print("[boot] building main window…", flush=True)
-    _window = webview.create_window("Prospectors Plus", html=build_html(),
+    _window = webview.create_window("Prospectors Plus", html=_themed(build_html()),
                                     js_api=api, width=1340, height=900,
                                     min_size=(600, 560))
     try:
@@ -8973,7 +9056,7 @@ def main():
     print("[boot] main ok -> pill", flush=True)
     try:
         _pill = webview.create_window(
-            "Prospectors Plus", html=PILL_HTML, js_api=api,
+            "Prospectors Plus", html=_themed(PILL_HTML), js_api=api,
             width=272, height=178, frameless=True, on_top=True,
             easy_drag=True, resizable=False, hidden=True)
     except Exception as _e:
@@ -8983,7 +9066,7 @@ def main():
         if os.environ.get("PP_NO_HUD"):
             raise RuntimeError("skipped by PP_NO_HUD")
         _hud = webview.create_window(
-            "HUD, Prospectors Plus", html=_hud_html(), js_api=api,
+            "HUD, Prospectors Plus", html=_themed(_hud_html()), js_api=api,
             width=384, height=470, frameless=True, on_top=True,
             easy_drag=True, resizable=False, hidden=True)
     except Exception as _e:
@@ -8991,7 +9074,7 @@ def main():
     print("[boot] hud ok -> calibrate overlay", flush=True)
     try:
         _overlay = webview.create_window(
-            "Calibrate", html=_OVERLAY_HTML, js_api=api,
+            "Calibrate", html=_themed(_OVERLAY_HTML), js_api=api,
             x=0, y=0, width=_sw, height=_sh,
             frameless=True, on_top=True, easy_drag=False, hidden=True)
     except Exception as _e:
@@ -8999,7 +9082,7 @@ def main():
     print("[boot] overlay ok -> coach", flush=True)
     try:
         _coach_win = webview.create_window(
-            "Coach, Prospectors Plus", html=COACH_HTML, js_api=api,
+            "Coach, Prospectors Plus", html=_themed(COACH_HTML), js_api=api,
             width=900, height=820, min_size=(560, 560), hidden=True)
         _hide_on_close(_coach_win)
     except Exception as _e:
@@ -9007,7 +9090,7 @@ def main():
     print("[boot] coach ok -> analytics", flush=True)
     try:
         _analytics_win = webview.create_window(
-            "Analytics, Prospectors Plus", html=ANALYTICS_HTML, js_api=api,
+            "Analytics, Prospectors Plus", html=_themed(ANALYTICS_HTML), js_api=api,
             width=980, height=860, min_size=(620, 560), hidden=True)
         _hide_on_close(_analytics_win)
     except Exception as _e:
@@ -9015,7 +9098,7 @@ def main():
     print("[boot] analytics ok -> studio", flush=True)
     try:
         _studio_win = webview.create_window(
-            "Studio, Prospectors Plus", html=_studio_html(), js_api=api,
+            "Studio, Prospectors Plus", html=_themed(_studio_html()), js_api=api,
             width=1200, height=800, min_size=(720, 540), hidden=True)
         _hide_on_close(_studio_win)
     except Exception as _e:
