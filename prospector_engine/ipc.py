@@ -601,6 +601,36 @@ class Server(object):
         sys.stdout.flush()
         os._exit(0)
 
+    def fatal_error(self, exc):
+        """An unhandled exception is ending the engine (section 9). Emit a
+        structured terminal for any live run (run.stopped reason=error) and
+        an error bye BEFORE the traceback kills the process, so hosts get a
+        machine-readable stop reason instead of a bare crash. Every step is
+        best-effort: nothing here may raise over the original error."""
+        po = self.po
+        try:
+            po.release_all()
+        except Exception:
+            pass
+        try:
+            if self.emit.run_id is not None:
+                final = (po.State.stats.as_dict()
+                         if po.State.stats is not None else {})
+                self.emit.stopped("error", final)
+        except Exception:
+            pass
+        try:
+            self.emit.bye("error", code="EXCEPTION",
+                          message="%s: %s" % (type(exc).__name__, exc))
+        except Exception:
+            pass
+        try:
+            self._shutdown.set()
+            self.lock.release()
+            sys.stdout.flush()
+        except Exception:
+            pass
+
     def main_ended(self):
         """Engine main() returned (quit hotkey / natural end): section 10.1
         epilogue -- terminal run event if one was live, then bye. The

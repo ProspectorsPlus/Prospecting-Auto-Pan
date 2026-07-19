@@ -16,7 +16,7 @@ import json
 MAGIC = "PPE1"
 PREFIX = MAGIC + " "
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 0
+PROTOCOL_MINOR = 1   # 1.1: adds the "error" stop reason (fatal-exception path)
 
 # ---- ack error codes (closed set, protocol section 3.3) ---------------------
 E_UNSUPPORTED = "UNSUPPORTED"
@@ -108,7 +108,8 @@ SAFETY_EVENT_TYPES = (
     "autopan_guard", "autopan_kick", "shake_glitch", "no_progress",
 )
 
-STOP_REASONS = ("user", "hotkey", "safe-stop", "auto", "bag-full", "shutdown")
+STOP_REASONS = ("user", "hotkey", "safe-stop", "auto", "bag-full", "shutdown",
+                "error")
 
 # the full injectable vocabulary (section 10.1 release floor). Keycodes are
 # platform-specific; these are the platform-neutral names hosts release

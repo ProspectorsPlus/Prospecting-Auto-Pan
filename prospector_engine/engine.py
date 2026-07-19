@@ -621,6 +621,8 @@ RELIC_PRE_MS       = 120   # settle after releasing movement, before switching s
 # Posts to WEBHOOK_URL on events (start, safe-stop, bag full, periodic stats).
 # The engine performs no network egress except the user's own configured
 # webhook (architecture section 8, ISS-121/ISS-157).
+WEBHOOK_ENABLED    = False  # master toggle; the config/UI turns it on
+WEBHOOK_URL        = ""  # optional user webhook; empty disables notifications
 WEBHOOK_SECRET     = ""  # set in config only; no secret is ever baked into source
 WEBHOOK_USER       = ""     # a name/id your bot uses to know who to DM
 WEBHOOK_STATS_MIN  = 60     # also send a stats update every N minutes (0 = off)
@@ -6298,8 +6300,11 @@ def main():
                     was_running = False
                     time.sleep(0.02)
         except Exception as _e:
-            post_webhook("error", f"❌ Macro error: {_e}",
-                         State.stats.as_dict() if State.stats else None)
+            try:
+                post_webhook("error", f"❌ Macro error: {_e}",
+                             State.stats.as_dict() if State.stats else None)
+            except Exception:
+                pass          # a webhook failure must never mask the real error
             raise
         finally:
             release_all()
@@ -6374,7 +6379,15 @@ def _cli_main(argv=None):
             import engine_sim as _ppe_sim
             _ppe_sim.World(sys.modules[__name__],
                            _ppe_sim.load_scenario(_scen))
-        main()
+        try:
+            main()
+        except BaseException as _fatal:
+            # Structured last words: a fatal engine exception still reports a
+            # machine-readable stop reason + bye to the host before the
+            # traceback ends the process (section 9). Best-effort by design.
+            if _IPC_MODE and _IPC_SERVER is not None:
+                _IPC_SERVER.fatal_error(_fatal)
+            raise
         if _IPC_MODE and _IPC_SERVER is not None:
             _IPC_SERVER.main_ended()
     else:
