@@ -808,6 +808,147 @@ finally:
     _sh.rmtree(_mdir, ignore_errors=True)
 
 # =============================================================================
+print("[11] PPScript v3 — general input under declared capabilities")
+# =============================================================================
+# The runner-level contract for docs/PPSCRIPT_V3.md (Studio repo): caps are
+# parsed and re-enforced at load, the new handlers drive the platform seams in
+# a deterministic order, and every down is released on the abort paths.
+
+install_stubs()
+po.type_char = lambda ch: ACTIONS.append(("type", ch))
+po.button_down = lambda b, cs=1: ACTIONS.append(("bd", b, cs))
+po.button_up = lambda b, cs=1: ACTIONS.append(("bu", b, cs))
+po.scroll_lines = lambda n: ACTIONS.append(("scroll", n))
+po.set_clipboard = lambda t: ACTIONS.append(("clip", t))
+
+
+def v3_script(blocks, caps=None, **extra):
+    s = {"format": "ppscript", "version": 3, "name": "V3", "blocks": blocks}
+    if caps is not None:
+        s["caps"] = caps
+    s.update(extra)
+    return s
+
+
+def v3_runner(blocks, caps=None, ticks=200, **extra):
+    r = po.ScriptRunner(json.dumps(v3_script(blocks, caps, **extra)), "V3")
+    det = FakeDet()
+    det_live[0] = det
+    for _ in range(ticks):
+        if not po.State.running:
+            break
+        r.tick(det)
+    return r, det
+
+
+# ---- caps enforcement at load ----------------------------------------------
+fresh_state()
+r = po.ScriptRunner(json.dumps(v3_script(
+    [{"id": "k", "type": "key_press", "params": {"key": "g"}}])), "V3")
+check("undeclared keyboard cap refuses the script",
+      "does not declare" in r.dead and "press any key" in r.dead, r.dead)
+
+r = po.ScriptRunner(json.dumps(v3_script(
+    [{"id": "k", "type": "key_press", "params": {"key": "g"}}],
+    caps=["keyboard"])), "V3")
+check("declared keyboard cap loads", r.dead == "", r.dead)
+check("runner records its caps", r.caps == ("keyboard",), r.caps)
+
+r = po.ScriptRunner(json.dumps(v3_script(
+    [{"id": "w", "type": "wait", "params": {"ms": 200}}],
+    caps=["telepathy"])), "V3")
+check("unknown cap refuses the script", "unknown capability" in r.dead, r.dead)
+
+r = po.ScriptRunner(json.dumps({
+    "format": "ppscript", "version": 2, "name": "V2",
+    "blocks": [{"id": "k", "type": "key_press", "params": {"key": "g"}}]}), "V2")
+check("v2 does not understand v3 blocks",
+      "does not understand" in r.dead, r.dead)
+
+# caps needed inside hooks count too
+fresh_state()
+r = po.ScriptRunner(json.dumps(v3_script(
+    [{"id": "w", "type": "wait", "params": {"ms": 200}}],
+    caps=[], hooks={"on_stuck": [
+        {"id": "t", "type": "type_text", "params": {"text": "hi"}}]})), "V3")
+check("hook-only cap use is still enforced",
+      "does not declare" in r.dead and "type text" in r.dead, r.dead)
+
+# ---- combo parsing -----------------------------------------------------------
+ok, why = po._script3_parse_combo("cmd+shift+4")
+check("combo parses (mods ordered, terminal kept)",
+      ok == (["cmd", "shift"], "4"), (ok, why))
+bad = [po._script3_parse_combo(t)[0] is None
+       for t in ("cmd+shift", "q+w", "cmd+cmd+c", "", "cmd+nosuchkey")]
+check("bad combos are all refused", all(bad), bad)
+check("primary alias resolves per platform",
+      po._script3_key_name("primary") == po.V3_PRIMARY, po.V3_PRIMARY)
+
+# ---- execution order + release safety ---------------------------------------
+fresh_state()
+G = po.V3_KEYCODES["g"]
+CMD = po.V3_KEYCODES["cmd"]
+C = po.V3_KEYCODES["c"]
+r, det = v3_runner([
+    {"id": "p", "type": "key_press", "params": {"key": "g", "hold_ms": 50}},
+    {"id": "c", "type": "key_combo", "params": {"combo": "cmd+c"}},
+    {"id": "t", "type": "type_text", "params": {"text": "hi", "cps": 10}},
+    {"id": "m", "type": "mouse_btn",
+     "params": {"button": "right", "action": "double"}},
+    {"id": "s", "type": "scroll", "params": {"amount": -3, "steps": 2}},
+    {"id": "x", "type": "stop", "params": {"message": "done"}},
+], caps=["keyboard", "text", "mouse"], ticks=20)
+seq = [a for a in ACTIONS if a[0] in
+       ("kd", "ku", "type", "bd", "bu", "scroll", "clip")]
+check("v3 executes in authored order with paired downs/ups", seq == [
+    ("kd", G), ("ku", G),
+    ("kd", CMD), ("kd", C), ("ku", C), ("ku", CMD),
+    ("type", "h"), ("type", "i"),
+    ("bd", "right", 1), ("bu", "right", 1),
+    ("bd", "right", 2), ("bu", "right", 2),
+    ("scroll", -3), ("scroll", -3),
+], seq)
+
+# key_down persists across nodes and is released by release_all
+fresh_state()
+held_before = set(po._HELD_KEYS)
+r, det = v3_runner([
+    {"id": "d", "type": "key_down", "params": {"key": "g"}},
+    {"id": "w", "type": "wait", "params": {"ms": 200}},
+    {"id": "x", "type": "stop", "params": {"message": "held"}},
+], caps=["keyboard"], ticks=10)
+kd = [a for a in ACTIONS if a[0] == "kd"]
+ku = [a for a in ACTIONS if a[0] == "ku"]
+check("key_down holds across nodes (no auto key_up)",
+      ("kd", G) in kd and ("ku", G) not in ku, (kd, ku))
+
+# The REAL release_all (install_stubs nulled the one on `po`) must release
+# held v3 keys AND buttons — use a fresh module load with recording seams.
+_po2 = load(os.path.join(ROOT, "prospector_engine", "engine.py"), "pold_rel")
+_po2._HELD_KEYS.clear()
+_po2._HELD_BUTTONS.clear()
+_rel_calls = []
+_po2.key_up = lambda c: _rel_calls.append(("ku", c))
+_po2.mouse_up = lambda: _rel_calls.append(("mu",))
+_po2.button_up = lambda b, cs=1: _rel_calls.append(("bu", b))
+_po2._HELD_KEYS.add(99)
+_po2._HELD_BUTTONS.add("right")
+_po2.release_all()
+check("release_all releases held v3 keys and buttons",
+      ("ku", 99) in _rel_calls and ("bu", "right") in _rel_calls
+      and ("mu",) in _rel_calls, _rel_calls)
+
+# ---- v3 is additive: a v2 script through the v3 runner is unchanged ---------
+fresh_state()
+r, det = v3_runner([
+    {"id": "a", "type": "dig", "params": {"hold_ms": 75}},
+    {"id": "x", "type": "stop", "params": {"message": "done"}},
+], caps=[], ticks=5)
+check("v1/v2 nodes run under version 3 unchanged",
+      any(a[0] == "md" for a in ACTIONS)
+      and any(a[0] == "safe_stop" for a in ACTIONS), ACTIONS[:6])
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

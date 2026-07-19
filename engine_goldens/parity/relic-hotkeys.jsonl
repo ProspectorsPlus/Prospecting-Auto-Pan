@@ -1,4 +1,4 @@
-{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "simulated": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 1}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
+{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "scriptV3": true, "simulated": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 2}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
 {"data": {"kind": "resetAll", "origin": "hotkey"}, "ev": "relic.changed", "seq": 2}
 {"data": {"level": "info", "text": "=== RELIC 'Relic B' timer RESET to full ==="}, "ev": "engine.log", "seq": 3}
 {"data": {"index": 1, "kind": "resetOne", "origin": "hotkey"}, "ev": "relic.changed", "seq": 4}

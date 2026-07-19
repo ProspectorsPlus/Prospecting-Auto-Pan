@@ -278,6 +278,103 @@ def scroll_down(steps=3):
     _eng._send(inp)
 
 
+# ---- v3 general input (Studio Scripts with declared caps; PPSCRIPT_V3) ------
+# Canonical lowercase key names -> hardware SCANCODES (same injection path as
+# key_down above). One shared name model with platform_mac and the Studio VM.
+KEYEVENTF_UNICODE = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_MIDDLEDOWN = 0x0020
+MOUSEEVENTF_MIDDLEUP = 0x0040
+
+V3_KEYCODES = {
+    "a": 0x1E, "b": 0x30, "c": 0x2E, "d": 0x20, "e": 0x12, "f": 0x21,
+    "g": 0x22, "h": 0x23, "i": 0x17, "j": 0x24, "k": 0x25, "l": 0x26,
+    "m": 0x32, "n": 0x31, "o": 0x18, "p": 0x19, "q": 0x10, "r": 0x13,
+    "s": 0x1F, "t": 0x14, "u": 0x16, "v": 0x2F, "w": 0x11, "x": 0x2D,
+    "y": 0x15, "z": 0x2C,
+    "0": 0x0B, "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06,
+    "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A,
+    "f1": 0x3B, "f2": 0x3C, "f3": 0x3D, "f4": 0x3E, "f5": 0x3F, "f6": 0x40,
+    "f7": 0x41, "f8": 0x42, "f9": 0x43, "f10": 0x44, "f11": 0x57, "f12": 0x58,
+    "f13": 0x64, "f14": 0x65, "f15": 0x66, "f16": 0x67, "f17": 0x68,
+    "f18": 0x69, "f19": 0x6A,
+    # extended-bit arrows/navigation ride the same scancode path Roblox
+    # already accepts for the game keys; extended flags handled below.
+    "up": 0x48, "down": 0x50, "left": 0x4B, "right": 0x4D, "space": 0x39,
+    "enter": 0x1C, "tab": 0x0F, "escape": 0x01, "backspace": 0x0E,
+    "delete": 0x53, "home": 0x47, "end": 0x4F, "pageup": 0x49,
+    "pagedown": 0x51,
+    "minus": 0x0C, "equal": 0x0D, "comma": 0x33, "period": 0x34,
+    "slash": 0x35, "backslash": 0x2B, "semicolon": 0x27, "quote": 0x28,
+    "bracketleft": 0x1A, "bracketright": 0x1B, "grave": 0x29,
+    "cmd": 0x5B, "ctrl": 0x1D, "alt": 0x38, "shift": 0x2A,
+}
+V3_PRIMARY = "ctrl"  # the cross-platform "primary" modifier on this platform
+
+# names whose scancodes need the extended-key flag when injected
+_V3_EXTENDED = {"up", "down", "left", "right", "delete", "home", "end",
+                "pageup", "pagedown", "cmd"}
+KEYEVENTF_EXTENDEDKEY = 0x0001
+_V3_EXT_CODES = {V3_KEYCODES[n] for n in _V3_EXTENDED}
+
+
+def v3_keycode(name):
+    return V3_KEYCODES.get(name)
+
+
+def _v3_flags(code, up):
+    f = KEYEVENTF_SCANCODE
+    if code in _V3_EXT_CODES:
+        f |= KEYEVENTF_EXTENDEDKEY
+    if up:
+        f |= KEYEVENTF_KEYUP
+    return f
+
+
+def type_char(ch):
+    """One layout-independent unicode character (down + up) via
+    KEYEVENTF_UNICODE. The engine paces characters."""
+    cu = ord(ch)
+    for up in (False, True):
+        flags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if up else 0)
+        inp = _INPUT(type=INPUT_KEYBOARD,
+                     u=_INPUTunion(ki=_KEYBDINPUT(0, cu, flags, 0, 0)))
+        _eng._send(inp)
+
+
+_V3_BUTTONS = {
+    "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+    "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+    "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+}
+
+
+def button_down(button, click_state=1):
+    _eng._HELD_BUTTONS.add(button)
+    _eng._mouse_btn(_V3_BUTTONS[button][0])
+
+
+def button_up(button, click_state=1):
+    _eng._HELD_BUTTONS.discard(button)
+    _eng._mouse_btn(_V3_BUTTONS[button][1])
+
+
+def scroll_lines(amount):
+    """Signed line scroll: positive = up, negative = down (one wheel event)."""
+    data = (120 * int(amount)) & 0xFFFFFFFF
+    inp = _INPUT(type=INPUT_MOUSE,
+                 u=_INPUTunion(mi=_MOUSEINPUT(0, 0, data, MOUSEEVENTF_WHEEL, 0, 0)))
+    _eng._send(inp)
+
+
+def set_clipboard(text):
+    """Local clipboard write via the standard clip.exe (no new dependencies)."""
+    import subprocess
+    p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=False)
+    p.communicate(str(text).encode("utf-16-le"), timeout=5)
+
+
 def _rel_move(dx, dy):
     inp = _INPUT(type=INPUT_MOUSE,
                  u=_INPUTunion(mi=_MOUSEINPUT(int(dx), int(dy), 0,
@@ -406,6 +503,7 @@ def calib_key_labeler(label, stop):
 
 # Names re-exported into the engine module namespace (per-platform values).
 ENGINE_GLOBALS = {
+    "V3_KEYCODES": V3_KEYCODES, "V3_PRIMARY": V3_PRIMARY,
     "KEY_W": KEY_W, "KEY_S": KEY_S, "KEY_A": KEY_A, "KEY_D": KEY_D,
     "KEY_SHIFT": KEY_SHIFT, "KEY_SPACE": KEY_SPACE,
     "SLOT_KEYCODES": SLOT_KEYCODES,

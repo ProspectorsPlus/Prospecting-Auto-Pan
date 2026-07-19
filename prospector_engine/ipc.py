@@ -32,6 +32,7 @@ def capabilities(po, simulated):
             "earningsOcr": sys.platform == "darwin",
             "inputLagProbe": hasattr(po, "_LAG"),
             "fastTravelRecovery": True,
+            "scriptV3": hasattr(po, "_SCRIPT_HANDLERS_V3"),
             "simulated": bool(simulated)}
     if simulated:
         try:

@@ -2125,6 +2125,29 @@ STUDIO2_OPS = ("add", "sub", "mul", "div", "mod", "neg", "abs", "min", "max",
                "round", "floor", "ceil", "clamp", "lt", "le", "gt", "ge",
                "eq", "ne", "and", "or", "not", "concat")
 
+# Version 3 adds general automation input under DECLARED capabilities
+# (PPSCRIPT_V3.md in the Studio repo). The library stores/activates/runs v3
+# like v2; the engine re-checks the declaration at load, and the UI shows the
+# declared caps to the user wherever a v3 program can be started.
+STUDIO_SCHEMA_V3 = 3
+STUDIO3_V3_ONLY_TYPES = ("key_press", "key_hold", "key_down", "key_up",
+                         "key_combo", "key_seq", "type_text",
+                         "set_clipboard", "release_keys", "mouse_btn",
+                         "scroll")
+STUDIO3_TYPES = STUDIO2_TYPES | set(STUDIO3_V3_ONLY_TYPES)
+STUDIO3_CAPS = ("keyboard", "text", "mouse")
+STUDIO3_CAP_OF = {
+    "key_press": "keyboard", "key_hold": "keyboard", "key_down": "keyboard",
+    "key_up": "keyboard", "key_combo": "keyboard", "key_seq": "keyboard",
+    "type_text": "text", "set_clipboard": "text",
+    "mouse_btn": "mouse", "scroll": "mouse",
+}
+STUDIO3_CAP_LABEL = {
+    "keyboard": "press any key",
+    "text": "type text and write the clipboard",
+    "mouse": "use every mouse button and scroll",
+}
+
 
 def render(msg=""):
     saved = load_saved()

@@ -789,6 +789,12 @@ move_cursor = _plat.move_cursor
 scroll_down = _plat.scroll_down
 fr_move_to = _plat.fr_move_to
 make_listener = _plat.make_listener
+v3_keycode = _plat.v3_keycode          # [v3] canonical key name -> code
+type_char = _plat.type_char            # [v3] one unicode char (down+up)
+button_down = _plat.button_down        # [v3] left/right/middle press
+button_up = _plat.button_up
+scroll_lines = _plat.scroll_lines      # [v3] signed line scroll
+set_clipboard = _plat.set_clipboard    # [v3] local clipboard write
 
 
 # ---- Phase 04: engine process flags (set by __main__ argv parsing) ----------
@@ -3001,6 +3007,7 @@ def post_webhook(event, message, stats=None, shot=False):
     threading.Thread(target=_send, daemon=True).start()
 
 
+_HELD_BUTTONS = set()   # v3 right/middle/left buttons currently held
 _HELD_KEYS = set()      # section 10.1 held-set registry (every injected
                         # press records itself; every release removes itself)
 
@@ -3023,6 +3030,11 @@ def release_all():
         mouse_up()
     except Exception:
         pass
+    for b in list(_HELD_BUTTONS):
+        try:
+            button_up(b)
+        except Exception:
+            pass
 
 
 def fortune_river_recover():
@@ -4462,6 +4474,72 @@ for _i in range(1, 10):
     _SCRIPT_KEYS[str(_i)] = SLOT_KEYCODES.get(_i)
 _SCRIPT_MOVE_KEYS = ("W", "A", "S", "D")
 
+# ---- version 3 (general automation; docs/PPSCRIPT_V3.md in the Studio repo) --
+# v3 widens input beyond the game whitelist ONLY for programs that declare the
+# matching capability, and the declaration is re-checked here at load — the
+# same triple-enforcement (validator, TS VM, this runner) the whitelist has.
+# Hosts display declared caps to the user wherever a v3 program can start.
+_SCRIPT3_CAPS = ("keyboard", "text", "mouse")
+_SCRIPT3_CAP_OF = {
+    "key_press": "keyboard", "key_hold": "keyboard", "key_down": "keyboard",
+    "key_up": "keyboard", "key_combo": "keyboard", "key_seq": "keyboard",
+    "type_text": "text", "set_clipboard": "text",
+    "mouse_btn": "mouse", "scroll": "mouse",
+    # release_keys is a safety node: always allowed.
+}
+_SCRIPT3_MODIFIERS = ("cmd", "ctrl", "alt", "shift")
+_SCRIPT3_BUTTONS = ("left", "right", "middle")
+_SCRIPT3_CAP_LABEL = {
+    "keyboard": "press any key",
+    "text": "type text and write the clipboard",
+    "mouse": "use every mouse button and scroll",
+}
+
+
+def _script3_required_caps(blocks):
+    """The capabilities a block tree actually needs (recursive)."""
+    need = set()
+    for b in blocks:
+        cap = _SCRIPT3_CAP_OF.get(b.get("type"))
+        if cap:
+            need.add(cap)
+        for lst in (b.get("children"), b.get("else")):
+            if isinstance(lst, list) and lst:
+                need.update(_script3_required_caps(lst))
+    return need
+
+
+def _script3_key_name(tok):
+    """Canonical v3 key name (lowercased) when valid, else None. The alias
+    'primary' resolves to this platform's primary modifier."""
+    if not isinstance(tok, str) or not tok:
+        return None
+    name = tok.strip().lower()
+    if name == "primary":
+        name = V3_PRIMARY
+    return name if name in V3_KEYCODES else None
+
+
+def _script3_parse_combo(txt):
+    """'cmd+shift+4' -> (modifier names, terminal name) or (None, reason)."""
+    parts = [p for p in str(txt or "").split("+")]
+    names = []
+    for p in parts:
+        n = _script3_key_name(p)
+        if n is None:
+            return None, "unknown key %r" % (p.strip(),)
+        names.append(n)
+    if not names:
+        return None, "empty combo"
+    mods, term = names[:-1], names[-1]
+    if term in _SCRIPT3_MODIFIERS:
+        return None, "a combo must end with a non-modifier key"
+    if any(m not in _SCRIPT3_MODIFIERS for m in mods):
+        return None, "only cmd/ctrl/alt/shift may precede the final key"
+    if len(mods) != len(set(mods)):
+        return None, "a modifier appears twice"
+    return (mods, term), ""
+
 
 def _script_sleep(ms):
     """Sleep in <=25 ms slices so Esc / Ctrl+K / Pause abort instantly.
@@ -4717,6 +4795,7 @@ class ScriptRunner:
         self.dead = ""                # non-empty -> refuse to run, with reason
         self.blocks = []
         self.version = 1
+        self.caps = ()                # v3 declared capabilities
         self.passes = 0
         self.empty_passes = 0
         self.pass_activity = False    # this pass sent input / really waited
@@ -4748,18 +4827,31 @@ class ScriptRunner:
             self.dead = "the active custom script could not be read; open " \
                         "Studio and set it active again"
             return
-        if isinstance(data, dict) and data.get("version") == 2:
-            self.version = 2
+        if isinstance(data, dict) and data.get("version") in (2, 3):
+            self.version = int(data["version"])
         blocks = (data or {}).get("blocks") if isinstance(data, dict) else None
         if not isinstance(blocks, list) or not blocks:
             self.dead = "the active custom script is empty or malformed"
             return
-        if self.version == 2 and not self._load_v2(data):
+        if self.version >= 2 and not self._load_v2(data):
             return
+        # v3 capability declaration (consent model): parse now, enforce after
+        # the shape check below proves every block is a known dict.
+        self.caps = ()
+        if self.version >= 3:
+            caps = data.get("caps", [])
+            if caps is None:
+                caps = []
+            if (not isinstance(caps, list)
+                    or any(c not in _SCRIPT3_CAPS for c in caps)):
+                self.dead = "the active custom script declares an unknown " \
+                            "capability"
+                return
+            self.caps = tuple(dict.fromkeys(caps))
         n, deep = self._shape(blocks, 1)
-        max_blocks = (_SCRIPT2_MAX_BLOCKS if self.version == 2
+        max_blocks = (_SCRIPT2_MAX_BLOCKS if self.version >= 2
                       else _SCRIPT_MAX_BLOCKS)
-        max_depth = (_SCRIPT2_MAX_DEPTH if self.version == 2
+        max_depth = (_SCRIPT2_MAX_DEPTH if self.version >= 2
                      else _SCRIPT_MAX_DEPTH)
         if n > max_blocks:
             self.dead = "the active custom script has too many blocks"
@@ -4768,15 +4860,28 @@ class ScriptRunner:
         elif n < 0:
             self.dead = "the active custom script contains blocks this " \
                         "version does not understand"
-        elif self.version == 2 and not self._check_exprs(blocks):
+        elif self.version >= 2 and not self._check_exprs(blocks):
             pass                      # _check_exprs filled self.dead
         else:
+            if self.version >= 3:
+                need = _script3_required_caps(blocks)
+                for body in self.hooks.values():
+                    need.update(_script3_required_caps(body))
+                missing = sorted(need - set(self.caps))
+                if missing:
+                    self.dead = ("the script uses abilities it does not "
+                                 "declare (%s) -- re-export it from Studio"
+                                 % ", ".join(
+                                     _SCRIPT3_CAP_LABEL[m] for m in missing))
+                    return
             self.blocks = blocks
             self._reset_walk()
 
     def _shape(self, blocks, depth):
         """Count blocks + max depth; -1 count = a block failed the shape check."""
-        tab = _SCRIPT_HANDLERS_V2 if self.version == 2 else _SCRIPT_HANDLERS
+        tab = (_SCRIPT_HANDLERS_V3 if self.version >= 3 else
+               _SCRIPT_HANDLERS_V2 if self.version == 2 else
+               _SCRIPT_HANDLERS)
         n, deep = 0, depth
         for b in blocks:
             if (not isinstance(b, dict) or b.get("type") not in tab
@@ -4790,7 +4895,7 @@ class ScriptRunner:
                     return -1, kd
                 n += kn
                 deep = max(deep, kd)
-            if self.version == 2:
+            if self.version >= 2:
                 els = b.get("else")
                 if els is not None:
                     if (not isinstance(els, list)
@@ -4814,7 +4919,7 @@ class ScriptRunner:
     def _pi(self, p, key, dflt, lo, hi):
         v = p.get(key, dflt)
         if isinstance(v, dict):
-            if self.version == 2 and "$expr" in v:
+            if self.version >= 2 and "$expr" in v:
                 ev = _script_eval(v["$expr"], self, self._det)
                 if isinstance(ev, bool):
                     v = 1 if ev else 0
@@ -4836,7 +4941,7 @@ class ScriptRunner:
     def _key(self, p, key_param, movement_only=False):
         """Whitelisted keycode for a key param, or None (= safe stop)."""
         tok = p.get(key_param)
-        if isinstance(tok, dict) and self.version == 2 and "$expr" in tok:
+        if isinstance(tok, dict) and self.version >= 2 and "$expr" in tok:
             tok = _sv_text(_script_eval(tok["$expr"], self, self._det))
         if movement_only and tok not in _SCRIPT_MOVE_KEYS:
             if tok in (None, "", "none"):
@@ -4871,12 +4976,12 @@ class ScriptRunner:
         if State.want_reset:          # fresh slate after a safe-pause retry
             State.want_reset = False
             self._reset_walk()
-            if self.version == 2 and self.hooks.get("on_stuck"):
+            if self.version >= 2 and self.hooks.get("on_stuck"):
                 self._pending_stuck = True
         release_all()                 # anti-drift, same as the supervisor
         try:
             self._det = det
-            if self.version == 2 and not self._started:
+            if self.version >= 2 and not self._started:
                 self._started = True
                 self._run_hook("on_start", det)
             if self._pending_stuck:
@@ -4884,7 +4989,7 @@ class ScriptRunner:
                 self._run_hook("on_stuck", det)
             if State.running:
                 self._step(det)
-            if (self.version == 2 and not State.running
+            if (self.version >= 2 and not State.running
                     and not self._ran_on_stop and not self._suppress_on_stop
                     and self.hooks.get("on_stop")):
                 self._ran_on_stop = True
@@ -4936,7 +5041,9 @@ class ScriptRunner:
         kids = b.get("children") if isinstance(b.get("children"), list) else []
         self._cur = b
         self._emit_block(b)
-        tab = _SCRIPT_HANDLERS_V2 if self.version == 2 else _SCRIPT_HANDLERS
+        tab = (_SCRIPT_HANDLERS_V3 if self.version >= 3 else
+               _SCRIPT_HANDLERS_V2 if self.version == 2 else
+               _SCRIPT_HANDLERS)
         enter = tab[t](self, det, p, kids)
         frame[1] += 1
         if isinstance(enter, tuple):
@@ -5197,7 +5304,7 @@ class ScriptRunner:
 
     def _do_repeat(self, det, p, kids):
         raw = p.get("times")
-        if isinstance(raw, dict) and self.version == 2 and "$expr" in raw:
+        if isinstance(raw, dict) and self.version >= 2 and "$expr" in raw:
             # A wired count may be 0, meaning skip the loop this pass.
             return self._pi(p, "times", 1, 0, 1000)
         return self._pi(p, "times", 1, 1, 1000)
@@ -5306,7 +5413,7 @@ class ScriptRunner:
     def _pv_eval(self, v):
         """Evaluate a param value: expression dicts in v2, literals as-is."""
         if isinstance(v, dict):
-            if self.version == 2 and "$expr" in v:
+            if self.version >= 2 and "$expr" in v:
                 return _script_eval(v["$expr"], self, self._det)
             raise ValueError("malformed wired value")
         return v
@@ -5341,7 +5448,7 @@ class ScriptRunner:
 
     def _run_hook(self, name, det):
         """Run one hook body synchronously on a private frame stack."""
-        body = self.hooks.get(name) if self.version == 2 else None
+        body = self.hooks.get(name) if self.version >= 2 else None
         if not body:
             return
         saved = self.stack
@@ -5542,6 +5649,200 @@ class ScriptRunner:
         self._emit_hud(txt)
         return None
 
+    # ---- v3 (general automation; caps re-checked at load) ------------------
+    # Every down registers in the held registries, so release_all() on any
+    # stop/abort path releases v3 input exactly like the game keys.
+
+    def _v3_key(self, p, param="key"):
+        """Canonical v3 keycode for a key param, or (None, True) after a
+        safe stop — mirror of _key for the open key model."""
+        tok = p.get(param)
+        if isinstance(tok, dict) and "$expr" in tok:
+            tok = _sv_text(self._pv_eval(tok))
+        name = _script3_key_name(tok)
+        if name is None:
+            safe_stop("the script pressed a key this engine does not know "
+                      "(%r)" % (tok,))
+            return None, True
+        return V3_KEYCODES[name], False
+
+    def _do_key_press(self, det, p, kids):
+        code, bad = self._v3_key(p)
+        if bad:
+            return None
+        hold = self._pi(p, "hold_ms", 40, 10, 2000)
+        self.pass_activity = True
+        key_down(code)
+        try:
+            _script_sleep(hold)
+        finally:
+            key_up(code)
+        return None
+
+    def _do_key_hold(self, det, p, kids):
+        code, bad = self._v3_key(p)
+        if bad:
+            return None
+        ms = self._pi(p, "ms", 300, 20, _SCRIPT_WAIT_MAX_MS)
+        self.pass_activity = True
+        key_down(code)
+        try:
+            _script_sleep(ms)
+        finally:
+            key_up(code)
+        return None
+
+    def _do_key_down(self, det, p, kids):
+        code, bad = self._v3_key(p)
+        if bad:
+            return None
+        self.pass_activity = True
+        key_down(code)     # held across nodes BY DESIGN; released on any stop
+        return None
+
+    def _do_key_up(self, det, p, kids):
+        code, bad = self._v3_key(p)
+        if bad:
+            return None
+        key_up(code)
+        return None
+
+    def _do_key_combo(self, det, p, kids):
+        combo = p.get("combo", "")
+        if isinstance(combo, dict) and "$expr" in combo:
+            combo = _sv_text(self._pv_eval(combo))
+        parsed, why = _script3_parse_combo(combo)
+        if parsed is None:
+            safe_stop("the script has a bad key combo (%s)" % why)
+            return None
+        mods, term = parsed
+        hold = self._pi(p, "hold_ms", 60, 10, 1000)
+        self.pass_activity = True
+        held = []
+        try:
+            for m in mods:
+                key_down(V3_KEYCODES[m])
+                held.append(m)
+                _script_sleep(15)     # let the OS register the modifier
+            key_down(V3_KEYCODES[term])
+            try:
+                _script_sleep(hold)
+            finally:
+                key_up(V3_KEYCODES[term])
+        finally:
+            for m in reversed(held):
+                key_up(V3_KEYCODES[m])
+        return None
+
+    def _do_key_seq(self, det, p, kids):
+        keys = p.get("keys", "")
+        if isinstance(keys, dict) and "$expr" in keys:
+            keys = _sv_text(self._pv_eval(keys))
+        names = []
+        for tok in str(keys or "").split():
+            n = _script3_key_name(tok)
+            if n is None or n in _SCRIPT3_MODIFIERS:
+                safe_stop("the script key sequence contains an unusable "
+                          "key (%r)" % (tok,))
+                return None
+            names.append(n)
+        if not names:
+            return None
+        hold = self._pi(p, "hold_ms", 40, 10, 500)
+        inter = self._pi(p, "inter_ms", 80, 10, 5000)
+        self.pass_activity = True
+        for i, n in enumerate(names):
+            if not State.running:
+                break
+            key_down(V3_KEYCODES[n])
+            try:
+                _script_sleep(hold)
+            finally:
+                key_up(V3_KEYCODES[n])
+            if i + 1 < len(names):
+                _script_sleep(inter)
+        return None
+
+    def _do_type_text(self, det, p, kids):
+        text = _sv_text(self._pv_eval(p.get("text", "")))[:_SCRIPT2_STR_MAX]
+        cps = self._pi(p, "cps", 18, 2, 50)
+        gap = max(1, int(round(1000.0 / cps)))
+        self.pass_activity = True
+        for ch in text:
+            if not State.running:
+                break
+            type_char(ch)
+            _script_sleep(gap)
+        return None
+
+    def _do_set_clipboard(self, det, p, kids):
+        text = _sv_text(self._pv_eval(p.get("text", "")))[:_SCRIPT2_STR_MAX]
+        self.pass_activity = True
+        try:
+            set_clipboard(text)
+        except Exception as e:
+            log("clipboard write failed: %s" % e)
+        return None
+
+    def _do_release_keys(self, det, p, kids):
+        release_all()
+        return None
+
+    def _do_mouse_btn(self, det, p, kids):
+        btn = p.get("button", "left")
+        if isinstance(btn, dict) and "$expr" in btn:
+            btn = _sv_text(self._pv_eval(btn))
+        if btn not in _SCRIPT3_BUTTONS:
+            safe_stop("the script used an unknown mouse button (%r)" % (btn,))
+            return None
+        action = p.get("action", "click")
+        if action not in ("click", "double", "down", "up"):
+            safe_stop("the script used an unknown mouse action (%r)"
+                      % (action,))
+            return None
+        self.pass_activity = True
+        if p.get("anchor") is not None:
+            x, y = self._resolve_anchor(p)
+            self._cursor = (x, y)
+            move_cursor(x, y)
+            _script_sleep(30)
+        if action == "down":
+            button_down(btn)
+            return None
+        if action == "up":
+            button_up(btn)
+            return None
+        clicks = 2 if action == "double" else self._pi(p, "clicks", 1, 1, 10)
+        hold = self._pi(p, "hold_ms", 40, 10, 2000)
+        inter = self._pi(p, "interval_ms", 120, 20, 2000)
+        for i in range(clicks):
+            if not State.running:
+                break
+            # click_state i+1 lets the OS recognize double/triple clicks
+            button_down(btn, i + 1)
+            try:
+                _script_sleep(hold)
+            finally:
+                button_up(btn, i + 1)
+            if i + 1 < clicks:
+                _script_sleep(inter)
+        return None
+
+    def _do_scroll(self, det, p, kids):
+        amount = self._pi(p, "amount", -3, -10, 10)
+        if amount == 0:
+            return None
+        steps = self._pi(p, "steps", 1, 1, 20)
+        inter = self._pi(p, "interval_ms", 40, 10, 500)
+        self.pass_activity = True
+        for i in range(steps):
+            if not State.running:
+                break
+            scroll_lines(amount)
+            if i + 1 < steps:
+                _script_sleep(inter)
+        return None
+
 
 # One handler per schema block type; studio_tests.py asserts this table stays
 # in lockstep with STUDIO_BLOCKS in prospecting_ui.py.
@@ -5571,6 +5872,23 @@ _SCRIPT_HANDLERS_V2.update({
     "log": ScriptRunner._do_log,
     "hud_text": ScriptRunner._do_hud_text,
     "long_press": ScriptRunner._do_long_press,
+})
+
+# Version 3 adds general automation input under declared capabilities
+# (docs/PPSCRIPT_V3.md in the Studio repo; caps re-checked at load).
+_SCRIPT_HANDLERS_V3 = dict(_SCRIPT_HANDLERS_V2)
+_SCRIPT_HANDLERS_V3.update({
+    "key_press": ScriptRunner._do_key_press,
+    "key_hold": ScriptRunner._do_key_hold,
+    "key_down": ScriptRunner._do_key_down,
+    "key_up": ScriptRunner._do_key_up,
+    "key_combo": ScriptRunner._do_key_combo,
+    "key_seq": ScriptRunner._do_key_seq,
+    "type_text": ScriptRunner._do_type_text,
+    "set_clipboard": ScriptRunner._do_set_clipboard,
+    "release_keys": ScriptRunner._do_release_keys,
+    "mouse_btn": ScriptRunner._do_mouse_btn,
+    "scroll": ScriptRunner._do_scroll,
 })
 
 

@@ -228,6 +228,93 @@ def scroll_down(steps=3):
         pass
 
 
+# ---- v3 general input (Studio Scripts with declared caps; PPSCRIPT_V3) ------
+# Canonical lowercase key names -> macOS virtual keycodes. One shared name
+# model with platform_win and the Studio VM; unknown names are refused at
+# script load, never guessed here.
+V3_KEYCODES = {
+    "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4,
+    "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35,
+    "q": 12, "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7,
+    "y": 16, "z": 6,
+    "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26,
+    "8": 28, "9": 25,
+    "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98,
+    "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111, "f13": 105,
+    "f14": 107, "f15": 113, "f16": 106, "f17": 64, "f18": 79, "f19": 80,
+    "up": 126, "down": 125, "left": 123, "right": 124, "space": 49,
+    "enter": 36, "tab": 48, "escape": 53, "backspace": 51, "delete": 117,
+    "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
+    "minus": 27, "equal": 24, "comma": 43, "period": 47, "slash": 44,
+    "backslash": 42, "semicolon": 41, "quote": 39, "bracketleft": 33,
+    "bracketright": 30, "grave": 50,
+    "cmd": 55, "ctrl": 59, "alt": 58, "shift": 56,
+}
+V3_PRIMARY = "cmd"   # the cross-platform "primary" modifier on this platform
+
+
+def v3_keycode(name):
+    return V3_KEYCODES.get(name)
+
+
+def type_char(ch):
+    """One layout-independent unicode character (down + up). The engine paces
+    characters (cancellable sleeps) — this stays a single primitive."""
+    for down in (True, False):
+        ev = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
+        Quartz.CGEventKeyboardSetUnicodeString(ev, len(ch), ch)
+        _eng._post(ev)
+
+
+_V3_BUTTONS = {
+    "left": (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp,
+             Quartz.kCGMouseButtonLeft),
+    "right": (Quartz.kCGEventRightMouseDown, Quartz.kCGEventRightMouseUp,
+              Quartz.kCGMouseButtonRight),
+    "middle": (Quartz.kCGEventOtherMouseDown, Quartz.kCGEventOtherMouseUp,
+               Quartz.kCGMouseButtonCenter),
+}
+
+
+def button_down(button, click_state=1):
+    kd, _ku, btn = _V3_BUTTONS[button]
+    p = _eng._cursor_point()
+    ev = Quartz.CGEventCreateMouseEvent(None, kd, p, btn)
+    if click_state > 1:
+        # the OS recognizes a double-click by the event's click-state field
+        Quartz.CGEventSetIntegerValueField(
+            ev, Quartz.kCGMouseEventClickState, int(click_state))
+    _eng._HELD_BUTTONS.add(button)
+    _eng._post(ev)
+
+
+def button_up(button, click_state=1):
+    _kd, ku, btn = _V3_BUTTONS[button]
+    p = _eng._cursor_point()
+    ev = Quartz.CGEventCreateMouseEvent(None, ku, p, btn)
+    if click_state > 1:
+        Quartz.CGEventSetIntegerValueField(
+            ev, Quartz.kCGMouseEventClickState, int(click_state))
+    _eng._HELD_BUTTONS.discard(button)
+    _eng._post(ev)
+
+
+def scroll_lines(amount):
+    """Signed line scroll: positive = up, negative = down (one event)."""
+    try:
+        _eng._post(Quartz.CGEventCreateScrollWheelEvent(
+            None, Quartz.kCGScrollEventUnitLine, 1, int(amount)))
+    except Exception:
+        pass
+
+
+def set_clipboard(text):
+    """Local clipboard write via pbcopy (no new Python dependencies)."""
+    import subprocess
+    p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
+    p.communicate(str(text).encode("utf-8"), timeout=5)
+
+
 def fr_move_to(x, y):
     """Move the cursor toward (x, y) from the calibrated home (screen centre
     where the cursor rests with shift-lock off), in small steps."""
@@ -358,6 +445,7 @@ def calib_key_labeler(label, stop):
 
 # Names re-exported into the engine module namespace (per-platform values).
 ENGINE_GLOBALS = {
+    "V3_KEYCODES": V3_KEYCODES, "V3_PRIMARY": V3_PRIMARY,
     "KEY_W": KEY_W, "KEY_S": KEY_S, "KEY_A": KEY_A, "KEY_D": KEY_D,
     "KEY_SHIFT": KEY_SHIFT, "KEY_SPACE": KEY_SPACE,
     "SLOT_KEYCODES": SLOT_KEYCODES,

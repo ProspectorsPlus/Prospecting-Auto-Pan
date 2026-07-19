@@ -262,6 +262,11 @@ try:
     STUDIO2_STOP_SAFE = getattr(_ui, "STUDIO2_STOP_SAFE", ())
     STUDIO2_READS = getattr(_ui, "STUDIO2_READS", ())
     STUDIO2_OPS = getattr(_ui, "STUDIO2_OPS", ())
+    STUDIO_SCHEMA_V3 = getattr(_ui, "STUDIO_SCHEMA_V3", 3)
+    STUDIO3_TYPES = getattr(_ui, "STUDIO3_TYPES", set())
+    STUDIO3_CAPS = getattr(_ui, "STUDIO3_CAPS", ())
+    STUDIO3_CAP_OF = getattr(_ui, "STUDIO3_CAP_OF", {})
+    STUDIO3_CAP_LABEL = getattr(_ui, "STUDIO3_CAP_LABEL", {})
 except Exception:
     import traceback
     traceback.print_exc()
@@ -292,6 +297,11 @@ except Exception:
     STUDIO2_STOP_SAFE = ()
     STUDIO2_READS = ()
     STUDIO2_OPS = ()
+    STUDIO_SCHEMA_V3 = 3
+    STUDIO3_TYPES = set()
+    STUDIO3_CAPS = ()
+    STUDIO3_CAP_OF = {}
+    STUDIO3_CAP_LABEL = {}
 
 # Local tuning assistant (offline expert system). Optional: if it fails to load,
 # the rest of the app keeps working and the Coach panel just reports it's offline.
@@ -1227,11 +1237,16 @@ def _studio2_stop_safe(lst):
 
 
 def _studio_validate_v2(script):
-    """Structural check for version 2 programs (made in the standalone
+    """Structural check for version 2/3 programs (made in the standalone
     Prospector Studio desktop app). The engine re-validates everything
     again at runtime behind its own hard rails, so this focuses on shape,
-    limits, and clear messages. The embedded editor never edits these."""
+    limits, and clear messages. The embedded editor never edits these.
+    v3 adds general input; its capability declaration is checked here so
+    the library refuses an undeclared file with the same message the
+    engine would give at run time."""
     errors, problems = [], []
+    is_v3 = script.get("version") == STUDIO_SCHEMA_V3
+    types_tab = STUDIO3_TYPES if is_v3 else STUDIO2_TYPES
     if script.get("format") != "ppscript":
         errors.append("Not a Prospector Studio script (missing the "
                       "ppscript marker).")
@@ -1244,6 +1259,16 @@ def _studio_validate_v2(script):
     known = {"format", "version", "name", "description", "author",
              "created", "updated", "blocks", "settings", "variables",
              "hooks"}
+    if is_v3:
+        known.add("caps")
+        caps = script.get("caps", [])
+        if caps is None:
+            caps = []
+        if (not isinstance(caps, list)
+                or any(c not in STUDIO3_CAPS for c in caps)):
+            errors.append("The script declares an unknown capability.")
+            caps = [c for c in caps if c in STUDIO3_CAPS] \
+                if isinstance(caps, list) else []
     extra = [k for k in script if k not in known]
     if extra:
         errors.append("Unknown fields in the script file: %s."
@@ -1279,6 +1304,7 @@ def _studio_validate_v2(script):
         problems.append("The script is empty; publish it again from "
                         "Prospector Studio with at least one step.")
     seen_ids = set()
+    need_caps = set()
 
     def walk(lst, depth):
         if depth > STUDIO2_MAX_DEPTH:
@@ -1297,9 +1323,12 @@ def _studio_validate_v2(script):
             else:
                 seen_ids.add(bid)
             t = b.get("type")
-            if t not in STUDIO2_TYPES:
+            if t not in types_tab:
                 errors.append("Unknown block type %r." % (t,))
                 continue
+            if is_v3:
+                need_caps.update(
+                    c for c in (STUDIO3_CAP_OF.get(t),) if c)
             params = b.get("params")
             if params is None:
                 params = {}
@@ -1354,6 +1383,14 @@ def _studio_validate_v2(script):
             errors.append("The on_stop hook may only set variables, log, "
                           "show HUD text, notify, or branch.")
         walk(body, 1)
+    if is_v3:
+        missing = sorted(need_caps - set(caps))
+        if missing:
+            errors.append("The script uses abilities it "
+                          "does not declare (%s); re-export "
+                          "it from Prospector Studio."
+                          % ", ".join(STUDIO3_CAP_LABEL.get(m, m)
+                                      for m in missing))
     return {"ok": not errors, "errors": errors, "problems": problems}
 
 
@@ -1405,8 +1442,9 @@ def _studio_validate(script):
     v = script.get("version")
     if not isinstance(v, int) or isinstance(v, bool) or v < 1:
         errors.append("Unsupported script version.")
-    elif v == STUDIO_SCHEMA_V2:
-        # Standalone Prospector Studio program: its own validation path.
+    elif v in (STUDIO_SCHEMA_V2, STUDIO_SCHEMA_V3):
+        # Standalone Prospector Studio program: its own validation path
+        # (v3 = v2 shape + general input under declared capabilities).
         return _studio_validate_v2(script)
     elif v > STUDIO_SCHEMA_VERSION:
         errors.append("This script was made with a newer version of "
@@ -3142,12 +3180,16 @@ class Api:
         for name in sorted(d["scripts"], key=lambda n: -(d["scripts"][n].get("updated") or 0)):
             s = d["scripts"][name]
             chk = _studio_validate(_studio_normalize(s))
+            caps = ([STUDIO3_CAP_LABEL.get(c, c) for c in s.get("caps")]
+                    if s.get("version") == STUDIO_SCHEMA_V3
+                    and isinstance(s.get("caps"), list) else [])
             out.append({"name": name,
                         "description": s.get("description", ""),
                         "blocks": _studio_count_blocks(s.get("blocks") or []),
                         "updated": s.get("updated", 0),
                         "active": name == d["active"],
                         "runnable": bool(chk["ok"] and not chk["problems"]),
+                        "caps": caps,
                         "issues": len(chk["errors"]) + len(chk["problems"])})
         _STUDIO_LIST_CACHE["key"] = key
         _STUDIO_LIST_CACHE["scripts"] = out
@@ -3160,7 +3202,7 @@ class Api:
         s = d["scripts"].get(name)
         if not isinstance(s, dict):
             return {"ok": False, "error": "Script not found."}
-        if s.get("version") == STUDIO_SCHEMA_V2:
+        if s.get("version") in (STUDIO_SCHEMA_V2, STUDIO_SCHEMA_V3):
             return {"ok": False, "error":
                     "This script was made in Prospector Studio (the "
                     "desktop app). Open it there to edit it. You can "

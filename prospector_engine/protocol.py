@@ -16,7 +16,9 @@ import json
 MAGIC = "PPE1"
 PREFIX = MAGIC + " "
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 1   # 1.1: adds the "error" stop reason (fatal-exception path)
+PROTOCOL_MINOR = 2   # 1.1: adds the "error" stop reason (fatal-exception path)
+                     # 1.2: adds the scriptV3 capability (PPScript v3 accepted
+                     #      by script.setActive; PPSCRIPT_V3.md in Studio)
 
 # ---- ack error codes (closed set, protocol section 3.3) ---------------------
 E_UNSUPPORTED = "UNSUPPORTED"
