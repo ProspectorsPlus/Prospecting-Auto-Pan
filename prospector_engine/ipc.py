@@ -28,11 +28,13 @@ def capabilities(po, simulated):
     override flags via po._SIM_CAPS (simulated engines only -- the world
     scripts platform capabilities the test host can't reach, e.g. the
     windows no-Vision testRead refusal on a mac test machine)."""
+    from prospector_engine import recorder as recorder_mod
     caps = {"findsOcr": sys.platform == "darwin",
             "earningsOcr": sys.platform == "darwin",
             "inputLagProbe": hasattr(po, "_LAG"),
             "fastTravelRecovery": True,
             "scriptV3": hasattr(po, "_SCRIPT_HANDLERS_V3"),
+            "recorder": recorder_mod.available(),
             "simulated": bool(simulated)}
     if simulated:
         try:
@@ -391,6 +393,7 @@ class Server(object):
         # C8: the calibration sensing class (protocol 4.15) -- the one
         # implementation, bound to the server's settings document.
         self.sensing = sensing_mod.Sensing(po, _ServerStore(self))
+        self._recorder = None      # input-capture session (recorder.*)
 
     # -- startup ----------------------------------------------------------
     # Section 11.2 order: stderr vestibule -> --protocol check -> instance
@@ -542,6 +545,9 @@ class Server(object):
             self.emit._next_origin = req["origin"]
             self._start_inflight = req
             self.sensing.drop_session()   # protocol 4.15: run.start drops it
+            if self._recorder is not None and self._recorder.recording:
+                # a run must never be recorded (nor fight the listeners)
+                self._recorder.stop("run-start")
             try:
                 # re-bind config per run start (ipc only): settings.set
                 # while idle/running becomes effective at the next run
@@ -968,6 +974,56 @@ class Server(object):
                     return
             self.emit.settings_changed(sorted(writes), "cmd")
             self._ack_ok(cid, {"active": name})
+        elif cmd == "recorder.start":
+            from prospector_engine import recorder as recorder_mod
+            if st.running or st.paused:
+                self._ack_err(cid, protocol.E_RUN_ACTIVE,
+                              "idle-only while a run exists",
+                              {"state": self._state()})
+                return
+            if not recorder_mod.available():
+                self._ack_err(cid, protocol.E_UNSUPPORTED,
+                              "input capture is unavailable on this install",
+                              None)
+                return
+            if self._recorder is None:
+                scale = 1.0
+                try:
+                    with po._MSS() as sct:
+                        scale = po.get_scale(sct)
+                except Exception:
+                    pass
+                self._recorder = recorder_mod.Recorder(
+                    po.V3_KEYCODES, scale=scale)
+            r = self._recorder.start()
+            if not r.get("ok"):
+                self._ack_err(cid, protocol.E_BAD_STATE, r.get("error", ""),
+                              None)
+                return
+            self._ack_ok(cid, {"recording": True})
+        elif cmd == "recorder.stop":
+            if self._recorder is None or not self._recorder.recording:
+                # a capture that hit its cap or Secure Input still has events
+                if self._recorder is not None and self._recorder.events:
+                    r = {"ok": True, "events": list(self._recorder.events),
+                         "truncated": self._recorder.truncated,
+                         "durationMs": 0,
+                         "reason": self._recorder.stop_reason or "stopped"}
+                    self._recorder.events = []
+                    self._ack_ok(cid, {k: v for k, v in r.items()
+                                       if k != "ok"})
+                    return
+                self._ack_err(cid, protocol.E_BAD_STATE, "not recording",
+                              None)
+                return
+            r = self._recorder.stop()
+            self._ack_ok(cid, {k: v for k, v in r.items() if k != "ok"})
+        elif cmd == "recorder.status":
+            if self._recorder is None:
+                self._ack_ok(cid, {"recording": False, "count": 0,
+                                   "secureInput": False, "truncated": False})
+            else:
+                self._ack_ok(cid, self._recorder.status())
         elif cmd.startswith("calibration.") and cmd in protocol.COMMANDS:
             self._dispatch_calibration(cid, cmd, params)
         else:

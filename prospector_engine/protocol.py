@@ -73,6 +73,9 @@ COMMANDS = {
     "calibration.health": "fast",
     "calibration.auto": "fast",
     "calibration.savePixels": "fast",
+    "recorder.start": "fast",
+    "recorder.stop": "slow",
+    "recorder.status": "fast",
 }
 
 # ---- event vocabulary v1.0 (section 5) ---------------------------------------

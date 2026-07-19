@@ -949,6 +949,76 @@ check("v1/v2 nodes run under version 3 unchanged",
       and any(a[0] == "safe_stop" for a in ACTIONS), ACTIONS[:6])
 
 # =============================================================================
+print("[12] input recorder — capture service (fake listeners)")
+# =============================================================================
+from prospector_engine import recorder as R  # noqa: E402
+
+
+class _FakeListener:
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
+class _KC:                       # pynput KeyCode-like
+    def __init__(self, char):
+        self.char = char
+
+
+class _KS:                       # pynput special-Key-like
+    def __init__(self, name):
+        self.name = name
+        self.char = None
+
+
+class _KB:                       # pynput Button-like
+    def __init__(self, name):
+        self.name = name
+
+
+_kcodes = {"a": 0, "g": 5, "cmd": 55, "space": 49}
+rec = R.Recorder(_kcodes, scale=2.0,
+                 kb_listener=_FakeListener, mouse_listener=_FakeListener)
+check("recorder starts", rec.start()["ok"] is True)
+rec._on_press(_KC("g")); rec._on_release(_KC("g"))
+rec._on_press(_KS("cmd")); rec._on_release(_KS("cmd"))
+rec._on_press(_KC("!"))
+rec._on_press(_KS("f24"))
+rec._on_move(10, 20); rec._on_move(11, 21)     # 2nd inside coalesce window
+time.sleep(0.02); rec._on_move(12, 22)
+rec._on_click(50, 60, _KB("right"), True)
+rec._on_click(50, 60, _KB("right"), False)
+rec._on_scroll(50, 60, 0, -2)
+out = rec.stop()
+evs = out["events"]
+check("canonical key names + typed chars recorded",
+      evs[0]["kind"] == "key_down" and evs[0]["key"] == "g"
+      and evs[0]["char"] == "g" and evs[2]["key"] == "cmd", evs[:3])
+check("unmapped char keeps the char, unknown special keeps raw",
+      evs[4].get("char") == "!" and "key" not in evs[4]
+      and "raw" in evs[5], evs[4:6])
+_moves = [e for e in evs if e["kind"] == "mouse_move"]
+check("mouse moves coalesced and scaled to physical px",
+      len(_moves) == 2 and _moves[0]["x"] == 20, _moves)
+_clicks = [e for e in evs if e["kind"] in ("mouse_down", "mouse_up")]
+check("buttons recorded with physical coords",
+      _clicks[0]["button"] == "right" and _clicks[0]["x"] == 100, _clicks)
+check("scroll recorded", any(e["kind"] == "scroll" and e["dy"] == -2
+                             for e in evs))
+check("clean stop reports no truncation", out["truncated"] is False)
+
+rec2 = R.Recorder(_kcodes, kb_listener=_FakeListener,
+                  mouse_listener=_FakeListener)
+rec2.start()
+for _i in range(R.MAX_EVENTS + 5):
+    rec2._on_press(_KC("a"))
+check("event cap stops the capture with truncated=True",
+      rec2.truncated is True and len(rec2.events) == R.MAX_EVENTS
+      and rec2.recording is False)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

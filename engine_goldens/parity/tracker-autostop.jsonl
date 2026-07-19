@@ -1,4 +1,4 @@
-{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "scriptV3": true, "simulated": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 2}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
+{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "recorder": true, "scriptV3": true, "simulated": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 2}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
 {"data": {"level": "info", "text": "[RUNNING]"}, "ev": "engine.log", "seq": 2}
 {"data": {"mode": "tracker", "origin": "hotkey", "runId": "r1"}, "ev": "run.started", "seq": 3}
 {"data": {"level": "info", "text": "[tracker] Auto Pan button not calibrated or unreadable -- start it manually"}, "ev": "engine.log", "seq": 4}
