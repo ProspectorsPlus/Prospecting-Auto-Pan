@@ -1062,7 +1062,14 @@ def _studio_load():
     active = d.get("active")
     if not isinstance(active, str) or active not in scripts:
         active = ""
-    return {"active": active, "scripts": scripts, "meta": meta}
+    mode = d.get("mode")
+    if mode not in ("classic", "studio"):
+        mode = ""                      # unset -> derived from active
+    last_active = d.get("last_active")
+    if not isinstance(last_active, str) or last_active not in scripts:
+        last_active = ""
+    return {"active": active, "scripts": scripts, "meta": meta,
+            "mode": mode, "last_active": last_active}
 
 
 _STUDIO_LIST_CACHE = {"key": None, "scripts": None, "active": ""}
@@ -1776,6 +1783,8 @@ class Api:
               "AUTOPAN_ON_RGB": list(saved.get("AUTOPAN_ON_RGB", [0, 0, 0])),
               "AUTOPAN_OFF_RGB": list(saved.get("AUTOPAN_OFF_RGB", [0, 0, 0]))}
         hk = {k: saved.get(k, _HK_DEFAULTS[k]) for k in _HK_DEFAULTS}
+        sd = _studio_load()
+        ui_mode = sd.get("mode") or ("studio" if sd["active"] else "classic")
         return {"values": merged, "running": self.proc is not None, "fr": fr, "hotkeys": hk,
                 "v1": PRESET_V1, "v2": PRESET_V2, "geode": PRESET_GEODE, "defaults": DEFAULTS,
                 "relics": relics, "relics_enabled": bool(saved.get("RELICS_ENABLED", False)),
@@ -1783,7 +1792,8 @@ class Api:
                 "colors": saved.get("PIXEL_COLORS", {}),
                 "region_previews": saved.get("REGION_PREVIEWS", {}),
                 "autobuild": saved.get("AUTOBUILD", {}),
-                "studio_launch": STUDIO_LAUNCH, "studio_script": STUDIO_SCRIPT}
+                "studio_launch": STUDIO_LAUNCH, "studio_script": STUDIO_SCRIPT,
+                "studio_mode": ui_mode}
 
     # ---- tutorial + help content (owner-editable) ----
     def tutorial_content(self):
@@ -2539,6 +2549,97 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    # Pages whose settings apply to ANY run (the engine checks them in its
+    # control loop or notification path, classic cycle and Studio scripts
+    # alike). Every other settings page tunes the classic cycle, so its keys
+    # are CLASSIC-owned. Studio-owned state (active build, CLASSIC | STUDIO
+    # mode, editor flags) lives in the script-library file, never here.
+    _SHARED_PAGES = ("Notifications", "Auto-stop", "Window", "Earnings")
+
+    def settings_ownership(self):
+        """Explicit owner for every tuning key: {'classic': [...],
+        'shared': [...]}. Computed from the settings schema so new keys
+        always land in a group (unlisted pages default to classic)."""
+        classic, shared = set(), set()
+        for title, rows in SECTIONS:
+            dst = shared if title in self._SHARED_PAGES else classic
+            for row in rows:
+                dst.add(row[0])
+        shared.add("WEBHOOK_URL")          # set via its own field, same owner
+        classic.update(("RELICS", "RELICS_ENABLED"))
+        return {"classic": sorted(classic), "shared": sorted(shared)}
+
+    def settings_reset(self, group, include_calibration=False):
+        """Reset one ownership group to shipped defaults. 'classic' and
+        'shared' restore config keys from the schema defaults; calibration
+        pixels and keybinds are precious (machine-specific), so 'shared'
+        touches them only when explicitly asked. 'studio' clears the active
+        build, mode, remembered build and editor flags but NEVER deletes
+        scripts. Config is rewritten in one pass -- a failed write leaves
+        the file as it was."""
+        if group == "studio":
+            d = _studio_load()
+            d["active"] = ""
+            d["mode"] = "classic"
+            d["last_active"] = ""
+            d["meta"] = {}
+            try:
+                _studio_write(d)
+                self._studio_push_active("")
+            except OSError as e:
+                return {"ok": False, "error": str(e)}
+            return {"ok": True,
+                    "reset": ["active build", "mode", "editor flags"]}
+        own = self.settings_ownership()
+        if group not in own:
+            return {"ok": False, "error": "Unknown settings group."}
+        cur = load_saved()
+        hit = []
+        for k in own[group]:
+            if k == "RELICS":
+                if cur.get("RELICS") != DEFAULT_RELICS:
+                    cur["RELICS"] = list(DEFAULT_RELICS)
+                    hit.append(k)
+            elif k == "WEBHOOK_URL":
+                if cur.get("WEBHOOK_URL"):
+                    cur["WEBHOOK_URL"] = ""
+                    hit.append(k)
+            elif k in DEFAULTS:
+                if k in cur and cur[k] != DEFAULTS[k]:
+                    hit.append(k)
+                cur[k] = DEFAULTS[k]
+        if group == "shared":
+            for k in _HK_DEFAULTS:
+                if cur.get(k, _HK_DEFAULTS[k]) != _HK_DEFAULTS[k]:
+                    hit.append(k)
+                cur[k] = _HK_DEFAULTS[k]
+            if include_calibration:
+                for k, v in PIXEL_DEFAULTS.items():
+                    if list(cur.get(k, v)) != list(v):
+                        hit.append(k)
+                    cur[k] = list(v)
+        vals = {k: cur[k] for k in hit if k in TYPES}
+        ack = self._engine_settings_set(vals) if vals else None
+        if ack is None or not ack.get("ok"):
+            try:
+                with open(CONFIG_FILE, "w") as f:
+                    json.dump(cur, f, indent=2)
+            except OSError as e:
+                return {"ok": False, "error": str(e)}
+        else:
+            # engine owned the scalar keys; write the non-scalar leftovers
+            # (relics, pixels, hotkeys, webhook url) through the file
+            rest = {k: cur[k] for k in hit if k not in TYPES}
+            if rest:
+                base = load_saved()
+                base.update(rest)
+                try:
+                    with open(CONFIG_FILE, "w") as f:
+                        json.dump(base, f, indent=2)
+                except OSError as e:
+                    return {"ok": False, "error": str(e)}
+        return {"ok": True, "reset": sorted(hit)}
+
     def save_config(self, data):
         """Write scalar settings, PRESERVING relic keys already in the file."""
         vals = {k: _coerce(t, data[k]) for k, t in TYPES.items() if k in data}
@@ -3082,6 +3183,70 @@ class Api:
             return {"ok": False, "error": "Could not save: %s" % e}
         return {"ok": True, "active": d["active"]}
 
+    def studio_mode(self, mode=None):
+        """The macro window's top-level CLASSIC | STUDIO mode (Studio launch).
+        The invariant is structural: CLASSIC always runs the built-in cycle
+        (no active script), STUDIO always runs the active Studio build --
+        launch() refuses any mismatch. Switching to CLASSIC remembers the
+        build (last_active) so switching back restores it instead of losing
+        the selection. Refuses to switch while a run is live."""
+        d = _studio_load()
+        cur = d.get("mode") or ("studio" if d["active"] else "classic")
+        # A plain GET never has side effects. A SET that matches the current
+        # mode is also a no-op -- except re-choosing STUDIO with no active
+        # build, which retries the restore (deliberate user intent).
+        if mode is None or (mode == cur and (mode != "studio" or d["active"])):
+            return {"ok": True, "mode": cur, "active": d["active"],
+                    "needs_build": cur == "studio" and not d["active"]}
+        if mode not in ("classic", "studio"):
+            return {"ok": False, "error": "Unknown mode."}
+        if self.proc is not None:
+            return {"ok": False, "error": "Stop the run first, then switch."}
+        if mode == "classic":
+            if d["active"]:
+                d["last_active"] = d["active"]
+            d["active"] = ""
+            d["mode"] = "classic"
+            try:
+                _studio_write(d)
+                self._studio_push_active("")
+            except OSError as e:
+                return {"ok": False, "error": "Could not save: %s" % e}
+            return {"ok": True, "mode": "classic", "active": ""}
+        d["mode"] = "studio"
+        try:
+            _studio_write(d)
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e}
+        name = d["active"] or d.get("last_active") or STUDIO_SCRIPT
+        active = d["active"]
+        if name and not active:
+            r = self.studio_set_active(name)  # validates; refuses broken scripts
+            if r.get("ok"):
+                active = name
+        return {"ok": True, "mode": "studio", "active": active,
+                "needs_build": not active}
+
+    def studio_open_in_studio(self, node=None):
+        """Ask the Prospector Studio app (when it launched this macro) to
+        focus the Build workspace for the active script. The ask is a small
+        request file in the data folder; Studio watches for it while the
+        macro is open. No-op outside a Studio launch."""
+        if not STUDIO_LAUNCH:
+            return {"ok": False, "error": "Only available when Prospector "
+                                          "Studio launched the macro."}
+        d = _studio_load()
+        payload = {"ts": time.time(),
+                   "script": d["active"] or STUDIO_SCRIPT or "",
+                   "node": str(node or "")}
+        try:
+            with open(os.path.join(DATA_DIR, "studio_open_request.json"),
+                      "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+        except OSError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True}
+
     def studio_meta(self, patch=None):
         """Small Studio flags that must survive restarts (for example whether
         the editor walkthrough already offered itself once)."""
@@ -3192,11 +3357,25 @@ class Api:
         if self.proc is not None:
             return {"ok": False, "error": "Already running. Stop the current "
                                           "run first."}
+        if STUDIO_LAUNCH:
+            # Running a script IS choosing STUDIO: flip the top-level mode so
+            # the launch() invariant (STUDIO <=> active build) holds and the
+            # window's tabs reflect what is actually about to run.
+            d = _studio_load()
+            if d.get("mode") != "studio":
+                d["mode"] = "studio"
+                try:
+                    _studio_write(d)
+                except OSError as e:
+                    return {"ok": False, "error": "Could not save: %s" % e}
         r = self.studio_set_active(name)
         if not r.get("ok"):
             return r
         out = self.launch(None)
-        return {"ok": out == "launched", "state": out}
+        err = None if out == "launched" else {
+            "already running": "Already running. Stop the current run first.",
+        }.get(out, "Could not start (%s)." % out)
+        return {"ok": out == "launched", "state": out, "error": err}
 
     def studio_stop(self):
         self.stop()
@@ -3395,6 +3574,16 @@ class Api:
             self.save_relics(relics, enabled)
         if self.proc is not None:
             return "already running"
+        if STUDIO_LAUNCH:
+            # Top-level CLASSIC | STUDIO invariant: STUDIO must have an active
+            # build, CLASSIC must not have one. Refuse (with a reason the UI
+            # shows) rather than silently running the wrong program.
+            sd = _studio_load()
+            ui_mode = sd.get("mode") or ("studio" if sd["active"] else "classic")
+            if ui_mode == "studio" and not sd["active"]:
+                return "no-studio-build"
+            if ui_mode == "classic" and sd["active"]:
+                return "classic-with-active-build"
         self._report_usage()
         # When frozen there is no python.exe to run the .py macro, so re-launch
         # THIS exe with --run-macro (handled in main()). In dev, run the script.
@@ -4703,8 +4892,6 @@ def build_html():
         '<p class="chint">Start the macro, tab into Roblox. Ctrl+K also '
         'starts/stops; Esc quits.</p></div>'
         '<div class="stlaunch" id="stlaunch" style="display:none">'
-        '<button type="button" class="slbtn" id="sl_classic">Classic cycle</button>'
-        '<button type="button" class="slbtn" id="sl_studio">Studio build</button>'
         '<span class="slnote" id="slnote"></span></div>'
         '<div class="calbanner" id="calbanner"></div>'
         '<div class="runbtns"><button type="button" id="startbtn" class="big go">'
@@ -4933,6 +5120,7 @@ def build_html():
         'digs, walks, shakes, prompts and waits. No code needed, the safety '
         'nets stay on, and a script runs and counts pans exactly like a '
         'built-in mode. Share one as a single .ppscript file.</p></div>'
+        '<div id="sthdr" class="sthdr" style="display:none"></div>'
         '<div class="stbtns">'
         '<button type="button" id="stopen" class="btn">Open Studio</button>'
         '<button type="button" id="stnew" class="btn2">New script\u2026</button>'
@@ -5178,6 +5366,26 @@ def build_html():
         '</div>'
         '<p class="chint" style="margin-top:16px">Press Ctrl+Z to undo a setting '
         'change and Ctrl+Y to redo. Undo covers slider, box and preset changes.</p>'
+        '<div class="ownercard" id="ownercard">'
+        '<h3>Settings ownership</h3>'
+        '<p class="chint">Every setting has one owner, so the two macro modes '
+        'never trample each other. <b>Classic</b> owns the built-in cycle '
+        'tuning: modes, dig/shake/walk timing, recovery, relics. '
+        '<b>Studio</b> owns which build is active, the CLASSIC | STUDIO '
+        'switch and editor flags — stored with the script library, never in '
+        'the classic config. <b>Shared</b> is used by every run: '
+        'calibration, game window, notifications, auto-stop, earnings '
+        'tracking, keybinds and appearance.</p>'
+        '<div class="ownerbtns">'
+        '<button type="button" class="btn2" id="rst_classic">Reset Classic…</button>'
+        '<button type="button" class="btn2" id="rst_studio">Reset Studio…</button>'
+        '<button type="button" class="btn2" id="rst_shared">Reset Shared…</button>'
+        '</div>'
+        '<label class="row"><span class="lbl">Reset Shared also clears calibration '
+        '(you would have to calibrate again)</span>'
+        '<span class="switch"><input type="checkbox" id="rst_cal">'
+        '<span class="track"><span class="knob"></span></span></span></label>'
+        '</div>'
         '</section>')
     nav_html = {n["id"]: n["html"] for n in navs}
     PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "studio", "keys", "settings"]
@@ -5656,10 +5864,49 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .scriptbar select:focus{outline:none;border-color:var(--accent)}
  .scriptnote{color:var(--mut);font-size:11.5px}
  .stlaunch{display:flex;gap:8px;align-items:center;margin:0 2px 12px;flex-wrap:wrap}
- .slbtn{background:var(--bg2);border:1px solid var(--line2);border-radius:9px;color:var(--txt);padding:9px 16px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;transition:border-color .15s}
- .slbtn:hover{border-color:var(--accent)}
- .slbtn.on{background:var(--sand-dim);border-color:var(--accent);color:var(--accent-lit)}
  .slnote{color:var(--mut);font-size:11.5px}
+ /* ---- Studio-launch: top-level CLASSIC | STUDIO tabs ---- */
+ .modestrip{display:none;gap:3px;align-items:center;margin-left:14px;padding:3px;
+  background:var(--bg2);border:1px solid var(--line2);border-radius:11px}
+ body.studiolaunch .modestrip{display:flex}
+ .mtab{background:transparent;border:0;border-radius:8px;color:var(--mut);
+  padding:7px 15px;font:inherit;font-size:12.5px;font-weight:700;letter-spacing:.4px;
+  text-transform:uppercase;cursor:pointer;transition:color .15s,background .15s}
+ .mtab:hover{color:var(--txt)}
+ .mtab.on{background:var(--sand-dim);color:var(--accent-lit);box-shadow:inset 0 0 0 1px var(--accent)}
+ /* mode-scoped surfaces: CLASSIC hides the Studio library; STUDIO hides the
+    classic-cycle-only tabs, groups, presets and the Run-tab script picker */
+ body.studiolaunch.mode-classic .tab[data-tab="studio"]{display:none}
+ body.studiolaunch #scriptsel{display:none}
+ body.studiolaunch.mode-studio .tab[data-tab="cycle"],
+ body.studiolaunch.mode-studio .tab[data-tab="builds"],
+ body.studiolaunch.mode-studio .tab[data-tab="relics"],
+ body.studiolaunch.mode-studio .tab[data-tab="Tracker"],
+ body.studiolaunch.mode-studio .tab[data-tab="Relic behaviour"],
+ body.studiolaunch.mode-studio .navgroup[data-group="Modes"],
+ body.studiolaunch.mode-studio .navgroup[data-group="Advanced"],
+ body.studiolaunch.mode-studio .navgroup[data-group="Other"],
+ body.studiolaunch.mode-studio .side .pretitle,
+ body.studiolaunch.mode-studio .side .chip{display:none}
+ /* ---- main-window confirm modal (mode switch, resets) ---- */
+ .mmodal{position:fixed;inset:0;z-index:1200;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
+ .mmodal.show{display:flex;animation:fadeIn .22s var(--ease)}
+ .mbox{background:var(--bg2);border:1px solid var(--line2);border-radius:14px;padding:20px 22px;max-width:420px;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+ .mbox h3{margin:0 0 8px;font-size:15px}
+ .mbox p{margin:0 0 16px;color:var(--mut);font-size:12.5px;line-height:1.55}
+ .mrow{display:flex;gap:9px;justify-content:flex-end}
+ /* ---- settings ownership card ---- */
+ .ownercard{margin-top:22px;padding:16px 18px;border:1px solid var(--line2);border-radius:12px;background:var(--bg2)}
+ .ownercard h3{margin:0 0 6px;font-size:13.5px}
+ .ownerbtns{display:flex;gap:9px;flex-wrap:wrap;margin:12px 0 6px}
+ /* ---- Studio-panel build header (Studio launch) ---- */
+ .sthdr{margin:0 0 14px;padding:14px 16px;border:1px solid var(--line2);border-radius:12px;background:var(--bg2)}
+ .sth-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+ .sth-name{font-weight:700;font-size:14px}
+ .sth-badge{font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;padding:3px 8px;border-radius:7px;border:1px solid var(--line2);color:var(--mut)}
+ .sth-badge.on{border-color:var(--accent);color:var(--accent-lit);background:var(--sand-dim)}
+ .sth-meta{margin:7px 0 10px;color:var(--mut);font-size:12px;line-height:1.5}
+ .sth-btns{display:flex;gap:8px;flex-wrap:wrap}
  .hc-rt{margin-left:auto;color:var(--accent-lit);font-weight:700;font-variant-numeric:tabular-nums;font-size:13px}
  .hc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:12px}
  .hc{background:var(--field);border-radius:9px;padding:8px 10px;text-align:center;box-shadow:inset 0 1px 2px rgba(0,0,0,.3)}
@@ -6122,6 +6369,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  </div>
  <div class="topbar">
    <div class="brand"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospectors <b>Plus</b></div>
+   <div class="modestrip" id="modestrip" role="tablist" aria-label="Macro mode">
+     <button type="button" class="mtab" id="mode_classic" role="tab" aria-selected="false" title="The proven built-in cycle — modes, routes, relics, recovery">Classic</button>
+     <button type="button" class="mtab" id="mode_studio" role="tab" aria-selected="false" title="Run the build Prospector Studio pushed (or any script in your library)">Studio</button>
+   </div>
    <div class="grow"></div>
    <button class="hammenu" id="hammenu" title="Menu" aria-label="Menu">&#9776;</button>
    <div class="topgroup" id="topgroup">
@@ -6198,6 +6449,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    </aside>
  </div>
  <div class="ok" id="toast"></div>
+ <div class="mmodal" id="mcfm" role="dialog" aria-modal="true" aria-labelledby="mcfmtitle">
+  <div class="mbox"><h3 id="mcfmtitle"></h3><p id="mcfmbody"></p>
+   <div class="mrow"><button type="button" class="btn" id="mcfmyes">Yes</button>
+    <button type="button" class="btn2" id="mcfmno">Cancel</button></div></div></div>
  <div id="bsplash" aria-hidden="true"><div class="bsp-card"><span class="bsp-mark">&#9670;</span><span class="bsp-txt"></span></div></div>
  <div id="tour" class="tour" style="display:none"><div id="tourspot" class="tourspot"></div>
   <div id="tourpop" class="tourpop"><div id="tourarrow"></div><div class="tourstepn" id="tourstepn"></div>
@@ -7306,7 +7561,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    window.addEventListener('keydown',onk,true);};});
  $('#savekeys').onclick=async()=>{try{await window.pywebview.api.save_hotkeys(hotkeys);toast('Keybinds saved, Stop & Start the macro to apply');}catch(e){toast('Save failed');}};
  $('#saverelics').onclick=async()=>{const n=await window.pywebview.api.save_relics(collectRelics(),$('#relicsMaster').checked);toast('Saved '+n+' relic(s)');};
- $('#startbtn').onclick=async()=>{await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);setRunning(true);toast('Launched, Ctrl+K to start');};
+ $('#startbtn').onclick=async()=>{
+   const r=await window.pywebview.api.launch(collect(),collectRelics(),$('#relicsMaster').checked);
+   if(r==='no-studio-build'){toast('STUDIO mode has no build selected — pick one on the Studio tab.');
+     const tb=document.querySelector('.tab[data-tab="studio"]');if(tb)tb.click();return;}
+   if(r==='classic-with-active-build'){toast('A Studio build is still active — switch to STUDIO, or Reset Studio in Settings.');return;}
+   if(r!=='launched'&&r!=='already running'){toast(r||'Could not start.');return;}
+   setRunning(true);toast('Launched, Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
  // ---- Studio: the script library on the tab + the Run-tab mode selector ----
  (function(){
@@ -7346,12 +7607,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
          try{r2=await window.pywebview.api.studio_set_active(s.active?'':s.name);}catch(e){r2=null;}
          if(r2&&r2.ok)toast(s.active?'Back to the built-in modes':'"'+s.name+'" is now the active mode');
          else toast((r2&&r2.error)||'Could not set it active');
-         stRefresh();};
+         stRefresh();if(window.modeRefresh)window.modeRefresh();};
        c.querySelector('.strun2').onclick=async function(){var r2;
          try{r2=await window.pywebview.api.studio_run(s.name);}catch(e){r2=null;}
          if(r2&&r2.ok){setRunning(true);toast('Running "'+s.name+'". Click into Roblox; Esc stops.');}
          else toast((r2&&r2.error)||'Could not start');
-         stRefresh();};
+         stRefresh();if(window.modeRefresh)window.modeRefresh();};
        c.querySelector('.stdup').onclick=async function(){
          try{await window.pywebview.api.studio_duplicate(s.name);}catch(e){}
          stRefresh();};
@@ -7383,41 +7644,136 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      t.addEventListener('click',function(){setTimeout(window.stRefresh,60);});});
    stRefresh();
  })();
- // ---- Studio-launch: the Classic | Studio-build switch on the Run tab ----
+ // ---- Studio-launch: the top-level CLASSIC | STUDIO tabs -----------------
  // Visible only when Prospector Studio launched this app (PP_STUDIO_LAUNCH).
- // It drives the SAME plumbing as the Mode dropdown: studio_set_active('')
- // for the classic built-in cycle, studio_set_active(<pushed script>) for
- // the build Studio published at launch.
+ // The invariant is structural and server-owned: CLASSIC <=> no active script
+ // (the built-in cycle), STUDIO <=> the active Studio build. studio_mode() on
+ // the Python side validates, remembers last_active, and refuses mid-run;
+ // launch() refuses any mismatch. Each mode shows only its own surfaces
+ // (body.mode-classic / body.mode-studio CSS) plus the shared ones.
  (function(){
-   var wrap=$('#stlaunch');if(!wrap)return;
-   async function slRefresh(){var st;try{st=await window.pywebview.api.get_state();}catch(e){return;}
+   var strip=$('#modestrip');if(!strip)return;
+   function mconfirm(title,body,cb){var m=$('#mcfm');if(!m){cb(window.confirm?window.confirm(title):true);return;}
+     $('#mcfmtitle').textContent=title;$('#mcfmbody').textContent=body;
+     m.classList.add('show');
+     function done(v){m.classList.remove('show');document.removeEventListener('keydown',esc);cb(v);}
+     function esc(e){if(e.key==='Escape')done(false);}
+     document.addEventListener('keydown',esc);
+     $('#mcfmyes').onclick=function(){done(true);};
+     $('#mcfmno').onclick=function(){done(false);};
+     $('#mcfmyes').focus();}
+   window.mconfirm=mconfirm;
+   var MODE='classic',NEEDS=false;
+   function paint(r){document.body.classList.add('studiolaunch');
+     NEEDS=!!(r&&r.needs_build);
+     document.body.classList.toggle('mode-classic',MODE==='classic');
+     document.body.classList.toggle('mode-studio',MODE==='studio');
+     ['classic','studio'].forEach(function(m){var b=$('#mode_'+m);
+       b.classList.toggle('on',MODE===m);b.setAttribute('aria-selected',MODE===m?'true':'false');});
+     var wrap=$('#stlaunch'),note=$('#slnote');
+     if(wrap)wrap.style.display='flex';
+     if(note)note.textContent=MODE==='studio'
+       ?((r&&r.active)?('Studio build "'+r.active+'" runs when you press Start.')
+                      :'STUDIO is selected but no build is active \u2014 pick one on the Studio tab.')
+       :'The classic cycle runs when you press Start.';
+     var cur=document.querySelector('.tab.active');
+     if(cur&&getComputedStyle(cur).display==='none'){
+       var tb=document.querySelector('.tab[data-tab="'+(MODE==='studio'?'studio':'run')+'"]');
+       if(tb)tb.click();}
+     if(window.sthdrRefresh)window.sthdrRefresh();}
+   async function refresh(){var st;try{st=await window.pywebview.api.get_state();}catch(e){return;}
      if(!st||!st.studio_launch)return;
-     wrap.style.display='flex';
+     strip.style.display='flex';
+     var r;try{r=await window.pywebview.api.studio_mode();}catch(e){r=null;}
+     if(r&&r.ok)MODE=r.mode;else MODE=st.studio_mode||'classic';
+     paint(r);}
+   async function switchTo(m){
+     if(m===MODE&&!(m==='studio'&&NEEDS))return;
+     var st;try{st=await window.pywebview.api.get_state();}catch(e){st=null;}
+     if(st&&st.running){
+       mconfirm('Stop the run and switch?',
+         'Switching between CLASSIC and STUDIO stops the current run first. Input is released safely \u2014 nothing stays held.',
+         async function(okv){if(!okv)return;
+           try{await window.pywebview.api.stop();}catch(e){}
+           if(window.setRunning)setRunning(false);
+           setTimeout(function(){switchTo(m);},600);});
+       return;}
+     var r;try{r=await window.pywebview.api.studio_mode(m);}catch(e){r=null;}
+     if(!r||!r.ok){toast((r&&r.error)||'Could not switch');return;}
+     MODE=r.mode;paint(r);
+     if(m==='studio'&&r.needs_build){
+       var tb=document.querySelector('.tab[data-tab="studio"]');if(tb)tb.click();
+       toast('STUDIO runs the active build \u2014 pick or create one here.');}
+     else toast(m==='studio'?('STUDIO \u2014 "'+(r.active||'')+'" is the active build.')
+                            :'CLASSIC \u2014 the built-in cycle is in charge.');
+     if(window.stRefresh)window.stRefresh();}
+   $('#mode_classic').onclick=function(){switchTo('classic');};
+   $('#mode_studio').onclick=function(){switchTo('studio');};
+   var ss=$('#scriptsel');if(ss)ss.addEventListener('change',function(){setTimeout(refresh,150);});
+   window.modeRefresh=refresh;window.slRefresh=refresh;
+   window.addEventListener('pywebviewready',function(){setTimeout(refresh,120);});
+   setTimeout(refresh,900);refresh();
+ })();
+ // ---- Studio-launch: build header on the Studio tab + settings resets ----
+ (function(){
+   window.sthdrRefresh=async function(){var h=$('#sthdr');if(!h)return;
+     var st;try{st=await window.pywebview.api.get_state();}catch(e){return;}
+     if(!st||!st.studio_launch){h.style.display='none';return;}
      var r;try{r=await window.pywebview.api.studio_list();}catch(e){r=null;}
      if(r&&r.ok===false)r=null;
-     var active=(r&&r.active)||'';
-     var name=st.studio_script||'';
-     var sb=$('#sl_studio');
-     if(sb)sb.textContent='Studio build'+(name?': '+name:'');
-     $('#sl_classic').classList.toggle('on',!active);
-     if(sb)sb.classList.toggle('on',!!active);
-     var note=$('#slnote');
-     if(note)note.textContent=active?('"'+active+'" runs when you press Start.'):'The built-in cycle runs when you press Start.';}
-   $('#sl_classic').onclick=async function(){var r;
-     try{r=await window.pywebview.api.studio_set_active('');}catch(e){r=null;}
-     if(r&&r.ok)toast('Classic cycle \u2014 the built-in mode toggles are in charge');
-     else toast((r&&r.error)||'Could not switch');
-     if(window.stRefresh)window.stRefresh();slRefresh();};
-   $('#sl_studio').onclick=async function(){var st;try{st=await window.pywebview.api.get_state();}catch(e){st=null;}
-     var name=(st&&st.studio_script)||'';var r=null;
-     if(name){try{r=await window.pywebview.api.studio_set_active(name);}catch(e){r=null;}}
-     if(r&&r.ok)toast('"'+name+'" from Studio is the active mode');
-     else toast((r&&r.error)||'No Studio build was pushed for this launch \u2014 open the Studio tab to pick a script');
-     if(window.stRefresh)window.stRefresh();slRefresh();};
-   var ss=$('#scriptsel');if(ss)ss.addEventListener('change',function(){setTimeout(slRefresh,150);});
-   window.slRefresh=slRefresh;
-   window.addEventListener('pywebviewready',function(){setTimeout(slRefresh,120);});
-   setTimeout(slRefresh,900);slRefresh();
+     var active=(r&&r.active)||'';var pushed=st.studio_script||'';
+     var name=active||pushed;
+     if(!name){h.style.display='none';return;}
+     var steps=null,verdict='';
+     try{var g=await window.pywebview.api.studio_get(name);
+       if(g&&g.ok){steps=(g.script.blocks||[]).length;
+         var v=await window.pywebview.api.studio_validate(g.script);
+         if(v)verdict=(v.ok&&!(v.problems&&v.problems.length))?'valid \u2014 ready to run'
+           :(((v.errors||[]).length+((v.problems||[]).length))+' problem(s) \u2014 open Studio to fix');}
+     }catch(e){}
+     h.style.display='block';
+     h.innerHTML='<div class="sth-top"><span class="sth-name"></span>'
+       +(active?'<span class="sth-badge on">active</span>':'<span class="sth-badge">not active</span>')
+       +(pushed&&pushed===name?'<span class="sth-badge">pushed from Prospector Studio</span>':'')
+       +'</div><div class="sth-meta"></div>'
+       +'<div class="sth-btns"><button type="button" class="btn2" id="sth_reload">Reload from Studio</button>'
+       +'<button type="button" class="btn2" id="sth_open">Open in Prospector Studio</button></div>';
+     h.querySelector('.sth-name').textContent=name;
+     var meta=[];if(steps!==null)meta.push(steps+' step'+(steps===1?'':'s'));
+     if(verdict)meta.push(verdict);
+     h.querySelector('.sth-meta').textContent=meta.join(' \u00b7 ');
+     $('#sth_reload').onclick=async function(){
+       var s2;try{s2=await window.pywebview.api.get_state();}catch(e){s2=null;}
+       if(s2&&s2.running){toast('Stop the run first \u2014 reloading replaces the build.');return;}
+       if(window.stRefresh)window.stRefresh();
+       window.sthdrRefresh();toast('Build library reloaded from disk.');};
+     $('#sth_open').onclick=async function(){
+       var r2;try{r2=await window.pywebview.api.studio_open_in_studio('');}catch(e){r2=null;}
+       toast(r2&&r2.ok?'Asked Prospector Studio to open this build.'
+                      :((r2&&r2.error)||'Could not reach Prospector Studio.'));};};
+   document.querySelectorAll('.tab[data-tab="studio"]').forEach(function(t){
+     t.addEventListener('click',function(){setTimeout(window.sthdrRefresh,60);});});
+   window.addEventListener('pywebviewready',function(){setTimeout(window.sthdrRefresh,150);});
+   setTimeout(window.sthdrRefresh,950);
+   // Settings ownership resets. Each group belongs to exactly one owner;
+   // the server does the work and reports what changed. The page reloads
+   // afterwards so every input shows the restored values.
+   function doReset(group,label,body){
+     if(!window.mconfirm)return;
+     window.mconfirm('Reset '+label+' settings?',body,async function(okv){
+       if(!okv)return;
+       var inc=group==='shared'&&!!($('#rst_cal')&&$('#rst_cal').checked);
+       var r;try{r=await window.pywebview.api.settings_reset(group,inc);}catch(e){r=null;}
+       if(!r||!r.ok){toast((r&&r.error)||'Reset failed.');return;}
+       if(group==='shared'){try{['pp_set_compact','pp_set_wood','pp_set_reduce'].forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+       toast(label+' settings reset ('+((r.reset&&r.reset.length)||0)+' changed). Reloading\u2026');
+       setTimeout(function(){location.reload();},700);});}
+   var bc=$('#rst_classic');if(bc)bc.onclick=function(){doReset('classic','Classic',
+     'The built-in cycle tuning goes back to shipped defaults: modes, dig/shake/walk timing, recovery and relics. Your saved builds, Studio scripts, calibration and history are untouched.');};
+   var bs=$('#rst_studio');if(bs)bs.onclick=function(){doReset('studio','Studio',
+     'Clears which build is active, the CLASSIC | STUDIO mode and editor flags. Your scripts themselves are NOT deleted.');};
+   var bh=$('#rst_shared');if(bh)bh.onclick=function(){doReset('shared','Shared',
+     'Notifications, auto-stop, window tracking, earnings tracking, keybinds and appearance go back to defaults. Calibration is cleared only if you ticked the box below.');};
  })();
  (function(){const b=$('#hudbtn');if(b)b.onclick=async()=>{
    try{const r=await window.pywebview.api.hud_toggle();
