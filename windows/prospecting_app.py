@@ -7724,13 +7724,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var active=(r&&r.active)||'';var pushed=st.studio_script||'';
      var name=active||pushed;
      if(!name){h.style.display='none';return;}
-     var steps=null,verdict='';
-     try{var g=await window.pywebview.api.studio_get(name);
-       if(g&&g.ok){steps=(g.script.blocks||[]).length;
-         var v=await window.pywebview.api.studio_validate(g.script);
-         if(v)verdict=(v.ok&&!(v.problems&&v.problems.length))?'valid \u2014 ready to run'
-           :(((v.errors||[]).length+((v.problems||[]).length))+' problem(s) \u2014 open Studio to fix');}
-     }catch(e){}
+     // The list row carries everything the header needs (block count +
+     // validation issue count) and works for v2 Studio-made scripts, which
+     // studio_get deliberately refuses to hand to the inline editor.
+     var row=(r&&r.scripts||[]).filter(function(s){return s.name===name;})[0];
+     var steps=row?row.blocks:null;
+     var verdict=row?(row.issues?(row.issues+' to fix \u2014 open it in Prospector Studio')
+                                :'valid \u2014 ready to run'):'';
      h.style.display='block';
      h.innerHTML='<div class="sth-top"><span class="sth-name"></span>'
        +(active?'<span class="sth-badge on">active</span>':'<span class="sth-badge">not active</span>')
