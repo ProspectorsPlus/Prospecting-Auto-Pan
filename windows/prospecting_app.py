@@ -3697,7 +3697,11 @@ class Api:
 
     # ---- run control ----
     def _report_usage(self):
-        """Background sync ping (fire-and-forget; never blocks the launch)."""
+        """Background sync ping (fire-and-forget; never blocks the launch).
+        Never under a Studio launch: the Prospector Macro companion sends
+        nothing anywhere (privacy contract of the integrated product)."""
+        if STUDIO_LAUNCH:
+            return
         try:
             cur = load_saved()
             hook = (cur.get("SYNC_URL") or "").strip()
@@ -9591,7 +9595,9 @@ def main():
     except Exception:
         pass
     print("[boot] building main window…", flush=True)
-    _window = webview.create_window("Prospectors Plus", html=_themed(build_html()),
+    _window = webview.create_window(
+        "Prospector Macro" if STUDIO_LAUNCH else "Prospectors Plus",
+        html=_themed(build_html()),
                                     js_api=api, width=1340, height=900,
                                     min_size=(600, 560))
     try:
