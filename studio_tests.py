@@ -547,6 +547,141 @@ finally:
     _sh.rmtree(_tdir, ignore_errors=True)
 
 # =============================================================================
+print("[9] CLASSIC | STUDIO top-level mode (Studio launch)")
+# =============================================================================
+# Everything runs against a scratch home: user config, scripts and the open-
+# request file are patched module attributes, restored in the finally.
+_mdir = tempfile.mkdtemp()
+_saved_attrs = {k: getattr(app, k) for k in
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR",
+                 "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
+app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.DATA_DIR = _mdir
+app.STUDIO_LAUNCH = True
+app.STUDIO_SCRIPT = "Pushed Build"
+app._STUDIO_LIST_CACHE["key"] = None
+try:
+    api_m = app.Api()
+    tpl = json.loads(json.dumps(app._studio_templates()[0]))
+    tpl["name"] = "Pushed Build"
+    check("mode fixture script saves clean", api_m.studio_save(tpl, None)["ok"])
+
+    # fresh home derives CLASSIC; STUDIO with no build refuses to launch
+    r = api_m.studio_mode()
+    check("fresh home derives classic", r["ok"] and r["mode"] == "classic", r)
+    api_m.studio_set_active("")
+    d0 = app._studio_load()
+    d0["mode"] = "studio"
+    app._studio_write(d0)
+    api_m.studio_set_active("")           # studio mode, no active build
+    check("launch refuses studio-without-build",
+          api_m.launch(None) == "no-studio-build")
+
+    # explicit STUDIO restores the pushed build; CLASSIC remembers it
+    r = api_m.studio_mode("studio")
+    check("studio switch restores the pushed build",
+          r["ok"] and r["active"] == "Pushed Build" and not r["needs_build"], r)
+    cfg = app.load_saved()
+    check("active build rides into engine config",
+          cfg.get("SCRIPT_MODE") is True and cfg.get("SCRIPT_ACTIVE") == "Pushed Build")
+    r = api_m.studio_mode("classic")
+    check("classic switch clears the active build", r["ok"] and r["active"] == "")
+    d = app._studio_load()
+    check("classic switch remembers last_active", d["last_active"] == "Pushed Build")
+    cfg = app.load_saved()
+    check("classic switch clears engine script keys",
+          cfg.get("SCRIPT_MODE") is False and cfg.get("SCRIPT_ACTIVE") == "")
+    r = api_m.studio_mode("studio")
+    check("switching back restores the remembered build",
+          r["ok"] and r["active"] == "Pushed Build")
+
+    # classic with a stale active build refuses (invariant, belt and braces)
+    d = app._studio_load()
+    d["mode"] = "classic"
+    app._studio_write(d)
+    check("launch refuses classic-with-active-build",
+          api_m.launch(None) == "classic-with-active-build")
+
+    # mid-run guard: mode switches are refused while a run is live
+    api_m.studio_mode("studio")
+    api_m.proc = object()
+    r = api_m.studio_mode("classic")
+    check("mode switch refused while running",
+          not r["ok"] and "Stop the run" in r["error"], r)
+    api_m.proc = None
+
+    # studio_run implies STUDIO mode (a grid Run can never wedge the
+    # invariant). launch() is stubbed -- no real engine child in tests.
+    d = app._studio_load()
+    d["mode"] = "classic"
+    d["active"] = ""
+    app._studio_write(d)
+    _orig_launch = api_m.launch
+    api_m.launch = lambda data=None: "launched"
+    rr = api_m.studio_run("Pushed Build")
+    api_m.launch = _orig_launch
+    d = app._studio_load()
+    check("studio_run implies STUDIO mode and starts",
+          rr["ok"] and d["mode"] == "studio" and d["active"] == "Pushed Build",
+          (rr, d["mode"], d["active"]))
+    api_m.proc = object()
+    rr = api_m.studio_run("Pushed Build")
+    api_m.proc = None
+    check("studio_run mid-run reports a reason", not rr["ok"] and rr["error"], rr)
+
+    # settings ownership: disjoint groups, resets scoped to their owner
+    own = api_m.settings_ownership()
+    check("ownership groups are disjoint",
+          not set(own["classic"]) & set(own["shared"]))
+    check("auto-stop and webhook are shared",
+          "AUTOSTOP_ENABLED" in own["shared"] and "WEBHOOK_URL" in own["shared"])
+    check("cycle tuning is classic",
+          "DIG_CLICK_MS" in own["classic"] and "RELICS" in own["classic"])
+    api_m.save_config({"DIG_CLICK_MS": 999, "AUTOSTOP_MINUTES": 123})
+    api_m.settings_reset("classic")
+    cfg = app.load_saved()
+    check("reset classic restores classic keys only",
+          cfg.get("DIG_CLICK_MS") == app.DEFAULTS["DIG_CLICK_MS"]
+          and cfg.get("AUTOSTOP_MINUTES") == 123)
+    api_m.settings_reset("shared")
+    cfg = app.load_saved()
+    check("reset shared restores shared keys",
+          cfg.get("AUTOSTOP_MINUTES") == app.DEFAULTS["AUTOSTOP_MINUTES"])
+    pk = next(iter(app.PIXEL_DEFAULTS), None)
+    if pk:
+        cfg2 = dict(app.load_saved())
+        cfg2[pk] = [123, 456]
+        with open(app.CONFIG_FILE, "w") as f:
+            json.dump(cfg2, f)
+        api_m.settings_reset("shared", include_calibration=False)
+        check("reset shared leaves calibration alone by default",
+              list(app.load_saved().get(pk)) == [123, 456])
+        api_m.settings_reset("shared", include_calibration=True)
+        check("reset shared clears calibration only when asked",
+              list(app.load_saved().get(pk)) == list(app.PIXEL_DEFAULTS[pk]))
+    api_m.settings_reset("studio")
+    d = app._studio_load()
+    check("reset studio clears active/mode but keeps scripts",
+          d["active"] == "" and d["mode"] == "classic"
+          and "Pushed Build" in d["scripts"])
+
+    # open-in-studio request file
+    r = api_m.studio_open_in_studio("node-3")
+    req = json.load(open(os.path.join(_mdir, "studio_open_request.json")))
+    check("open request written with script+node",
+          r["ok"] and req["script"] == "Pushed Build"
+          and req["node"] == "node-3", req)
+    app.STUDIO_LAUNCH = False
+    check("open request refused outside a Studio launch",
+          not api_m.studio_open_in_studio("")["ok"])
+finally:
+    for k, v in _saved_attrs.items():
+        setattr(app, k, v)
+    app._STUDIO_LIST_CACHE["key"] = None
+    _sh.rmtree(_mdir, ignore_errors=True)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))
