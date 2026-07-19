@@ -252,10 +252,12 @@ def _mouse_btn(flag):
 
 
 def mouse_down():
+    _eng._MOUSE_DOWN = True
     _eng._mouse_btn(MOUSEEVENTF_LEFTDOWN)
 
 
 def mouse_up():
+    _eng._MOUSE_DOWN = False
     _eng._mouse_btn(MOUSEEVENTF_LEFTUP)
 
 

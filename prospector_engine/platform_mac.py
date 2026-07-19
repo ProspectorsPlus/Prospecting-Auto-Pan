@@ -193,10 +193,12 @@ def _mouse_event(kind):
 
 
 def mouse_down():
+    _eng._MOUSE_DOWN = True
     _eng._mouse_event(Quartz.kCGEventLeftMouseDown)
 
 
 def mouse_up():
+    _eng._MOUSE_DOWN = False
     _eng._mouse_event(Quartz.kCGEventLeftMouseUp)
 
 

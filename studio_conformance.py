@@ -161,6 +161,10 @@ def run_golden(path):
     for tok, code in po._SCRIPT_KEYS.items():
         if code is not None:
             code_to_tok[code] = tok
+    # v3 keys trace as canonical lowercase names; overlapping codes keep
+    # their whitelist token (W not w) per the v3 trace contract.
+    for name, code in po.V3_KEYCODES.items():
+        code_to_tok.setdefault(code, name)
 
     def key_down(code):
         tok = code_to_tok.get(code, str(code))
@@ -194,6 +198,12 @@ def run_golden(path):
         if mouse["down"]:
             mouse["down"] = False
             emit("mouse_up")
+        for b in list(held_buttons):
+            held_buttons.remove(b)
+            if b == "left":
+                emit("mouse_up")
+            else:
+                emit("mouse_up", button=b)
 
     def wait_until(cond, max_ms, confirm=1, min_ms=0):
         # Mirror of the Studio VM waitUntil: virtual 25 ms polls.
@@ -223,6 +233,51 @@ def run_golden(path):
         if m.startswith("\U0001f4dc "):
             m = m[2:]
         emit("notify", msg=m)
+
+    held_buttons = []
+
+    def button_down(button, click_state=1):
+        if button not in held_buttons:
+            held_buttons.append(button)
+        # left omits the button field so v2 traces stay byte-identical
+        if button == "left":
+            emit("mouse_down")
+        else:
+            emit("mouse_down", button=button)
+
+    def button_up(button, click_state=1):
+        if button in held_buttons:
+            held_buttons.remove(button)
+        if button == "left":
+            emit("mouse_up")
+        else:
+            emit("mouse_up", button=button)
+
+    def scroll_lines(amount):
+        emit("scroll", amount=int(amount))
+
+    def set_clipboard(text):
+        emit("clip", text=str(text))
+
+    po.button_down = button_down
+    po.button_up = button_up
+    po.scroll_lines = scroll_lines
+    po.set_clipboard = set_clipboard
+
+    # type_text traces as ONE aggregated event (the v3 contract: per-key
+    # typing timing is not pinned) — mirror the VM's single event + advance.
+    def _h_type_text(runner_self, det_, p, kids):
+        text = po._sv_text(runner_self._pv_eval((p or {}).get("text", "")))
+        text = text[:po._SCRIPT2_STR_MAX]
+        cps = runner_self._pi(p, "cps", 18, 2, 50)
+        ms = int(-(-len(text) * 1000 // cps))
+        emit("type", text=text, ms=ms)
+        clock.adv(ms)
+        runner_self.pass_activity = True
+        return None
+
+    saved_v3_type = po._SCRIPT_HANDLERS_V3.get("type_text")
+    po._SCRIPT_HANDLERS_V3["type_text"] = _h_type_text
 
     po.key_down = key_down
     po.key_up = key_up

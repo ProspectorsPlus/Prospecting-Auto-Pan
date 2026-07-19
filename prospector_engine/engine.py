@@ -3007,6 +3007,7 @@ def post_webhook(event, message, stats=None, shot=False):
     threading.Thread(target=_send, daemon=True).start()
 
 
+_MOUSE_DOWN = False     # left button currently down (platform-maintained)
 _HELD_BUTTONS = set()   # v3 right/middle/left buttons currently held
 _HELD_KEYS = set()      # section 10.1 held-set registry (every injected
                         # press records itself; every release removes itself)
@@ -4796,6 +4797,8 @@ class ScriptRunner:
         self.blocks = []
         self.version = 1
         self.caps = ()                # v3 declared capabilities
+        self.held_v3 = set()          # v3 key codes deliberately held across nodes
+        self.held_v3_buttons = set()  # v3 buttons deliberately held across nodes
         self.passes = 0
         self.empty_passes = 0
         self.pass_activity = False    # this pass sent input / really waited
@@ -4909,6 +4912,33 @@ class ScriptRunner:
                         deep = max(deep, kd)
         return n, deep
 
+    def _tick_release(self):
+        """The per-step anti-drift release. Identical to release_all() until a
+        v3 key_down/mouse-button-down deliberately holds input across nodes —
+        those spared holds are the runner's OWN registry, cleared by key_up /
+        release_keys, and the full release_all() on every stop/abort/quit path
+        still releases them (the safety funnel is untouched)."""
+        if not self.held_v3 and not self.held_v3_buttons:
+            release_all()
+            return
+        # Sparing path: the held registry is authoritative here (the full
+        # idempotent floor still fires on every stop/abort path).
+        for c in set(_HELD_KEYS) - self.held_v3:
+            try:
+                key_up(c)
+            except Exception:
+                pass
+        if _MOUSE_DOWN and "left" not in self.held_v3_buttons:
+            try:
+                mouse_up()
+            except Exception:
+                pass
+        for b in set(_HELD_BUTTONS) - self.held_v3_buttons:
+            try:
+                button_up(b)
+            except Exception:
+                pass
+
     def _reset_walk(self):
         self.stack = [[self.blocks, 0, 1, "top", None]]
         self.pass_activity = False
@@ -4978,7 +5008,7 @@ class ScriptRunner:
             self._reset_walk()
             if self.version >= 2 and self.hooks.get("on_stuck"):
                 self._pending_stuck = True
-        release_all()                 # anti-drift, same as the supervisor
+        self._tick_release()          # anti-drift, sparing deliberate holds
         try:
             self._det = det
             if self.version >= 2 and not self._started:
@@ -5697,6 +5727,7 @@ class ScriptRunner:
         if bad:
             return None
         self.pass_activity = True
+        self.held_v3.add(code)
         key_down(code)     # held across nodes BY DESIGN; released on any stop
         return None
 
@@ -5704,6 +5735,7 @@ class ScriptRunner:
         code, bad = self._v3_key(p)
         if bad:
             return None
+        self.held_v3.discard(code)
         key_up(code)
         return None
 
@@ -5785,6 +5817,8 @@ class ScriptRunner:
         return None
 
     def _do_release_keys(self, det, p, kids):
+        self.held_v3.clear()
+        self.held_v3_buttons.clear()
         release_all()
         return None
 
@@ -5807,9 +5841,11 @@ class ScriptRunner:
             move_cursor(x, y)
             _script_sleep(30)
         if action == "down":
+            self.held_v3_buttons.add(btn)
             button_down(btn)
             return None
         if action == "up":
+            self.held_v3_buttons.discard(btn)
             button_up(btn)
             return None
         clicks = 2 if action == "double" else self._pi(p, "clicks", 1, 1, 10)
