@@ -72,6 +72,15 @@ BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
 TUTORIAL_FILE = os.path.join(DATA_DIR, "tutorial_content.json")        # owner edits
 TUTORIAL_CACHE = os.path.join(DATA_DIR, "tutorial_remote_cache.json")  # site copy
 SCRIPTS_FILE = os.path.join(DATA_DIR, "prospecting_scripts.json")   # Studio scripts
+# Studio-launch cross-window state (both ignored outside PP_STUDIO_LAUNCH):
+#   STATUS_FILE  -- written by THIS app (atomic, seq-numbered): mode, active
+#                   build + revision, run state, and headline stats, so the
+#                   Prospector Studio window can mirror the macro live.
+#   PUSH_FILE    -- written by Prospector Studio at publish time (this app
+#                   only reads it): the name + content revision of the build
+#                   it pushed, so both windows can show the same revision.
+STATUS_FILE = os.path.join(DATA_DIR, "studio_macro_status.json")
+PUSH_FILE = os.path.join(DATA_DIR, "studio_push.json")
 
 # ---- Prospector Studio embedded launch --------------------------------------
 # Studio bundles this exact app and opens it as "the macro" window. The env
@@ -686,7 +695,7 @@ TOUR_DEFAULTS = {
    "body": "If nothing completes for this many seconds, it forces a "
            "click-to-empty to shake the state loose. The quiet last resort "
            "before stopping."},
-  {"id": "rec.safestop", "tab": "cycle", "sel": "[data-key=\"SAFE_STOP_RETRY\"]",
+  {"id": "rec.safestop", "tab": "Auto-stop", "sel": "[data-key=\"SAFE_STOP_RETRY\"]",
    "row": True, "title": "Safe stop: pause, do not quit",
    "body": "When it truly cannot proceed it pauses, waits, and retries, up "
            "to the max. Only then does it stop for real. Keep this on for "
@@ -1068,8 +1077,14 @@ def _studio_load():
     last_active = d.get("last_active")
     if not isinstance(last_active, str) or last_active not in scripts:
         last_active = ""
+    # STUDIO mode parks the classic AutoPan-Tracking preference here (see
+    # studio_mode): the engine must never see TRACKER_MODE while a Studio
+    # build is meant to run (tracker outranks scripts in the engine), and
+    # switching back to CLASSIC must restore the user's choice untouched.
+    ct = d.get("classic_tracker")
+    ct = ct if isinstance(ct, bool) else None
     return {"active": active, "scripts": scripts, "meta": meta,
-            "mode": mode, "last_active": last_active}
+            "mode": mode, "last_active": last_active, "classic_tracker": ct}
 
 
 _STUDIO_LIST_CACHE = {"key": None, "scripts": None, "active": ""}
@@ -1088,6 +1103,18 @@ def _studio_write(data):
             pass
     os.replace(tmp, SCRIPTS_FILE)
     _STUDIO_LIST_CACHE["key"] = None
+
+
+def _config_patch(patch):
+    """Merge a few keys into the config file atomically (tmp + replace).
+    Only for idle-time bookkeeping (mode switches, launch projection) --
+    live-run settings still go through the engine ack path."""
+    cur = load_saved()
+    cur.update(patch)
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cur, f, indent=2)
+    os.replace(tmp, CONFIG_FILE)
 
 
 def _studio_normalize(script):
@@ -1762,6 +1789,68 @@ class Api:
         self._last_stats = None   # latest stats from the macro (for history)
         self._run_active = False  # a run is in progress (write history once)
         self._macro_status = "off"  # off/idle/running/paused/safe-pause/recovering/stopped
+        self._studio_status_stop = threading.Event()
+        if STUDIO_LAUNCH:
+            # Live state mirror for the Prospector Studio window. A leftover
+            # file from a previous session must never be read as current.
+            try:
+                os.remove(STATUS_FILE)
+            except OSError:
+                pass
+            self._studio_status_thread = threading.Thread(
+                target=self._studio_status_loop, daemon=True)
+            self._studio_status_thread.start()
+
+    # ---- Studio-launch status mirror ----
+    def _studio_push_info(self):
+        """The build stamp Prospector Studio wrote at publish time (read-
+        only here). {} when absent/unreadable."""
+        info = _read_json(PUSH_FILE, None)
+        return info if isinstance(info, dict) else {}
+
+    def _studio_status_snapshot(self):
+        """Everything the Studio window mirrors, cheap enough for 1 Hz."""
+        d = _studio_load()
+        mode = d.get("mode") or ("studio" if d["active"] else "classic")
+        push = self._studio_push_info()
+        rev = str(push.get("rev") or "") if (
+            d["active"] and push.get("name") == d["active"]) else ""
+        st = self._last_stats or {}
+        stats = {k: st[k] for k in ("cycles", "digs", "runtime_s",
+                                    "pans_per_hr", "money_earned",
+                                    "shards_earned", "recoveries")
+                 if k in st}
+        return {"mode": mode, "active": d["active"], "rev": rev,
+                "run": getattr(self, "_macro_status", "off"),
+                "stop_reason": str(st.get("stop_reason") or ""),
+                "stats": stats}
+
+    def _studio_status_loop(self):
+        """Write STATUS_FILE atomically whenever the snapshot changes. The
+        Studio window watches the file; the seq number lets it drop
+        out-of-order or replayed reads, and ts marks freshness."""
+        seq = 0
+        last = None
+        while not self._studio_status_stop.is_set():
+            try:
+                snap = self._studio_status_snapshot()
+            except Exception:
+                snap = None
+            if snap is not None and snap != last:
+                seq += 1
+                body = dict(snap)
+                body["v"] = 1
+                body["seq"] = seq
+                body["ts"] = time.time()
+                tmp = STATUS_FILE + ".tmp"
+                try:
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump(body, f)
+                    os.replace(tmp, STATUS_FILE)
+                    last = snap
+                except OSError:
+                    pass
+            self._studio_status_stop.wait(1.0)
 
     # ---- settings ----
     def get_state(self):
@@ -2583,9 +2672,14 @@ class Api:
             d["mode"] = "classic"
             d["last_active"] = ""
             d["meta"] = {}
+            restore = d.get("classic_tracker")
+            d["classic_tracker"] = None
             try:
                 _studio_write(d)
                 self._studio_push_active("")
+                if restore is not None:
+                    # back to CLASSIC: un-park the AutoPan-Tracking choice
+                    _config_patch({"TRACKER_MODE": restore})
             except OSError as e:
                 return {"ok": False, "error": str(e)}
             return {"ok": True,
@@ -2618,6 +2712,16 @@ class Api:
                     if list(cur.get(k, v)) != list(v):
                         hit.append(k)
                     cur[k] = list(v)
+        if group == "classic":
+            # TRACKER_MODE just went back to its default, so the value STUDIO
+            # parked (see studio_mode) must not outlive it.
+            d = _studio_load()
+            if d.get("classic_tracker") is not None:
+                d["classic_tracker"] = None
+                try:
+                    _studio_write(d)
+                except OSError:
+                    pass
         vals = {k: cur[k] for k in hit if k in TYPES}
         ack = self._engine_settings_set(vals) if vals else None
         if ack is None or not ack.get("ok"):
@@ -3207,17 +3311,28 @@ class Api:
                 d["last_active"] = d["active"]
             d["active"] = ""
             d["mode"] = "classic"
+            restore = d.get("classic_tracker")
+            d["classic_tracker"] = None
             try:
                 _studio_write(d)
                 self._studio_push_active("")
+                if restore is not None:
+                    # give back the AutoPan-Tracking choice STUDIO parked
+                    _config_patch({"TRACKER_MODE": restore})
             except OSError as e:
                 return {"ok": False, "error": "Could not save: %s" % e}
-            return {"ok": True, "mode": "classic", "active": ""}
+            return {"ok": True, "mode": "classic", "active": "",
+                    "tracker": bool(load_saved().get("TRACKER_MODE"))}
         d["mode"] = "studio"
         try:
             _studio_write(d)
         except OSError as e:
             return {"ok": False, "error": "Could not save: %s" % e}
+        # Park the classic AutoPan-Tracking choice while STUDIO owns Start
+        # (see _studio_park_tracker; the way back restores it).
+        err = self._studio_park_tracker()
+        if err:
+            return {"ok": False, "error": "Could not save: %s" % err}
         name = d["active"] or d.get("last_active") or STUDIO_SCRIPT
         active = d["active"]
         if name and not active:
@@ -3225,7 +3340,34 @@ class Api:
             if r.get("ok"):
                 active = name
         return {"ok": True, "mode": "studio", "active": active,
-                "needs_build": not active}
+                "needs_build": not active, "tracker": False}
+
+    def _studio_park_tracker(self, sd=None):
+        """STUDIO owns Start: the engine must not see TRACKER_MODE (AutoPan
+        Tracking is a CLASSIC program choice, and in the engine the tracker
+        outranks Studio scripts). The classic preference is parked in the
+        script library and restored by the switch back / Reset Studio.
+        Belt-and-braces at launch too, because Prospector Studio publishes
+        straight into the config and an interrupted switch can leave the
+        toggle behind. Returns an error string, or None on success/no-op."""
+        if not load_saved().get("TRACKER_MODE"):
+            return None
+        try:
+            sd = sd if sd is not None else _studio_load()
+            sd["classic_tracker"] = True
+            _studio_write(sd)
+            _config_patch({"TRACKER_MODE": False})
+        except OSError as e:
+            return str(e)
+        return None
+
+    def studio_push_info(self):
+        """The publish stamp Prospector Studio left for the active build
+        (name + content revision), so this window can show the exact same
+        revision the Studio editor shows. Read-only."""
+        push = self._studio_push_info()
+        return {"ok": True, "name": str(push.get("name") or ""),
+                "rev": str(push.get("rev") or "")}
 
     def studio_open_in_studio(self, node=None):
         """Ask the Prospector Studio app (when it launched this macro) to
@@ -3584,6 +3726,10 @@ class Api:
                 return "no-studio-build"
             if ui_mode == "classic" and sd["active"]:
                 return "classic-with-active-build"
+            if ui_mode == "studio":
+                err = self._studio_park_tracker(sd)
+                if err:
+                    return "error: %s" % err
         self._report_usage()
         # When frozen there is no python.exe to run the .py macro, so re-launch
         # THIS exe with --run-macro (handled in main()). In dev, run the script.
@@ -5201,7 +5347,6 @@ def build_html():
           "STUCK_TICKS", "RECOVER_LIMIT", "RECOVER_BACK_MS",
           "SHAKE_FAIL_LIMIT", "SHAKE_GLITCH_LIMIT", "NO_PROGRESS_SEC",
           "BREAKOUT_LIMIT", "BREAKOUT_SHAKE_MS", "BREAKOUT_REPOS_MS",
-          "SAFE_STOP_RETRY", "SAFE_STOP_RETRY_SEC", "SAFE_STOP_MAX_RETRIES",
           "BURST_ON_MS", "BURST_OFF_MS"]),
     ]
     _claimed = set()
@@ -7701,6 +7846,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var r;try{r=await window.pywebview.api.studio_mode(m);}catch(e){r=null;}
      if(!r||!r.ok){toast((r&&r.error)||'Could not switch');return;}
      MODE=r.mode;paint(r);
+     // The switch parks/restores AutoPan Tracking server-side; mirror the
+     // result into the (possibly hidden) input so a later Start's collect()
+     // cannot write a stale value back over it.
+     if(typeof r.tracker!=='undefined'){
+       var tin=document.querySelector('[data-key="TRACKER_MODE"]');
+       if(tin)tin.checked=!!r.tracker;}
      if(m==='studio'&&r.needs_build){
        var tb=document.querySelector('.tab[data-tab="studio"]');if(tb)tb.click();
        toast('STUDIO runs the active build \u2014 pick or create one here.');}
@@ -7731,10 +7882,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var steps=row?row.blocks:null;
      var verdict=row?(row.issues?(row.issues+' to fix \u2014 open it in Prospector Studio')
                                 :'valid \u2014 ready to run'):'';
+     var rev='';try{var pi=await window.pywebview.api.studio_push_info();
+       if(pi&&pi.ok&&pi.name===name)rev=pi.rev||'';}catch(e){}
      h.style.display='block';
      h.innerHTML='<div class="sth-top"><span class="sth-name"></span>'
        +(active?'<span class="sth-badge on">active</span>':'<span class="sth-badge">not active</span>')
        +(pushed&&pushed===name?'<span class="sth-badge">pushed from Prospector Studio</span>':'')
+       +(rev?'<span class="sth-badge" title="Build revision \u2014 matches the revision shown in Prospector Studio">rev '+_esc(rev)+'</span>':'')
        +'</div><div class="sth-meta"></div>'
        +'<div class="sth-btns"><button type="button" class="btn2" id="sth_reload">Reload from Studio</button>'
        +'<button type="button" class="btn2" id="sth_open">Open in Prospector Studio</button></div>';

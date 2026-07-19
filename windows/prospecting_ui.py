@@ -151,9 +151,6 @@ SECTIONS = [
         ("BREAKOUT_LIMIT",     "Break-outs before STOP",                  "int", 2),
         ("BREAKOUT_SHAKE_MS",  "Break-out click-to-finish (ms)",          "int", 700),
         ("BREAKOUT_REPOS_MS",  "Break-out reposition W (ms)",             "int", 160),
-        ("SAFE_STOP_RETRY",     "Safe-stop = pause and retry (don't hard-stop)", "bool", True),
-        ("SAFE_STOP_RETRY_SEC", "Wait before each retry (seconds)",        "int", 60),
-        ("SAFE_STOP_MAX_RETRIES","Hard-stop after this many failed retries", "int", 3),
     ]),
     ("Recovery movement (jitter taps)", [
         ("BURST_ON_MS",        "Tap hold per pulse (ms)",                 "int", 11),
@@ -175,6 +172,11 @@ SECTIONS = [
         ("AUTOSTOP_ENABLED",   "Auto-stop after a set time",             "bool", False),
         ("AUTOSTOP_MINUTES",   "Stop after this many minutes",           "int", 60),
         ("STOP_AFTER_PANS",    "Stop after N pans (0 = off, bag guard)", "int", 0),
+        # Safe-stop policy lives here (a SHARED page): it decides what ANY
+        # run does at a hazard -- classic cycle and Studio builds alike.
+        ("SAFE_STOP_RETRY",     "Safe-stop = pause and retry (don't hard-stop)", "bool", True),
+        ("SAFE_STOP_RETRY_SEC", "Wait before each retry (seconds)",        "int", 60),
+        ("SAFE_STOP_MAX_RETRIES","Hard-stop after this many failed retries", "int", 3),
     ]),
     ("Window", [
         ("WINDOW_RELATIVE",    "Shift pixels when the Roblox window moves", "bool", False),

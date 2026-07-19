@@ -553,14 +553,17 @@ print("[9] CLASSIC | STUDIO top-level mode (Studio launch)")
 # request file are patched module attributes, restored in the finally.
 _mdir = tempfile.mkdtemp()
 _saved_attrs = {k: getattr(app, k) for k in
-                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR",
-                 "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR", "STATUS_FILE",
+                 "PUSH_FILE", "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
 app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
 app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.STATUS_FILE = os.path.join(_mdir, "studio_macro_status.json")
+app.PUSH_FILE = os.path.join(_mdir, "studio_push.json")
 app.DATA_DIR = _mdir
 app.STUDIO_LAUNCH = True
 app.STUDIO_SCRIPT = "Pushed Build"
 app._STUDIO_LIST_CACHE["key"] = None
+api_m = None
 try:
     api_m = app.Api()
     tpl = json.loads(json.dumps(app._studio_templates()[0]))
@@ -676,6 +679,129 @@ try:
     check("open request refused outside a Studio launch",
           not api_m.studio_open_in_studio("")["ok"])
 finally:
+    if api_m is not None:
+        api_m._studio_status_stop.set()
+        _t9 = getattr(api_m, "_studio_status_thread", None)
+        if _t9 is not None:
+            _t9.join(timeout=3.0)
+    for k, v in _saved_attrs.items():
+        setattr(app, k, v)
+    app._STUDIO_LIST_CACHE["key"] = None
+    _sh.rmtree(_mdir, ignore_errors=True)
+
+# =============================================================================
+print("[10] mode truth: AutoPan Tracking cannot shadow a Studio run")
+# =============================================================================
+# TRACKER_MODE outranks SCRIPT_MODE inside the engine, so the app must park
+# the classic toggle whenever STUDIO owns Start, and hand it back on the way
+# out. Also: the live status mirror + the safety-policy ownership move.
+_mdir = tempfile.mkdtemp()
+_saved_attrs = {k: getattr(app, k) for k in
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR", "STATUS_FILE",
+                 "PUSH_FILE", "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
+app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.STATUS_FILE = os.path.join(_mdir, "studio_macro_status.json")
+app.PUSH_FILE = os.path.join(_mdir, "studio_push.json")
+app.DATA_DIR = _mdir
+app.STUDIO_LAUNCH = True
+app.STUDIO_SCRIPT = "Pushed Build"
+app._STUDIO_LIST_CACHE["key"] = None
+api_t = None
+try:
+    api_t = app.Api()
+    tpl = json.loads(json.dumps(app._studio_templates()[0]))
+    tpl["name"] = "Pushed Build"
+    check("fixture script saves clean", api_t.studio_save(tpl, None)["ok"])
+
+    # ownership: safe-stop policy is SHARED (any run hits safe_stop);
+    # the tracker toggle stays CLASSIC (it selects the classic program)
+    own = api_t.settings_ownership()
+    check("safe-stop policy is shared",
+          all(k in own["shared"] for k in
+              ("SAFE_STOP_RETRY", "SAFE_STOP_RETRY_SEC",
+               "SAFE_STOP_MAX_RETRIES")))
+    check("tracker toggle is classic-owned", "TRACKER_MODE" in own["classic"])
+
+    # classic -> studio parks the toggle; the engine config never sees it
+    api_t.save_config({"TRACKER_MODE": True})
+    r = api_t.studio_mode("studio")
+    check("studio switch succeeds with tracker parked",
+          r["ok"] and r["mode"] == "studio" and r.get("tracker") is False, r)
+    cfg = app.load_saved()
+    check("engine config shows tracker OFF in studio mode",
+          cfg.get("TRACKER_MODE") is False)
+    check("classic preference is parked",
+          app._studio_load()["classic_tracker"] is True)
+
+    # studio -> classic hands the choice back and clears the stash
+    r = api_t.studio_mode("classic")
+    check("classic switch restores the tracker choice",
+          r["ok"] and r.get("tracker") is True
+          and app.load_saved().get("TRACKER_MODE") is True, r)
+    check("stash cleared after restore",
+          app._studio_load()["classic_tracker"] is None)
+
+    # launch guard: state written straight into the config (Prospector
+    # Studio's publish path) is re-projected before any spawn
+    api_t.studio_mode("studio")
+    app._config_patch({"TRACKER_MODE": True})
+    check("park guard clears an out-of-band toggle",
+          api_t._studio_park_tracker() is None
+          and app.load_saved().get("TRACKER_MODE") is False
+          and app._studio_load()["classic_tracker"] is True)
+    check("park guard is a no-op when already clear",
+          api_t._studio_park_tracker() is None)
+
+    # Reset Studio returns to CLASSIC and must un-park the choice
+    api_t.settings_reset("studio")
+    check("reset studio restores the parked tracker choice",
+          app.load_saved().get("TRACKER_MODE") is True
+          and app._studio_load()["classic_tracker"] is None)
+
+    # Reset Classic clears the toggle AND any stale stash
+    api_t.studio_mode("studio")            # parks True again
+    api_t.settings_reset("classic")
+    check("reset classic clears toggle and stash",
+          app.load_saved().get("TRACKER_MODE")
+          == app.DEFAULTS["TRACKER_MODE"]
+          and app._studio_load()["classic_tracker"] is None)
+
+    # live status mirror: push stamp + snapshot + the 1 Hz writer
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Pushed Build", "rev": "ab12cd34",
+                   "at": 1000}, f)
+    api_t.studio_mode("studio")
+    api_t._last_stats = {"cycles": 7, "runtime_s": 60, "pans_per_hr": 420,
+                         "stop_reason": ""}
+    api_t._macro_status = "running"
+    snap = api_t._studio_status_snapshot()
+    check("snapshot mirrors mode/build/rev/run",
+          snap["mode"] == "studio" and snap["active"] == "Pushed Build"
+          and snap["rev"] == "ab12cd34" and snap["run"] == "running", snap)
+    check("snapshot carries only known headline stats",
+          snap["stats"] == {"cycles": 7, "runtime_s": 60,
+                            "pans_per_hr": 420}, snap["stats"])
+    pi = api_t.studio_push_info()
+    check("push info readable by the macro UI",
+          pi["ok"] and pi["name"] == "Pushed Build" and pi["rev"] == "ab12cd34")
+    deadline = time.time() + 3.0
+    body = None
+    while time.time() < deadline:
+        try:
+            body = json.load(open(app.STATUS_FILE))
+            break
+        except (OSError, ValueError):
+            time.sleep(0.1)
+    check("status file written atomically with v/seq/ts",
+          isinstance(body, dict) and body.get("v") == 1
+          and body.get("seq", 0) >= 1 and body.get("ts", 0) > 0, body)
+finally:
+    if api_t is not None:
+        api_t._studio_status_stop.set()
+        t = getattr(api_t, "_studio_status_thread", None)
+        if t is not None:
+            t.join(timeout=3.0)
     for k, v in _saved_attrs.items():
         setattr(app, k, v)
     app._STUDIO_LIST_CACHE["key"] = None
