@@ -4800,6 +4800,7 @@ class ScriptRunner:
         self.held_v3 = set()          # v3 key codes deliberately held across nodes
         self.held_v3_buttons = set()  # v3 buttons deliberately held across nodes
         self.passes = 0
+        self.steps = 0                # blocks stepped this run (HUD progress)
         self.empty_passes = 0
         self.pass_activity = False    # this pass sent input / really waited
         self.pass_dirty = False       # this pass had a miss/timeout-stop event
@@ -4994,7 +4995,7 @@ class ScriptRunner:
         try:
             EMIT.script_block(
                 {"id": str(b.get("id", "")), "type": str(b.get("type", "")),
-                 "pass": self.passes})
+                 "pass": self.passes, "n": self.steps})
         except Exception:
             pass
 
@@ -5070,6 +5071,7 @@ class ScriptRunner:
         p = b.get("params") or {}
         kids = b.get("children") if isinstance(b.get("children"), list) else []
         self._cur = b
+        self.steps += 1
         self._emit_block(b)
         tab = (_SCRIPT_HANDLERS_V3 if self.version >= 3 else
                _SCRIPT_HANDLERS_V2 if self.version == 2 else

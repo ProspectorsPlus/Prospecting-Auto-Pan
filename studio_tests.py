@@ -1019,6 +1019,136 @@ check("event cap stops the capture with truncated=True",
       and rec2.recording is False)
 
 # =============================================================================
+print("[13] CLASSIC | STUDIO BUILD | STUDIO SCRIPT (document kinds)")
+# =============================================================================
+# The three-mode top level: "kind" rides the ppscript file (build unless
+# Prospector Studio stamped "script"), the server-owned mode always matches
+# the active entry's kind, launch() refuses every mismatch, and the status
+# mirror carries kind + live script progress for the Studio window.
+import shutil as _sh13
+import tempfile as _tf13
+
+_mdir = _tf13.mkdtemp()
+_saved_attrs = {k: getattr(app, k) for k in
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR", "STATUS_FILE",
+                 "PUSH_FILE", "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
+app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.STATUS_FILE = os.path.join(_mdir, "studio_macro_status.json")
+app.PUSH_FILE = os.path.join(_mdir, "studio_push.json")
+app.DATA_DIR = _mdir
+app.STUDIO_LAUNCH = True
+app.STUDIO_SCRIPT = ""
+app._STUDIO_LIST_CACHE["key"] = None
+api_k = None
+try:
+    api_k = app.Api()
+
+    # kind validation on the wire format
+    v2s = {"format": "ppscript", "version": 2, "name": "A Build",
+           "blocks": [{"id": "b1", "type": "wait",
+                       "params": {"ms": 500}}]}
+    r = app._studio_validate_v2(dict(v2s, kind="script"))
+    check("kind=script validates", r["ok"], r["errors"])
+    r = app._studio_validate_v2(dict(v2s, kind="build"))
+    check("kind=build validates", r["ok"], r["errors"])
+    r = app._studio_validate_v2(dict(v2s, kind="banana"))
+    check("unknown kind refused", not r["ok"]
+          and any("kind" in e for e in r["errors"]), r["errors"])
+    check("kind default is build", app._studio_kind(v2s) == "build")
+    check("script kind reads back",
+          app._studio_kind(dict(v2s, kind="script")) == "script")
+
+    # fixtures: one build, one script
+    bld = json.loads(json.dumps(app._studio_templates()[0]))
+    bld["name"] = "Kind Build"
+    check("build fixture saves", api_k.studio_save(bld, None)["ok"])
+    scr = dict(v2s, kind="script", name="Kind Script")
+    check("script fixture saves", api_k.studio_save(scr, None)["ok"])
+    rows = {s["name"]: s for s in api_k.studio_list()["scripts"]}
+    check("list rows carry kinds",
+          rows["Kind Build"]["kind"] == "build"
+          and rows["Kind Script"]["kind"] == "script", rows)
+
+    # activating an entry flips the top level to its kind
+    api_k.studio_set_active("Kind Script")
+    r = api_k.studio_mode()
+    check("activating a script chooses STUDIO SCRIPT",
+          r["mode"] == "script" and r["kind"] == "script", r)
+    api_k.studio_set_active("Kind Build")
+    r = api_k.studio_mode()
+    check("activating a build chooses STUDIO BUILD",
+          r["mode"] == "studio" and r["kind"] == "build", r)
+
+    # switching modes restores only entries of the mode's own kind
+    r = api_k.studio_mode("script")
+    check("script mode never adopts the build",
+          r["ok"] and r["mode"] == "script" and r["active"] == ""
+          and r["needs_script"], r)
+    check("launch refuses script mode without a script",
+          api_k.launch(None) == "no-studio-script")
+    api_k.studio_set_active("Kind Script")
+    r = api_k.studio_mode("classic")
+    check("classic remembers the script", r["ok"]
+          and app._studio_load()["last_active"] == "Kind Script")
+    r = api_k.studio_mode("script")
+    check("script mode restores the remembered script",
+          r["ok"] and r["active"] == "Kind Script", r)
+
+    # a hand-edited mismatch (mode says build, active is a script) refuses
+    d = app._studio_load()
+    d["mode"] = "studio"
+    app._studio_write(d)
+    check("launch refuses a mode/kind mismatch",
+          api_k.launch(None) == "mode-kind-mismatch")
+
+    # both Studio modes park the tracker
+    api_k.studio_mode("classic")
+    api_k.save_config({"TRACKER_MODE": True})
+    r = api_k.studio_mode("script")
+    check("script mode parks AutoPan Tracking",
+          r["ok"] and app.load_saved().get("TRACKER_MODE") is False
+          and app._studio_load()["classic_tracker"] is True, r)
+    r = api_k.studio_mode("classic")
+    check("classic restores the parked choice after script mode",
+          r["ok"] and app.load_saved().get("TRACKER_MODE") is True)
+
+    # status mirror: kind + live script step ride the snapshot
+    api_k.studio_set_active("Kind Script")
+    api_k._on_script_block({"id": "b1", "type": "wait", "pass": 2, "n": 9})
+    snap = api_k._studio_status_snapshot()
+    check("snapshot carries mode/kind for scripts",
+          snap["mode"] == "script" and snap["kind"] == "script", snap)
+    check("snapshot carries the live script step",
+          snap["script"] == {"id": "b1", "type": "wait", "pass": 2, "n": 9},
+          snap)
+    api_k.studio_set_active("Kind Build")
+    snap = api_k._studio_status_snapshot()
+    check("snapshot kind follows the build", snap["kind"] == "build", snap)
+
+    # the legacy embedded editor never appears under a Studio launch
+    check("legacy editor refused under Studio launch",
+          api_k.open_studio_window() == "studio-owns-editing")
+
+    # studio_run flips to the entry's kind
+    _orig_launch = api_k.launch
+    api_k.launch = lambda data=None: "launched"
+    rr = api_k.studio_run("Kind Script")
+    api_k.launch = _orig_launch
+    check("studio_run picks STUDIO SCRIPT for a script",
+          rr["ok"] and app._studio_load()["mode"] == "script", rr)
+finally:
+    if api_k is not None:
+        api_k._studio_status_stop.set()
+        t = getattr(api_k, "_studio_status_thread", None)
+        if t is not None:
+            t.join(timeout=3.0)
+    for k, v in _saved_attrs.items():
+        setattr(app, k, v)
+    app._STUDIO_LIST_CACHE["key"] = None
+    _sh13.rmtree(_mdir, ignore_errors=True)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))
