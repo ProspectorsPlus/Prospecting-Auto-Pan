@@ -548,6 +548,12 @@ SHARDS_GREEN_CONFIRM   = False # the dig skill-bar's green zone appearing also
 SCRIPT_MODE   = False  # run the active Studio script instead of a built-in mode
 SCRIPT_ACTIVE = ""     # its name (History labels + logs)
 SCRIPT_JSON   = ""     # the script itself (JSON text)
+# Data-driven recovery program + background flows (canonical-foundation
+# pass; prospector_engine/recovery.py and flows.py document the exact
+# `_recovery:1` / `_flows:1` envelopes). Empty = the built-in ladder and
+# no flows -- byte-identical default behavior.
+RECOVERY_JSON = ""     # recovery program overrides/authored rungs (JSON)
+FLOWS_JSON    = ""     # background flow definitions (JSON)
 
 GEODE_MODE           = False
 GEODE_DIGS_TO_FILL   = 1     # dig taps to fill the pan
@@ -967,7 +973,7 @@ def log(msg):
 # any of these events means the current cycle wasn't perfectly smooth
 _DIRTY_EVENTS = {"shake_fail", "shake_start_retry", "nudge", "recover",
                  "break_out", "shake_glitch", "no_progress", "safe_stop",
-                 "hard_stop", "fr_recover", "recenter"}
+                 "hard_stop", "fr_recover", "recenter", "recovery_rung"}
 
 
 class _LegacyEmit(object):
@@ -1007,6 +1013,9 @@ class _LegacyEmit(object):
 
     def script_hud(self, payload):
         print("__SCRIPTHUD__ " + json.dumps(payload), flush=True)
+
+    def flow_state(self, payload):
+        print("__FLOW__ " + json.dumps(payload), flush=True)
 
     def popout(self):
         print("__POPOUT__", flush=True)
@@ -1068,17 +1077,25 @@ EMIT = _LegacyEmit()
 
 def emit_phase(name):
     """__PHASE__ <name> line: the app times each phase (dig / water / shake)
-    for the per-phase analytics. Print-only; never affects the macro."""
+    for the per-phase analytics. Print-only; never affects the macro. Also
+    tracks the live phase for the recovery/flow triggers (state only)."""
+    State.phase_name = name
+    State.phase_t = time.perf_counter()
+    State.phase_seq += 1
+    State.phase_ring.append((State.phase_seq, name))
+    del State.phase_ring[:-16]
     try:
         EMIT.phase(name)
     except Exception:
         pass
 
 
-def emit_event(etype, reason="", where="", contents=""):
+def emit_event(etype, reason="", where="", contents="", extra=None):
     """Emit a structured telemetry event (__EVENT__ <json>) the app collects into
     the run record: WHAT happened and WHY, so the analytics + Coach can explain
-    each safe-stop / nudge / recovery. Best-effort; never affects the macro."""
+    each safe-stop / nudge / recovery. Best-effort; never affects the macro.
+    `extra` merges additional structured fields into the record (used by the
+    recovery program's recovery_rung events -- {id, authored, action})."""
     try:
         rec = {"type": etype, "reason": reason or "",
                "t": round(State.stats.runtime(), 1) if State.stats else 0.0}
@@ -1086,6 +1103,8 @@ def emit_event(etype, reason="", where="", contents=""):
             rec["where"] = where
         if contents:
             rec["contents"] = contents
+        if extra:
+            rec.update(extra)
         if etype in _DIRTY_EVENTS:
             State.cycle_dirty = True         # this cycle wasn't clean
         EMIT.event(etype, rec)
@@ -1454,6 +1473,13 @@ class State:
     scale = 1.0              # screen scale (physical px / points) for cursor moves
     fr_cur = None            # tracked cursor pos during Fortune River recovery
     script_runner = None     # live ScriptRunner while a custom script runs
+    run_id = ""              # persistent run id (r<epoch>-<pid>-<n>)
+    phase_name = ""          # last emitted phase (recovery/flow triggers)
+    phase_t = 0.0            # perf_counter of the last phase change
+    phase_seq = 0            # monotonic phase-emission counter
+    phase_ring = []          # [(seq, name)] recent phases (flow triggers)
+    recovery = None          # RecoveryRuntime while running (or None)
+    flows_mgr = None         # FlowManager while running (or None)
 
 
 class SessionStats:
@@ -1484,6 +1510,7 @@ class SessionStats:
         self.pause_started = None
         self.nudges = 0
         self.shake_misses = 0    # shakes that ran but didn't empty (fast-build misses)
+        self.shake_retries = 0   # shake start-confirm deeper-S retries
         self.stop_reason = ""
 
     def runtime(self):
@@ -1547,6 +1574,13 @@ class SessionStats:
                 "safe_stops": self.safe_stops, "hard_stops": self.hard_stops,
                 "relics_used": self.relics_used, "nudges": self.nudges,
                 "shake_misses": self.shake_misses,
+                "shake_fails": self.shake_misses,
+                "shake_retries": self.shake_retries,
+                "run_id": State.run_id,
+                "recovery": (State.recovery.active_id
+                             if State.recovery is not None else None),
+                "flows": (State.flows_mgr.states()
+                          if State.flows_mgr is not None else {}),
                 "stop_reason": self.stop_reason}
 
 
@@ -3220,17 +3254,99 @@ def starfall_river_recover():
     return True
 
 
+_RUN_PID = os.getpid()   # sim world patches this to a constant (goldens)
+_RUN_SEQ = 0
+
+
+def _mint_run_id():
+    """Persistent run identity r<epoch>-<pid>-<n> (protocol 1.4), minted
+    once per run start and carried in run.started / run.stats meta /
+    run.stopped and the legacy __STATS__ line. Deterministic under the sim
+    world: epoch is the pinned virtual time() and _RUN_PID is patched."""
+    global _RUN_SEQ
+    _RUN_SEQ += 1
+    return "r%d-%d-%d" % (int(time.time()), _RUN_PID, _RUN_SEQ)
+
+
+def _rv(key):
+    """Recovery-ladder value seam: the ACTIVE recovery program's override
+    for a ladder threshold/budget/enable, else the live module global.
+    The default program overrides nothing, so default behavior is
+    byte-identical to reading the global directly."""
+    rt = State.recovery
+    if rt is not None:
+        try:
+            v = rt.value_for(key)
+        except Exception:
+            v = None
+        if v is not None:
+            return v
+    return globals()[key]
+
+
+def _note_rung_fired(rid):
+    """State-only breadcrumb when a built-in ladder rung fires (feeds the
+    flow manager's recovery{rung} trigger and meta.recovery; emits
+    nothing -- the ladder's own events are unchanged)."""
+    rt = State.recovery
+    if rt is not None:
+        try:
+            rt.note_builtin_fired(rid)
+        except Exception:
+            pass
+
+
+def _bind_recovery_and_flows():
+    """Fresh-start bind: build the per-run recovery runtime + flow manager
+    from RECOVERY_JSON / FLOWS_JSON. An invalid document is rejected
+    loudly and the built-in behavior is kept (default ladder, no flows)."""
+    from prospector_engine import recovery as _rec_mod
+    from prospector_engine import flows as _flows_mod
+    eng = sys.modules[__name__]
+    prog, err = _rec_mod.parse_program(eng, RECOVERY_JSON)
+    if err:
+        log("[recovery] program rejected: %s -- using the built-in ladder"
+            % err)
+        prog = _rec_mod.build_default_program(eng)
+    State.recovery = _rec_mod.RecoveryRuntime(eng, prog)
+    flows, ferr = _flows_mod.parse_flows(eng, FLOWS_JSON)
+    if ferr:
+        log("[flows] rejected: %s -- no background flows this run" % ferr)
+        flows = []
+    State.flows_mgr = (_flows_mod.FlowManager(eng, flows)
+                       if flows else None)
+
+
+def recovery_manual_trigger(rid):
+    """recovery.trigger {id} (running only): queue a manual rung firing;
+    the tick thread consumes it at the next boundary. False = unknown id
+    (or no live runtime)."""
+    rt = State.recovery
+    if rt is None or not isinstance(rid, str):
+        return False
+    return rt.manual(rid)
+
+
+def flow_manual_trigger(fid):
+    """flow.trigger {id} (running only): queue a manual flow firing."""
+    mgr = State.flows_mgr
+    if mgr is None or not isinstance(fid, str):
+        return False
+    return mgr.manual(fid)
+
+
 def safe_stop(reason, hard=False):
     """A hazard/stuck was detected. By DEFAULT pause and retry shortly instead of
     hard-stopping (so an AFK run recovers itself); only hard-stop after
     SAFE_STOP_MAX_RETRIES failed retries in a row."""
     release_all()
+    _note_rung_fired("R5")
     State.empty_fails = State.shake_fails = State.land_fails = State.breakouts = 0
     if State.stats:
         State.stats.safe_stops += 1
     emit_event("hard_stop" if hard else "safe_stop", reason)
 
-    if SR_RECOVERY and not hard:
+    if _rv("SR_RECOVERY") and not hard:
         try:
             ok = starfall_river_recover()
         except Exception as e:
@@ -3247,7 +3363,7 @@ def safe_stop(reason, hard=False):
                          State.stats.as_dict() if State.stats else None,
                          shot=True)
             return
-    if FR_RECOVERY and not hard:
+    if _rv("FR_RECOVERY") and not hard:
         try:
             ok = fortune_river_recover()
         except Exception as e:
@@ -3275,18 +3391,20 @@ def safe_stop(reason, hard=False):
             except Exception:
                 print("\a", end="", flush=True)
 
-    if SAFE_STOP_RETRY and State.safe_retries < SAFE_STOP_MAX_RETRIES and not hard:
+    _retry_sec = _rv("SAFE_STOP_RETRY_SEC")
+    _retry_max = _rv("SAFE_STOP_MAX_RETRIES")
+    if _rv("SAFE_STOP_RETRY") and State.safe_retries < _retry_max and not hard:
         State.safe_retries += 1
-        msg = (f"{reason} - retrying in {SAFE_STOP_RETRY_SEC}s "
-               f"(attempt {State.safe_retries}/{SAFE_STOP_MAX_RETRIES})")
+        msg = (f"{reason} - retrying in {_retry_sec}s "
+               f"(attempt {State.safe_retries}/{_retry_max})")
         EMIT.safe_pause(msg, reason, State.safe_retries,
-                        SAFE_STOP_MAX_RETRIES, SAFE_STOP_RETRY_SEC)
+                        _retry_max, _retry_sec)
         post_webhook("safe_stop", f"⚠️ Safe-paused: {msg}",
                      State.stats.as_dict() if State.stats else None, shot=True)
         _beep(False)
         State.safe_paused = True
         State.safe_wait_skip = False
-        end = time.perf_counter() + SAFE_STOP_RETRY_SEC
+        end = time.perf_counter() + _retry_sec
         while (time.perf_counter() < end and State.running and State.alive
                and not State.safe_wait_skip):
             time.sleep(0.2)
@@ -3758,6 +3876,8 @@ def do_shake(det):
                 and time.perf_counter() > confirm_at
                 and det.capacity_full()):
             start_retries += 1
+            if State.stats:
+                State.stats.shake_retries += 1
             emit_event("shake_start_retry",
                        "no shake start in %dms -- deeper S tap, retry %d/%d"
                        % (SHAKE_START_CONFIRM_MS, start_retries,
@@ -4002,7 +4122,8 @@ def _shards_dig(det):
     _adapt_land(True)
     log(f"    shards dig: no land after {LAND_DIG_TRIES} rounds "
         f"(land_fails={State.land_fails})")
-    if State.land_fails >= STUCK_LIMIT:
+    if State.land_fails >= _rv("STUCK_LIMIT"):
+        _note_rung_fired("R4")
         safe_stop("shards dig can't find land after shaking")
     return False
 
@@ -4110,7 +4231,8 @@ def _geode_dig(det):
     _adapt_land(True)
     log(f"    geode dig: no land after {LAND_DIG_TRIES} rounds "
         f"(land_fails={State.land_fails})")
-    if State.land_fails >= STUCK_LIMIT:
+    if State.land_fails >= _rv("STUCK_LIMIT"):
+        _note_rung_fired("R4")
         safe_stop("geode dig can't find land after shaking")
     return False
 
@@ -4123,7 +4245,8 @@ def return_and_dig(det):
     nudging W (so a single non-registering dig can't cause a jittery nudge)."""
     emit_phase("dig")
     State.no_full += 1
-    if State.no_full >= NO_FULL_LIMIT:
+    if State.no_full >= _rv("NO_FULL_LIMIT"):
+        _note_rung_fired("R4")
         # We keep digging/nudging but the capacity bar NEVER reads full -- almost
         # always a mis-calibrated capacity pixel (common when auto-calibrate's
         # ratios don't match this PC's Roblox GUI scale). Stop loudly instead of
@@ -4190,7 +4313,8 @@ def return_and_dig(det):
     _adapt_land(True)
     log(f"    dig-probe: no land after {LAND_DIG_TRIES} rounds "
         f"(land_fails={State.land_fails})")
-    if State.land_fails >= STUCK_LIMIT:
+    if State.land_fails >= _rv("STUCK_LIMIT"):
+        _note_rung_fired("R4")
         safe_stop("dig-probe can't find land after shaking")
     return False
 
@@ -4227,18 +4351,18 @@ def recover(det, s):
     if s.full and s.pan:
         emit_event("recover", "full & in water, pan won't empty, re-shaking",
                    s.where, s.contents)
-        if SHAKE_RETRY_ENABLED:
+        if _rv("SHAKE_RETRY_ENABLED"):
             do_shake(det)                # full in water, won't empty -> shake again
     elif s.full:
         # full but not in water -> jitter S back toward the water
         emit_event("recover", "full on land, jitter back to the water", s.where, s.contents)
         if State.stats: State.stats.nudges += 1
-        pulse_until(KEY_S, det.on_pan, RECOVER_BACK_MS)
+        pulse_until(KEY_S, det.on_pan, _rv("RECOVER_BACK_MS"))
     else:
         # empty, can't land -> jitter forward, then re-probe with a dig next tick
         emit_event("recover", "empty, can't find land, jitter forward", s.where, s.contents)
         if State.stats: State.stats.nudges += 1
-        pulse_until(KEY_W, det.capacity_full, RECOVER_BACK_MS)
+        pulse_until(KEY_W, det.capacity_full, _rv("RECOVER_BACK_MS"))
 
 
 def break_out(det, s):
@@ -4252,7 +4376,7 @@ def break_out(det, s):
     emit_event("break_out", "stuck at %s/%s, forcing an escape" % (s.where, s.contents),
                s.where, s.contents)
     if s.full:
-        end = time.perf_counter() + BREAKOUT_SHAKE_MS / 1000.0
+        end = time.perf_counter() + _rv("BREAKOUT_SHAKE_MS") / 1000.0
         while time.perf_counter() < end and State.running:
             mouse_tap(SHAKE_CLICK_MS)
             if det.pan_empty():
@@ -4261,7 +4385,7 @@ def break_out(det, s):
             sleep_ms(SHAKE_CLICK_GAP_MS)
     # still stuck -> reposition forward (off the edge / onto land) for next try
     log("    break-out: reposition W fwd")
-    key_down(KEY_W); sleep_ms(BREAKOUT_REPOS_MS); key_up(KEY_W)
+    key_down(KEY_W); sleep_ms(_rv("BREAKOUT_REPOS_MS")); key_up(KEY_W)
     return False
 
 
@@ -4831,6 +4955,8 @@ class ScriptRunner:
         self._suppress_on_stop = False
         self._det = None
         self._cur = None
+        self.kind = ""                # document stamp: "build" | "script"
+        self._phase = ""              # last emitted run.phase (build kind)
         self._t0 = time.perf_counter()
         self._rand = _mulberry32(int(time.time()) & 0xFFFFFFFF)
         r = find_roblox_rect()
@@ -4844,6 +4970,8 @@ class ScriptRunner:
             return
         if isinstance(data, dict) and data.get("version") in (2, 3):
             self.version = int(data["version"])
+        if isinstance(data, dict) and isinstance(data.get("kind"), str):
+            self.kind = data["kind"]
         blocks = (data or {}).get("blocks") if isinstance(data, dict) else None
         if not isinstance(blocks, list) or not blocks:
             self.dead = "the active custom script is empty or malformed"
@@ -5085,6 +5213,22 @@ class ScriptRunner:
         self._cur = b
         self.steps += 1
         self._emit_block(b)
+        # run.phase for prospecting-shaped nodes -- ONLY when the document
+        # carries an explicit kind == "build" (Studio Build programs), and
+        # only from the unambiguous node types. Kindless documents (all
+        # existing goldens) emit nothing here.
+        if self.kind == "build":
+            ph = None
+            if t == "dig":
+                ph = "dig"
+            elif t in ("shake", "long_press"):
+                ph = "shake"
+            elif (t == "wait_cue" and p.get("cue") == "pan"
+                  and p.get("hold") in ("W", "A", "S", "D")):
+                ph = "water"
+            if ph is not None and ph != self._phase:
+                self._phase = ph
+                emit_phase(ph)
         tab = (_SCRIPT_HANDLERS_V3 if self.version >= 3 else
                _SCRIPT_HANDLERS_V2 if self.version == 2 else
                _SCRIPT_HANDLERS)
@@ -6272,9 +6416,11 @@ class Supervisor:
         # failed shakes, do a quick CLICK-TO-EMPTY break-out right away -- it's
         # low-risk (worst case it just starts a shake/dig) and usually clears the
         # glitch. Only SAFE STOP if even the break-out keeps failing.
-        if SHAKE_GLITCH_LIMIT > 0 and State.shake_fails >= SHAKE_GLITCH_LIMIT:
-            if BREAKOUT_ENABLED and State.breakouts < BREAKOUT_LIMIT:
+        _glim = _rv("SHAKE_GLITCH_LIMIT")
+        if _glim > 0 and State.shake_fails >= _glim:
+            if _rv("BREAKOUT_ENABLED") and State.breakouts < _rv("BREAKOUT_LIMIT"):
                 State.breakouts += 1
+                _note_rung_fired("R1")
                 emit_event("shake_glitch", "shake didn't register x%d, quick recovery"
                            % State.shake_fails)
                 log(f"** shake not registering x{State.shake_fails} "
@@ -6293,13 +6439,15 @@ class Supervisor:
         # If nothing has worked (no pan emptied AND no dig registered) for
         # NO_PROGRESS_SEC, do a quick click-to-empty break-out -- low risk, usually
         # clears it. Safe-stop only if break-out keeps failing.
-        if (BREAKOUT_ENABLED and NO_PROGRESS_SEC > 0 and State.last_progress
-                and time.perf_counter() - State.last_progress > NO_PROGRESS_SEC):
+        _np_sec = _rv("NO_PROGRESS_SEC")
+        if (_rv("BREAKOUT_ENABLED") and _np_sec > 0 and State.last_progress
+                and time.perf_counter() - State.last_progress > _np_sec):
             State.breakouts += 1
+            _note_rung_fired("R2")
             emit_event("no_progress", "nothing completed for %ds, click-to-empty recovery"
-                       % NO_PROGRESS_SEC)
-            log(f"** no progress for {NO_PROGRESS_SEC}s -> break-out #{State.breakouts} (click to empty) **")
-            if State.breakouts > BREAKOUT_LIMIT:
+                       % _np_sec)
+            log(f"** no progress for {_np_sec}s -> break-out #{State.breakouts} (click to empty) **")
+            if State.breakouts > _rv("BREAKOUT_LIMIT"):
                 safe_stop("no progress -- stuck (shake glitch?)")
                 return
             break_out(det, s)
@@ -6309,24 +6457,26 @@ class Supervisor:
             self.recoveries = 0
             self.last_sig = None
             return
-        if self.same < STUCK_TICKS:
+        if self.same < _rv("STUCK_TICKS"):
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"-> {plan_label(s)}")
             act(det, s)
-        elif RECOVER_ENABLED and self.recoveries < RECOVER_LIMIT:
+        elif _rv("RECOVER_ENABLED") and self.recoveries < _rv("RECOVER_LIMIT"):
             self.recoveries += 1
+            _note_rung_fired("R3")
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"** STUCK x{self.same}, RECOVER #{self.recoveries} **")
             recover(det, s)
             self.same = 0
-        elif BREAKOUT_ENABLED:
+        elif _rv("BREAKOUT_ENABLED"):
             # recovered enough and still stuck -> SMART BREAK-OUT: finish any active
             # (movement-locking) shake by clicking + reposition, then reset and let
             # normal logic try again. SAFE STOP only if the break-out keeps failing.
             State.breakouts += 1
+            _note_rung_fired("R3")
             log(f"{s.where:7}/{s.contents:7} cue[{cue}] cap[{cap}] "
                 f"** BREAK-OUT #{State.breakouts} (recovery loop) **")
-            if State.breakouts > BREAKOUT_LIMIT:
+            if State.breakouts > _rv("BREAKOUT_LIMIT"):
                 safe_stop(f"stuck at {s.where}/{s.contents} after break-outs")
                 return
             if break_out(det, s):
@@ -6448,6 +6598,8 @@ def engine_pause(origin="hotkey"):
         State.stats.pauses += 1
     release_all()
     EMIT.paused(origin)
+    if State.flows_mgr is not None:
+        State.flows_mgr.on_pause()      # flow.state paused for in-flight
 
 
 def engine_resume(origin="hotkey"):
@@ -6464,6 +6616,8 @@ def engine_resume(origin="hotkey"):
     State.last_progress = time.perf_counter()    # don't trip no-progress
     State.running = True
     EMIT.resumed(origin)
+    if State.flows_mgr is not None:
+        State.flows_mgr.on_resume()     # flow.state resumed for in-flight
 
 
 def request_toggle(origin="hotkey"):
@@ -6710,6 +6864,7 @@ def main():
                     _IPC_SERVER.tick_hook()
                 if State.running:
                     if not was_running:     # fresh start -> clear stuck-counters
+                        State.run_id = _mint_run_id()   # persistent run id
                         EMIT.reset()   # tell the app to clear
                         sup.reset()                      # finds/analytics
                         State.script_runner = None   # fresh Studio walker
@@ -6717,6 +6872,8 @@ def main():
                         relics.reset()      # start relic timers from now
                         State.stats = SessionStats()
                         _LAG.reset()
+                        _bind_recovery_and_flows()   # recovery program +
+                                                     # background flows
                         State.earn = EarnTracker()
                         State.earn.start()  # no-op unless configured
                         State.finds = FindsWatcher()
@@ -6745,6 +6902,14 @@ def main():
                         safe_stop("manual soft-stop (test)")
                     if (not TRACKER_MODE) or TRACKER_RELICS:
                         relics.maybe_fire() # timed relic use (no-op unless enabled)
+                    # tick-boundary consultation (same safe boundary as the
+                    # relic scheduler): the recovery program's authored
+                    # rungs + manual triggers, then background flows.
+                    # Default mode: default program -> both are no-ops.
+                    if State.recovery is not None:
+                        State.recovery.poll(detector)
+                    if State.flows_mgr is not None:
+                        State.flows_mgr.poll(detector)
                     if TRACKER_MODE:
                         tracker_tick(detector)   # watch-only: zero input
                     elif SCRIPT_MODE:
@@ -6813,6 +6978,8 @@ def main():
                         time.sleep(0.1)
                         continue
                     if was_running:
+                        if State.flows_mgr is not None:
+                            State.flows_mgr.on_stop()   # cancel in-flight
                         reason = ((State.stats.stop_reason if State.stats
                                    and State.stats.stop_reason else State.stop_reason)
                                   or "manual")

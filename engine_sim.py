@@ -430,6 +430,10 @@ class World(object):
             "title": "Roblox"}
         # C8: sim-only capability overrides (hello/describe, ipc mode)
         po._SIM_CAPS = dict(scen.get("capabilities") or {})
+        # run ids are r<epoch>-<pid>-<n>: epoch is the pinned virtual
+        # time(); the pid seam is patched to a constant so byte-pinned
+        # goldens stay stable across processes
+        po._RUN_PID = 4242
 
         sct = FakeSct(po, scen, clock)
         po._MSS = FakeMSS(sct)

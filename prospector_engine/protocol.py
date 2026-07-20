@@ -26,7 +26,16 @@ PROTOCOL_MINOR = 4   # 1.1: adds the "error" stop reason (fatal-exception path)
                      # 1.4: adds plan.describe -- the canonical Cycle Plan
                      #      resolved from the same globals the Supervisor
                      #      executes with (prospector_engine/cycleplan.py,
-                     #      docs/CANONICAL_CYCLE_PLAN.md section 2.1)
+                     #      docs/CANONICAL_CYCLE_PLAN.md section 2.1).
+                     #      Extended (same minor, additive): the recovery
+                     #      program + background flow runtime -- commands
+                     #      recovery.trigger {id} and flow.trigger {id}
+                     #      (running only), event flow.state {id, state,
+                     #      reason?}, safety.event type recovery_rung,
+                     #      run.stats raw shake_fails/shake_retries and
+                     #      meta run_id/recovery/flows, and the persistent
+                     #      run id "r<epoch>-<pid>-<n>" carried in
+                     #      run.started/run.stopped/run.stats.
 
 # ---- ack error codes (closed set, protocol section 3.3) ---------------------
 E_UNSUPPORTED = "UNSUPPORTED"
@@ -84,6 +93,8 @@ COMMANDS = {
     "vision.testMatch": "capture",
     "vision.assetStat": "fast",
     "plan.describe": "fast",
+    "recovery.trigger": "fast",
+    "flow.trigger": "fast",
     "recorder.start": "fast",
     "recorder.stop": "slow",
     "recorder.status": "fast",
@@ -97,7 +108,7 @@ EVENTS = (
     "safety.event", "safety.safePaused", "safety.retrying",
     "safety.recovery", "safety.hardStopped",
     "find.new", "find.updated", "geode.timer",
-    "script.block", "script.hud",
+    "script.block", "script.hud", "flow.state",
     "relic.changed", "hotkey.popout", "settings.changed",
 )
 
@@ -106,7 +117,8 @@ STATS_RAW_KEYS = (
     "cycles", "clean_cycles", "digs", "dig_clicks", "pauses",
     "finds_count", "finds_stack", "finds_lowconf", "money_earned",
     "shards_earned", "recoveries", "safe_stops", "hard_stops",
-    "relics_used", "nudges", "shake_misses", "find_kg", "best_kg",
+    "relics_used", "nudges", "shake_misses", "shake_fails",
+    "shake_retries", "find_kg", "best_kg",
     "loot_value", "by_rarity", "by_mod", "runtime_s",
 )
 STATS_DERIVED_KEYS = (
@@ -115,13 +127,15 @@ STATS_DERIVED_KEYS = (
     "cyc_p50_s", "cyc_p95_s", "cyc_last_s", "loot_per_hr",
     "total_per_hr", "pans_per_hr",
 )
-STATS_META_KEYS = ("tracker", "script", "stop_reason", "relics", "input_lag")
+STATS_META_KEYS = ("tracker", "script", "stop_reason", "relics", "input_lag",
+                   "run_id", "recovery", "flows")
 
 SAFETY_EVENT_TYPES = (
     "finds_infer", "finds_fork", "finds_ghost", "finds_resight",
     "safe_stop", "hard_stop", "sr_recover", "fr_recover", "recenter",
     "shake_start_retry", "shake_fail", "nudge", "recover", "break_out",
     "autopan_guard", "autopan_kick", "shake_glitch", "no_progress",
+    "recovery_rung",
 )
 
 STOP_REASONS = ("user", "hotkey", "safe-stop", "auto", "bag-full", "shutdown",
@@ -296,8 +310,8 @@ def _selftest():
     assert s["raw"] == {"cycles": 3, "runtime_s": 12}
     assert s["derived"] == {"clean_pct": 100.0, "money_per_hr": 0}
     assert s["meta"] == {"tracker": False, "relics": [], "input_lag": None}
-    assert len(STATS_RAW_KEYS) == 22 and len(STATS_DERIVED_KEYS) == 14
-    assert len(STATS_META_KEYS) == 5 and len(SAFETY_EVENT_TYPES) == 18
+    assert len(STATS_RAW_KEYS) == 24 and len(STATS_DERIVED_KEYS) == 14
+    assert len(STATS_META_KEYS) == 8 and len(SAFETY_EVENT_TYPES) == 19
     print("protocol selftest: ALL PASS")
 
 

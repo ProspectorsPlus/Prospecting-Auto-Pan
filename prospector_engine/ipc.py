@@ -210,8 +210,12 @@ class FrameEmit(object):
     # -- EMIT seam methods (same names/signatures as _LegacyEmit) ----------
     def reset(self, origin=None):
         self._run_counter += 1
-        self.run_id = "r%d" % self._run_counter
         po = self.po
+        # the persistent run id is minted by the tick thread at fresh
+        # start (engine._mint_run_id -> State.run_id); the per-process
+        # counter remains only as a fallback for exotic call orders
+        self.run_id = (getattr(po.State, "run_id", "")
+                       or "r%d" % self._run_counter)
         if origin is None:
             origin = self._next_origin or "hotkey"
         self._next_origin = None
@@ -236,6 +240,9 @@ class FrameEmit(object):
         for k in ("where", "contents"):
             if rec.get(k):
                 d[k] = rec[k]
+        for k in ("id", "authored", "action"):
+            if k in rec:               # recovery_rung structured fields
+                d[k] = rec[k]          # (authored may be False -- carry it)
         self._ev("safety.event", self._rd(d))
 
     def phase(self, name):
@@ -259,6 +266,9 @@ class FrameEmit(object):
 
     def script_hud(self, payload):
         self._ev("script.hud", self._rd({"text": payload.get("text", "")}))
+
+    def flow_state(self, payload):
+        self._ev("flow.state", self._rd(dict(payload)))
 
     def popout(self):
         self._ev("hotkey.popout", {})
@@ -1075,6 +1085,31 @@ class Server(object):
                                   "plan resolution failed: %r" % (e,), None)
                     return
             self._ack_ok(cid, {"plan": plan})
+        elif cmd in ("recovery.trigger", "flow.trigger"):
+            # 1.4 additive verbs: queue a manual recovery-rung / flow
+            # firing for the tick thread (running only -- the boundary
+            # consumes it before the next supervisor/script tick)
+            tid = params.get("id")
+            if not isinstance(tid, str) or not tid:
+                self._ack_err(cid, protocol.E_BAD_PARAMS, "id required",
+                              None)
+                return
+            if not st.running or st.paused \
+                    or getattr(st, "safe_paused", False):
+                self._ack_err(cid, protocol.E_BAD_STATE,
+                              "running only", {"state": self._state()})
+                return
+            if cmd == "recovery.trigger":
+                ok = bool(po.recovery_manual_trigger(tid))
+                what = "rung"
+            else:
+                ok = bool(po.flow_manual_trigger(tid))
+                what = "flow"
+            if not ok:
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "unknown %s id" % what, {"id": tid})
+                return
+            self._ack_ok(cid, {"queued": True, "id": tid})
         elif cmd.startswith("calibration.") and cmd in protocol.COMMANDS:
             self._dispatch_calibration(cid, cmd, params)
         else:

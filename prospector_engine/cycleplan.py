@@ -701,6 +701,44 @@ def _hud(eng):
     }
 
 
+# ---- effective recovery program / background flows -------------------------
+
+def _apply_effective_program(eng, ctx, plan):
+    """Overlay the EFFECTIVE recovery program + authored flows onto the
+    plan (spec C: plan.describe reflects the program that will actually
+    run). Default mode (no RECOVERY_JSON / FLOWS_JSON) adds only the two
+    consulted settings entries -- rung/flow sections stay untouched."""
+    rec_text = ctx.note("RECOVERY_JSON")
+    flow_text = ctx.note("FLOWS_JSON")
+    from . import recovery as recovery_mod
+    from . import flows as flows_mod
+    eff = recovery_mod.describe_effective(eng, rec_text)
+    if eff is not None:
+        rec = plan["recovery"]
+        rec["program"] = ({"error": eff["error"]} if "error" in eff else {
+            "overrides": eff["overrides"],
+            "disabled": eff["disabled"],
+            "authored": [a["id"] for a in eff["authored"]],
+        })
+        if "error" not in eff:
+            for rung in rec["rungs"]:
+                rid = rung.get("id")
+                if rid in eff["disabled"]:
+                    rung["disabled"] = True
+                allowed = recovery_mod.RUNG_PARAMS.get(rid, ())
+                ov = {k: eff["overrides"][k] for k in allowed
+                      if k in eff["overrides"]}
+                if ov:
+                    rung["overrides"] = ov
+            rec["rungs"].extend(eff["authored"])
+    flows_eff = flows_mod.describe_effective(eng, flow_text)
+    if flows_eff is not None:
+        if isinstance(flows_eff, dict) and "error" in flows_eff:
+            plan["background"]["authored_flows"] = flows_eff
+        else:
+            plan["background"]["authored_flows"] = flows_eff
+
+
 # ---- fingerprint ------------------------------------------------------------
 
 def plan_fingerprint(plan):
@@ -753,6 +791,7 @@ def resolve_cycle_plan(eng):
         "stops": _stops(ctx),
         "hud": _hud(eng),
     }
+    _apply_effective_program(eng, ctx, plan)
     # EASY offsets are always part of the consulted surface (they are
     # already layered inside the resolved globals; surface the offsets)
     for k in EASY_KEYS:

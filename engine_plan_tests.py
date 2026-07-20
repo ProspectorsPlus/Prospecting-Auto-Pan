@@ -269,6 +269,109 @@ def test_inprocess_modes():
         "plan.tracker: autopan_guard flow present in tracker mode only")
 
 
+def test_effective_recovery_and_flows():
+    """spec C: plan.describe reflects the EFFECTIVE recovery program
+    (overrides / disabled / authored rungs) and authored flows."""
+    print("[plan] effective recovery program + authored flows")
+    eng = _fresh("pold_plan_eff")
+    base = cycleplan.resolve_cycle_plan(eng)
+    chk("program" not in base["recovery"]
+        and "authored_flows" not in base["background"],
+        "plan.eff: default mode -> no program/flow sections (plan shape "
+        "unchanged)")
+    chk(base["settings"]["RECOVERY_JSON"]["value"] == ""
+        and base["settings"]["FLOWS_JSON"]["value"] == "",
+        "plan.eff: RECOVERY_JSON/FLOWS_JSON are consulted settings")
+    eng.RECOVERY_JSON = json.dumps({
+        "_recovery": 1,
+        "rungs": {"R1": {"enabled": False},
+                  "R2": {"params": {"NO_PROGRESS_SEC": 2}}},
+        "authored": [{
+            "id": "kicker",
+            "trigger": {"type": "no_progress", "s": 3},
+            "actions": [{"id": "a1", "type": "tap_key",
+                         "params": {"key": "8", "hold_ms": 40},
+                         "children": []}],
+            "resume": "restart_cycle", "cooldown_s": 5, "limit": 2,
+            "max_ms": 4000}],
+    })
+    eng.FLOWS_JSON = json.dumps({
+        "_flows": 1,
+        "flows": [{
+            "id": "poller",
+            "trigger": {"type": "interval", "every_s": 5},
+            "priority": 2, "input": "none",
+            "body": [{"id": "b1", "type": "log",
+                      "params": {"message": "hi"}, "children": []}],
+            "max_ms": 3000}],
+    })
+    plan = cycleplan.resolve_cycle_plan(eng)
+    prog = plan["recovery"].get("program")
+    chk(prog == {"overrides": {"NO_PROGRESS_SEC": 2}, "disabled": ["R1"],
+                 "authored": ["kicker"]},
+        "plan.eff: program summary {overrides, disabled, authored} (%r)"
+        % (prog,))
+    rungs = {r["id"]: r for r in plan["recovery"]["rungs"]}
+    chk(rungs["R1"].get("disabled") is True,
+        "plan.eff: R1 marked disabled")
+    chk(rungs["R2"].get("overrides") == {"NO_PROGRESS_SEC": 2},
+        "plan.eff: R2 carries its override")
+    k = rungs.get("kicker")
+    chk(bool(k) and k["authored"] is True and k["enabled"] is True
+        and k["trigger"] == {"type": "no_progress", "s": 3}
+        and k["actions"] == {"ir_blocks": 1, "version": 2, "max_ms": 4000}
+        and k["resume"] == "restart_cycle"
+        and k["cooldown_s"] == 5 and k["limit"] == 2,
+        "plan.eff: authored rung fully described (%r)" % (k,))
+    fl = plan["background"].get("authored_flows")
+    chk(isinstance(fl, list) and len(fl) == 1 and fl[0]["id"] == "poller"
+        and fl[0]["input"] == "none" and fl[0]["priority"] == 2
+        and fl[0]["body"] == {"ir_blocks": 1, "version": 2,
+                              "max_ms": 3000},
+        "plan.eff: authored flow described in background (%r)" % (fl,))
+    chk(plan["fingerprint"] != base["fingerprint"],
+        "plan.eff: configuring a program changes the fingerprint")
+    plan2 = cycleplan.resolve_cycle_plan(eng)
+    chk(_canon(plan) == _canon(plan2),
+        "plan.eff: deterministic with a program configured")
+    eng.RECOVERY_JSON = "{not json"
+    bad = cycleplan.resolve_cycle_plan(eng)
+    chk(bad["recovery"]["program"] == {
+            "error": "RECOVERY_JSON is not valid JSON"},
+        "plan.eff: invalid program surfaces a deterministic error")
+
+
+def test_wire_effective_program():
+    """plan.describe over PPE1 reflects a pushed program (next-run bind)."""
+    print("[plan] plan.describe reflects RECOVERY_JSON/FLOWS_JSON (wire)")
+    cli = C._make_client("idle-command").spawn()
+    try:
+        chk(cli.wait_ready(), "wire-eff: engine ready")
+        rec = json.dumps({"_recovery": 1,
+                          "rungs": {"R2": {"params":
+                                           {"NO_PROGRESS_SEC": 2}}}})
+        flw = json.dumps({"_flows": 1, "flows": [{
+            "id": "poller",
+            "trigger": {"type": "interval", "every_s": 5},
+            "input": "none",
+            "body": [{"id": "b1", "type": "log",
+                      "params": {"message": "hi"}, "children": []}]}]})
+        a = cli.request("settings.set", {"values": {"RECOVERY_JSON": rec,
+                                                    "FLOWS_JSON": flw}})
+        chk(a.get("ok") is True,
+            "wire-eff: RECOVERY_JSON/FLOWS_JSON are settings keys")
+        p = cli.request("plan.describe")["result"]["plan"]
+        chk(p["recovery"].get("program", {}).get("overrides")
+            == {"NO_PROGRESS_SEC": 2},
+            "wire-eff: plan.describe reflects the rung override")
+        fl = p["background"].get("authored_flows")
+        chk(isinstance(fl, list) and fl and fl[0]["id"] == "poller",
+            "wire-eff: plan.describe lists the authored flow")
+        cli.shutdown()
+    finally:
+        cli.kill()
+
+
 def test_wire_plan_describe():
     """plan.describe over PPE1: settings.set values are reflected (the
     next-run bind), fingerprint tracks live knobs only."""
@@ -342,7 +445,9 @@ if __name__ == "__main__":
     test_inprocess_pinning()
     test_inprocess_easy_layering()
     test_inprocess_modes()
+    test_effective_recovery_and_flows()
     test_wire_plan_describe()
+    test_wire_effective_program()
     print()
     if FAILS:
         print("PLAN TESTS: %d FAILURES" % len(FAILS))
