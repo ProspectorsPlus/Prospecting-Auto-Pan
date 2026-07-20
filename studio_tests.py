@@ -1453,6 +1453,124 @@ check("unknown cap refused by the validator",
       not app._studio_validate_v2(_scr)["ok"])
 
 # =============================================================================
+print("[15] dynamic settings — declared parameters from the pushed graph")
+# =============================================================================
+# settings.params (written by Prospector Studio at publish) renders as the
+# macro's Studio-mode settings: sanitized against the document, edited
+# through studio_set_param (coerce + clamp + whole-document re-validation
+# with rollback), re-pushed into the engine config, mirrored to Studio.
+import shutil as _sh15
+import tempfile as _tf15
+
+_mdir = _tf15.mkdtemp()
+_saved_attrs = {k: getattr(app, k) for k in
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR", "STATUS_FILE",
+                 "PUSH_FILE", "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
+app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.STATUS_FILE = os.path.join(_mdir, "studio_macro_status.json")
+app.PUSH_FILE = os.path.join(_mdir, "studio_push.json")
+app.DATA_DIR = _mdir
+app.STUDIO_LAUNCH = True
+app.STUDIO_SCRIPT = ""
+app._STUDIO_LIST_CACHE["key"] = None
+api_p = None
+try:
+    api_p = app.Api()
+    doc = {"format": "ppscript", "version": 2, "kind": "script",
+           "name": "Param Script",
+           "variables": [
+               {"name": "walk_ms", "type": "number", "initial": 1200},
+               {"name": "announce", "type": "bool", "initial": True},
+               {"name": "route", "type": "string", "initial": "east"}],
+           "blocks": [
+               {"id": "w1", "type": "wait",
+                "params": {"ms": {"$expr": {"var": "walk_ms"}}}},
+               {"id": "w2", "type": "wait", "params": {"ms": 800}}],
+           "settings": {"params": [
+               {"name": "walk_ms", "kind": "variable", "type": "number",
+                "label": "Walk time", "group": "Timing", "unit": "ms",
+                "desc": "How long each leg walks.", "default": 1200,
+                "min": 100, "max": 5000, "step": 50},
+               {"name": "announce", "kind": "variable", "type": "bool",
+                "label": "Announce laps", "default": True},
+               {"name": "route", "kind": "variable", "type": "choice",
+                "label": "Route", "options": ["east", "west"],
+                "default": "east"},
+               {"name": "settle", "kind": "node", "node": "w2", "key": "ms",
+                "type": "number", "label": "Settle wait", "group": "Timing",
+                "unit": "ms", "default": 800, "min": 100, "max": 5000},
+               {"name": "ghost", "kind": "variable", "type": "number",
+                "label": "No such variable", "default": 1},
+               {"name": "badnode", "kind": "node", "node": "nope",
+                "key": "ms", "type": "number", "default": 1}]}}
+    check("param fixture saves clean", api_p.studio_save(doc, None)["ok"])
+    api_p.studio_set_active("Param Script")
+
+    r = api_p.studio_params()
+    names = [p["name"] for p in r["params"]]
+    check("declared params surface, malformed ones skipped",
+          names == ["walk_ms", "announce", "route", "settle"], names)
+    walk = r["params"][0]
+    check("param carries meta + live value",
+          walk["label"] == "Walk time" and walk["unit"] == "ms"
+          and walk["current"] == 1200 and walk["default"] == 1200
+          and walk["group"] == "Timing", walk)
+    settle = r["params"][3]
+    check("node-backed param reads the block's live value",
+          settle["kind"] == "node" and settle["current"] == 800, settle)
+
+    # numeric edit: clamped, persisted, re-pushed
+    r = api_p.studio_set_param("walk_ms", 99999)
+    check("number clamps to the declared max",
+          r["ok"] and r["value"] == 5000 and r["effective"] == "next-run", r)
+    d = app._studio_load()
+    check("variable initial persisted",
+          d["scripts"]["Param Script"]["variables"][0]["initial"] == 5000)
+    cfg = app.load_saved()
+    check("edit re-pushed into the engine config",
+          '"initial": 5000' in cfg.get("SCRIPT_JSON", "")
+          or '"initial":5000' in cfg.get("SCRIPT_JSON", ""))
+
+    # node-backed edit lands in the block
+    r = api_p.studio_set_param("settle", 950)
+    d = app._studio_load()
+    check("node param edit lands in the block",
+          r["ok"] and d["scripts"]["Param Script"]["blocks"][1]["params"]["ms"] == 950, r)
+
+    # choice + bool + refusals
+    check("choice refuses off-list values",
+          not api_p.studio_set_param("route", "north")["ok"])
+    check("choice accepts listed values",
+          api_p.studio_set_param("route", "west")["ok"])
+    check("bool coerces", api_p.studio_set_param("announce", 0)["ok"]
+          and app._studio_load()["scripts"]["Param Script"]["variables"][1]["initial"] is False)
+    check("unknown param refused with the reason",
+          "declares no" in (api_p.studio_set_param("nope", 1)["error"] or ""))
+
+    # low values clamp to the declared min; strings past the schema cap refuse
+    r = api_p.studio_set_param("settle", 0)
+    check("number clamps to the declared min", r["ok"] and r["value"] == 100, r)
+    long_p = api_p.studio_set_param("route", "x" * 500)
+    check("too-long strings refused", not long_p["ok"])
+
+    # status mirror carries the live values
+    snap = api_p._studio_status_snapshot()
+    check("mirror carries the param values",
+          snap["params"].get("walk_ms") == 5000
+          and snap["params"].get("settle") == 100, snap.get("params"))
+finally:
+    if api_p is not None:
+        api_p._studio_status_stop.set()
+        t = getattr(api_p, "_studio_status_thread", None)
+        if t is not None:
+            t.join(timeout=3.0)
+    for k, v in _saved_attrs.items():
+        setattr(app, k, v)
+    app._STUDIO_LIST_CACHE["key"] = None
+    _sh15.rmtree(_mdir, ignore_errors=True)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

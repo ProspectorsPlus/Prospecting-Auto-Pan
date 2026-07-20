@@ -1206,6 +1206,82 @@ def _studio_count_blocks(blocks):
     return n
 
 
+def _studio_find_block(blocks, bid):
+    """The block with this id anywhere in the tree (children + else)."""
+    for b in blocks or []:
+        if not isinstance(b, dict):
+            continue
+        if b.get("id") == bid:
+            return b
+        for branch in ("children", "else"):
+            kid = _studio_find_block(b.get(branch) or [], bid)
+            if kid is not None:
+                return kid
+    return None
+
+
+def _studio_params(script):
+    """The macro-adjustable parameters a published script DECLARES in
+    settings.params (Prospector Studio writes them at publish time). Each
+    entry is sanitized against the script itself: a variable-backed param
+    must name a declared variable, a node-backed param must name a real
+    block, and the current value is read from the live document — never
+    invented. Unknown/malformed entries are skipped, not errors."""
+    out = []
+    if not isinstance(script, dict):
+        return out
+    settings = script.get("settings")
+    params = settings.get("params") if isinstance(settings, dict) else None
+    if not isinstance(params, list):
+        return out
+    var_by_name = {v.get("name"): v for v in script.get("variables") or []
+                   if isinstance(v, dict)}
+    for p in params[:64]:
+        if not isinstance(p, dict):
+            continue
+        name = p.get("name")
+        if not isinstance(name, str) or not name or len(name) > 64:
+            continue
+        kind = "node" if p.get("kind") == "node" else "variable"
+        ptype = p.get("type")
+        if ptype not in ("number", "bool", "string", "choice"):
+            continue
+        current = None
+        node_id, node_key = "", ""
+        if kind == "variable":
+            v = var_by_name.get(name)
+            if not isinstance(v, dict):
+                continue
+            current = v.get("initial")
+        else:
+            node_id = str(p.get("node") or "")
+            node_key = str(p.get("key") or "")
+            b = _studio_find_block(script.get("blocks"), node_id)
+            if b is None or not node_key:
+                continue
+            current = (b.get("params") or {}).get(node_key)
+        entry = {"name": name, "kind": kind, "type": ptype,
+                 "label": str(p.get("label") or name)[:60],
+                 "group": str(p.get("group") or "Project settings")[:40],
+                 "unit": str(p.get("unit") or "")[:12],
+                 "desc": str(p.get("desc") or "")[:200],
+                 "default": p.get("default"),
+                 "current": current,
+                 "node": node_id, "key": node_key}
+        for k in ("min", "max", "step"):
+            v = p.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                entry[k] = v
+        opts = p.get("options")
+        if ptype == "choice":
+            if not (isinstance(opts, list) and opts
+                    and all(isinstance(o, str) for o in opts)):
+                continue
+            entry["options"] = opts[:20]
+        out.append(entry)
+    return out
+
+
 def _studio_block_title(b, idx_path):
     d = STUDIO_BLOCKS.get((b or {}).get("type") or "", {})
     nm = d.get("name") or str((b or {}).get("type") or "block")
@@ -1893,11 +1969,18 @@ class Api:
         # Script-run progress (the engine's script.block event) so the
         # Studio window can highlight the live node without polling.
         sb = getattr(self, "_script_block", None)
+        # Declared-parameter values, so both windows show the same numbers
+        # whichever side last edited them.
+        pvals = {p["name"]: p["current"]
+                 for p in _studio_params(
+                     _studio_normalize(d["scripts"].get(d["active"])))} \
+            if d["active"] else {}
         return {"mode": mode, "active": d["active"], "rev": rev,
                 "kind": kind,
                 "run": getattr(self, "_macro_status", "off"),
                 "stop_reason": str(st.get("stop_reason") or ""),
                 "script": dict(sb) if isinstance(sb, dict) else None,
+                "params": pvals,
                 "stats": stats}
 
     def _studio_status_loop(self):
@@ -3511,6 +3594,97 @@ class Api:
         push = self._studio_push_info()
         return {"ok": True, "name": str(push.get("name") or ""),
                 "rev": str(push.get("rev") or "")}
+
+    def studio_params(self):
+        """The active script's declared macro-adjustable parameters, with
+        their live values. Generated from the pushed document — an empty
+        list simply means the author exposed nothing."""
+        d = _studio_load()
+        name = d["active"]
+        if not name:
+            return {"ok": True, "name": "", "params": []}
+        s = d["scripts"].get(name)
+        return {"ok": True, "name": name,
+                "kind": _studio_kind(s),
+                "running": self.proc is not None,
+                "params": _studio_params(_studio_normalize(s))}
+
+    def studio_set_param(self, pname, value):
+        """Change one declared parameter of the active script. The write
+        lands in the stored document (variable initial or node param), is
+        re-validated as a whole — an edit that would break the script rolls
+        back with the reason — and is re-pushed into the engine config.
+        Values always apply at the NEXT run start (the engine binds config
+        per run); a live run keeps what it started with."""
+        d = _studio_load()
+        name = d["active"]
+        if not name:
+            return {"ok": False, "error": "No active script."}
+        s = d["scripts"].get(name)
+        decl = None
+        for p in _studio_params(_studio_normalize(s)):
+            if p["name"] == pname:
+                decl = p
+                break
+        if decl is None:
+            return {"ok": False, "error": "This script declares no "
+                                          "parameter called %r." % (pname,)}
+        # Coerce + clamp against the declaration -- garbage never lands.
+        if decl["type"] == "number":
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "That needs to be a number."}
+            if value == int(value):
+                value = int(value)
+            if "min" in decl and value < decl["min"]:
+                value = decl["min"]
+            if "max" in decl and value > decl["max"]:
+                value = decl["max"]
+        elif decl["type"] == "bool":
+            value = bool(value)
+        elif decl["type"] == "choice":
+            if value not in decl.get("options", []):
+                return {"ok": False, "error": "Pick one of the listed "
+                                              "options."}
+        else:
+            if not isinstance(value, str) or len(value) > STUDIO2_STR_MAX:
+                return {"ok": False, "error": "That text is too long."}
+        before = json.loads(json.dumps(s))
+        if decl["kind"] == "variable":
+            hit = False
+            for v in s.get("variables") or []:
+                if isinstance(v, dict) and v.get("name") == pname:
+                    v["initial"] = value
+                    hit = True
+            if not hit:
+                return {"ok": False, "error": "The parameter's variable is "
+                                              "gone; publish again from "
+                                              "Prospector Studio."}
+        else:
+            b = _studio_find_block(s.get("blocks"), decl["node"])
+            if b is None:
+                return {"ok": False, "error": "The parameter's step is "
+                                              "gone; publish again from "
+                                              "Prospector Studio."}
+            if not isinstance(b.get("params"), dict):
+                b["params"] = {}
+            b["params"][decl["key"]] = value
+        chk = _studio_validate(_studio_normalize(s))
+        if not chk["ok"] or chk["problems"]:
+            d["scripts"][name] = before      # visible rollback, with the why
+            return {"ok": False, "rolled_back": True,
+                    "error": "That value broke the script, so it was NOT "
+                             "applied: "
+                             + " ".join((chk["errors"] + chk["problems"])[:2])}
+        try:
+            _studio_write(d)
+            self._studio_push_active(name)
+        except OSError as e:
+            return {"ok": False, "error": "Could not save: %s" % e}
+        return {"ok": True, "name": pname, "value": value,
+                "effective": "next-run",
+                "running": self.proc is not None}
 
     def studio_open_in_studio(self, node=None, name=None):
         """Ask the Prospector Studio app (when it launched this macro) to
@@ -5464,6 +5638,11 @@ def build_html():
         'nets stay on, and a script runs and counts pans exactly like a '
         'built-in mode. Share one as a single .ppscript file.</p></div>'
         '<div id="sthdr" class="sthdr" style="display:none"></div>'
+        '<div id="bpwrap" class="sthdr spwrap" style="display:none">'
+        '<div class="sth-top"><span class="sth-name">Build settings from the graph</span>'
+        '<span class="sth-badge" title="The engine reads its configuration when a run starts; a live run keeps what it started with">applies at the next start</span>'
+        '<input id="bpsearch" class="spsearch" placeholder="search"></div>'
+        '<div id="bpgrid" class="spgrid"></div></div>'
         '<div class="stbtns">'
         '<button type="button" id="stopen" class="btn">Open Studio</button>'
         '<button type="button" id="stnew" class="btn2">New script\u2026</button>'
@@ -5485,6 +5664,11 @@ def build_html():
         '<span class="sth-badge" id="ssc_state">idle</span></div>'
         '<div class="scr-step" id="ssc_step"><span class="lbl">current step</span> \u2014</div>'
         '<div class="scr-hud" id="ssc_hud"></div></div>'
+        '<div id="spwrap" class="sthdr spwrap" style="display:none">'
+        '<div class="sth-top"><span class="sth-name">Script settings</span>'
+        '<span class="sth-badge" title="The engine reads its configuration when a run starts; a live run keeps what it started with">applies at the next start</span>'
+        '<input id="spsearch" class="spsearch" placeholder="search"></div>'
+        '<div id="spgrid" class="spgrid"></div></div>'
         '<div id="scgrid" class="stgrid"></div></section>')
 
     nav("keys", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 9.5h.01M9.5 9.5h.01M13 9.5h.01M16.5 9.5h.01M6.5 13.5h11"/></svg>', "Keybinds")
@@ -6264,6 +6448,29 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  /* Studio-launch: the legacy embedded editor never appears -- its entry
     points are gone and authoring hands off to Prospector Studio. */
  body.studiolaunch #stopen,body.studiolaunch #stnew{display:none}
+ /* Dynamic settings from the pushed graph (Studio modes) */
+ .spwrap{margin:0 0 14px}
+ .spsearch{margin-left:auto;background:var(--field);border:1px solid var(--line2);
+  border-radius:8px;color:var(--txt);font:inherit;font-size:12px;padding:5px 9px;width:150px}
+ .spsearch:focus{outline:none;border-color:var(--accent)}
+ .spgrid{margin-top:8px}
+ .spgroup{margin:10px 0 4px;color:var(--mut);font-size:10.5px;font-weight:700;
+  letter-spacing:.5px;text-transform:uppercase}
+ .sprow{display:flex;gap:9px;align-items:center;padding:5px 0;border-bottom:1px solid var(--line)}
+ .sprow:last-child{border-bottom:none}
+ .sp-pin{background:none;border:0;color:var(--dim);cursor:pointer;font-size:13px;padding:0 2px}
+ .sp-pin.on{color:var(--accent-lit)}
+ .sp-lab{flex:1;min-width:0}
+ .sp-name{font-size:12.5px;color:var(--txt)}
+ .sp-desc{font-size:10.5px;color:var(--dim)}
+ .sp-state{font-size:9.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;
+  padding:2px 6px;border-radius:6px;border:1px solid var(--line2);color:var(--dim)}
+ .sp-state.ovr{border-color:var(--accent);color:var(--accent-lit)}
+ .sprow input[type=number],.sprow input[type=text],.sprow select{background:var(--field);
+  border:1px solid var(--line2);border-radius:7px;color:var(--txt);font:inherit;
+  font-size:12px;padding:4px 8px;width:110px}
+ .sprow input:focus,.sprow select:focus{outline:none;border-color:var(--accent)}
+ .sp-unit{color:var(--dim);font-size:11px;min-width:24px}
  /* Script-run card (STUDIO SCRIPT mode, Run tab + Script tab) */
  .scriptcard{margin:0 2px 12px;padding:12px 14px;border:1px solid var(--line2);
   border-radius:12px;background:var(--bg2);display:none}
@@ -8035,6 +8242,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      if(slaunch)renderGrid($('#scgrid'),all.filter(function(s){return s.kind==='script';}),slaunch,
        '<b>No Studio Scripts yet.</b><br>Create a Script project in Prospector Studio and press Run — it appears here automatically.');
      if(window.schdrRefresh)window.schdrRefresh();
+     if(window.paramsRefresh)window.paramsRefresh();
    };
    var so=$('#stopen');if(so)so.onclick=function(){window.pywebview.api.open_studio_window();};
    var sn=$('#stnew');if(sn)sn.onclick=function(){window.pywebview.api.studio_new();};
@@ -8194,6 +8402,93 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    };
    window.addEventListener('pywebviewready',function(){setTimeout(window.schdrRefresh,180);});
    setTimeout(window.schdrRefresh,980);
+ })();
+ // ---- dynamic settings from the pushed graph (Studio modes) --------------
+ // Rendered from the active document's DECLARED parameters (settings.params,
+ // written by Prospector Studio at publish). Values edit the stored script
+ // and re-push it; the engine binds config at run start, so every change is
+ // honestly labeled "applies at the next start".
+ (function(){
+   var PINKEY='pps_param_pins';
+   function pins(){try{return JSON.parse(localStorage.getItem(PINKEY))||[];}catch(e){return [];}}
+   function setPins(l){try{localStorage.setItem(PINKEY,JSON.stringify(l));}catch(e){}}
+   function fmtv(p,v){return p.type==='number'?String(v):p.type==='bool'?(v?'on':'off'):String(v);}
+   function row(p){
+     var d=document.createElement('div');d.className='sprow';
+     var pinned=pins().indexOf(p.name)>=0;
+     var ovr=JSON.stringify(p.current)!==JSON.stringify(p.default);
+     var pin=document.createElement('button');pin.type='button';
+     pin.className='sp-pin'+(pinned?' on':'');pin.textContent='★';
+     pin.title=pinned?'Unpin':'Pin to the top';
+     pin.onclick=function(){var l=pins();
+       if(pinned)l=l.filter(function(n){return n!==p.name;});else l.push(p.name);
+       setPins(l);paramsRefresh();};
+     d.appendChild(pin);
+     var lab=document.createElement('div');lab.className='sp-lab';
+     lab.innerHTML='<div class="sp-name"></div>'+(p.desc?'<div class="sp-desc"></div>':'');
+     lab.querySelector('.sp-name').textContent=p.label;
+     if(p.desc)lab.querySelector('.sp-desc').textContent=p.desc;
+     d.appendChild(lab);
+     var st=document.createElement('span');st.className='sp-state'+(ovr?' ovr':'');
+     st.textContent=ovr?'overridden':'default';
+     st.title=ovr?('Published default: '+fmtv(p,p.default)+'. Click to reset.'):'At the published default';
+     if(ovr){st.style.cursor='pointer';st.onclick=function(){apply(p,p.default);};}
+     d.appendChild(st);
+     var inp;
+     if(p.type==='bool'){inp=document.createElement('input');inp.type='checkbox';inp.checked=!!p.current;
+       inp.onchange=function(){apply(p,inp.checked);};}
+     else if(p.type==='choice'){inp=document.createElement('select');
+       (p.options||[]).forEach(function(o){var op=document.createElement('option');
+         op.value=o;op.textContent=o;if(o===p.current)op.selected=true;inp.appendChild(op);});
+       inp.onchange=function(){apply(p,inp.value);};}
+     else{inp=document.createElement('input');
+       inp.type=p.type==='number'?'number':'text';
+       if(typeof p.min!=='undefined')inp.min=p.min;
+       if(typeof p.max!=='undefined')inp.max=p.max;
+       if(typeof p.step!=='undefined')inp.step=p.step;
+       inp.value=p.current==null?'':p.current;
+       inp.onchange=function(){apply(p,p.type==='number'?Number(inp.value):inp.value);};}
+     d.appendChild(inp);
+     var un=document.createElement('span');un.className='sp-unit';un.textContent=p.unit||'';
+     d.appendChild(un);
+     return d;
+   }
+   async function apply(p,val){
+     var r;try{r=await window.pywebview.api.studio_set_param(p.name,val);}catch(e){r=null;}
+     if(r&&r.ok)toast('"'+p.label+'" = '+fmtv(p,r.value)
+       +(r.running?' — applies when the NEXT run starts':' — applies at the next start'));
+     else toast((r&&r.error)||'Could not change it','err');
+     paramsRefresh();
+   }
+   window.paramsRefresh=async function(){
+     var r;try{r=await window.pywebview.api.studio_params();}catch(e){r=null;}
+     if(!r||!r.ok)return;
+     var scriptKind=r.kind==='script';
+     var wrap=$(scriptKind?'#spwrap':'#bpwrap'),grid=$(scriptKind?'#spgrid':'#bpgrid');
+     var other=$(scriptKind?'#bpwrap':'#spwrap');
+     if(other)other.style.display='none';
+     if(!wrap||!grid)return;
+     if(!r.params||!r.params.length){wrap.style.display='none';return;}
+     wrap.style.display='block';
+     var box=$(scriptKind?'#spsearch':'#bpsearch');
+     var q=(box&&box.value||'').toLowerCase();
+     var list=r.params.filter(function(p){
+       return !q||((p.label+' '+p.name+' '+p.group).toLowerCase().indexOf(q)>=0);});
+     var pn=pins(),groups={};
+     list.forEach(function(p){var g=pn.indexOf(p.name)>=0?'★ Pinned':p.group;
+       (groups[g]=groups[g]||[]).push(p);});
+     grid.innerHTML='';
+     Object.keys(groups).sort(function(a,b){
+       return a==='★ Pinned'?-1:b==='★ Pinned'?1:(a<b?-1:1);}).forEach(function(g){
+       var h=document.createElement('div');h.className='spgroup';h.textContent=g;grid.appendChild(h);
+       groups[g].forEach(function(p){grid.appendChild(row(p));});});
+   };
+   ['#spsearch','#bpsearch'].forEach(function(id){var el=$(id);
+     if(el)el.addEventListener('input',function(){window.paramsRefresh();});});
+   document.querySelectorAll('.tab[data-tab="studio"],.tab[data-tab="script"]').forEach(function(t){
+     t.addEventListener('click',function(){setTimeout(window.paramsRefresh,80);});});
+   window.addEventListener('pywebviewready',function(){setTimeout(window.paramsRefresh,220);});
+   setTimeout(window.paramsRefresh,1050);
  })();
  // ---- Studio-launch: build header on the Studio tab + settings resets ----
  (function(){
