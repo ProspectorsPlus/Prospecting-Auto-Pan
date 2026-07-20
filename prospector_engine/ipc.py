@@ -34,6 +34,7 @@ def capabilities(po, simulated):
             "inputLagProbe": hasattr(po, "_LAG"),
             "fastTravelRecovery": True,
             "scriptV3": hasattr(po, "_SCRIPT_HANDLERS_V3"),
+            "vision": True,
             "recorder": recorder_mod.available(),
             "simulated": bool(simulated)}
     if simulated:
@@ -1024,6 +1025,34 @@ class Server(object):
                                    "secureInput": False, "truncated": False})
             else:
                 self._ack_ok(cid, self._recorder.status())
+        elif cmd == "vision.assetStat":
+            ids = params.get("ids")
+            if not isinstance(ids, list):
+                self._ack_err(cid, protocol.E_BAD_PARAMS,
+                              "ids must be a list", None)
+                return
+            try:
+                self._ack_ok(cid, self.sensing.vision_asset_stat(ids))
+            except Exception as e:
+                self._ack_err(cid, protocol.E_INTERNAL,
+                              "vision failure: %r" % (e,), None)
+        elif cmd == "vision.testMatch":
+            # idle-only like the calibration verbs: it owns the capture
+            # session and reads the screen (protocol 4.15 semantics)
+            if st.running or st.paused:
+                self._ack_err(cid, protocol.E_RUN_ACTIVE,
+                              "idle-only while a run exists",
+                              {"state": self._state()})
+                return
+            try:
+                self._ack_ok(cid, self.sensing.vision_test_match(
+                    params.get("png"), params.get("threshold"),
+                    params.get("rect")))
+            except sensing_mod.SensingError as e:
+                self._ack_err(cid, e.code, e.message, e.data)
+            except Exception as e:
+                self._ack_err(cid, protocol.E_INTERNAL,
+                              "vision failure: %r" % (e,), None)
         elif cmd.startswith("calibration.") and cmd in protocol.COMMANDS:
             self._dispatch_calibration(cid, cmd, params)
         else:

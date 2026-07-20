@@ -69,8 +69,13 @@ from collections import namedtuple
 # [C7] Frozen Windows bundles (PyInstaller) keep the config in a writable
 # per-user folder, matching prospecting_app.py's data dir.
 if getattr(sys, "frozen", False):
-    _HOME_DIR = os.path.join(os.environ.get("LOCALAPPDATA")
-                             or os.path.expanduser("~"), "Prospectors Plus")
+    # A spawner-provided home (Studio's frozen sidecar sets PPENGINE_HOME
+    # to the shared data dir) outranks the per-user default: the frozen
+    # engine must read the same config/calibration the app manages.
+    _HOME_DIR = (os.environ.get("PPENGINE_HOME")
+                 or os.path.join(os.environ.get("LOCALAPPDATA")
+                                 or os.path.expanduser("~"),
+                                 "Prospectors Plus"))
 else:
     _HOME_DIR = (os.environ.get("PPENGINE_HOME")
                  or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -4480,12 +4485,14 @@ _SCRIPT_MOVE_KEYS = ("W", "A", "S", "D")
 # matching capability, and the declaration is re-checked here at load — the
 # same triple-enforcement (validator, TS VM, this runner) the whitelist has.
 # Hosts display declared caps to the user wherever a v3 program can start.
-_SCRIPT3_CAPS = ("keyboard", "text", "mouse")
+_SCRIPT3_CAPS = ("keyboard", "text", "mouse", "vision")
 _SCRIPT3_CAP_OF = {
     "key_press": "keyboard", "key_hold": "keyboard", "key_down": "keyboard",
     "key_up": "keyboard", "key_combo": "keyboard", "key_seq": "keyboard",
     "type_text": "text", "set_clipboard": "text",
     "mouse_btn": "mouse", "scroll": "mouse",
+    "wait_image": "vision", "if_image": "vision",
+    "click_image": "vision", "move_image": "vision",
     # release_keys is a safety node: always allowed.
 }
 _SCRIPT3_MODIFIERS = ("cmd", "ctrl", "alt", "shift")
@@ -4494,7 +4501,10 @@ _SCRIPT3_CAP_LABEL = {
     "keyboard": "press any key",
     "text": "type text and write the clipboard",
     "mouse": "use every mouse button and scroll",
+    "vision": "read the screen to find images",
 }
+# Vision nodes poll the screen at this cadence while waiting for an image.
+_SCRIPT3_IMAGE_POLL_MS = 250
 
 
 def _script3_required_caps(blocks):
@@ -4813,6 +4823,7 @@ class ScriptRunner:
         self.hooks = {}               # v2 hooks: name -> block list
         self.on_set_var = None        # optional observers (tests and tools)
         self.on_pass = None
+        self._image_cache = {}        # vision: asset id -> (mtime, HxWx3)
         self._stuck_at_pass = 0       # test hook: fire on_stuck after pass N
         self._pending_stuck = False
         self._started = False
@@ -4903,7 +4914,8 @@ class ScriptRunner:
                 els = b.get("else")
                 if els is not None:
                     if (not isinstance(els, list)
-                            or b.get("type") not in ("branch", "detect_pixel")):
+                            or b.get("type") not in ("branch", "detect_pixel",
+                                                     "if_image")):
                         return -1, deep
                     if els:
                         kn, kd = self._shape(els, depth + 1)
@@ -5881,6 +5893,171 @@ class ScriptRunner:
                 _script_sleep(inter)
         return None
 
+    # ---- v3 vision (reference-image nodes; cap "vision") --------------------
+    # Reference images are PNG assets Prospector Studio installs under
+    # <engine home>/studio_assets/<id>.png. ALL finds go through ONE seam:
+    #
+    #   self._image_probe(image_id, region, threshold) -> (found, x, y, score)
+    #
+    # where region is (x1, y1, x2, y2) in physical screen px ((0,0,0,0) =
+    # the full primary screen), threshold is the int 50..100 the node
+    # declared, x/y are the match CENTRE in physical px and score is 0..1.
+    # The real probe below grabs through the run Detector's mss handle
+    # (the _pixel_rgb seam -- never a second capture session); tests and
+    # the conformance harness replace it by attribute injection, exactly
+    # like the on_set_var observer.
+
+    def _image_id(self, p):
+        """Validated reference-image asset id, or None after a safe stop."""
+        from prospector_engine import vision as vision_mod
+        tok = p.get("image")
+        if isinstance(tok, dict) and "$expr" in tok:
+            tok = _sv_text(self._pv_eval(tok))
+        if not vision_mod.asset_id_ok(tok):
+            safe_stop("the script names a reference image this engine "
+                      "cannot use (%r)" % (tok,))
+            return None
+        return tok
+
+    def _image_region(self, p):
+        """Search rect (x1, y1, x2, y2), physical px; all zero = full screen."""
+        return (self._pi(p, "x1", 0, 0, 20000),
+                self._pi(p, "y1", 0, 0, 20000),
+                self._pi(p, "x2", 0, 0, 20000),
+                self._pi(p, "y2", 0, 0, 20000))
+
+    def _image_template(self, image_id):
+        """Decoded HxWx3 template, cached for this run by id + file mtime."""
+        from prospector_engine import vision as vision_mod
+        path = vision_mod.asset_path(os.path.dirname(CONFIG_FILE), image_id)
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            raise ValueError('the reference image "%s" is not installed '
+                             "(publish the script again from Studio)"
+                             % image_id)
+        hit = self._image_cache.get(image_id)
+        if hit is not None and hit[0] == mtime:
+            return hit[1]
+        tpl = vision_mod.load_png_rgb(path)
+        self._image_cache[image_id] = (mtime, tpl)
+        return tpl
+
+    def _image_probe(self, image_id, region, threshold):
+        """Find the template on screen NOW -> (found, x, y, score). Grabs
+        ONLY the search region (full-screen grabs are expensive) through
+        the run Detector's mss handle."""
+        from prospector_engine import vision as vision_mod
+        tpl = self._image_template(image_id)
+        x1, y1, x2, y2 = region
+        if (x1, y1, x2, y2) == (0, 0, 0, 0):
+            mon = self._det.sct.monitors[1]
+            gx, gy = int(mon["left"]), int(mon["top"])
+            gw, gh = int(mon["width"]), int(mon["height"])
+        else:
+            gx, gy = min(x1, x2), min(y1, y2)
+            gw, gh = max(1, abs(x2 - x1)), max(1, abs(y2 - y1))
+        img = np.asarray(self._det.sct.grab(
+            {"left": gx, "top": gy, "width": gw, "height": gh}))[:, :, :3]
+        img = np.ascontiguousarray(img[:, :, ::-1])          # BGRA -> RGB
+        r = vision_mod.match_template(img, tpl, threshold / 100.0)
+        return (r["found"], gx + r["x"], gy + r["y"], r["score"])
+
+    def _do_wait_image(self, det, p, kids):
+        image = self._image_id(p)
+        if image is None:
+            return None
+        timeout = _script_clamp_wait(
+            self._pi(p, "timeout_ms", 10000, 1, _SCRIPT_WAIT_MAX_MS))
+        thr = self._pi(p, "threshold", 90, 50, 100)
+        region = self._image_region(p)
+        self.pass_activity = True
+        end = time.perf_counter() + timeout / 1000.0
+        while State.running:
+            found, _x, _y, _score = self._image_probe(image, region, thr)
+            if found:
+                return None
+            left = (end - time.perf_counter()) * 1000.0
+            if left <= 0:
+                break
+            if not _script_sleep(min(_SCRIPT3_IMAGE_POLL_MS, left)):
+                return None
+        if State.running and p.get("on_timeout", "stop") != "continue":
+            self.pass_dirty = True
+            safe_stop('the image "%s" never appeared within %d ms '
+                      "(wait_image)" % (image, timeout))
+        return None
+
+    def _do_if_image(self, det, p, kids):
+        b = self._cur
+        image = self._image_id(p)
+        if image is None:
+            return None
+        thr = self._pi(p, "threshold", 90, 50, 100)
+        found, _x, _y, _score = self._image_probe(
+            image, self._image_region(p), thr)
+        els = b.get("else") if isinstance(b.get("else"), list) else []
+        return ("push", kids if found else els, 1, "body", None)
+
+    def _do_click_image(self, det, p, kids):
+        image = self._image_id(p)
+        if image is None:
+            return None
+        btn = p.get("button", "left")
+        if isinstance(btn, dict) and "$expr" in btn:
+            btn = _sv_text(self._pv_eval(btn))
+        if btn not in _SCRIPT3_BUTTONS:
+            safe_stop("the script used an unknown mouse button (%r)" % (btn,))
+            return None
+        thr = self._pi(p, "threshold", 90, 50, 100)
+        self.pass_activity = True
+        found, mx, my, _score = self._image_probe(
+            image, self._image_region(p), thr)
+        if not found:
+            if p.get("on_miss", "stop") != "continue":
+                self.pass_dirty = True
+                safe_stop('the image "%s" is not on screen (click_image)'
+                          % image)
+            return None
+        x = mx + self._pi(p, "dx", 0, -10000, 10000)
+        y = my + self._pi(p, "dy", 0, -10000, 10000)
+        self._cursor = (int(x), int(y))
+        move_cursor(int(x), int(y))
+        _script_sleep(30)             # settle after move, as _do_mouse_btn
+        clicks = self._pi(p, "clicks", 1, 1, 3)
+        for i in range(clicks):
+            if not State.running:
+                break
+            # click_state i+1 lets the OS recognize double/triple clicks
+            button_down(btn, i + 1)
+            try:
+                _script_sleep(40)
+            finally:
+                button_up(btn, i + 1)
+            if i + 1 < clicks:
+                _script_sleep(120)
+        return None
+
+    def _do_move_image(self, det, p, kids):
+        image = self._image_id(p)
+        if image is None:
+            return None
+        thr = self._pi(p, "threshold", 90, 50, 100)
+        self.pass_activity = True
+        found, mx, my, _score = self._image_probe(
+            image, self._image_region(p), thr)
+        if not found:
+            if p.get("on_miss", "stop") != "continue":
+                self.pass_dirty = True
+                safe_stop('the image "%s" is not on screen (move_image)'
+                          % image)
+            return None
+        x = mx + self._pi(p, "dx", 0, -10000, 10000)
+        y = my + self._pi(p, "dy", 0, -10000, 10000)
+        self._cursor = (int(x), int(y))
+        move_cursor(int(x), int(y))
+        return None
+
 
 # One handler per schema block type; studio_tests.py asserts this table stays
 # in lockstep with STUDIO_BLOCKS in prospecting_ui.py.
@@ -5927,6 +6104,10 @@ _SCRIPT_HANDLERS_V3.update({
     "release_keys": ScriptRunner._do_release_keys,
     "mouse_btn": ScriptRunner._do_mouse_btn,
     "scroll": ScriptRunner._do_scroll,
+    "wait_image": ScriptRunner._do_wait_image,
+    "if_image": ScriptRunner._do_if_image,
+    "click_image": ScriptRunner._do_click_image,
+    "move_image": ScriptRunner._do_move_image,
 })
 
 

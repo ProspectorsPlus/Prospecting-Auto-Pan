@@ -2113,9 +2113,11 @@ STUDIO2_V2_ONLY_TYPES = ("branch", "while", "break_loop", "continue_loop",
                          "set_var", "detect_pixel", "move_mouse",
                          "drag_mouse", "log", "hud_text", "long_press")
 STUDIO2_TYPES = set(STUDIO_BLOCKS) | set(STUDIO2_V2_ONLY_TYPES)
+# if_image is v3-only: it can never appear in a v2 file (unknown type is
+# refused first), so listing it here only widens the v3 walk.
 STUDIO2_CONTAINERS = set(STUDIO_CONTAINERS) | {"branch", "while",
-                                               "detect_pixel"}
-STUDIO2_ELSE_TYPES = ("branch", "detect_pixel")
+                                               "detect_pixel", "if_image"}
+STUDIO2_ELSE_TYPES = ("branch", "detect_pixel", "if_image")
 STUDIO2_HOOKS = ("on_start", "on_stop", "on_stuck")
 STUDIO2_STOP_SAFE = ("set_var", "log", "hud_text", "notify", "comment",
                      "branch")
@@ -2133,19 +2135,23 @@ STUDIO_SCHEMA_V3 = 3
 STUDIO3_V3_ONLY_TYPES = ("key_press", "key_hold", "key_down", "key_up",
                          "key_combo", "key_seq", "type_text",
                          "set_clipboard", "release_keys", "mouse_btn",
-                         "scroll")
+                         "scroll", "wait_image", "if_image", "click_image",
+                         "move_image")
 STUDIO3_TYPES = STUDIO2_TYPES | set(STUDIO3_V3_ONLY_TYPES)
-STUDIO3_CAPS = ("keyboard", "text", "mouse")
+STUDIO3_CAPS = ("keyboard", "text", "mouse", "vision")
 STUDIO3_CAP_OF = {
     "key_press": "keyboard", "key_hold": "keyboard", "key_down": "keyboard",
     "key_up": "keyboard", "key_combo": "keyboard", "key_seq": "keyboard",
     "type_text": "text", "set_clipboard": "text",
     "mouse_btn": "mouse", "scroll": "mouse",
+    "wait_image": "vision", "if_image": "vision",
+    "click_image": "vision", "move_image": "vision",
 }
 STUDIO3_CAP_LABEL = {
     "keyboard": "press any key",
     "text": "type text and write the clipboard",
     "mouse": "use every mouse button and scroll",
+    "vision": "read the screen to find images",
 }
 
 

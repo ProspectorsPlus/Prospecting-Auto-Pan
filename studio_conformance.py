@@ -99,6 +99,24 @@ class Scenario:
         a = (self.spec.get("anchors") or {}).get(name)
         return (a["x"], a["y"]) if a else None
 
+    def image(self, image_id, threshold, t):
+        """Vision rows: images = [{id, from, to, x, y, score}] (ms times,
+        score 0..1). Found = any row for this id active at virtual-now
+        whose score*100 >= the node's threshold. The probe seam receives
+        the search region too, but the scenario model deliberately does
+        not filter on it (the TS IntervalScenario mirrors this exactly).
+        -> (found, x, y, score) in the _image_probe contract."""
+        for row in self.spec.get("images", []):
+            if row.get("id") != image_id:
+                continue
+            if not (row.get("from", 0) <= t < row.get("to", 0)):
+                continue
+            sc = float(row.get("score", 1.0))
+            if sc * 100.0 >= threshold:
+                return (True, int(row.get("x", 0)),
+                        int(row.get("y", 0)), sc)
+        return (False, 0, 0, 0.0)
+
 
 class DetStub:
     def __init__(self, scen, clock):
@@ -310,6 +328,8 @@ def run_golden(path):
     runner._stuck_at_pass = run.get("stuckAtPass", 0) or 0
     runner._emit_block = lambda b: None
     runner._pixel_rgb = lambda det_, x, y: scen.pixel(x, y, clock.ms)
+    runner._image_probe = lambda image_id, region, threshold: scen.image(
+        image_id, threshold, clock.ms)
     runner._emit_hud = lambda txt: emit("hud", text=txt)
 
     def on_set_var(name, value):

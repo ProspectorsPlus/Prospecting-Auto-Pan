@@ -1149,6 +1149,310 @@ finally:
     _sh13.rmtree(_mdir, ignore_errors=True)
 
 # =============================================================================
+print("[14] vision — image nodes + assets")
+# =============================================================================
+# The engine-side image capability: the pure-Python PNG decoder, the
+# template matcher, the four v3 vision nodes through the one _image_probe
+# seam (attribute injection, like on_set_var), the "vision" capability
+# gate, and the app-side validator acceptance.
+import struct as _struct  # noqa: E402
+import zlib as _zlib      # noqa: E402
+import mss.tools as _mt   # noqa: E402
+from prospector_engine import vision as V  # noqa: E402
+
+np14 = po.np
+
+# ---- PNG decoder: mss round-trip (studio_assets are written by mss/Studio) --
+_src = np14.arange(9 * 7 * 3, dtype=np14.uint8).reshape(9, 7, 3)
+_dec = V.decode_png_rgb(_mt.to_png(_src.tobytes(), (7, 9)))
+check("png round-trip (mss.tools.to_png) decodes to the same pixels",
+      _dec.shape == (9, 7, 3) and bool((_dec == _src).all()), _dec.shape)
+
+
+def _png_chunk(tag, body):
+    return (_struct.pack(">I", len(body)) + tag + body
+            + _struct.pack(">I", _zlib.crc32(tag + body) & 0xFFFFFFFF))
+
+
+def _mk_png(arr, filters):
+    """Hand-encode a PNG choosing the scanline filter per row (tests the
+    decoder's unfilter paths; browsers emit 1-4, mss emits 0)."""
+    h, w, ch = arr.shape
+    ctype = {1: 0, 3: 2, 4: 6}[ch]
+    raw = bytearray()
+    prev = bytes(w * ch)
+    for y in range(h):
+        ft = filters[y % len(filters)]
+        line = bytes(arr[y].tobytes())
+        enc = bytearray(line)
+        for i in range(len(line)):
+            a = line[i - ch] if i >= ch else 0
+            b = prev[i]
+            c2 = prev[i - ch] if i >= ch else 0
+            if ft == 1:
+                enc[i] = (line[i] - a) & 0xFF
+            elif ft == 2:
+                enc[i] = (line[i] - b) & 0xFF
+            elif ft == 3:
+                enc[i] = (line[i] - ((a + b) >> 1)) & 0xFF
+            elif ft == 4:
+                pa = abs(b - c2)
+                pb = abs(a - c2)
+                pc = abs(a + b - 2 * c2)
+                pr = a if (pa <= pb and pa <= pc) else (b if pb <= pc else c2)
+                enc[i] = (line[i] - pr) & 0xFF
+        raw.append(ft)
+        raw += enc
+        prev = line
+    ihdr = _struct.pack(">IIBBBBB", w, h, 8, ctype, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + _png_chunk(b"IHDR", ihdr)
+            + _png_chunk(b"IDAT", _zlib.compress(bytes(raw)))
+            + _png_chunk(b"IEND", b""))
+
+
+_arr = (np14.arange(6 * 5 * 3, dtype=np14.uint8).reshape(6, 5, 3) * 7 + 3)
+check("decoder unfilters scanline filters 0-4",
+      bool((V.decode_png_rgb(_mk_png(_arr, [0, 1, 2, 3, 4, 2])) == _arr).all()))
+_gray = np14.arange(4 * 5, dtype=np14.uint8).reshape(4, 5, 1) * 12
+_dg = V.decode_png_rgb(_mk_png(_gray, [0, 2, 1, 4]))
+check("greyscale decodes to HxWx3 (replicated channels)",
+      _dg.shape == (4, 5, 3) and bool((_dg[:, :, 0] == _gray[:, :, 0]).all())
+      and bool((_dg[:, :, 2] == _gray[:, :, 0]).all()), _dg.shape)
+_rgba = np14.zeros((3, 4, 4), np14.uint8)
+_rgba[..., :3] = 200
+_rgba[..., 3] = 7
+_da = V.decode_png_rgb(_mk_png(_rgba, [0, 4]))
+check("rgba decodes and drops alpha",
+      _da.shape == (3, 4, 3) and bool((_da == 200).all()), _da.shape)
+try:
+    V.decode_png_rgb(b"\x89PNG\r\n\x1a\n" + b"junk")
+    check("truncated png refused with a clear error", False)
+except ValueError:
+    check("truncated png refused with a clear error", True)
+_pal = (b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", _struct.pack(">IIBBBBB", 2, 2, 8, 3, 0, 0, 0))
+        + _png_chunk(b"IDAT", _zlib.compress(b"\x00\x00\x00\x00\x00\x00"))
+        + _png_chunk(b"IEND", b""))
+try:
+    V.decode_png_rgb(_pal)
+    check("palette png refused (color type named)", False)
+except ValueError as e:
+    check("palette png refused (color type named)", "color type" in str(e), e)
+
+# ---- matcher ----------------------------------------------------------------
+_big = np14.full((60, 80, 3), 20, np14.uint8)
+_patch = (np14.arange(10 * 12 * 3, dtype=np14.uint8).reshape(10, 12, 3) + 60)
+_big[23:33, 40:52] = _patch
+_r = V.match_template(_big, _patch, 0.9)
+check("matcher finds the patch at its centre with score 1.0",
+      _r["found"] and _r["score"] == 1.0
+      and _r["x"] == 40 + 12 // 2 and _r["y"] == 23 + 10 // 2, _r)
+_r2 = V.match_template(_big, (255 - _patch), 0.9)
+check("matcher rejects below threshold",
+      not _r2["found"] and _r2["score"] < 0.9, _r2)
+check("template larger than the image is a clean miss",
+      not V.match_template(_patch, _big, 0.5)["found"])
+_big2 = np14.zeros((200, 300, 3), np14.uint8)
+_tpl2 = (np14.arange(48 * 52 * 3, dtype=np14.uint8) * 5 + 1).reshape(48, 52, 3)
+_big2[77:125, 133:185] = _tpl2
+_r4 = V.match_template(_big2, _tpl2, 0.95)
+check("stride-sampled search still lands exactly (score 1.0)",
+      _r4["found"] and _r4["score"] == 1.0
+      and _r4["x"] == 133 + 26 and _r4["y"] == 77 + 24, _r4)
+check("asset id rules ([A-Za-z0-9_-]{1,64})",
+      V.asset_id_ok("Btn_ok-2") and not V.asset_id_ok("../evil")
+      and not V.asset_id_ok("") and not V.asset_id_ok("x" * 65)
+      and not V.asset_id_ok(None) and not V.asset_id_ok("a b"))
+
+# ---- schema drift guards ----------------------------------------------------
+check("v3 handler table covers the four vision nodes",
+      all(t in po._SCRIPT_HANDLERS_V3 for t in
+          ("wait_image", "if_image", "click_image", "move_image")))
+check("app schema and engine handler tables agree (v3)",
+      set(po._SCRIPT_HANDLERS_V3) == set(ui.STUDIO3_TYPES),
+      set(po._SCRIPT_HANDLERS_V3) ^ set(ui.STUDIO3_TYPES))
+check("cap tables agree across app and engine",
+      po._SCRIPT3_CAP_OF == ui.STUDIO3_CAP_OF
+      and po._SCRIPT3_CAP_LABEL == ui.STUDIO3_CAP_LABEL
+      and tuple(po._SCRIPT3_CAPS) == tuple(ui.STUDIO3_CAPS))
+
+# ---- runner: the _image_probe seam ------------------------------------------
+install_stubs()
+po.button_down = lambda b, cs=1: ACTIONS.append(("bd", b, cs))
+po.button_up = lambda b, cs=1: ACTIONS.append(("bu", b, cs))
+
+PROBES = []
+
+
+def v14_runner(blocks, probe, ticks=50, caps=("vision",)):
+    r = po.ScriptRunner(json.dumps(v3_script(blocks, list(caps))), "V3")
+    r._image_probe = lambda image_id, region, threshold: (
+        PROBES.append((image_id, region, threshold))
+        or probe(image_id, region, threshold))
+    det = FakeDet()
+    det_live[0] = det
+    for _ in range(ticks):
+        if not po.State.running:
+            break
+        r.tick(det)
+    return r
+
+
+# caps enforcement (same style as the other caps)
+fresh_state()
+r = po.ScriptRunner(json.dumps(v3_script(
+    [{"id": "w", "type": "wait_image", "params": {"image": "btn"}}])), "V3")
+check("undeclared vision cap refuses the script",
+      "does not declare" in r.dead
+      and "read the screen to find images" in r.dead, r.dead)
+r = po.ScriptRunner(json.dumps(v3_script(
+    [{"id": "w", "type": "wait_image", "params": {"image": "btn"}}],
+    caps=["vision"])), "V3")
+check("declared vision cap loads", r.dead == "", r.dead)
+r = po.ScriptRunner(json.dumps({
+    "format": "ppscript", "version": 2, "name": "V2",
+    "blocks": [{"id": "w", "type": "wait_image",
+                "params": {"image": "btn"}}]}), "V2")
+check("v2 does not understand vision blocks",
+      "does not understand" in r.dead, r.dead)
+
+# wait_image: found -> continues; the probe gets id + region + threshold
+fresh_state()
+del PROBES[:]
+v14_runner(
+    [{"id": "w", "type": "wait_image",
+      "params": {"image": "btn", "timeout_ms": 5000, "threshold": 95,
+                 "x1": 10, "y1": 20, "x2": 400, "y2": 300}},
+     {"id": "s", "type": "stop", "params": {"message": "found it"}}],
+    lambda i, reg, thr: (True, 200, 150, 0.99), ticks=5)
+stops = [a for a in ACTIONS if a[0] == "safe_stop"]
+check("wait_image found continues to the next node",
+      len(stops) == 1 and "found it" in stops[0][1], stops)
+check("probe receives id + region + threshold",
+      PROBES and PROBES[0] == ("btn", (10, 20, 400, 300), 95), PROBES[:1])
+
+# wait_image: timeout -> safe stop naming the node (default on_timeout=stop)
+fresh_state()
+v14_runner([{"id": "w", "type": "wait_image",
+             "params": {"image": "btn", "timeout_ms": 120}}],
+           lambda i, reg, thr: (False, 0, 0, 0.0), ticks=3)
+stops = [a for a in ACTIONS if a[0] == "safe_stop"]
+check("wait_image timeout safe-stops naming image and node",
+      len(stops) == 1 and '"btn"' in stops[0][1]
+      and "wait_image" in stops[0][1], stops)
+
+# wait_image: on_timeout=continue keeps walking
+fresh_state()
+v14_runner([{"id": "w", "type": "wait_image",
+             "params": {"image": "btn", "timeout_ms": 120,
+                        "on_timeout": "continue"}},
+            {"id": "k", "type": "tap_key", "params": {"key": "1"}}],
+           lambda i, reg, thr: (False, 0, 0, 0.0), ticks=3)
+check("wait_image on_timeout=continue keeps running",
+      not [a for a in ACTIONS if a[0] == "safe_stop"]
+      and [a for a in ACTIONS if a[0] == "kd"], ACTIONS)
+
+# if_image: children vs else branch
+_ifb = [{"id": "i", "type": "if_image", "params": {"image": "btn"},
+         "children": [{"id": "y", "type": "tap_key", "params": {"key": "1"}}],
+         "else": [{"id": "n", "type": "tap_key", "params": {"key": "2"}}]},
+        {"id": "s", "type": "stop", "params": {"message": "done"}}]
+fresh_state()
+v14_runner(_ifb, lambda i, reg, thr: (True, 5, 5, 1.0), ticks=6)
+kds = [a[1] for a in ACTIONS if a[0] == "kd"]
+check("if_image found runs the children", kds == [po._SCRIPT_KEYS["1"]], kds)
+fresh_state()
+v14_runner(_ifb, lambda i, reg, thr: (False, 0, 0, 0.0), ticks=6)
+kds = [a[1] for a in ACTIONS if a[0] == "kd"]
+check("if_image not-found runs the else branch",
+      kds == [po._SCRIPT_KEYS["2"]], kds)
+
+# click_image: move to match+offset, settle, paired clicks with click_state
+fresh_state()
+v14_runner([{"id": "c", "type": "click_image",
+             "params": {"image": "btn", "button": "right", "clicks": 2,
+                        "dx": 4, "dy": -6}},
+            {"id": "s", "type": "stop", "params": {"message": "done"}}],
+           lambda i, reg, thr: (True, 300, 200, 0.97), ticks=5)
+moves = [a for a in ACTIONS if a[0] == "move"]
+bds = [a for a in ACTIONS if a[0] == "bd"]
+bus = [a for a in ACTIONS if a[0] == "bu"]
+check("click_image moves to match+offset then double right-clicks",
+      moves == [("move", 304, 194)]
+      and bds == [("bd", "right", 1), ("bd", "right", 2)]
+      and bus == [("bu", "right", 1), ("bu", "right", 2)], ACTIONS)
+
+# click_image: miss stops by default, no clicks sent
+fresh_state()
+v14_runner([{"id": "c", "type": "click_image", "params": {"image": "btn"}}],
+           lambda i, reg, thr: (False, 0, 0, 0.0), ticks=3)
+stops = [a for a in ACTIONS if a[0] == "safe_stop"]
+check("click_image miss safe-stops by default (zero clicks)",
+      len(stops) == 1 and "click_image" in stops[0][1]
+      and not [a for a in ACTIONS if a[0] == "bd"], ACTIONS)
+
+# click_image: on_miss=continue skips ahead
+fresh_state()
+v14_runner([{"id": "c", "type": "click_image",
+             "params": {"image": "btn", "on_miss": "continue"}},
+            {"id": "k", "type": "tap_key", "params": {"key": "3"}}],
+           lambda i, reg, thr: (False, 0, 0, 0.0), ticks=3)
+check("click_image on_miss=continue skips ahead",
+      not [a for a in ACTIONS if a[0] == "safe_stop"]
+      and [a for a in ACTIONS if a[0] == "kd"]
+      and not [a for a in ACTIONS if a[0] == "bd"], ACTIONS)
+
+# move_image parks the cursor at match+offset
+fresh_state()
+v14_runner([{"id": "m", "type": "move_image",
+             "params": {"image": "btn", "dx": -10, "dy": 5}},
+            {"id": "s", "type": "stop", "params": {"message": "done"}}],
+           lambda i, reg, thr: (True, 100, 80, 1.0), ticks=4)
+check("move_image parks the cursor at match+offset",
+      [a for a in ACTIONS if a[0] == "move"] == [("move", 90, 85)], ACTIONS)
+
+# a non-id image name safe-stops before any probe runs
+fresh_state()
+del PROBES[:]
+v14_runner([{"id": "w", "type": "wait_image",
+             "params": {"image": "../evil"}}],
+           lambda i, reg, thr: (True, 0, 0, 1.0), ticks=3)
+stops = [a for a in ACTIONS if a[0] == "safe_stop"]
+check("a non-id image name safe-stops before any probe",
+      len(stops) == 1 and "reference image" in stops[0][1]
+      and not PROBES, (stops, PROBES))
+
+# ---- app-side validator -----------------------------------------------------
+_v3v = {"format": "ppscript", "version": 3, "name": "Vision",
+        "caps": ["vision"], "blocks": [
+            {"id": "w1", "type": "wait_image",
+             "params": {"image": "pan_btn", "timeout_ms": 4000,
+                        "threshold": 92, "x1": 0, "y1": 0, "x2": 0, "y2": 0,
+                        "on_timeout": "stop"}},
+            {"id": "i1", "type": "if_image", "params": {"image": "pan_btn"},
+             "children": [{"id": "c1", "type": "click_image",
+                           "params": {"image": "pan_btn", "button": "left",
+                                      "clicks": 1, "dx": 0, "dy": 0,
+                                      "on_miss": "continue"}}],
+             "else": [{"id": "m1", "type": "move_image",
+                       "params": {"image": "pan_btn", "dx": 5, "dy": 5}}]}]}
+r = app._studio_validate_v2(_v3v)
+check("validator accepts the four vision nodes with the cap declared",
+      r["ok"], r["errors"])
+r = app._studio_validate_v2(dict(_v3v, caps=[]))
+check("validator refuses an undeclared vision cap with the label",
+      not r["ok"] and any("read the screen to find images" in e
+                          for e in r["errors"]), r["errors"])
+r = app._studio_validate_v2(dict(_v3v, version=2))
+check("v2 refuses vision nodes as unknown types",
+      not r["ok"] and any("Unknown block type" in e for e in r["errors"]),
+      r["errors"])
+_scr = json.loads(json.dumps(_v3v))
+_scr["caps"] = ["vision", "telepathy"]
+check("unknown cap refused by the validator",
+      not app._studio_validate_v2(_scr)["ok"])
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

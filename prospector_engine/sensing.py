@@ -59,6 +59,9 @@ PIXEL_RATIOS_DEFAULT = {
 CUE_PIXEL_KEY = {"PAN": "PAN_PIX", "SHAKE": "SHAKE_PIX",
                  "DEPOSIT": "DEPOSIT_PIX"}
 
+# vision.testMatch payload ceiling: 1.5 MB of base64 text (PPE1 1.3).
+VISION_PNG_B64_MAX = 1572864
+
 
 class SensingError(Exception):
     """A protocol-mapped sensing failure (the ipc layer turns this into
@@ -912,3 +915,68 @@ class Sensing(object):
             changed.update(("AUTO_CALIBRATE", "WINDOW_RELATIVE"))
         self.store.write(cur, sorted(changed), "cmd")
         return {"saved": sorted(changed)}
+
+    # -- vision (PPE1 1.3): reference-image authoring verbs ----------------
+
+    def vision_test_match(self, png_b64, threshold=None, rect=None):
+        """vision.testMatch: decode the authored template PNG, take a
+        FRESH full grab (it becomes the capture session, like detect),
+        and report the best match {found, x, y, score, w, h} in physical
+        screen px. rect = optional [x1, y1, x2, y2] search crop."""
+        from . import vision as vision_mod
+        np = self.po.np
+        if not isinstance(png_b64, str) or not png_b64:
+            raise SensingError("BAD_PARAMS", "png (base64 string) required")
+        if len(png_b64) > VISION_PNG_B64_MAX:
+            raise SensingError("BAD_PARAMS", "png too large (1.5 MB of "
+                                             "base64 max)")
+        try:
+            raw = base64.b64decode(png_b64, validate=True)
+        except (ValueError, TypeError):
+            raise SensingError("BAD_PARAMS", "png is not valid base64")
+        try:
+            tpl = vision_mod.decode_png_rgb(raw)
+        except ValueError as e:
+            raise SensingError("BAD_PARAMS", str(e))
+        try:
+            thr = int(threshold) if threshold is not None else 90
+        except (TypeError, ValueError):
+            raise SensingError("BAD_PARAMS", "threshold must be an integer")
+        thr = max(50, min(100, thr))
+        with self.lock:
+            self._set_session(self._grab_full())
+            self._cm = None
+            arr = self._shot
+            W, H = self._shot_w, self._shot_h
+            ox = oy = 0
+            if rect is not None:
+                try:
+                    x1, y1, x2, y2 = [int(v) for v in rect]
+                except (TypeError, ValueError):
+                    raise SensingError("BAD_PARAMS",
+                                       "rect must be [x1,y1,x2,y2]")
+                ox, oy = max(0, min(x1, x2)), max(0, min(y1, y2))
+                ex, ey = min(W, max(x1, x2)), min(H, max(y1, y2))
+                if ex - ox < 1 or ey - oy < 1:
+                    raise SensingError("BAD_PARAMS", "rect is empty or "
+                                                     "off screen")
+                arr = arr[oy:ey, ox:ex]
+            img = np.ascontiguousarray(arr[:, :, :3][:, :, ::-1])  # -> RGB
+            r = vision_mod.match_template(img, tpl, thr / 100.0)
+            return {"found": r["found"], "x": ox + r["x"], "y": oy + r["y"],
+                    "score": r["score"], "w": int(tpl.shape[1]),
+                    "h": int(tpl.shape[0])}
+
+    def vision_asset_stat(self, ids):
+        """vision.assetStat: which reference images are installed under
+        <engine home>/studio_assets -> {present: {id: bool}}. Unsafe ids
+        are reported absent (never touch the filesystem with them)."""
+        from . import vision as vision_mod
+        home = os.path.dirname(self.po.CONFIG_FILE)
+        present = {}
+        for i in list(ids)[:200]:
+            key = i if isinstance(i, str) else str(i)
+            present[key] = bool(
+                vision_mod.asset_id_ok(i)
+                and os.path.isfile(vision_mod.asset_path(home, i)))
+        return {"present": present}
