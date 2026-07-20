@@ -1,0 +1,57 @@
+[config] applied 1 setting(s) from prospecting_config.json
+
+Prospecting auto-pan macro for macOS.
+
+THE TWO BARS
+    DIG BAR (vertical, right of the player) -- a TIMED skill bar.
+        Hold LMB; a white line bounces along the bar. Release when the white
+        line is on the GREEN end so it "lands" on green. The macro watches the
+        green pixel and releases the instant the white line crosses it.
+    CAPACITY BAR (horizontal, gray -> yellow, bottom centre) -- NOT timed.
+        Each dig adds yellow. May take one or several digs to fill. When it is
+        FULL (all yellow) we run the empty sequence.
+
+ONE FULL LOOP
+    repeat:
+        dig_once()                 # hold LMB, release when white hits green
+        if capacity_full():        # yellow reached the end of the capacity bar
+            empty_sequence()       # S back into water, W forward + LMB shake,
+                                   # then hold LMB to empty the pan
+    # otherwise keep digging until the capacity bar fills
+
+Hotkeys:
+    F8   -> start / stop the loop
+    Esc  -> quit (always releases keys/mouse first)
+
+
+Dig trigger pixel (1078, 532) (white-line release).
+Capacity-full pixel (1120, 900) (yellow = full).
+Press Ctrl+K to start/stop, Escape to quit.
+
+[RUNNING]
+__RESET__
+[   0.00s] === RUNNING (live trace below) ===
+[   0.00s] LIMBO  /EMPTY   cue[---] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[   0.33s]     dig-probe HIT (round 1.1) -> on land, filling
+[   0.43s]     filled in 1 dig(s)
+[   0.43s] LIMBO  /FULL    cue[---] cap[F-] -> go WATER (S back)
+__PHASE__ water
+[   0.54s]     S back: reached_PAN=True (+0ms deeper, budget 200ms) (100ms)
+[   0.54s] WATER  /FULL    cue[-P-] cap[F-] -> SHAKE
+__PHASE__ shake
+__PHASE__ settle
+[   1.53s]     shake done: started=False emptied=True reached_land=False bail=False retries=0 fails=0 (1000ms)
+[   1.53s] WATER  /EMPTY   cue[-P-] cap[-E] -> DIG-probe (find land)
+__PHASE__ dig
+[   2.54s]     dig-probe HIT (round 1.3) -> on land, filling
+[   2.65s]     filled in 1 dig(s)
+__STATS__ {"cycles": 1, "recoveries": 0, "clean_cycles": 1, "clean_pct": 100.0, "digs": 2, "tracker": false, "script": "", "money_earned": 0, "shards_earned": 0, "money_per_hr": 0, "shards_per_hr": 0, "money_per_pan": 0, "shards_per_pan": 0.0, "dig_clicks": 4, "digs_per_pan": 2.0, "clicks_per_pan": 4.0, "pauses": 0, "cyc_mean_s": 0, "cyc_p50_s": 0, "cyc_p95_s": 0, "cyc_last_s": 0, "finds_count": 0, "find_kg": 0.0, "best_kg": 0.0, "by_rarity": {}, "by_mod": {}, "finds_stack": 0, "finds_lowconf": 0, "loot_value": 0, "loot_per_hr": 0, "total_per_hr": 0, "runtime_s": 2, "pans_per_hr": 0, "safe_stops": 0, "hard_stops": 0, "relics_used": 0, "nudges": 0, "shake_misses": 0, "stop_reason": "", "relics": [], "input_lag": {"n": 0, "mean_ms": 0.0, "max_ms": 0.0}}
+[   2.65s] LIMBO  /FULL    cue[---] cap[F-] -> go WATER (S back)
+__PHASE__ water
+[   2.85s]     S back: reached_PAN=False (+0ms deeper, budget 200ms) (200ms)
+[   2.85s] LIMBO  /FULL    cue[---] cap[F-] -> go WATER (S back)
+__PHASE__ water
+[QUIT]
+[   3.00s]     S back: reached_PAN=False (+0ms deeper, budget 400ms) (150ms)
+Stopped, all inputs released.

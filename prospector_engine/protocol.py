@@ -16,13 +16,17 @@ import json
 MAGIC = "PPE1"
 PREFIX = MAGIC + " "
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 3   # 1.1: adds the "error" stop reason (fatal-exception path)
+PROTOCOL_MINOR = 4   # 1.1: adds the "error" stop reason (fatal-exception path)
                      # 1.2: adds the scriptV3 capability (PPScript v3 accepted
                      #      by script.setActive; PPSCRIPT_V3.md in Studio)
                      # 1.3: adds the vision capability -- studio_assets image
                      #      templates, the four v3 vision nodes (wait_image /
                      #      if_image / click_image / move_image), and the
                      #      vision.testMatch + vision.assetStat verbs
+                     # 1.4: adds plan.describe -- the canonical Cycle Plan
+                     #      resolved from the same globals the Supervisor
+                     #      executes with (prospector_engine/cycleplan.py,
+                     #      docs/CANONICAL_CYCLE_PLAN.md section 2.1)
 
 # ---- ack error codes (closed set, protocol section 3.3) ---------------------
 E_UNSUPPORTED = "UNSUPPORTED"
@@ -79,6 +83,7 @@ COMMANDS = {
     "calibration.savePixels": "fast",
     "vision.testMatch": "capture",
     "vision.assetStat": "fast",
+    "plan.describe": "fast",
     "recorder.start": "fast",
     "recorder.stop": "slow",
     "recorder.status": "fast",

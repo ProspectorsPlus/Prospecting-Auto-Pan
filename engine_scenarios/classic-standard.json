@@ -1,0 +1,17 @@
+{
+  "name": "classic-standard",
+  "_comment": "Canonical STANDARD Classic cycle for the trace harness (spec A deliverable 4): toggle at 0, one full healthy cycle -- dig-probe registers and fills (capacity keyframed up), go_water reaches the Pan cue inside the first budget, do_shake drains to empty within SHAKE_HOLD_MS with the momentum W held (no Deposit cue -> W rides the whole drain), POST_SHAKE_SETTLE, then a second dig leg fills again; the Pan cue is gone by then so the final water legs time out until the scheduled quit. Modeled on the Studio repo's engine/scenarios/classic-run.json.",
+  "window": [0, 0, 1440, 900],
+  "config": {
+    "RELICS_ENABLED": false,
+    "WEBHOOK_URL": "",
+    "WEBHOOK_SECRET": ""
+  },
+  "schedule": [[0, "toggle"], [3000, "quit"]],
+  "cues": { "PAN": [[550, 2350]] },
+  "capacity": [[0, 0.0], [250, 0.0], [450, 1.0], [900, 1.0], [1900, 0.0], [2450, 0.0], [2650, 1.0], [600000, 1.0]],
+  "screen": [{ "rect": [0, 0, 1, 1], "rgb": [16, 16, 16], "from_ms": 0 }],
+  "_screen_comment": "The benign 1x1 rect flips the sim's capacity paint into whole-box mode (per-column detail is only for the legacy goldens' small boxes); without it the capacity_full region straddles the strip edge and reads a diluted mean that is never yellow, so FULL is unreachable in full-frame grabs.",
+  "duration_ms": 600000,
+  "expect": { "webhook_events_include": ["start"] }
+}

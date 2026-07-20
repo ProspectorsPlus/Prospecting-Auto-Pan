@@ -1053,6 +1053,28 @@ class Server(object):
             except Exception as e:
                 self._ack_err(cid, protocol.E_INTERNAL,
                               "vision failure: %r" % (e,), None)
+        elif cmd == "plan.describe":
+            # 1.4: the canonical Cycle Plan. Legal idle or running -- it
+            # only READS globals. While idle it first re-binds the config
+            # exactly the way tick_hook does at run start, so the plan
+            # always describes what the NEXT run will execute with
+            # (settings.set applies at run start; the plan must agree).
+            # While a run exists the live (already-bound) globals are the
+            # truth and are read as-is -- never re-bind mid-run.
+            from . import cycleplan
+            with self.state_lock:
+                if not (st.running or st.paused):
+                    try:
+                        po.load_config()
+                    except Exception:
+                        pass
+                try:
+                    plan = cycleplan.resolve_cycle_plan(po)
+                except Exception as e:
+                    self._ack_err(cid, protocol.E_INTERNAL,
+                                  "plan resolution failed: %r" % (e,), None)
+                    return
+            self._ack_ok(cid, {"plan": plan})
         elif cmd.startswith("calibration.") and cmd in protocol.COMMANDS:
             self._dispatch_calibration(cid, cmd, params)
         else:
