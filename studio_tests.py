@@ -1571,6 +1571,195 @@ finally:
     _sh15.rmtree(_mdir, ignore_errors=True)
 
 # =============================================================================
+print("[16] classic handoff + run identity (Track E)")
+# =============================================================================
+# Prospector Studio pushes a CLASSIC preset: the effective build lands in
+# prospecting_builds.json and studio_push.json gains kind=="classic". The
+# macro applies it at boot + 1 Hz (exactly once per stamp), defers while a
+# run is live (push_pending in the mirror), and refuses malformed pushes
+# cleanly. Runs gain a shared identity: engine run_id -> history entry id,
+# mirror run_id; entries record mode + pushed rev provenance.
+import shutil as _sh16
+import tempfile as _tf16
+
+_mdir = _tf16.mkdtemp()
+_saved_attrs = {k: getattr(app, k) for k in
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR", "STATUS_FILE",
+                 "PUSH_FILE", "BUILDS_FILE", "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
+app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.STATUS_FILE = os.path.join(_mdir, "studio_macro_status.json")
+app.PUSH_FILE = os.path.join(_mdir, "studio_push.json")
+app.BUILDS_FILE = os.path.join(_mdir, "prospecting_builds.json")
+app.DATA_DIR = _mdir
+app.STUDIO_LAUNCH = True
+app.STUDIO_SCRIPT = "Pushed Build"
+app._STUDIO_LIST_CACHE["key"] = None
+api_c = None
+try:
+    api_c = app.Api()
+    # deterministic: stop the 1 Hz loop and drive the application by hand
+    api_c._studio_status_stop.set()
+    _t16 = getattr(api_c, "_studio_status_thread", None)
+    if _t16 is not None:
+        _t16.join(timeout=3.0)
+
+    tpl = json.loads(json.dumps(app._studio_templates()[0]))
+    tpl["name"] = "Pushed Build"
+    check("handoff fixture saves clean", api_c.studio_save(tpl, None)["ok"])
+    api_c.studio_mode("studio")      # active build: the handoff must switch away
+    with open(app.BUILDS_FILE, "w") as f:
+        json.dump({"Speed Build": {"DIG_CLICK_MS": 777, "TRACKER_MODE": False,
+                                   "_meta": {"desc": "", "created": 1,
+                                             "updated": 1, "used": 0}}}, f)
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Speed Build", "rev": "a1b2c3d4",
+                   "kind": "classic", "at": 1111, "app": "ProspectorStudio"}, f)
+    api_c._apply_classic_push()
+    d = app._studio_load()
+    cfg = app.load_saved()
+    check("classic push switches the top-level mode to CLASSIC",
+          app._studio_ui_mode(d) == "classic" and d["active"] == "",
+          (d["mode"], d["active"]))
+    check("classic push merges the build into the config (load_build)",
+          cfg.get("DIG_CLICK_MS") == 777, cfg.get("DIG_CLICK_MS"))
+    check("applied stamp recorded in the scripts-store meta",
+          d["meta"].get("last_classic_push")
+          == {"name": "Speed Build", "rev": "a1b2c3d4", "at": 1111},
+          d["meta"].get("last_classic_push"))
+    check("nothing pending after a clean apply", api_c._push_pending is False)
+    check("toast queued for the UI",
+          "Speed Build" in (api_c._classic_toast or ""), api_c._classic_toast)
+    used0 = app._read_json(app.BUILDS_FILE, {})["Speed Build"]["_meta"]["used"]
+    api_c._apply_classic_push()      # same stamp again
+    used1 = app._read_json(app.BUILDS_FILE, {})["Speed Build"]["_meta"]["used"]
+    check("the same stamp is applied exactly once", used0 == 1 and used1 == 1,
+          (used0, used1))
+
+    # a run is live: the fresh stamp defers, the mirror says push_pending
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Speed Build", "rev": "55667788",
+                   "kind": "classic", "at": 2222}, f)
+    api_c.proc = object()
+    api_c._apply_classic_push()
+    check("push deferred while a run is live", api_c._push_pending is True)
+    check("deferred push does not touch the applied stamp",
+          app._studio_load()["meta"]["last_classic_push"]["rev"] == "a1b2c3d4")
+    api_c._last_stats = {"cycles": 3, "runtime_s": 20, "run_id": "r99-1-2"}
+    snap = api_c._studio_status_snapshot()
+    check("status mirror carries run_id + push_pending",
+          snap.get("run_id") == "r99-1-2"
+          and snap.get("push_pending") is True,
+          {k: snap.get(k) for k in ("run_id", "push_pending")})
+    api_c.proc = None
+    api_c._apply_classic_push()      # run over: the deferred push lands
+    check("deferred push applies once the run ends",
+          app._studio_load()["meta"]["last_classic_push"]["rev"] == "55667788"
+          and api_c._push_pending is False)
+    check("mirror drops push_pending after the apply",
+          api_c._studio_status_snapshot().get("push_pending") is False)
+
+    # malformed pushes: ignored + logged once, never a crash, never applied
+    with open(app.PUSH_FILE, "w") as f:
+        f.write("{this is not json")
+    api_c._apply_classic_push()
+    check("garbled push file ignored cleanly",
+          api_c._classic_push_warned is True
+          and app._studio_load()["meta"]["last_classic_push"]["rev"]
+          == "55667788")
+    api_c._classic_push_warned = False
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "kind": "classic", "rev": "ffffffff", "at": 9}, f)
+    api_c._apply_classic_push()
+    check("classic push without a name refused cleanly",
+          api_c._classic_push_warned is True)
+    api_c._classic_push_warned = False
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Ghost", "rev": "eeeeeeee",
+                   "kind": "classic", "at": 10}, f)
+    api_c._apply_classic_push()
+    check("classic push naming a missing build refused cleanly",
+          api_c._classic_push_warned is True
+          and app._studio_load()["meta"]["last_classic_push"]["rev"]
+          == "55667788")
+    # a build/script publish stamp (no classic kind) is not the handoff's
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Pushed Build", "rev": "ab12cd34",
+                   "at": 3333}, f)
+    api_c._classic_push_warned = False
+    api_c._apply_classic_push()
+    check("non-classic publish stamps are left alone",
+          api_c._classic_push_warned is False
+          and app._studio_load()["meta"]["last_classic_push"]["rev"]
+          == "55667788")
+
+    # run identity + provenance land in the history entry
+    api_c._run_active = True
+    api_c._run_mode = "studio"
+    api_c._run_rev = "ab12cd34"
+    api_c._events = []
+    api_c._last_stats = {"cycles": 5, "runtime_s": 60,
+                         "run_id": "r170000-42-1", "stop_reason": "manual"}
+    api_c._save_history("manual")
+    hist = app._read_json(os.path.join(_mdir, "run_history.json"), [])
+    check("history entry carries id/mode/rev",
+          bool(hist) and hist[-1].get("id") == "r170000-42-1"
+          and hist[-1].get("mode") == "studio"
+          and hist[-1].get("rev") == "ab12cd34",
+          hist[-1] if hist else None)
+    api_c._run_active = True
+    api_c._run_mode = ""
+    api_c._run_rev = ""
+    api_c._last_stats = {"cycles": 2, "runtime_s": 30}
+    api_c._save_history("manual")
+    hist = app._read_json(os.path.join(_mdir, "run_history.json"), [])
+    check("a legacy run without run_id fabricates no id",
+          bool(hist) and "id" not in hist[-1] and "rev" not in hist[-1],
+          hist[-1] if hist else None)
+
+    # analytics: the REAL engine keys pass through untouched
+    api_c._last_stats = {"cycles": 4, "shake_retries": 3, "shake_fails": 1}
+    dd = api_c.analytics_data()
+    check("analytics_data passes shake_retries/shake_fails through",
+          dd["stats"].get("shake_retries") == 3
+          and dd["stats"].get("shake_fails") == 1, dd["stats"])
+
+    # rendered-surface truth (string checks, the way the suite asserts markup)
+    html16 = app.build_html()
+    check("STUDIO BUILD shows the live step card (mode-studio CSS)",
+          'body.studiolaunch.mode-studio #runscriptcard{display:block}'
+          in html16)
+    check("STUDIO SCRIPT keeps its step card",
+          'body.studiolaunch.mode-script .scriptcard{display:block}'
+          in html16)
+    check("step card label follows the mode",
+          "'build step':'current step'" in html16)
+    for _t16n in ("hist", "cal"):
+        check("both Studio modes keep the %s tab visible" % _t16n,
+              ('mode-studio .tab[data-tab="%s"]' % _t16n) not in html16
+              and ('mode-script .tab[data-tab="%s"]' % _t16n) not in html16)
+    check("analytics shake card honest about absent data",
+          "s.shake_retries!=null" in app.ANALYTICS_HTML
+          and "s.shake_fails!=null" in app.ANALYTICS_HTML)
+    hud16 = app._hud_html()
+    check("HUD draws an as-observed strip for BUILD runs",
+          "drawObserved" in hud16 and "build phases, as observed" in hud16)
+    check("HUD hides the classic diagram for SCRIPT runs",
+          "scriptmode" in hud16 and "MODE==='script'" in hud16)
+    check("HUD classic diagram models CLASSIC runs only",
+          "MODE!=='classic'" in hud16)
+finally:
+    if api_c is not None:
+        api_c._studio_status_stop.set()
+        _t16 = getattr(api_c, "_studio_status_thread", None)
+        if _t16 is not None:
+            _t16.join(timeout=3.0)
+    for k, v in _saved_attrs.items():
+        setattr(app, k, v)
+    app._STUDIO_LIST_CACHE["key"] = None
+    _sh16.rmtree(_mdir, ignore_errors=True)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

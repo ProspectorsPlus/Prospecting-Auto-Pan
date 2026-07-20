@@ -1933,6 +1933,11 @@ class Api:
         self._script_hud = ""      # latest script hud_text line
         self._run_active = False  # a run is in progress (write history once)
         self._macro_status = "off"  # off/idle/running/paused/safe-pause/recovering/stopped
+        self._run_mode = ""       # provenance: mode the current run started under
+        self._run_rev = ""        # provenance: pushed revision it started from
+        self._push_pending = False   # classic push deferred while a run is live
+        self._classic_push_warned = False  # malformed push: log once, not per loop
+        self._classic_toast = None   # applied-push toast queued until the UI is up
         self._studio_status_stop = threading.Event()
         if STUDIO_LAUNCH:
             # Live state mirror for the Prospector Studio window. A leftover
@@ -1940,6 +1945,12 @@ class Api:
             try:
                 os.remove(STATUS_FILE)
             except OSError:
+                pass
+            # Classic handoff: apply a pending Studio classic push at boot
+            # (the 1 Hz loop keeps applying later ones).
+            try:
+                self._apply_classic_push()
+            except Exception:
                 pass
             self._studio_status_thread = threading.Thread(
                 target=self._studio_status_loop, daemon=True)
@@ -1951,6 +1962,95 @@ class Api:
         only here). {} when absent/unreadable."""
         info = _read_json(PUSH_FILE, None)
         return info if isinstance(info, dict) else {}
+
+    # ---- classic handoff: Studio pushes a classic preset -------------------
+    def _apply_classic_push(self):
+        """Prospector Studio's classic-preset handoff (Track E, contract
+        section 2). Studio writes the effective build into
+        prospecting_builds.json and stamps studio_push.json with
+        kind=="classic"; this app applies the stamp at boot and at 1 Hz:
+        switch the top-level mode to CLASSIC, load_build (the existing
+        merge semantics), record the applied stamp in the scripts-store
+        meta, and toast. While a run is live the application is DEFERRED
+        (push_pending in the status mirror) and re-checked each loop. A
+        malformed push file is ignored and logged once -- never a retry
+        storm, never a crash."""
+        if not STUDIO_LAUNCH:
+            return
+        raw = _read_json(PUSH_FILE, None)
+        if raw is None:
+            if os.path.exists(PUSH_FILE) and not self._classic_push_warned:
+                self._classic_push_warned = True
+                print("[studio] push file unreadable; ignoring it")
+            self._push_pending = False
+            return
+        if not isinstance(raw, dict) or raw.get("kind") != "classic":
+            # a build/script publish stamp (or pre-kind file): not ours
+            self._push_pending = False
+            return
+        name = raw.get("name")
+        rev = raw.get("rev")
+        if not isinstance(name, str) or not name.strip() \
+                or not isinstance(rev, str) or not rev:
+            if not self._classic_push_warned:
+                self._classic_push_warned = True
+                print("[studio] classic push stamp malformed; ignoring it")
+            self._push_pending = False
+            return
+        stamp = {"name": name, "rev": str(rev), "at": raw.get("at")}
+        d = _studio_load()
+        if d["meta"].get("last_classic_push") == stamp:
+            self._push_pending = False       # already applied, nothing new
+            return
+        if self.proc is not None:
+            # a run is live: never yank its config -- surface the pending
+            # update and re-check when the run ends (each loop pass)
+            self._push_pending = True
+            return
+        builds = _read_json(BUILDS_FILE, {})
+        if not isinstance(builds, dict) or (name not in builds
+                                            and name not in DEFAULT_BUILDS):
+            if not self._classic_push_warned:
+                self._classic_push_warned = True
+                print("[studio] classic push names a build that is not in "
+                      "the library (%r); ignoring it" % name)
+            self._push_pending = False
+            return
+        r = self.studio_mode("classic")      # clears active, restores tracker
+        if not isinstance(r, dict) or not r.get("ok"):
+            return                           # re-checked next loop pass
+        if self.load_build(name) is None:
+            return
+        d = _studio_load()
+        d["meta"]["last_classic_push"] = stamp
+        try:
+            _studio_write(d)
+        except OSError:
+            return
+        self._push_pending = False
+        self._classic_push_warned = False
+        self._classic_toast = ('Loaded "%s" from Prospector Studio '
+                               '— press Start (Ctrl+K)' % name)
+        self._flush_classic_toast()
+
+    def _flush_classic_toast(self):
+        """The applied-push toast waits until the main window's JS is real:
+        evaluate_js returns True only once window.toast exists, so a toast
+        can never be dropped into a not-yet-loaded page."""
+        t = getattr(self, "_classic_toast", None)
+        if not t or _window is None:
+            return
+        try:
+            ok = _window.evaluate_js(
+                "(function(){if(!window.toast)return false;"
+                "toast(%s);"
+                "window.modeRefresh&&modeRefresh();"
+                "window.stRefresh&&stRefresh();"
+                "return true})()" % json.dumps(t))
+            if ok:
+                self._classic_toast = None
+        except Exception:
+            pass
 
     def _studio_status_snapshot(self):
         """Everything the Studio window mirrors, cheap enough for 1 Hz."""
@@ -1981,6 +2081,11 @@ class Api:
                 "stop_reason": str(st.get("stop_reason") or ""),
                 "script": dict(sb) if isinstance(sb, dict) else None,
                 "params": pvals,
+                # shared run identity (engine meta run_id, Track C) and the
+                # classic-handoff defer flag: Studio can show "update
+                # pending" instead of wondering why nothing switched.
+                "run_id": str(st.get("run_id") or ""),
+                "push_pending": bool(getattr(self, "_push_pending", False)),
                 "stats": stats}
 
     def _studio_status_loop(self):
@@ -1990,6 +2095,14 @@ class Api:
         seq = 0
         last = None
         while not self._studio_status_stop.is_set():
+            # Classic handoff (contract section 2): each pass applies a new
+            # Studio classic push when idle, or re-checks a deferred one the
+            # moment the run ends; the toast waits for the UI to exist.
+            try:
+                self._apply_classic_push()
+                self._flush_classic_toast()
+            except Exception:
+                pass
             try:
                 snap = self._studio_status_snapshot()
             except Exception:
@@ -4069,6 +4182,19 @@ class Api:
                 err = self._studio_park_tracker(sd)
                 if err:
                     return "error: %s" % err
+        # Run provenance (Track E): the mode + pushed revision this run
+        # actually starts under -- stamped into the history entry so runs
+        # stay comparable after the fact. Standalone derives the same truth
+        # from the scripts store (an active entry runs instead of classic).
+        try:
+            _sdp = sd if STUDIO_LAUNCH else _studio_load()
+            self._run_mode = _studio_ui_mode(_sdp)
+            _pp = self._studio_push_info()
+            self._run_rev = (str(_pp.get("rev") or "")
+                             if _sdp["active"]
+                             and _pp.get("name") == _sdp["active"] else "")
+        except Exception:
+            self._run_mode, self._run_rev = "", ""
         self._report_usage()
         # When frozen there is no python.exe to run the .py macro, so re-launch
         # THIS exe with --run-macro (handled in main()). In dev, run the script.
@@ -4110,6 +4236,19 @@ class Api:
         entry = dict(st)
         entry["reason"] = reason or st.get("stop_reason") or "manual"
         entry["ended"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        # Shared run identity + provenance (Track E): the engine's persistent
+        # run_id becomes the entry id, and the entry records which mode (and
+        # pushed revision) the run started under. Absent truth stays absent:
+        # a legacy engine without run_id writes no id, never a fake one.
+        _rid = str(st.get("run_id") or "")
+        if _rid:
+            entry["id"] = _rid
+        _rmode = getattr(self, "_run_mode", "")
+        if _rmode:
+            entry["mode"] = _rmode
+        _rrev = getattr(self, "_run_rev", "")
+        if _rrev:
+            entry["rev"] = _rrev
         if self._synthetic_stop:
             # host-synthesized after an engine crash (protocol section 9.2):
             # never presented as an engine-emitted final
@@ -5278,6 +5417,7 @@ def _hud_html():
  .evt .warn{color:#e0a05f}.evt .bad{color:#e07b5f}.evt .good{color:#9bc07e}
  .hint{color:#524b40;font-size:9.5px;text-align:center}
  .gtimer{color:#d8a34a;font-size:12px;font-weight:700;text-align:center;background:rgba(168,121,74,.14);border:1px solid rgba(168,121,74,.32);border-radius:7px;padding:4px 8px;margin:2px 0;font-variant-numeric:tabular-nums}
+ body.scriptmode #hscript,body.scriptmode #hscripthud{font-size:13.5px;padding:6px 10px}
 </style></head><body><div class="wrap">
  <div class="hd"><span class="led" id="led"></span><span class="state" id="state">idle</span>
    <span class="sub" id="sub"></span><span class="hudx" id="hudx" title="Hide the HUD" onclick="try{window.pywebview.api.hud_toggle()}catch(e){}">&#10005;</span></div>
@@ -5287,7 +5427,7 @@ def _hud_html():
  <div class="gtimer" id="hgtimer" style="display:none"></div>
  <div class="gtimer" id="hscript" style="display:none"></div>
  <div class="gtimer" id="hscripthud" style="display:none"></div>
- <div class="ttl">cycle, live</div>
+ <div class="ttl" id="hcycttl">cycle, live</div>
  <svg id="hudsvg"></svg>
  <div class="ttl">events</div>
  <div class="evt" id="hevt"></div>
@@ -5300,7 +5440,28 @@ def _hud_html():
  const LABEL={dig:'DIGGING',water:'HOLD S to water',glide:'HOLD W glide',
    shake:'SHAKING',settle:'SETTLING',recover:'RECOVERING'};
  let cur={stage:null,t0:0},runState='idle';
- function rebuild(){if(!VALS)return;MODEL=cycModel(VALS,AB||{});TOTAL=Math.max(MODEL.cap,1);
+ // HUD honesty: the classic-settings cycle diagram describes only CLASSIC
+ // runs. STUDIO BUILD runs get a neutral "as observed" strip driven by the
+ // engine's real run.phase events (dig/water/shake, Track C); STUDIO SCRIPT
+ // runs hide the diagram entirely -- the script step + hud line ARE the
+ // truth there. Nothing estimated, no fake zeros.
+ let MODE='classic',OBS='';
+ const OBSSEG=[['dig','#a8794a','DIG'],['water','#6ba1b5','WATER'],['shake','#caa06e','SHAKE']];
+ function applyMode(){var t=document.getElementById('hcycttl'),s=document.getElementById('hudsvg');
+   if(MODE==='script'){document.body.classList.add('scriptmode');
+     if(t)t.style.display='none';if(s)s.style.display='none';MODEL=null;SPANS=null;return;}
+   document.body.classList.remove('scriptmode');
+   if(t)t.style.display='';if(s)s.style.display='';
+   if(MODE==='studio'){if(t)t.textContent='build phases, as observed';
+     MODEL=null;SPANS=null;drawObserved();}
+   else{if(t)t.textContent='cycle, live';rebuild();}}
+ function drawObserved(){const svg=document.getElementById('hudsvg');if(!svg)return;
+   const W=356,H=64,bw=(W-8)/3;let d='';
+   OBSSEG.forEach((s,i)=>{const x=4+i*bw,on=OBS===s[0];
+     d+='<rect x="'+(x+1)+'" y="8" width="'+(bw-2)+'" height="26" rx="3" fill="'+s[1]+'" fill-opacity="'+(on?'0.95':'0.25')+'"'+(on?' stroke="#ece0d0" stroke-opacity=".8"':'')+'/>';
+     d+='<text x="'+(x+bw/2)+'" y="56" fill="'+(on?'#ece0d0':'#6a6253')+'" font-size="9" text-anchor="middle">'+s[2]+'</text>';});
+   svg.setAttribute('viewBox','0 0 '+W+' '+H);svg.innerHTML=d;}
+ function rebuild(){if(!VALS||MODE!=='classic')return;MODEL=cycModel(VALS,AB||{});TOTAL=Math.max(MODEL.cap,1);
    SPANS={};let t=0;
    MODEL.segs.forEach(s=>{const sp=SPANS[s.stage]||(SPANS[s.stage]=[t,t]);
      sp[1]=t+s.hi;if(sp[0]>t)sp[0]=t;t+=s.hi;});
@@ -5327,9 +5488,12 @@ def _hud_html():
    const t=Math.min(sp[0]+el,sp[1]);
    const W=356,L=4,R=4;const xx=L+(W-L-R)*t/TOTAL;
    cl.setAttribute('x1',xx);cl.setAttribute('x2',xx);cl.setAttribute('opacity','0.95');}
- window.hudPhase=function(p){cur={stage:MAP[p]||null,t0:performance.now()};
+ window.hudPhase=function(p){
+   if(MODE==='studio'){if(p==='dig'||p==='water'||p==='shake'){OBS=p;drawObserved();}}
+   else cur={stage:MAP[p]||null,t0:performance.now()};
    const st=document.getElementById('state');
-   if(LABEL[p])st.textContent=LABEL[p];else st.textContent=(p||'').toUpperCase();};
+   if(MODE==='studio')st.textContent=(p||'').toUpperCase();
+   else if(LABEL[p])st.textContent=LABEL[p];else st.textContent=(p||'').toUpperCase();};
  window.hudGeode=function(ms,label){const el=document.getElementById('hgtimer');if(!el)return;
    if(window._hgInt){clearInterval(window._hgInt);window._hgInt=null;}
    if(!ms||ms<=0){el.style.display='none';return;}
@@ -5364,7 +5528,7 @@ def _hud_html():
    const d=document.createElement('div');d.className='e good';
    d.textContent='◆ '+(f.mod?f.mod+' ':'')+f.name+' '+f.kg+'kg';
    box.prepend(d);while(box.children.length>4)box.removeChild(box.lastChild);};
- window.hudReset=function(){boot();document.getElementById('hevt').innerHTML='';
+ window.hudReset=function(){OBS='';boot();document.getElementById('hevt').innerHTML='';
    var sc=document.getElementById('hscript');if(sc){sc.style.display='none';sc.textContent='';}
    var sh=document.getElementById('hscripthud');if(sh){sh.style.display='none';sh.textContent='';}};
  window.hudScript=function(p){const el=document.getElementById('hscript');if(!el||!p)return;
@@ -5376,7 +5540,9 @@ def _hud_html():
    if(!t){el.style.display='none';el.textContent='';return;}
    el.style.display='block';el.textContent=t;};
  async function boot(){try{const st=await window.pywebview.api.get_state();
-   VALS=st.values||{};AB=st.autobuild||{};rebuild();}catch(e){}}
+   VALS=st.values||{};AB=st.autobuild||{};
+   MODE=(st.studio_mode==='studio'||st.studio_mode==='script')?st.studio_mode:'classic';
+   applyMode();}catch(e){}}
  window.addEventListener('pywebviewready',()=>{boot();tick();});
  setTimeout(()=>{boot();tick();},700);
 </script></body></html>"""
@@ -6471,10 +6637,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
   font-size:12px;padding:4px 8px;width:110px}
  .sprow input:focus,.sprow select:focus{outline:none;border-color:var(--accent)}
  .sp-unit{color:var(--dim);font-size:11px;min-width:24px}
- /* Script-run card (STUDIO SCRIPT mode, Run tab + Script tab) */
+ /* Live step card: STUDIO SCRIPT (Run tab + Script tab) and STUDIO BUILD
+    (Run tab, labeled "build step") -- the engine emits script.block for
+    both kinds, so hiding it for builds would be a styling lie. */
  .scriptcard{margin:0 2px 12px;padding:12px 14px;border:1px solid var(--line2);
   border-radius:12px;background:var(--bg2);display:none}
  body.studiolaunch.mode-script .scriptcard{display:block}
+ body.studiolaunch.mode-studio #runscriptcard{display:block}
  .scr-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
  .scr-name{font-weight:700;font-size:13.5px}
  .scr-step{margin-top:7px;color:var(--txt);font-size:12.5px;font-variant-numeric:tabular-nums}
@@ -8303,6 +8472,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      if(cur&&getComputedStyle(cur).display==='none'){
        var tb=document.querySelector('.tab[data-tab="'+HOMETAB[MODE]+'"]');
        if(tb)tb.click();}
+     // the live step card serves both Studio modes: label it honestly
+     var sl2=document.querySelector('#rsc_step .lbl');
+     if(sl2)sl2.textContent=(MODE==='studio')?'build step':'current step';
      if(window.sthdrRefresh)window.sthdrRefresh();
      if(window.schdrRefresh)window.schdrRefresh();}
    async function refresh(){var st;try{st=await window.pywebview.api.get_state();}catch(e){return;}
@@ -8361,8 +8533,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var t=(p.type||'?')+' \u00b7 '+(p.id||'?')
        +(typeof p.pass!=='undefined'?(' \u00b7 pass '+p.pass):'')
        +(typeof p.n!=='undefined'?(' \u00b7 step '+p.n):'');
+     var lbl=document.body.classList.contains('mode-studio')?'build step':'current step';
      ['#rsc_step','#ssc_step'].forEach(function(id){var el=$(id);if(el)
-       el.innerHTML='<span class="lbl">current step</span> '+_esc(t);});};
+       el.innerHTML='<span class="lbl">'+lbl+'</span> '+_esc(t);});};
    window.setScriptHud=function(t){setTxt('#rsc_hud',t||'');setTxt('#ssc_hud',t||'');};
    window.schdrRefresh=async function(){
      var h=$('#schdr');if(!h)return;
@@ -8373,7 +8546,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var rows=(r&&r.scripts||[]).filter(function(s){return s.kind==='script';});
      var row=rows.filter(function(s){return s.active;})[0]
         ||rows.filter(function(s){return s.name===(st.studio_script||'');})[0];
-     if(!row){h.style.display='none';setTxt('#ssc_name','');setTxt('#rsc_name','');return;}
+     // the Run-tab card belongs to whichever Studio mode is active:
+     // mode-studio's build header owns it there (sthdrRefresh)
+     var msc=document.body.classList.contains('mode-script');
+     if(!row){h.style.display='none';setTxt('#ssc_name','');if(msc)setTxt('#rsc_name','');return;}
      var rev='';try{var pi=await window.pywebview.api.studio_push_info();
        if(pi&&pi.ok&&pi.name===row.name)rev=pi.rev||'';}catch(e){}
      h.style.display='block';
@@ -8391,8 +8567,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      if(row.caps&&row.caps.length)meta.push('uses: '+row.caps.join(', '));
      if(row.description)meta.push(row.description);
      h.querySelector('.sth-meta').textContent=meta.join(' \u00b7 ');
-     setTxt('#ssc_name',row.name);setTxt('#rsc_name',row.name);
-     var rv=$('#rsc_rev');if(rv){rv.style.display=rev?'':'none';if(rev)rv.textContent='rev '+rev;}
+     setTxt('#ssc_name',row.name);if(msc)setTxt('#rsc_name',row.name);
+     var rv=$('#rsc_rev');if(rv&&msc){rv.style.display=rev?'':'none';if(rev)rv.textContent='rev '+rev;}
      $('#sch_open').onclick=function(){window.pywebview.api.studio_open_in_studio(null,row.name);};
      $('#sch_reload').onclick=async function(){
        var s2;try{s2=await window.pywebview.api.get_state();}catch(e){s2=null;}
@@ -8521,6 +8697,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var meta=[];if(steps!==null)meta.push(steps+' step'+(steps===1?'':'s'));
      if(verdict)meta.push(verdict);
      h.querySelector('.sth-meta').textContent=meta.join(' \u00b7 ');
+     // STUDIO BUILD: the Run-tab live step card shows this build's name and
+     // revision (the engine emits script.block for build runs too)
+     if(document.body.classList.contains('mode-studio')){
+       var rn=$('#rsc_name');if(rn)rn.textContent=name;
+       var rv2=$('#rsc_rev');if(rv2){rv2.style.display=rev?'':'none';
+         if(rev)rv2.textContent='rev '+rev;}}
      $('#sth_reload').onclick=async function(){
        var s2;try{s2=await window.pywebview.api.get_state();}catch(e){s2=null;}
        if(s2&&s2.running){toast('Stop the run first \u2014 reloading replaces the build.');return;}
@@ -9076,7 +9258,7 @@ window.renderAnalytics=function(root,s,finds){
   h+=sec('Reliability')+'<div class="agrid">';
   h+=card('Clean cycles',(s.clean_pct!=null?s.clean_pct+'%':'-'),(s.clean_cycles||0)+' of '+(s.cycles||0));
   h+=card('Recoveries',s.recoveries||0,(s.nudges||0)+' nudges · '+(s.shake_misses||0)+' shake misses');
-  h+=card('Shake retries',s.shake_retries||0,(s.shake_fails||0)+' fails');
+  h+=card('Shake retries',(s.shake_retries!=null?s.shake_retries:'—'),(s.shake_fails!=null?(s.shake_fails+' fails'):'—'));
   h+=card('Stops / pauses',(s.safe_stops||0)+' / '+(s.hard_stops||0),(s.pauses||0)+' pauses · '+(s.relics_used||0)+' relics');
   h+='</div>';
   h+=sec('Find log','Find log ('+finds.length+')');

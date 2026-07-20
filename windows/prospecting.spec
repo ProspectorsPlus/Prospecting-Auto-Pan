@@ -39,7 +39,12 @@ hiddenimports += ["prospector_engine", "prospector_engine.client",
                   # [C7] the engine itself + its Windows platform layer (the
                   # runpy'd prospecting_old.py shim imports them at runtime)
                   "prospector_engine.engine", "prospector_engine.ipc",
-                  "prospector_engine.settings", "prospector_engine.platform_win"]
+                  "prospector_engine.settings", "prospector_engine.platform_win",
+                  # lazily imported inside the engine (run start / node
+                  # handlers), so PyInstaller cannot discover them statically
+                  "prospector_engine.recorder", "prospector_engine.cycleplan",
+                  "prospector_engine.vision", "prospector_engine.recovery",
+                  "prospector_engine.flows"]
 
 block_cipher = None
 
