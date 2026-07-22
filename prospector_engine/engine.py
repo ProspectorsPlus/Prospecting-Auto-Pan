@@ -6471,8 +6471,11 @@ class ScriptRunner:
                         return True
                 else:
                     hits = 0
-            if not _script_sleep(poll_ms):
-                return False
+            # Whole-poll sleeps (not sliced): the classic legs' sleeps run to
+            # completion, and detached-trace byte parity depends on landing
+            # on the same instants. The per-lap State.running check bounds
+            # stop latency at one poll.
+            sleep_ms(poll_ms)
         return False
 
     def _wait_classic(self, p, timeout_ms, confirm, min_ms, poll_ms):
@@ -6633,6 +6636,12 @@ class ScriptRunner:
         msg = _sv_text(self._pv_eval(
             p.get("message", "Something went wrong")))[:120]
         raise ValueError(msg or "Something went wrong")
+
+    def _do_stop_hard(self, det, p, kids):
+        msg = str(p.get("message") or "Stopped by the script")[:120]
+        self.pass_dirty = True
+        safe_stop("script: %s" % msg, hard=True)
+        return None
 
     # ---- v4 engine-op practicals: the Classic leg cores, parameterized.
     # Each is a faithful port of the Supervisor function it names, built on
@@ -6961,6 +6970,7 @@ _SCRIPT_HANDLERS_V4.update({
     "stat_set": ScriptRunner._do_stat_set,
     "guard": ScriptRunner._do_guard,
     "raise_error": ScriptRunner._do_raise_error,
+    "stop_hard": ScriptRunner._do_stop_hard,
     "hold_key_until": ScriptRunner._do_hold_key_until,
     "pulse_key": ScriptRunner._do_pulse_key,
     "probe_dig": ScriptRunner._do_probe_dig,
