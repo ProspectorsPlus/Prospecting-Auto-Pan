@@ -148,6 +148,11 @@ class DetStub:
     def cap_changed(self, baseline):
         return abs(self.s.cap(self.c.ms) - baseline) > 0.004
 
+    def dig_bar_green(self):
+        # v4 dig_green read: scenario models it as a cue named "dig_green"
+        # (the TS IntervalScenario mirrors this exactly).
+        return self.s.cue("dig_green", self.c.ms)
+
 
 def norm_val(v):
     if isinstance(v, float) and v == int(v) and abs(v) < 1e15:
@@ -307,7 +312,15 @@ def run_golden(path):
     po.safe_stop = safe_stop
     po.post_webhook = post_webhook
     po.log = lambda msg: emit("log", msg=str(msg))
-    po.emit_event = lambda *a, **k: None
+
+    # v4: emit_event's dirty-set behavior is real semantics (clean-cycle
+    # accounting) — mirror it; the event trace row itself comes from the
+    # runner's on_event observer, matching the Studio VM exactly.
+    def emit_event(etype, reason="", where="", contents="", extra=None):
+        if etype in po._DIRTY_EVENTS:
+            po.State.cycle_dirty = True
+    po.emit_event = emit_event
+    po.emit_phase = lambda name: None
     po.RelicScheduler._fire = lambda _self, relic: emit(
         "relic", slot=relic["slot"], clicks=relic["clicks"])
 
@@ -318,6 +331,7 @@ def run_golden(path):
     po.State.last_progress = 0.0
     po.State.last_cycle_end = 0.0
     po.State.script_runner = None
+    po.State.cycle_dirty = False
 
     det = DetStub(scen, clock)
     runner = po.ScriptRunner(json.dumps(script), script.get("name"))
@@ -335,6 +349,13 @@ def run_golden(path):
     def on_set_var(name, value):
         emit("set_var", name=name, value=norm_val(value))
     runner.on_set_var = on_set_var
+
+    # v4 conformance rows: phases, structured events, stat writes.
+    runner.on_phase = lambda ph: emit("phase", phase=ph)
+    runner.on_event = lambda etype, reason: emit("event", type=etype,
+                                                 reason=reason)
+    runner.on_stat = lambda stat, op, value: emit("stat", stat=stat, op=op,
+                                                  value=norm_val(value))
 
     max_passes = run.get("maxPasses", 50)
 

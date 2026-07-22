@@ -1512,6 +1512,7 @@ class SessionStats:
         self.shake_misses = 0    # shakes that ran but didn't empty (fast-build misses)
         self.shake_retries = 0   # shake start-confirm deeper-S retries
         self.stop_reason = ""
+        self.custom = {}         # v4 custom c_* metrics (stat_add/stat_set)
 
     def runtime(self):
         rt = time.perf_counter() - self.start - self.pause_accum
@@ -1522,7 +1523,7 @@ class SessionStats:
     def as_dict(self):
         rt = self.runtime()
         hrs = rt / 3600.0
-        return {"cycles": self.cycles, "recoveries": self.recoveries,
+        d = {"cycles": self.cycles, "recoveries": self.recoveries,
                 "clean_cycles": self.clean_cycles,
                 "clean_pct": (round(100.0 * self.clean_cycles / self.cycles, 1)
                               if self.cycles else 0),
@@ -1582,6 +1583,11 @@ class SessionStats:
                 "flows": (State.flows_mgr.states()
                           if State.flows_mgr is not None else {}),
                 "stop_reason": self.stop_reason}
+        # v4 custom metrics: additive — absent unless a program wrote one,
+        # so every pre-v4 stats consumer and golden stays byte-identical.
+        if self.custom:
+            d["custom"] = dict(self.custom)
+        return d
 
 
 class _ARPool:
@@ -4630,6 +4636,38 @@ _SCRIPT3_CAP_LABEL = {
 # Vision nodes poll the screen at this cadence while waiting for an image.
 _SCRIPT3_IMAGE_POLL_MS = 250
 
+# ---- version 4 (the Atomic Automation IR; docs/ATOMIC_AUTOMATION_IR.md in
+# the Studio repo). Atomic timing/loop/sensing/stat/phase primitives plus the
+# Classic leg cores as engine-op practicals. Same hard-rail philosophy:
+# every limit and vocabulary below is re-enforced here at runtime regardless
+# of what the file claims. Semantics are pinned against the Studio TS VM by
+# the cross-language conformance suite. ---------------------------------------
+_SCRIPT4_MAX_BLOCKS = 4000
+_SCRIPT4_MAX_DEPTH = 48
+_SCRIPT4_SLEEP_MIN_MS = 1          # sleep_ms floor (Classic rhythms: 14/18 ms)
+_SCRIPT4_LOOP_FREE_LAPS = 10000    # zero-time laps before the runaway stop
+_SCRIPT4_PHASES = ("dig", "water", "shake", "glide", "settle")
+_SCRIPT4_EVENT_TYPES = ("nudge", "recover", "break_out", "shake_glitch",
+                        "no_progress", "shake_fail", "shake_start_retry",
+                        "recenter")
+_SCRIPT4_CORE_STATS = ("cycles", "clean_cycles", "digs", "dig_clicks",
+                       "nudges", "shake_misses", "shake_retries",
+                       "recoveries")
+_SCRIPT4_READS = _SCRIPT2_READS + ("dig_green",)
+_SCRIPT4_OPS = _SCRIPT2_OPS + ("xor", "nand", "nor", "contains",
+                               "starts_with", "ends_with")
+_SCRIPT4_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
+
+
+def _script4_name_ok(name, prefix, maxlen):
+    """studio_*/c_* custom-name rule shared with the Studio validator."""
+    if not isinstance(name, str) or not name.startswith(prefix):
+        return False
+    body = name[len(prefix):]
+    if not body or len(body) > maxlen:
+        return False
+    return all(c in _SCRIPT4_NAME_CHARS for c in body)
+
 
 def _script3_required_caps(blocks):
     """The capabilities a block tree actually needs (recursive)."""
@@ -4823,6 +4861,8 @@ def _script_eval(e, runner, det, depth=0):
             return float(runner.passes)
         if w == "time_ms":
             return (time.perf_counter() - runner._t0) * 1000.0
+        if w == "dig_green":
+            return bool(det.dig_bar_green())
         raise ValueError("unknown read %r" % (w,))
     op = e.get("op")
     args = e.get("args")
@@ -4882,11 +4922,26 @@ def _script_eval(e, runner, det, depth=0):
         return not _sv_bool(a[0])
     if op == "concat":
         return "".join(_sv_text(v) for v in a)
+    # v4 boolean/text ops (Studio VM mirrors these exactly).
+    if op == "xor":
+        return _sv_bool(a[0]) != _sv_bool(a[1])
+    if op == "nand":
+        return not (_sv_bool(a[0]) and _sv_bool(a[1]))
+    if op == "nor":
+        return not (_sv_bool(a[0]) or _sv_bool(a[1]))
+    if op == "contains":
+        return _sv_text(a[1]) in _sv_text(a[0])
+    if op == "starts_with":
+        return _sv_text(a[0]).startswith(_sv_text(a[1]))
+    if op == "ends_with":
+        return _sv_text(a[0]).endswith(_sv_text(a[1]))
     raise ValueError("unknown operation %r" % (op,))
 
 
-def _expr_shape_ok(e, var_decls, depth=0):
-    """Static well-formedness walk of one expression tree."""
+def _expr_shape_ok(e, var_decls, depth=0,
+                   reads=_SCRIPT2_READS, ops=_SCRIPT2_OPS):
+    """Static well-formedness walk of one expression tree. The read/op
+    whitelists are version-selected by the caller (v4 widens both)."""
     if depth > 32 or not isinstance(e, dict):
         return False
     if "lit" in e:
@@ -4899,12 +4954,13 @@ def _expr_shape_ok(e, var_decls, depth=0):
     if "var" in e:
         return isinstance(e["var"], str) and e["var"] in var_decls
     if "read" in e:
-        return e["read"] in _SCRIPT2_READS
+        return e["read"] in reads
     if "op" in e:
         args = e.get("args")
-        return (e["op"] in _SCRIPT2_OPS and isinstance(args, list)
+        return (e["op"] in ops and isinstance(args, list)
                 and len(args) <= 4
-                and all(_expr_shape_ok(x, var_decls, depth + 1) for x in args))
+                and all(_expr_shape_ok(x, var_decls, depth + 1, reads, ops)
+                        for x in args))
     return False
 
 
@@ -4947,6 +5003,12 @@ class ScriptRunner:
         self.hooks = {}               # v2 hooks: name -> block list
         self.on_set_var = None        # optional observers (tests and tools)
         self.on_pass = None
+        self.on_phase = None          # v4 observers (conformance harness)
+        self.on_event = None
+        self.on_stat = None
+        self.stats_mode = "auto"      # v4: "manual" disables the pass-wrap
+                                      # cycle heuristic (stat ops own stats)
+        self._dig_burst_t = -1e9      # v4 probe_dig: registered-dig burst
         self._image_cache = {}        # vision: asset id -> (mtime, HxWx3)
         self._stuck_at_pass = 0       # test hook: fire on_stuck after pass N
         self._pending_stuck = False
@@ -4968,10 +5030,17 @@ class ScriptRunner:
             self.dead = "the active custom script could not be read; open " \
                         "Studio and set it active again"
             return
-        if isinstance(data, dict) and data.get("version") in (2, 3):
+        if isinstance(data, dict) and data.get("version") in (2, 3, 4):
             self.version = int(data["version"])
         if isinstance(data, dict) and isinstance(data.get("kind"), str):
             self.kind = data["kind"]
+        # v4: stats ownership rides the envelope; anything else is refused.
+        if isinstance(data, dict) and data.get("stats") is not None:
+            if self.version < 4 or data.get("stats") not in ("auto", "manual"):
+                self.dead = "the active custom script has a bad stats " \
+                            "ownership field"
+                return
+            self.stats_mode = data["stats"]
         blocks = (data or {}).get("blocks") if isinstance(data, dict) else None
         if not isinstance(blocks, list) or not blocks:
             self.dead = "the active custom script is empty or malformed"
@@ -4992,9 +5061,11 @@ class ScriptRunner:
                 return
             self.caps = tuple(dict.fromkeys(caps))
         n, deep = self._shape(blocks, 1)
-        max_blocks = (_SCRIPT2_MAX_BLOCKS if self.version >= 2
+        max_blocks = (_SCRIPT4_MAX_BLOCKS if self.version >= 4
+                      else _SCRIPT2_MAX_BLOCKS if self.version >= 2
                       else _SCRIPT_MAX_BLOCKS)
-        max_depth = (_SCRIPT2_MAX_DEPTH if self.version >= 2
+        max_depth = (_SCRIPT4_MAX_DEPTH if self.version >= 4
+                     else _SCRIPT2_MAX_DEPTH if self.version >= 2
                      else _SCRIPT_MAX_DEPTH)
         if n > max_blocks:
             self.dead = "the active custom script has too many blocks"
@@ -5022,7 +5093,8 @@ class ScriptRunner:
 
     def _shape(self, blocks, depth):
         """Count blocks + max depth; -1 count = a block failed the shape check."""
-        tab = (_SCRIPT_HANDLERS_V3 if self.version >= 3 else
+        tab = (_SCRIPT_HANDLERS_V4 if self.version >= 4 else
+               _SCRIPT_HANDLERS_V3 if self.version >= 3 else
                _SCRIPT_HANDLERS_V2 if self.version == 2 else
                _SCRIPT_HANDLERS)
         n, deep = 0, depth
@@ -5043,7 +5115,7 @@ class ScriptRunner:
                 if els is not None:
                     if (not isinstance(els, list)
                             or b.get("type") not in ("branch", "detect_pixel",
-                                                     "if_image")):
+                                                     "if_image", "guard")):
                         return -1, deep
                     if els:
                         kn, kd = self._shape(els, depth + 1)
@@ -5166,6 +5238,11 @@ class ScriptRunner:
                 self._ran_on_stop = True
                 self._run_hook("on_stop", det)
         except Exception as e:
+            # v4 Guard: a runtime error unwinds to the nearest armed guard
+            # frame (no release, the rescue chain runs next tick). Safety
+            # stops never raise, so they can never be caught here.
+            if self._unwind_guard():
+                return
             release_all()
             safe_stop("Custom script error: %s" % e)
             return
@@ -5195,6 +5272,29 @@ class ScriptRunner:
                         frame[1] = 0
                         ex[1] -= 1
                         continue
+                    self.stack.pop()
+                    continue
+                if kind == "vloop":
+                    # v4 loop: post-lap until-check + free-lap guard, then
+                    # the next lap's yield + while-check. Order pinned with
+                    # the Studio VM (yield -> while -> body -> until -> guard).
+                    ex = frame[4]
+                    if ((not ex[2]) and self._loop_post(det, ex)
+                            and ex[1] > 0 and self._loop_next(det, ex)):
+                        frame[1] = 0
+                        ex[1] -= 1
+                        continue
+                    self.stack.pop()
+                    continue
+                if kind == "vfor":
+                    ex = frame[4]
+                    if (not ex[6]) and self._for_again(det, ex):
+                        frame[1] = 0
+                        continue
+                    self.stack.pop()
+                    continue
+                if kind == "guard":
+                    # children finished cleanly (or the rescue chain did).
                     self.stack.pop()
                     continue
                 if reps > 1:
@@ -5229,7 +5329,8 @@ class ScriptRunner:
             if ph is not None and ph != self._phase:
                 self._phase = ph
                 emit_phase(ph)
-        tab = (_SCRIPT_HANDLERS_V3 if self.version >= 3 else
+        tab = (_SCRIPT_HANDLERS_V4 if self.version >= 4 else
+               _SCRIPT_HANDLERS_V3 if self.version >= 3 else
                _SCRIPT_HANDLERS_V2 if self.version == 2 else
                _SCRIPT_HANDLERS)
         enter = tab[t](self, det, p, kids)
@@ -5263,7 +5364,9 @@ class ScriptRunner:
                     self.on_pass(self.passes)
                 except Exception:
                     pass
-            if State.stats:
+            # v4 manual stats ownership: the program's stat ops are the only
+            # writer — the pass-wrap cycle heuristic stands down entirely.
+            if State.stats and self.stats_mode != "manual":
                 State.stats.cycles += 1
                 if not self.pass_dirty:
                     State.stats.clean_cycles += 1
@@ -5583,11 +5686,14 @@ class ScriptRunner:
     def _check_exprs(self, blocks):
         """Static walk over every wired param expression. Fills self.dead on
         the first malformed tree."""
+        reads = _SCRIPT4_READS if self.version >= 4 else _SCRIPT2_READS
+        ops = _SCRIPT4_OPS if self.version >= 4 else _SCRIPT2_OPS
         for b in blocks:
             for v in (b.get("params") or {}).values():
                 if isinstance(v, dict):
                     if "$expr" not in v \
-                            or not _expr_shape_ok(v["$expr"], self.var_decls):
+                            or not _expr_shape_ok(v["$expr"], self.var_decls,
+                                                  0, reads, ops):
                         self.dead = ("the active custom script has a "
                                      "malformed wired value on block %r"
                                      % (b.get("id", "?"),))
@@ -5621,10 +5727,89 @@ class ScriptRunner:
                 if is_break:
                     fr[4][2] = True
                 return
+            if kind == "vloop":
+                fr[1] = len(fr[0])
+                if is_break:
+                    fr[4][2] = True
+                return
+            if kind == "vfor":
+                fr[1] = len(fr[0])
+                if is_break:
+                    fr[4][6] = True
+                return
             self.stack.pop()
             if kind in ("top", "hook"):
                 return
         return
+
+    def _unwind_guard(self):
+        """A runtime error surfaced mid-step: unwind to the nearest armed
+        Guard frame and switch it to its rescue chain. Returns True when a
+        guard caught the error (the walk continues next tick); False means
+        no guard -> the caller keeps the classic safe-stop funnel."""
+        while self.stack:
+            fr = self.stack[-1]
+            kind = fr[3]
+            if kind == "guard" and not fr[4][1]:
+                b = fr[4][0]
+                rescue = b.get("else") if isinstance(b.get("else"), list) else []
+                self.stack[-1] = [rescue, 0, 1, "guard", [b, True]]
+                return True
+            if kind in ("top", "hook"):
+                return False
+            self.stack.pop()
+        return False
+
+    def _loop_post(self, det, ex):
+        """v4 loop, after one lap: until-check then the free-lap guard.
+        ex = [block, remaining, broken, mode, lap_start, free_laps]."""
+        b = ex[0]
+        p = b.get("params") or {}
+        if ex[3] == "until" and _sv_truthy(self._pv_eval(p.get("cond", True))):
+            return False
+        now = time.perf_counter()
+        if now == ex[4]:
+            ex[5] += 1
+            if ex[5] >= _SCRIPT4_LOOP_FREE_LAPS:
+                safe_stop("a loop is spinning without doing anything (no "
+                          "time passes); add a wait or a breath per lap")
+                return False
+        else:
+            ex[5] = 0
+        return True
+
+    def _loop_next(self, det, ex):
+        """v4 loop, entering the next lap: yield, then the while-check."""
+        b = ex[0]
+        p = b.get("params") or {}
+        ex[4] = time.perf_counter()          # next lap's start reference
+        yield_ms = self._pi(p, "yield_ms", 0, 0, 1000)
+        if yield_ms > 0:
+            sleep_ms(yield_ms)
+        if not State.running:
+            return False
+        if ex[3] == "while" \
+                and not _sv_truthy(self._pv_eval(p.get("cond", True))):
+            return False
+        return True
+
+    def _for_again(self, det, ex):
+        """v4 for_range, next lap: step the variable, re-check the range.
+        ex = [block, name, value, to, step, remaining, broken]."""
+        if ex[5] <= 0:
+            return False
+        v = ex[2] + ex[4]
+        if not (v < ex[3] if ex[4] > 0 else v > ex[3]):
+            return False
+        ex[2] = v
+        ex[5] -= 1
+        self.vars[ex[1]] = float(v)
+        if self.on_set_var:
+            try:
+                self.on_set_var(ex[1], float(v))
+            except Exception:
+                pass
+        return True
 
     def _while_again(self, det, b):
         """One While lap check: the fixed 10 ms yield, then the condition."""
@@ -6202,6 +6387,509 @@ class ScriptRunner:
         move_cursor(int(x), int(y))
         return None
 
+    # ---- v4 helpers (docs/ATOMIC_AUTOMATION_IR.md; the Studio TS VM mirrors
+    # every semantic here — conformance-pinned) ------------------------------
+
+    def _store_result(self, p, key, value):
+        """Write an op's result variable with set_var coercion + observer."""
+        name = p.get(key) or ""
+        if not name:
+            return
+        ty = self.var_decls.get(name)
+        if ty is None:
+            raise ValueError('variable "%s" is not declared' % (name,))
+        if ty == "number":
+            v = 1.0 if value is True else 0.0 if value is False \
+                else float(value)
+        elif ty == "bool":
+            v = _sv_truthy(value)
+        else:
+            v = _sv_text(value)[:_SCRIPT2_STR_MAX]
+        self.vars[name] = v
+        if self.on_set_var:
+            try:
+                self.on_set_var(name, v)
+            except Exception:
+                pass
+
+    def _stat_write(self, stat, op, value):
+        """Session-stat write: core stats hit SessionStats fields, custom
+        c_* metrics live in the stats custom map (HUD/Analytics pick them
+        up). The observer feeds the conformance trace."""
+        if State.stats:
+            if stat in _SCRIPT4_CORE_STATS:
+                cur = getattr(State.stats, stat, 0)
+                setattr(State.stats, stat,
+                        (cur + value) if op == "add" else value)
+            else:
+                m = State.stats.custom
+                m[stat] = (m.get(stat, 0) + value) if op == "add" else value
+        if self.on_stat:
+            try:
+                self.on_stat(stat, op, value)
+            except Exception:
+                pass
+
+    def _phase_op(self, ph):
+        """mark_phase core: dedup like emit_phase, observer for conformance."""
+        if ph == self._phase:
+            return
+        self._phase = ph
+        emit_phase(ph)
+        if self.on_phase:
+            try:
+                self.on_phase(ph)
+            except Exception:
+                pass
+
+    def _event_op(self, etype, reason):
+        """mark_event core: the real emit_event (dirty types void the clean
+        cycle exactly like Classic), observer for conformance."""
+        emit_event(etype, reason)
+        if self.on_event:
+            try:
+                self.on_event(etype, reason)
+            except Exception:
+                pass
+
+    def _wait_classic_fn(self, fn, timeout_ms, confirm, min_ms, poll_ms):
+        """Classic wait_until as data: check-first, FULL poll sleeps (may
+        overshoot the deadline), no final at-deadline check — the exact
+        trajectory engine_sim pinned for the classic legs (check at t, then
+        advance the full poll). Deliberately NOT the module wait_until, so
+        the semantics are identical under every harness and paced (not
+        busy-spinning) on real hardware."""
+        start = time.perf_counter()
+        deadline = start + timeout_ms / 1000.0
+        gate = start + min_ms / 1000.0
+        hits = 0
+        while State.running and time.perf_counter() < deadline:
+            if time.perf_counter() >= gate:
+                if fn():
+                    hits += 1
+                    if hits >= confirm:
+                        return True
+                else:
+                    hits = 0
+            if not _script_sleep(poll_ms):
+                return False
+        return False
+
+    def _wait_classic(self, p, timeout_ms, confirm, min_ms, poll_ms):
+        return self._wait_classic_fn(
+            lambda: _sv_truthy(self._pv_eval(p.get("cond", True))),
+            timeout_ms, confirm, min_ms, poll_ms)
+
+    def _dig_once4(self, click_ms):
+        """dig_once (PERFECT=False path) with the attempt stat + observer."""
+        self._stat_write("dig_clicks", "add", 1)
+        mouse_down()
+        sleep_ms(click_ms)
+        mouse_up()
+
+    def _note_dig4(self):
+        """_note_dig_registered mirror: rises within 350 ms are one dig."""
+        now = time.perf_counter()
+        if now - self._dig_burst_t > 0.35:
+            self._stat_write("digs", "add", 1)
+        self._dig_burst_t = now
+
+    # ---- v4 atomic handlers -------------------------------------------------
+
+    def _do_sleep_ms(self, det, p, kids):
+        ms = self._pi(p, "ms", 50, _SCRIPT4_SLEEP_MIN_MS, _SCRIPT_WAIT_MAX_MS)
+        self.pass_activity = True
+        _script_sleep(ms)
+        return None
+
+    def _do_loop(self, det, p, kids):
+        b = self._cur
+        mode = str(p.get("mode") or "while")
+        max_iters = self._pi(p, "max_iters", 100000, 1, _SCRIPT2_WHILE_MAX)
+        yield_ms = self._pi(p, "yield_ms", 0, 0, 1000)
+        lap_start = time.perf_counter()
+        if yield_ms > 0:
+            sleep_ms(yield_ms)
+        if not State.running:
+            return None
+        if mode == "while" \
+                and not _sv_truthy(self._pv_eval(p.get("cond", True))):
+            return None
+        return ("push", kids, 1, "vloop",
+                [b, max_iters - 1, False, mode, lap_start, 0])
+
+    def _do_for_range(self, det, p, kids):
+        b = self._cur
+        name = p.get("var") or ""
+        if self.var_decls.get(name) != "number":
+            raise ValueError('variable "%s" is not declared' % (name,))
+        v_from = self._pi(p, "from", 0, -1000000, 1000000)
+        v_to = self._pi(p, "to", 10, -1000000, 1000000)
+        step = self._pi(p, "step", 1, -1000000, 1000000)
+        if step == 0:
+            raise ValueError("For range: the step is 0")
+        if not (v_from < v_to if step > 0 else v_from > v_to):
+            return None
+        self.vars[name] = float(v_from)
+        if self.on_set_var:
+            try:
+                self.on_set_var(name, float(v_from))
+            except Exception:
+                pass
+        return ("push", kids, 1, "vfor",
+                [b, name, v_from, v_to, step, _SCRIPT2_WHILE_MAX - 1, False])
+
+    def _do_wait_expr(self, det, p, kids):
+        timeout = self._pi(p, "timeout_ms", 3000, 1, _SCRIPT_WAIT_MAX_MS)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        min_ms = self._pi(p, "min_ms", 0, 0, _SCRIPT_WAIT_MAX_MS)
+        poll = self._pi(p, "poll_ms", 25, 1, 1000)
+        self.pass_activity = True
+        ok = self._wait_classic(p, timeout, confirm, min_ms, poll)
+        self._store_result(p, "store", ok)
+        if not ok and State.running and p.get("on_timeout") == "stop":
+            self.pass_dirty = True
+            safe_stop("the condition never held within %d ms (wait)"
+                      % timeout)
+        return None
+
+    def _do_key_pin(self, det, p, kids):
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return None
+        self.pass_activity = True
+        if code in self.held_v3:
+            return None
+        self.held_v3.add(code)
+        key_down(code)
+        return None
+
+    def _do_key_unpin(self, det, p, kids):
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None or code not in self.held_v3:
+            return None
+        self.held_v3.discard(code)
+        key_up(code)
+        return None
+
+    def _do_btn_down(self, det, p, kids):
+        self.pass_activity = True
+        if "left" in self.held_v3_buttons:
+            return None
+        self.held_v3_buttons.add("left")
+        mouse_down()
+        return None
+
+    def _do_btn_up(self, det, p, kids):
+        if "left" not in self.held_v3_buttons:
+            return None
+        self.held_v3_buttons.discard("left")
+        mouse_up()
+        return None
+
+    def _do_mark_phase(self, det, p, kids):
+        ph = str(p.get("phase") or "")
+        if ph not in _SCRIPT4_PHASES:
+            safe_stop("the script marks an unknown phase (%r)" % (ph,))
+            return None
+        self._phase_op(ph)
+        return None
+
+    def _do_mark_event(self, det, p, kids):
+        etype = str(p.get("type") or "")[:40]
+        if etype not in _SCRIPT4_EVENT_TYPES \
+                and not _script4_name_ok(etype, "studio_", 32):
+            safe_stop("the script marks an unknown event (%r)" % (etype,))
+            return None
+        reason = _sv_text(self._pv_eval(p.get("reason", "")))[:120]
+        self._event_op(etype, reason)
+        return None
+
+    def _do_stat_add(self, det, p, kids):
+        stat = str(p.get("stat") or "")[:32]
+        if stat not in _SCRIPT4_CORE_STATS \
+                and not _script4_name_ok(stat, "c_", 24):
+            safe_stop("the script writes an unknown stat (%r)" % (stat,))
+            return None
+        self._stat_write(stat, "add",
+                         self._pi(p, "amount", 1, -1000000, 1000000))
+        return None
+
+    def _do_stat_set(self, det, p, kids):
+        stat = str(p.get("stat") or "")[:32]
+        if stat not in _SCRIPT4_CORE_STATS \
+                and not _script4_name_ok(stat, "c_", 24):
+            safe_stop("the script writes an unknown stat (%r)" % (stat,))
+            return None
+        self._stat_write(stat, "set",
+                         self._pi(p, "value", 0, -1000000, 1000000))
+        return None
+
+    def _do_guard(self, det, p, kids):
+        b = self._cur
+        return ("push", kids, 1, "guard", [b, False])
+
+    def _do_raise_error(self, det, p, kids):
+        msg = _sv_text(self._pv_eval(
+            p.get("message", "Something went wrong")))[:120]
+        raise ValueError(msg or "Something went wrong")
+
+    # ---- v4 engine-op practicals: the Classic leg cores, parameterized.
+    # Each is a faithful port of the Supervisor function it names, built on
+    # the SAME primitives (wait_until, sleep_ms, key/mouse, detector reads),
+    # so the sim-domain instruction traces match Classic byte-for-byte. ------
+
+    def _do_hold_key_until(self, det, p, kids):
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return None
+        timeout = self._pi(p, "timeout_ms", 4000, 1, _SCRIPT_WAIT_MAX_MS)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        extra = self._pi(p, "extra_ms", 0, 0, 5000)
+        self.pass_activity = True
+        key_down(code)
+        reached = False
+        try:
+            # go_water core: hold, poll the condition on the classic 25 ms
+            # seam, keep holding a touch longer after the hit.
+            reached = self._wait_classic(p, timeout, confirm, 0, 25)
+            if reached and extra > 0:
+                sleep_ms(extra)
+        finally:
+            key_up(code)
+        self._store_result(p, "store", reached)
+        return None
+
+    def _do_pulse_key(self, det, p, kids):
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return None
+        max_ms = self._pi(p, "max_ms", 400, 1, _SCRIPT_WAIT_MAX_MS)
+        on_ms = self._pi(p, "on_ms", 11, 1, 200)
+        off_ms = self._pi(p, "off_ms", 1, 1, 200)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        self.pass_activity = True
+        deadline = time.perf_counter() + max_ms / 1000.0
+        hits = 0
+        reached = False
+        # pulse_until: short taps, one condition check per tap.
+        while State.running and time.perf_counter() < deadline:
+            key_down(code)
+            sleep_ms(on_ms)
+            key_up(code)
+            sleep_ms(off_ms)
+            if _sv_truthy(self._pv_eval(p.get("cond", True))):
+                hits += 1
+                if hits >= confirm:
+                    reached = True
+                    break
+            else:
+                hits = 0
+        self._store_result(p, "store", reached)
+        return None
+
+    def _do_probe_dig(self, det, p, kids):
+        rounds = self._pi(p, "rounds", 5, 1, 20)
+        in_place = self._pi(p, "in_place", 3, 1, 10)
+        click_ms = self._pi(p, "click_ms", 75, 5, 600)
+        probe_ms = self._pi(p, "probe_ms", 320, 50, 5000)
+        rise = self._pi(p, "rise_frac", 3, 1, 50) / 100.0
+        nudge_ms = self._pi(p, "nudge_ms", 90, 0, 2000)
+        gap_ms = self._pi(p, "gap_ms", 80, 0, 2000)
+        settle_ms = self._pi(p, "settle_ms", 60, 0, 5000)
+        self.pass_activity = True
+        hit_any = False
+        # return_and_dig core: rounds of in-place digs with late-rise credit,
+        # a W nudge between rounds. The caller's graph owns the fail counters.
+        for rnd in range(rounds):
+            if not State.running:
+                break
+            if rnd == 0 and settle_ms > 0:
+                sleep_ms(settle_ms)
+            prev_before = None
+            for _t in range(in_place):
+                if not State.running:
+                    break
+                before = det.cap_fill()
+                if prev_before is not None and (
+                        before > prev_before + rise
+                        or det.capacity_full()):
+                    hit = True   # the PREVIOUS dig registered late
+                else:
+                    self._dig_once4(click_ms)
+                    hit = self._wait_classic_fn(
+                        lambda: det.cap_fill() > before + rise
+                        or det.capacity_full(),
+                        probe_ms, 1, 0, 25)
+                prev_before = before
+                if hit:
+                    self._note_dig4()
+                    hit_any = True
+                    break
+            if hit_any or not State.running:
+                break
+            self._event_op("nudge",
+                           "no dig registered, nudging forward to find land")
+            self._stat_write("nudges", "add", 1)
+            if nudge_ms > 0:
+                key_down(KEY_W)
+                sleep_ms(nudge_ms)
+                key_up(KEY_W)
+            if gap_ms > 0:
+                sleep_ms(gap_ms)
+        self._store_result(p, "store", hit_any)
+        return None
+
+    def _do_fill_to_full(self, det, p, kids):
+        max_digs = self._pi(p, "max_digs", 8, 1, 50)
+        fill_ms = self._pi(p, "fill_ms", 250, 50, 5000)
+        click_ms = self._pi(p, "click_ms", 75, 5, 600)
+        self.pass_activity = True
+        full = False
+        # fill_to_full default path: the probe dig was #1; keep digging and
+        # watching until FULL or the cap. "Proceed anyway" is the caller's read.
+        for i in range(max_digs):
+            if det.capacity_full():
+                full = True
+                break
+            if not State.running:
+                break
+            if i > 0:
+                self._dig_once4(click_ms)
+            self._wait_classic_fn(det.capacity_full, fill_ms, 1, 0, 25)
+        if not full:
+            full = bool(det.capacity_full())
+        self._store_result(p, "store", full)
+        return None
+
+    def _do_rattle_until(self, det, p, kids):
+        clicks = self._pi(p, "clicks", 0, 0, 100)
+        click_ms = self._pi(p, "click_ms", 18, 1, 200)
+        gap_ms = self._pi(p, "gap_ms", 14, 1, 500)
+        hold_ms = self._pi(p, "hold_ms", 1500, 100, _SCRIPT_WAIT_MAX_MS)
+        momentum_w = p.get("momentum_w") is True
+        lead_ms = self._pi(p, "lead_ms", 0, 0, 10000)
+        bail_ms = self._pi(p, "bail_ms", 500, 0, _SCRIPT_WAIT_MAX_MS)
+        start_confirm_ms = self._pi(p, "start_confirm_ms", 0, 0, 10000)
+        start_retries = self._pi(p, "start_retries", 2, 0, 5)
+        retry_deeper_ms = self._pi(p, "retry_deeper_ms", 70, 0, 1000)
+        stall_ms = self._pi(p, "stall_ms", 0, 0, 10000)
+        check_every = self._pi(p, "check_every", 1, 1, 20)
+        empty_frac = self._pi(p, "empty_frac", 4, 0, 50) / 100.0
+        settle_ms = self._pi(p, "settle_ms", 150, 0, _SCRIPT_WAIT_MAX_MS)
+        count_cycle = p.get("count_cycle") is True
+        self.pass_activity = True
+        # do_shake core, line for line (docs/ATOMIC_AUTOMATION_IR.md §4.3).
+        t0 = time.perf_counter()
+        w_down = False
+        if momentum_w:
+            key_down(KEY_W)
+            w_down = True
+            if lead_ms > 0:
+                self._phase_op("glide")
+                sleep_ms(lead_ms)
+                t0 = time.perf_counter()
+                self._phase_op("shake")
+        started = emptied = bailed = stalled = False
+        n_clicks = 0
+        fixed = clicks > 0
+        end = time.perf_counter() + hold_ms / 1000.0
+        retries_used = 0
+        stall_fill = 2.0
+        stall_t = time.perf_counter()
+        confirm_at = t0 + start_confirm_ms / 1000.0
+        bail_at = t0 + bail_ms / 1000.0
+        try:
+            while State.running and (n_clicks < clicks if fixed
+                                     else time.perf_counter() < end):
+                mouse_tap(click_ms)
+                n_clicks += 1
+                if check_every > 1 and not fixed and (n_clicks % check_every):
+                    sleep_ms(gap_ms)
+                    continue
+                if not started and det.on_shake():
+                    started = True
+                    stall_t = time.perf_counter()
+                f = det.cap_fill()               # ONE grab -> empty + stall
+                if not fixed and f < empty_frac:
+                    emptied = True
+                    break
+                if stall_ms > 0 and not fixed and started:
+                    if f < stall_fill - 0.005:
+                        stall_fill = f
+                        stall_t = time.perf_counter()
+                    elif (time.perf_counter() - stall_t) * 1000.0 > stall_ms:
+                        stalled = True
+                        break
+                if w_down and det.on_deposit():
+                    key_up(KEY_W)
+                    w_down = False
+                if (start_confirm_ms > 0 and not fixed and not started
+                        and retries_used < start_retries
+                        and time.perf_counter() > confirm_at
+                        and det.capacity_full()):
+                    retries_used += 1
+                    self._stat_write("shake_retries", "add", 1)
+                    self._event_op(
+                        "shake_start_retry",
+                        "no shake start in %dms -- deeper S tap, retry %d/%d"
+                        % (start_confirm_ms, retries_used, start_retries))
+                    if w_down:
+                        key_up(KEY_W)
+                        w_down = False
+                    key_down(KEY_S)
+                    sleep_ms(retry_deeper_ms)
+                    key_up(KEY_S)
+                    if momentum_w:
+                        key_down(KEY_W)
+                        w_down = True
+                    _now = time.perf_counter()
+                    confirm_at = _now + start_confirm_ms / 1000.0
+                    bail_at = _now + bail_ms / 1000.0
+                    end = max(end, _now + 0.6)
+                if (not fixed and time.perf_counter() > bail_at
+                        and det.capacity_full()):
+                    bailed = True
+                    break
+                sleep_ms(gap_ms)
+            if fixed:
+                emptied = det.cap_fill() < empty_frac
+        finally:
+            if w_down:
+                key_up(KEY_W)
+        if emptied:
+            if count_cycle:
+                self._stat_write("cycles", "add", 1)
+                if not State.cycle_dirty:
+                    self._stat_write("clean_cycles", "add", 1)
+                if State.stats:
+                    _nc = time.perf_counter()
+                    if State.last_cycle_end:
+                        _cd = (_nc - State.last_cycle_end) * 1000.0
+                        if 300 < _cd < 120000:
+                            State.stats.cycle_ms.append(_cd)
+                            if len(State.stats.cycle_ms) > 600:
+                                del State.stats.cycle_ms[
+                                    :len(State.stats.cycle_ms) - 600]
+                    State.last_cycle_end = _nc
+            State.cycle_dirty = False
+            State.last_progress = time.perf_counter()
+            self._phase_op("settle")
+            if settle_ms > 0:
+                sleep_ms(settle_ms)
+        else:
+            self.pass_dirty = True
+            self._stat_write("shake_misses", "add", 1)
+            self._event_op("shake_fail",
+                           "shake never started (glitch)" if not started
+                           else "shake stalled mid-drain (game dropped it)"
+                           if stalled else "shake ran but pan didn't empty")
+        outcome = ("emptied" if emptied else "bailed" if bailed
+                   else "stall" if stalled else "glitch" if not started
+                   else "timeout")
+        self._store_result(p, "store", outcome)
+        return None
+
 
 # One handler per schema block type; studio_tests.py asserts this table stays
 # in lockstep with STUDIO_BLOCKS in prospecting_ui.py.
@@ -6252,6 +6940,32 @@ _SCRIPT_HANDLERS_V3.update({
     "if_image": ScriptRunner._do_if_image,
     "click_image": ScriptRunner._do_click_image,
     "move_image": ScriptRunner._do_move_image,
+})
+
+# Version 4 adds the Atomic Automation IR (docs/ATOMIC_AUTOMATION_IR.md in
+# the Studio repo): atomic timing/loop/sensing/stat/phase primitives plus
+# the Classic leg cores as engine-op practicals.
+_SCRIPT_HANDLERS_V4 = dict(_SCRIPT_HANDLERS_V3)
+_SCRIPT_HANDLERS_V4.update({
+    "sleep_ms": ScriptRunner._do_sleep_ms,
+    "loop": ScriptRunner._do_loop,
+    "for_range": ScriptRunner._do_for_range,
+    "wait_expr": ScriptRunner._do_wait_expr,
+    "key_pin": ScriptRunner._do_key_pin,
+    "key_unpin": ScriptRunner._do_key_unpin,
+    "btn_down": ScriptRunner._do_btn_down,
+    "btn_up": ScriptRunner._do_btn_up,
+    "mark_phase": ScriptRunner._do_mark_phase,
+    "mark_event": ScriptRunner._do_mark_event,
+    "stat_add": ScriptRunner._do_stat_add,
+    "stat_set": ScriptRunner._do_stat_set,
+    "guard": ScriptRunner._do_guard,
+    "raise_error": ScriptRunner._do_raise_error,
+    "hold_key_until": ScriptRunner._do_hold_key_until,
+    "pulse_key": ScriptRunner._do_pulse_key,
+    "probe_dig": ScriptRunner._do_probe_dig,
+    "fill_to_full": ScriptRunner._do_fill_to_full,
+    "rattle_until": ScriptRunner._do_rattle_until,
 })
 
 
