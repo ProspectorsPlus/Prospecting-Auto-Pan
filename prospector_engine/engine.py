@@ -7453,6 +7453,9 @@ class ScriptRunner:
                 prev_before = before
                 if hit:
                     self._note_dig4()
+                    # Healthy progress replenishes the R5 safe-pause budget
+                    # (native probe-hit ledger; see the rattle emptied note).
+                    State.safe_retries = 0
                     hit_any = True
                     break
             if hit_any or not State.running:
@@ -7647,6 +7650,12 @@ class ScriptRunner:
                                     :len(State.stats.cycle_ms) - 600]
                     State.last_cycle_end = _nc
             State.cycle_dirty = False
+            # Healthy progress replenishes the R5 safe-pause budget, exactly
+            # like native do_shake's emptied ledger — safe_retries is the one
+            # recovery counter the graph cannot own (it lives inside the stop
+            # op's ladder), so a detached run must clear it here or its
+            # safe-pause budget never recovers (session-ten recovery audit).
+            State.safe_retries = 0
             State.last_progress = time.perf_counter()
             self._phase_op("settle")
             if settle_ms > 0:
@@ -8274,6 +8283,9 @@ class ScriptRunner:
                 prev_before = before
                 if hit:
                     self._note_dig4()
+                    # Healthy progress replenishes the R5 safe-pause budget
+                    # (native probe-hit ledger; see the rattle emptied note).
+                    State.safe_retries = 0
                     hit_any = True
                     break
             if hit_any:
@@ -8447,6 +8459,12 @@ class ScriptRunner:
                                     :len(State.stats.cycle_ms) - 600]
                     State.last_cycle_end = _nc
             State.cycle_dirty = False
+            # Healthy progress replenishes the R5 safe-pause budget, exactly
+            # like native do_shake's emptied ledger — safe_retries is the one
+            # recovery counter the graph cannot own (it lives inside the stop
+            # op's ladder), so a detached run must clear it here or its
+            # safe-pause budget never recovers (session-ten recovery audit).
+            State.safe_retries = 0
             State.last_progress = time.perf_counter()
             self._phase_op("settle")
             if settle_ms > 0:
