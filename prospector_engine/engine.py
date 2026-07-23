@@ -7022,6 +7022,46 @@ _SCRIPT_HANDLERS_V4.update({
 })
 
 
+def script_capabilities():
+    """The generated capability manifest: what THIS engine build actually
+    executes, derived from the LIVE handler/op/read registries — never a
+    hand-written list that can drift. Studio's run preflight compares a
+    compiled program's requirements against this document before any run
+    starts, so an unsupported block is a blocked launch with a named
+    remedy, never a post-start hard stop."""
+    try:
+        import hashlib
+        with open(os.path.abspath(__file__), "rb") as f:
+            fp = hashlib.sha256(f.read()).hexdigest()[:16]
+    except Exception:
+        fp = ""
+    # This module is loaded both as prospector_engine.engine and as a bare
+    # file module (harnesses/importlib) — resolve the package absolutely.
+    from prospector_engine import ENGINE_VERSION
+    from prospector_engine import protocol as _proto
+    return {
+        "_capabilities": 1,
+        "engine_version": ENGINE_VERSION,
+        "fingerprint": fp,
+        "protocol": {"major": _proto.PROTOCOL_MAJOR,
+                     "minor": _proto.PROTOCOL_MINOR},
+        "script_versions": [1, 2, 3, 4],
+        "blocks": {
+            "1": sorted(_SCRIPT_HANDLERS),
+            "2": sorted(_SCRIPT_HANDLERS_V2),
+            "3": sorted(_SCRIPT_HANDLERS_V3),
+            "4": sorted(_SCRIPT_HANDLERS_V4),
+        },
+        "ops": {"2": sorted(_SCRIPT2_OPS), "4": sorted(_SCRIPT4_OPS)},
+        "reads": {"2": sorted(_SCRIPT2_READS), "4": sorted(_SCRIPT4_READS)},
+        "caps": sorted(_SCRIPT3_CAPS),
+        "phases": list(_SCRIPT4_PHASES),
+        "event_types": list(_SCRIPT4_EVENT_TYPES),
+        "core_stats": list(_SCRIPT4_CORE_STATS),
+        "stats_modes": ["auto", "manual"],
+    }
+
+
 def script_tick(det):
     """Run the active custom script (SCRIPT_MODE). The runner is built lazily
     on the first tick of a run and torn down on every fresh start."""

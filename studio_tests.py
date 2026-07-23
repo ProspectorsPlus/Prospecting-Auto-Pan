@@ -1767,6 +1767,33 @@ finally:
     _sh16.rmtree(_mdir, ignore_errors=True)
 
 # =============================================================================
+print("[17] capability manifest (generated from the live registries)")
+# =============================================================================
+_caps = po.script_capabilities()
+check("capabilities: every v1 handler is advertised",
+      _caps["blocks"]["1"] == sorted(po._SCRIPT_HANDLERS),
+      _caps["blocks"]["1"])
+check("capabilities: every v4 handler is advertised (no drift possible)",
+      _caps["blocks"]["4"] == sorted(po._SCRIPT_HANDLERS_V4),
+      len(_caps["blocks"]["4"]))
+check("capabilities: version tables nest (v1 ⊆ v2 ⊆ v3 ⊆ v4)",
+      set(_caps["blocks"]["1"]) <= set(_caps["blocks"]["2"])
+      <= set(_caps["blocks"]["3"]) <= set(_caps["blocks"]["4"]), None)
+import hashlib as _hl
+with open(os.path.join(ROOT, "prospector_engine", "engine.py"), "rb") as _f:
+    _fp = _hl.sha256(_f.read()).hexdigest()[:16]
+check("capabilities: fingerprint IS the engine source on disk", _caps["fingerprint"] == _fp,
+      (_caps["fingerprint"], _fp))
+from prospector_engine import protocol as _pr
+check("capabilities: protocol matches the live protocol module",
+      _caps["protocol"] == {"major": _pr.PROTOCOL_MAJOR, "minor": _pr.PROTOCOL_MINOR},
+      _caps["protocol"])
+check("capabilities: ops/reads/caps advertised from the live tables",
+      _caps["ops"]["4"] == sorted(po._SCRIPT4_OPS)
+      and _caps["reads"]["4"] == sorted(po._SCRIPT4_READS)
+      and _caps["caps"] == sorted(po._SCRIPT3_CAPS), None)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))
