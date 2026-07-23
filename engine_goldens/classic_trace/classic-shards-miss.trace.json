@@ -1,0 +1,193 @@
+{
+ "_trace": 1,
+ "scenario": "classic-shards-miss",
+ "summary": {
+  "counts": {
+   "key_down": 4,
+   "key_up": 4,
+   "mouse_down": 17,
+   "mouse_up": 17
+  },
+  "events": 42,
+  "first_t": 80,
+  "last_t": 2216
+ },
+ "trace": [
+  {
+   "ev": "mouse_down",
+   "t": 80
+  },
+  {
+   "ev": "mouse_up",
+   "t": 155
+  },
+  {
+   "ev": "mouse_down",
+   "t": 255
+  },
+  {
+   "ev": "mouse_up",
+   "t": 330
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 405
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 605
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 605
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 705
+  },
+  {
+   "ev": "key_down",
+   "key": "W",
+   "t": 705
+  },
+  {
+   "ev": "mouse_down",
+   "t": 705
+  },
+  {
+   "ev": "mouse_up",
+   "t": 723
+  },
+  {
+   "ev": "mouse_down",
+   "t": 737
+  },
+  {
+   "ev": "mouse_up",
+   "t": 755
+  },
+  {
+   "ev": "mouse_down",
+   "t": 769
+  },
+  {
+   "ev": "mouse_up",
+   "t": 787
+  },
+  {
+   "ev": "mouse_down",
+   "t": 801
+  },
+  {
+   "ev": "mouse_up",
+   "t": 819
+  },
+  {
+   "ev": "mouse_down",
+   "t": 833
+  },
+  {
+   "ev": "mouse_up",
+   "t": 851
+  },
+  {
+   "ev": "mouse_down",
+   "t": 865
+  },
+  {
+   "ev": "mouse_up",
+   "t": 883
+  },
+  {
+   "ev": "mouse_down",
+   "t": 897
+  },
+  {
+   "ev": "mouse_up",
+   "t": 915
+  },
+  {
+   "ev": "mouse_down",
+   "t": 929
+  },
+  {
+   "ev": "mouse_up",
+   "t": 947
+  },
+  {
+   "ev": "mouse_down",
+   "t": 961
+  },
+  {
+   "ev": "mouse_up",
+   "t": 979
+  },
+  {
+   "ev": "mouse_down",
+   "t": 993
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1011
+  },
+  {
+   "ev": "key_up",
+   "key": "W",
+   "t": 1011
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1221
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1296
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1421
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1496
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1596
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1671
+  },
+  {
+   "ev": "key_down",
+   "key": "W",
+   "t": 1796
+  },
+  {
+   "ev": "key_up",
+   "key": "W",
+   "t": 1886
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1966
+  },
+  {
+   "ev": "mouse_up",
+   "t": 2041
+  },
+  {
+   "ev": "mouse_down",
+   "t": 2141
+  },
+  {
+   "ev": "mouse_up",
+   "t": 2216
+  }
+ ]
+}

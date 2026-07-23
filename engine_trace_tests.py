@@ -420,11 +420,80 @@ def test_stuck_full(update):
         % eng.BREAKOUT_REPOS_MS)
 
 
+# ---------------------------------------------------------------------------
+def test_classic_shards(update):
+    """SHARDS exact-click mode (Studio detach parity companions). The three
+    scenarios live in engine_goldens/classic_trace/*.scenario.json (NOT
+    engine_scenarios/ -- the characterization suite's auto-discovery must
+    not see them) and are vendored to the Studio, whose detach parity gate
+    runs its materialized shards program against these same goldens."""
+    for name in ("classic-shards", "classic-shards-miss",
+                 "classic-shards-assume"):
+        print("[trace] %s" % name)
+        path = os.path.join(GOLD, name + ".scenario.json")
+        transcript, world, trace = run_scenario(path, "pold_tr_" +
+                                                name.replace("-", "_"))
+        eng = world.po
+        compare_golden(name, trace_doc(name, trace), update)
+        chk(world.inputs.all_released(),
+            "%s: all inputs released at exit" % name)
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)["config"]
+        mp = mouse_pairs(trace)
+        p_dig = eng.DIG_CLICK_MS
+        digs = [(d, u) for d, u in mp if u - d == p_dig]
+        gap = int(190000.0 / max(1.0, eng.DIG_SPEED)) + 25
+        evs = event_types(transcript)
+
+        if name == "classic-shards":
+            chk(not evs, "shards: healthy run -- zero safety events")
+            # exactly SHARDS_DIG_CLICKS dig-holds: the confirmed click plus
+            # its rhythm-gapped follow-up, and nothing else before the quit.
+            chk(len(digs) == cfg["SHARDS_DIG_CLICKS"],
+                "shards: exactly SHARDS_DIG_CLICKS dig clicks (got %d)"
+                % len(digs))
+            # The rhythm-gap sleep starts at proof CONFIRM, which in this
+            # choreography lands two 25ms polls after click-up (rise at
+            # 200 against the 180/205 poll grid).
+            chk(len(digs) >= 2 and digs[1][0] - digs[0][1] == gap + 50,
+                "shards: the follow-up rides the dig rhythm gap from the "
+                "confirm (190000/DIG_SPEED+25 = %dms, +50ms poll latency; "
+                "got %s)"
+                % (gap, digs[1][0] - digs[0][1] if len(digs) >= 2 else "n/a"))
+        if name == "classic-shards-miss":
+            chk("nudge" in evs,
+                "shards-miss: the dead round emits the nudge event")
+            # dead clicks retry back-to-back: click-up to next click-down is
+            # exactly the max(30, SHARDS_CLICK_CONFIRM_MS) proof window.
+            win = max(30, eng.SHARDS_CLICK_CONFIRM_MS)
+            chk(len(digs) >= 2 and digs[1][0] - digs[0][1] == win,
+                "shards-miss: the retry click follows the dead proof window "
+                "(%dms; got %s)"
+                % (win, digs[1][0] - digs[0][1] if len(digs) >= 2 else "n/a"))
+            nudges = [(d, u) for d, u in key_pairs(trace, "W")
+                      if u - d == eng.LAND_PROBE_NUDGE_MS]
+            chk(len(nudges) >= 1,
+                "shards-miss: nudge W rides LAND_PROBE_NUDGE_MS (%d)"
+                % eng.LAND_PROBE_NUDGE_MS)
+        if name == "classic-shards-assume":
+            chk(not evs, "shards-assume: healthy run -- zero safety events")
+            chk(len(digs) == 1,
+                "shards-assume: ONE dig click, no fill wait (got %d)"
+                % len(digs))
+            # assume-full returns immediately: the water leg's S press
+            # follows the click confirm with no fill wait between.
+            s = key_pairs(trace, "S")
+            chk(bool(s) and s[0][0] < 400,
+                "shards-assume: go_water starts before the fill could have "
+                "been awaited (S at %s)" % (s[0][0] if s else "n/a"))
+
+
 if __name__ == "__main__":
     update = "--update" in sys.argv
     test_classic_standard(update)
     test_stuck_ladder(update)
     test_stuck_full(update)
+    test_classic_shards(update)
     print()
     if update:
         print("TRACE GOLDENS REGENERATED")

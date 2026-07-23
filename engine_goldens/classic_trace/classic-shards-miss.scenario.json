@@ -1,0 +1,18 @@
+{
+  "name": "classic-shards-miss",
+  "_comment": "SHARDS click-retry path: SHARDS_DIG_CLICKS=1, click 1 is provably DEAD (the bar never moves inside the max(30,SHARDS_CLICK_CONFIRM_MS) window after click-up at 155), click 2 (retry, down 255 up 330) is confirmed by the capacity jump at 400; the fill wait reads FULL instantly; water reaches the Pan cue at 700; the shake drains at 1000; then a whole dead round (3 dead clicks -> nudge W -> PROBE_GAP settle) exercises the round loop and the nudge cadence before the quit. Companion to classic-shards; same vendoring rules.",
+  "window": [0, 0, 1440, 900],
+  "config": {
+    "SHARDS_DIG_CLICKS": 1,
+    "SHARDS_ASSUME_FULL": false,
+    "RELICS_ENABLED": false,
+    "WEBHOOK_URL": "",
+    "WEBHOOK_SECRET": ""
+  },
+  "schedule": [[0, "toggle"], [2300, "quit"]],
+  "cues": { "PAN": [[700, 2200]] },
+  "capacity": [[0, 0.0], [399, 0.0], [400, 1.0], [999, 1.0], [1000, 0.0], [600000, 0.0]],
+  "screen": [{ "rect": [0, 0, 1, 1], "rgb": [16, 16, 16], "from_ms": 0 }],
+  "_screen_comment": "Whole-box capacity paint (see classic-shards): keyframes are 0/1 only.",
+  "duration_ms": 600000
+}

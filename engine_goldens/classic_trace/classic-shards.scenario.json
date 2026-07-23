@@ -1,0 +1,18 @@
+{
+  "name": "classic-shards",
+  "_comment": "Canonical SHARDS-mode Classic cycle for the trace harness and the Studio detach parity gate: SHARDS_DIG_CLICKS=2 exact-click digging. Toggle at 0; the dig leg settles PRE_DIG_SETTLE_MS then click 1 lands at 80-155; the capacity jumps to FULL at 200 (whole-box paint is binary with the screen-rect trick, so 'bar leaves EMPTY' and 'FULL' arrive together) inside the max(30,SHARDS_CLICK_CONFIRM_MS) proof window, so click 1 is CONFIRMED; the follow-up click rides the dig rhythm gap (190000/DIG_SPEED+25 = 1925ms at default speed); the fill wait then reads FULL instantly; go_water reaches the Pan cue at 2250 inside the first budget; do_shake drains to EMPTY at 2500 (inside SHAKE_BAIL_MS) with momentum W; the quit lands inside the post-shake settle, so the healthy golden carries zero safety events (the retry/nudge path is covered by classic-shards-miss). Lives in engine_goldens/classic_trace (NOT engine_scenarios/) so the characterization suite's auto-discovery is untouched; vendored to the Studio for its parity gate.",
+  "window": [0, 0, 1440, 900],
+  "config": {
+    "SHARDS_DIG_CLICKS": 2,
+    "SHARDS_ASSUME_FULL": false,
+    "RELICS_ENABLED": false,
+    "WEBHOOK_URL": "",
+    "WEBHOOK_SECRET": ""
+  },
+  "schedule": [[0, "toggle"], [2800, "quit"]],
+  "cues": { "PAN": [[2250, 2700]] },
+  "capacity": [[0, 0.0], [199, 0.0], [200, 1.0], [2499, 1.0], [2500, 0.0], [600000, 0.0]],
+  "screen": [{ "rect": [0, 0, 1, 1], "rgb": [16, 16, 16], "from_ms": 0 }],
+  "_screen_comment": "The benign 1x1 rect flips the sim's capacity paint into whole-box mode (see classic-standard.json) so FULL is readable in full-frame grabs; with it the capacity read is effectively binary, so keyframes use 0/1 only.",
+  "duration_ms": 600000
+}

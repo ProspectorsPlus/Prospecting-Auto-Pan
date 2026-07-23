@@ -1,0 +1,159 @@
+{
+ "_trace": 1,
+ "scenario": "classic-shards-assume",
+ "summary": {
+  "counts": {
+   "key_down": 3,
+   "key_up": 3,
+   "mouse_down": 14,
+   "mouse_up": 14
+  },
+  "events": 34,
+  "first_t": 80,
+  "last_t": 1100
+ },
+ "trace": [
+  {
+   "ev": "mouse_down",
+   "t": 80
+  },
+  {
+   "ev": "mouse_up",
+   "t": 155
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 205
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 405
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 405
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 455
+  },
+  {
+   "ev": "key_down",
+   "key": "W",
+   "t": 455
+  },
+  {
+   "ev": "mouse_down",
+   "t": 455
+  },
+  {
+   "ev": "mouse_up",
+   "t": 473
+  },
+  {
+   "ev": "mouse_down",
+   "t": 487
+  },
+  {
+   "ev": "mouse_up",
+   "t": 505
+  },
+  {
+   "ev": "mouse_down",
+   "t": 519
+  },
+  {
+   "ev": "mouse_up",
+   "t": 537
+  },
+  {
+   "ev": "mouse_down",
+   "t": 551
+  },
+  {
+   "ev": "mouse_up",
+   "t": 569
+  },
+  {
+   "ev": "mouse_down",
+   "t": 583
+  },
+  {
+   "ev": "mouse_up",
+   "t": 601
+  },
+  {
+   "ev": "mouse_down",
+   "t": 615
+  },
+  {
+   "ev": "mouse_up",
+   "t": 633
+  },
+  {
+   "ev": "mouse_down",
+   "t": 647
+  },
+  {
+   "ev": "mouse_up",
+   "t": 665
+  },
+  {
+   "ev": "mouse_down",
+   "t": 679
+  },
+  {
+   "ev": "mouse_up",
+   "t": 697
+  },
+  {
+   "ev": "mouse_down",
+   "t": 711
+  },
+  {
+   "ev": "mouse_up",
+   "t": 729
+  },
+  {
+   "ev": "mouse_down",
+   "t": 743
+  },
+  {
+   "ev": "mouse_up",
+   "t": 761
+  },
+  {
+   "ev": "mouse_down",
+   "t": 775
+  },
+  {
+   "ev": "mouse_up",
+   "t": 793
+  },
+  {
+   "ev": "mouse_down",
+   "t": 807
+  },
+  {
+   "ev": "mouse_up",
+   "t": 825
+  },
+  {
+   "ev": "key_up",
+   "key": "W",
+   "t": 825
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1035
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1100
+  }
+ ]
+}

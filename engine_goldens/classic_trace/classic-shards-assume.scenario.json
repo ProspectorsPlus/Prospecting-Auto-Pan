@@ -1,0 +1,38 @@
+{
+ "name": "classic-shards-assume",
+ "_comment": "SHARDS assume-full path: SHARDS_DIG_CLICKS=1 with SHARDS_ASSUME_FULL on. Click 1 (80-155) is confirmed by the capacity jump at 200; the leg RETURNS IMMEDIATELY (no fill wait) and sets the 1.2s assume-full deadline; go_water starts at once; the Pan cue at 450 is reached inside the first budget; the shake (which CLEARS assume_full_until) drains at 800; the quit lands inside the post-shake settle. HONEST COVERAGE NOTE: whole-box capacity paint is binary, so 'confirmed but not yet FULL' is unrepresentable in this sim \u2014 the assume override's set/clear/compare path executes and must stay trace-neutral, but a scenario where the override actively changes the dispatch is not constructible today; that residue is code-verified against engine.py act() lines ~4333-4337 and recorded in the Studio ledger. Companion to classic-shards; same vendoring rules.",
+ "window": [
+  0,
+  0,
+  1440,
+  900
+ ],
+ "config": {
+  "SHARDS_DIG_CLICKS": 1,
+  "SHARDS_ASSUME_FULL": true,
+  "RELICS_ENABLED": false,
+  "WEBHOOK_URL": "",
+  "WEBHOOK_SECRET": ""
+ },
+ "schedule": [
+  [ 0, "toggle" ],
+  [ 1100, "quit" ]
+ ],
+ "cues": {
+  "PAN": [ [  450,  1000 ] ]
+ },
+ "capacity": [
+  [ 0, 0.0 ],
+  [ 199, 0.0 ],
+  [ 200, 1.0 ],
+  [ 799, 1.0 ],
+  [ 800, 0.0 ],
+  [ 600000, 0.0 ]
+ ],
+ "screen": [
+  { "rect": [  0,  0,  1,  1 ], "rgb": [  16,  16,  16 ], "from_ms": 0
+  }
+ ],
+ "_screen_comment": "Whole-box capacity paint (see classic-shards): keyframes are 0/1 only.",
+ "duration_ms": 600000
+}
