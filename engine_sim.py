@@ -77,7 +77,23 @@ class Clock(object):
         self._sched.sort(key=lambda x: x[0])
 
     def adv(self, ms):
+        # DUST-FREE virtual time: quantize to integer nanoseconds after
+        # every advance. Float error otherwise accumulates differently per
+        # RUN HISTORY (the supervisor's pacing sleeps vs script_tick's),
+        # so two runs whose visible events agree to the millisecond could
+        # still disagree by ~1ulp in perf_counter — and a wait whose
+        # deadline lands exactly on a poll instant (a timeout that is a
+        # multiple of the 25ms poll) would then exit one poll apart on a
+        # coin-flip. Quantized, equal event times mean equal floats, so
+        # every deadline comparison resolves identically in every run —
+        # the property the detached-trace byte-parity contract stands on.
         target = self.ms + max(0.0, float(ms))
+        target = round(target * 1e6) / 1e6
+        if float(ms) > 0.0 and target <= self.ms:
+            # A positive advance must always make progress: a sub-quantum
+            # sleep (dust-sized sleep_until remainders) rounds up to one
+            # microsecond instead of stalling the clock.
+            target = round(self.ms * 1e6 + 1) / 1e6
         while self._sched and self._sched[0][0] <= target:
             t, fn = self._sched.pop(0)
             self.ms = max(self.ms, t)
