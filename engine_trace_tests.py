@@ -535,6 +535,67 @@ def test_classic_geode(update):
                     "full animation (%dms >= %dms)" % (span, lo))
 
 
+# The script-clock grid scenario: SCRIPT_MODE running a tiny v4 program whose
+# sleep lengths deliberately leave float-division dust (34/1000 has no exact
+# double), followed by a wait whose timeout is a whole multiple of the 25 ms
+# poll. The regression this pins: _script_sleep must count its budget down
+# exactly (never re-derive the remainder from the clock), or the dust-sized
+# final slice bumps the virtual clock +1 us off the native instant grid and
+# the poll-aligned wait deadline flips one poll late — the real-world
+# "Detached diverged on event 80" (Shards FR Latest, SHARDS_CLICK_CONFIRM_MS
+# = 100 on the 25 ms grid).
+_GRID_SCRIPT = {
+    "format": "ppscript", "version": 4, "name": "grid",
+    "variables": [{"name": "x", "type": "bool", "initial": False}],
+    "blocks": [
+        {"id": "a", "type": "btn_down", "params": {}},
+        {"id": "b", "type": "sleep_ms", "params": {"ms": 10}},
+        {"id": "c", "type": "btn_up", "params": {}},
+        {"id": "d", "type": "sleep_ms", "params": {"ms": 34}},
+        {"id": "e", "type": "wait_expr",
+         "params": {"timeout_ms": 100, "confirm": 1, "min_ms": 0,
+                    "poll_ms": 25, "cond": False,
+                    "on_timeout": "continue", "store": "x"}},
+        {"id": "f", "type": "btn_down", "params": {}},
+        {"id": "g", "type": "sleep_ms", "params": {"ms": 10}},
+        {"id": "h", "type": "btn_up", "params": {}},
+        {"id": "i", "type": "wait_expr",
+         "params": {"timeout_ms": 30000, "confirm": 1, "min_ms": 0,
+                    "poll_ms": 25, "cond": False,
+                    "on_timeout": "continue", "store": "x"}},
+    ]}
+
+SCRIPT_GRID = {
+    "name": "script-clock-grid",
+    "window": [0, 0, 1440, 900],
+    "config": {"RELICS_ENABLED": False, "WEBHOOK_URL": "",
+               "WEBHOOK_SECRET": "", "SCRIPT_MODE": True,
+               "SCRIPT_ACTIVE": "grid",
+               "SCRIPT_JSON": json.dumps(_GRID_SCRIPT)},
+    "schedule": [[0, "toggle"], [2000, "quit"]],
+    "cues": {},
+    "capacity": [[0, 0.0]],
+    "duration_ms": 5000,
+}
+
+
+def test_script_clock_grid(update):
+    print("[trace] script-clock-grid (v4 sleeps stay on the native grid)")
+    path = os.path.join(tempfile.mkdtemp(prefix="ppe-trace-"),
+                        "script-clock-grid.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(SCRIPT_GRID, f)
+    _transcript, world, trace = run_scenario(path, "pold_tr_grid")
+    mp = mouse_pairs(trace)
+    chk(len(mp) >= 2, "grid: both script clicks landed (%d)" % len(mp))
+    if len(mp) >= 2:
+        gap = mp[1][0] - mp[0][1]
+        chk(gap == 134,
+            "grid: dusty sleep (34ms) + poll-aligned wait (100ms) spans "
+            "exactly 134ms, got %dms (159 = the +1us dust bug)" % gap)
+    chk(world.inputs.all_released(), "grid: all inputs released at exit")
+
+
 if __name__ == "__main__":
     update = "--update" in sys.argv
     test_classic_standard(update)
@@ -542,6 +603,7 @@ if __name__ == "__main__":
     test_stuck_full(update)
     test_classic_shards(update)
     test_classic_geode(update)
+    test_script_clock_grid(update)
     print()
     if update:
         print("TRACE GOLDENS REGENERATED")

@@ -4716,13 +4716,19 @@ def _script3_parse_combo(txt):
 
 def _script_sleep(ms):
     """Sleep in <=25 ms slices so Esc / Ctrl+K / Pause abort instantly.
-    Returns True if the full time elapsed, False if the run stopped."""
-    end = time.perf_counter() + max(0.0, ms) / 1000.0
+    Returns True if the full time elapsed, False if the run stopped.
+    The remaining budget is an exact countdown, never re-derived from the
+    clock: a clock-derived remainder carries float-division dust, and a
+    dust-sized final slice nudges the virtual clock off the native legs'
+    instant grid -- flipping any later wait whose deadline lands exactly
+    on a poll instant (the detached-trace byte-parity contract)."""
+    left = max(0.0, float(ms))
     while State.running and State.alive:
-        left = (end - time.perf_counter()) * 1000.0
-        if left <= 0:
+        if left <= 0.0:
             return True
-        sleep_ms(min(25.0, left))
+        step = 25.0 if left > 25.0 else left
+        sleep_ms(step)
+        left -= step
     return False
 
 

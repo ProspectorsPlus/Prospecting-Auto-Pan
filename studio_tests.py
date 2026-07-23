@@ -468,12 +468,19 @@ check("want_reset restarts the walk from the top",
       kds == [po._SCRIPT_KEYS["1"], po._SCRIPT_KEYS["1"]], kds)
 
 # ---- real _script_sleep aborts on stop ----------------------------------------------
+# The real slicer counts its budget down (exact countdown, no clock reads --
+# the detach byte-parity contract), so this check runs it against the REAL
+# sleeper: the run flag flips mid-budget and the very next slice boundary
+# must abort the sleep.
+_stub_sleep_ms = po.sleep_ms
+po.sleep_ms = lambda ms: time.sleep(ms / 1000.0)
 po.State.running = True
 po.State.alive = True
 t0 = time.perf_counter()
 threading.Timer(0.08, lambda: setattr(po.State, "running", False)).start()
 res = _real_script_sleep(5000)
 dt = time.perf_counter() - t0
+po.sleep_ms = _stub_sleep_ms
 check("real _script_sleep aborts the instant the run stops",
       res is False and dt < 1.0, dt)
 
