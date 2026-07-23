@@ -82,16 +82,24 @@ def one_pair(cfg, program, tag):
 def main():
     cfg, program = load_fixtures()
 
-    # a clean pair: same behavior signature end to end. One retry absorbs
-    # a genuine scheduling-jitter flip; two mismatches fail.
+    # a clean pair: same behavior signature end to end AND within the gap
+    # budgets. One full-pair retry absorbs a genuine machine-load spike
+    # (parallel builds/tests on the same box push sleep wake-ups past the
+    # budgets — observed live in session ten on an untouched tree); two
+    # consecutive failures fail honestly.
     cw = dw = ce = de = None
     for attempt in (1, 2):
         cw, dw, ce, de = one_pair(cfg, program, "a%d" % attempt)
-        _, div = EP.gap_deltas(ce, de)
-        if div is None:
+        deltas_try, div = EP.gap_deltas(ce, de)
+        st_try = EP.summarize_deltas(deltas_try)
+        if div is None and st_try["median"] <= GAP_MEDIAN_MS \
+                and st_try["p95"] <= GAP_P95_MS and st_try["max"] <= GAP_MAX_MS:
             break
-        print("  [note] attempt %d diverged at event %d -- retrying once"
-              % (attempt, div))
+        if attempt == 1:
+            print("  [note] attempt 1 %s -- retrying once"
+                  % ("diverged at event %d" % div if div is not None
+                     else "over gap budget (median %.2f p95 %.2f max %.2f)"
+                     % (st_try["median"], st_try["p95"], st_try["max"])))
     deltas, div = EP.gap_deltas(ce, de)
 
     chk(div is None,
