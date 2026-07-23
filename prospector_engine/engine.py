@@ -6950,6 +6950,79 @@ class ScriptRunner:
         self._store_result(p, "store", outcome)
         return None
 
+    def _do_walk_back_x(self, det, p, kids):
+        """v4 engine-op practical: go_water's X_PATTERN walk-back, line for
+        line (docs/ATOMIC_AUTOMATION_IR.md §4.3): auto-recenter once the
+        drift ledger exceeds its budget, drift-biased diagonal side pick,
+        a short S+side diagonal, then the straight remainder and the extra
+        depth after the hit. The drift ledger accumulates FLOAT ms from
+        perf_counter deltas and int-truncates the recenter tap -- the same
+        float-trajectory class as fill_wait/rattle_until, which is why this
+        is an engine op and not a materializer approximation. The balance
+        and direction ride DECLARED number variables (visible, inspectable
+        state); the caller's graph owns water_fails and the growing budget,
+        exactly as it does for hold_key_until."""
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return None
+        strafe_ms = self._pi(p, "strafe_ms", 220, 0, 10000)
+        recenter_ms = self._pi(p, "recenter_ms", 400, 0, 10000)
+        timeout = self._pi(p, "timeout_ms", 4000, 1, _SCRIPT_WAIT_MAX_MS)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        extra = self._pi(p, "extra_ms", 0, 0, 5000)
+        bal_name = p.get("balance_var") or ""
+        dir_name = p.get("dir_var") or ""
+        for _nm in (bal_name, dir_name):
+            if self.var_decls.get(_nm) != "number":
+                raise ValueError('variable "%s" is not declared' % (_nm,))
+        balance = float(self.vars.get(bal_name, 0.0))
+        x_dir = int(float(self.vars.get(dir_name, 0.0)))
+        self.pass_activity = True
+        # X-pattern AUTO-RECENTER (go_water): pure A/D strafe back toward
+        # centre -- corrects sideways drift without changing depth.
+        if recenter_ms > 0 and abs(balance) > recenter_ms:
+            corr = KEY_A if balance > 0 else KEY_D
+            applied = min(abs(balance), recenter_ms * 2.0)
+            tap_key(corr, max(1, int(applied * 0.7)))
+            balance += (-applied if balance > 0 else applied)
+            self._event_op("recenter",
+                           "drifted %dms off centre -> strafe back"
+                           % int(applied))
+        # pick this pass's diagonal side (bias toward reducing the drift)
+        if balance > 0:
+            side, sgn = KEY_A, -1
+        elif balance < 0:
+            side, sgn = KEY_D, +1
+        else:
+            side, sgn = (KEY_D, +1) if x_dir == 0 else (KEY_A, -1)
+            x_dir ^= 1
+        tb = time.perf_counter()
+        key_down(code)
+        reached = False
+        try:
+            # hold the diagonal only BRIEFLY (strafe_ms; 0 = the whole
+            # budget), then release the side key and finish STRAIGHT.
+            key_down(side)
+            try:
+                diag_ms = (min(strafe_ms, timeout) if strafe_ms > 0
+                           else timeout)
+                reached = self._wait_classic(p, diag_ms, confirm, 0, 25)
+            finally:
+                key_up(side)                 # released -> no mid-walk kink
+            balance += sgn * (time.perf_counter() - tb) * 1000.0
+            if not reached:                  # STRAIGHT back for the rest
+                rem = timeout - (time.perf_counter() - tb) * 1000.0
+                if rem > 0:
+                    reached = self._wait_classic(p, rem, confirm, 0, 25)
+            if reached and extra > 0:
+                sleep_ms(extra)              # keep holding -> a bit deeper
+        finally:
+            key_up(code)
+        self._store_result(p, "balance_var", balance)
+        self._store_result(p, "dir_var", float(x_dir))
+        self._store_result(p, "store", reached)
+        return None
+
 
 # One handler per schema block type; studio_tests.py asserts this table stays
 # in lockstep with STUDIO_BLOCKS in prospecting_ui.py.
@@ -7028,6 +7101,7 @@ _SCRIPT_HANDLERS_V4.update({
     "fill_to_full": ScriptRunner._do_fill_to_full,
     "fill_wait": ScriptRunner._do_fill_wait,
     "rattle_until": ScriptRunner._do_rattle_until,
+    "walk_back_x": ScriptRunner._do_walk_back_x,
 })
 
 

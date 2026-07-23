@@ -1,0 +1,187 @@
+{
+ "_trace": 1,
+ "scenario": "classic-x",
+ "summary": {
+  "counts": {
+   "key_down": 9,
+   "key_up": 9,
+   "mouse_down": 10,
+   "mouse_up": 10
+  },
+  "events": 38,
+  "first_t": 20,
+  "last_t": 1623
+ },
+ "trace": [
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 20
+  },
+  {
+   "ev": "key_down",
+   "key": "D",
+   "t": 20
+  },
+  {
+   "ev": "key_up",
+   "key": "D",
+   "t": 220
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 220
+  },
+  {
+   "ev": "key_down",
+   "key": "A",
+   "t": 220
+  },
+  {
+   "ev": "key_up",
+   "key": "A",
+   "t": 360
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 360
+  },
+  {
+   "ev": "key_down",
+   "key": "A",
+   "t": 360
+  },
+  {
+   "ev": "key_up",
+   "key": "A",
+   "t": 585
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 760
+  },
+  {
+   "ev": "key_down",
+   "key": "D",
+   "t": 760
+  },
+  {
+   "ev": "key_up",
+   "key": "D",
+   "t": 917
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 917
+  },
+  {
+   "ev": "key_down",
+   "key": "D",
+   "t": 917
+  },
+  {
+   "ev": "key_up",
+   "key": "D",
+   "t": 1142
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 1317
+  },
+  {
+   "ev": "key_down",
+   "key": "W",
+   "t": 1317
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1317
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1335
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1349
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1367
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1381
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1399
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1413
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1431
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1445
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1463
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1477
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1495
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1509
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1527
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1541
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1559
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1573
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1591
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1605
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1623
+  },
+  {
+   "ev": "key_up",
+   "key": "W",
+   "t": 1623
+  }
+ ]
+}

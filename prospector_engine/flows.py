@@ -80,6 +80,7 @@ INPUT_NODE_TYPES = frozenset((
     "key_press", "key_hold", "key_down", "key_up", "key_combo", "key_seq",
     "type_text", "set_clipboard", "release_keys", "mouse_btn", "scroll",
     "click_image", "move_image",
+    "walk_back_x",
 ))
 
 

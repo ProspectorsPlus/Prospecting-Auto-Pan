@@ -535,6 +535,82 @@ def test_classic_geode(update):
                     "full animation (%dms >= %dms)" % (span, lo))
 
 
+# ---------------------------------------------------------------------------
+def test_classic_x(update):
+    """X_PATTERN walk-back (Studio detach parity companion for walk_back_x).
+    Same fixture home and vendoring rules as the shards scenarios. The world
+    keeps the pan FULL with a late Pan cue, so go_water runs three X legs
+    back-to-back: diagonal S+side pairs, the balanced side pick alternating
+    via x_dir, and pure-strafe recenter taps once the drift ledger exceeds
+    X_RECENTER_MS -- including the int-truncated dusty tap (157ms =
+    int(224.99999999999997 * 0.7)) that makes this leg an engine-op
+    practical rather than an expression mirror."""
+    name = "classic-x"
+    print("[trace] %s" % name)
+    path = os.path.join(GOLD, name + ".scenario.json")
+    transcript, world, trace = run_scenario(path, "pold_tr_x")
+    eng = world.po
+    compare_golden(name, trace_doc(name, trace), update)
+    chk(world.inputs.all_released(), "x: all inputs released at exit")
+    evs = event_types(transcript)
+    chk(evs == ["recenter", "recenter"],
+        "x: exactly the two recenter events, nothing else -- got %r" % evs)
+
+    s_pairs = key_pairs(trace, "S")
+    phases_water = transcript.count("__PHASE__ water")
+    chk(len(s_pairs) == 3 and phases_water == 3,
+        "x: three water legs, one S hold each (%d legs, %d pairs)"
+        % (phases_water, len(s_pairs)))
+
+    # each S hold carries EXACTLY one diagonal side pair, opened at the
+    # same instant as the S press (key_down S + key_down side) and released
+    # before (or with) the S release -- the short-diagonal-then-straight shape
+    sides = []
+    a_pairs, d_pairs = key_pairs(trace, "A"), key_pairs(trace, "D")
+    for sd, su in s_pairs:
+        inside = [("A", d, u) for d, u in a_pairs if sd <= d and u <= su] \
+            + [("D", d, u) for d, u in d_pairs if sd <= d and u <= su]
+        chk(len(inside) == 1 and inside[0][1] == sd,
+            "x: one diagonal side pair per water leg, opened with S "
+            "(leg at %d: %r)" % (sd, inside))
+        if inside:
+            sides.append(inside[0][0])
+    chk(sides == ["D", "A", "D"],
+        "x: balanced side picks ALTERNATE via x_dir (D, then A, then D) "
+        "-- got %r" % (sides,))
+
+    # leg 1's diagonal is budget-capped: min(X_STRAFE_MS, PAN_BACK_MAX_MS)
+    d1 = [(d, u) for d, u in d_pairs if d == s_pairs[0][0]]
+    chk(bool(d1) and d1[0][1] - d1[0][0]
+        == min(eng.X_STRAFE_MS, eng.PAN_BACK_MAX_MS),
+        "x: leg-1 diagonal capped by the first budget "
+        "(min(X_STRAFE_MS %d, PAN_BACK_MAX_MS %d))"
+        % (eng.X_STRAFE_MS, eng.PAN_BACK_MAX_MS))
+
+    # recenter strafes: pure A/D taps OUTSIDE any S hold, once drift
+    # exceeds X_RECENTER_MS. 140 = int(200*0.7); 157 = int(224.999...*0.7)
+    # -- the truncated dusty tap the float trajectory produces.
+    def outside_s(p):
+        return not any(sd <= p[0] and p[1] <= su for sd, su in s_pairs)
+    recenters = sorted([("A", u - d) for d, u in a_pairs
+                        if outside_s((d, u))]
+                       + [("D", u - d) for d, u in d_pairs
+                          if outside_s((d, u))])
+    chk(recenters == [("A", 140), ("D", 157)],
+        "x: recenter strafes are the pure A 140ms / D 157ms taps "
+        "(int-truncated drift * 0.7, dust included) -- got %r"
+        % (recenters,))
+
+    # the successful leg still shakes: one momentum-W rattle after leg 3
+    w = key_pairs(trace, "W")
+    chk(len(w) == 1 and w[0][0] == s_pairs[2][1],
+        "x: the reached leg hands off to the momentum-W shake immediately")
+
+    # determinism: a second run produces the identical trace
+    _t2, _w2, trace2 = run_scenario(path, "pold_tr_x2")
+    chk(trace == trace2, "x: two runs -> identical instruction traces")
+
+
 # The script-clock grid scenario: SCRIPT_MODE running a tiny v4 program whose
 # sleep lengths deliberately leave float-division dust (34/1000 has no exact
 # double), followed by a wait whose timeout is a whole multiple of the 25 ms
@@ -603,6 +679,7 @@ if __name__ == "__main__":
     test_stuck_full(update)
     test_classic_shards(update)
     test_classic_geode(update)
+    test_classic_x(update)
     test_script_clock_grid(update)
     print()
     if update:

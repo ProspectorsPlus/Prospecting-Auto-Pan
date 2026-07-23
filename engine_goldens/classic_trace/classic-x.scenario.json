@@ -1,0 +1,18 @@
+{
+  "name": "classic-x",
+  "_comment": "Canonical X_PATTERN walk-back for the trace harness and the Studio detach parity gate: capacity FULL from t0 with the Pan cue late, so go_water runs three consecutive X legs. Leg 1 (balanced, x_dir 0) walks S+D with the diagonal capped by the first 200ms budget (min(X_STRAFE_MS, budget)) -> misses -> the drift ledger reads +200. Leg 2 recenters first (abs(200) > X_RECENTER_MS 150: pure A strafe int(200*0.7)=140ms, ledger back to 0), then the balanced pick alternates to S+A (x_dir 1), full 220ms diagonal (225 on the poll grid) -> the ledger reads -224.99999999999997 (the float dust IS the trajectory: (0.585-0.36)*1000 in doubles) -> the straight remainder misses. Leg 3 recenters D int(224.99...*0.7)=157ms and alternates back to S+D; the Pan cue lands in its straight remainder -> reached. The shake drains at 1601 (momentum W, no safety events) and the quit lands inside the post-shake settle, so the golden carries exactly the two recenter events. X_PATTERN and X_RECENTER_MS are pinned here because this file IS the knob source for the trace harness (like SHARDS_DIG_CLICKS in classic-shards); X_RECENTER_MS rides low because the default 400 budget is unreachable when the default 220ms strafe bounds every diagonal at 225ms. X_STRAFE_MS stays unpinned (engine default). The Studio-side LIVE companion (engine/scenarios/classic-x-live.json) pins NO X_* keys at all -- the entry under verification drives its own knobs. Lives in engine_goldens/classic_trace (NOT engine_scenarios/ -- the characterization suite's auto-discovery must not see it); vendored to the Studio for its parity gate.",
+  "window": [0, 0, 1440, 900],
+  "config": {
+    "X_PATTERN": true,
+    "X_RECENTER_MS": 150,
+    "RELICS_ENABLED": false,
+    "WEBHOOK_URL": "",
+    "WEBHOOK_SECRET": ""
+  },
+  "schedule": [[0, "toggle"], [1800, "quit"]],
+  "cues": { "PAN": [[1300, 1800]] },
+  "capacity": [[0, 1.0], [1600, 1.0], [1601, 0.0], [600000, 0.0]],
+  "screen": [{ "rect": [0, 0, 1, 1], "rgb": [16, 16, 16], "from_ms": 0 }],
+  "_screen_comment": "The benign 1x1 rect flips the sim's capacity paint into whole-box mode (see classic-standard.json) so FULL is readable in full-frame grabs; keyframes are 0/1 only.",
+  "duration_ms": 600000
+}
