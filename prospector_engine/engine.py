@@ -6816,11 +6816,14 @@ class ScriptRunner:
     def _do_rattle_until(self, det, p, kids):
         clicks = self._pi(p, "clicks", 0, 0, 100)
         click_ms = self._pi(p, "click_ms", 18, 1, 200)
-        gap_ms = self._pi(p, "gap_ms", 14, 1, 500)
+        # gap 0 is legal: native do_shake sleeps SHAKE_CLICK_GAP_MS verbatim
+        # and 0 means back-to-back clicks (real geode builds use it).
+        gap_ms = self._pi(p, "gap_ms", 14, 0, 500)
         hold_ms = self._pi(p, "hold_ms", 1500, 100, _SCRIPT_WAIT_MAX_MS)
         momentum_w = p.get("momentum_w") is True
         lead_ms = self._pi(p, "lead_ms", 0, 0, 10000)
         bail_ms = self._pi(p, "bail_ms", 500, 0, _SCRIPT_WAIT_MAX_MS)
+        start_delay_ms = self._pi(p, "start_delay_ms", 0, 0, 10000)
         start_confirm_ms = self._pi(p, "start_confirm_ms", 0, 0, 10000)
         start_retries = self._pi(p, "start_retries", 2, 0, 5)
         retry_deeper_ms = self._pi(p, "retry_deeper_ms", 70, 0, 1000)
@@ -6831,7 +6834,13 @@ class ScriptRunner:
         count_cycle = p.get("count_cycle") is True
         self.pass_activity = True
         # do_shake core, line for line (docs/ATOMIC_AUTOMATION_IR.md §4.3).
+        # SHAKE_START_DELAY_MS belongs INSIDE: native captures t0 (the
+        # confirm/bail clock origin) BEFORE the start delay — hoisting the
+        # delay outside the practical skews both windows by exactly that
+        # delay (the Money-v5 one-extra-click divergence).
         t0 = time.perf_counter()
+        if start_delay_ms > 0:
+            sleep_ms(start_delay_ms)
         w_down = False
         if momentum_w:
             key_down(KEY_W)
