@@ -3,13 +3,19 @@
 Studio repo). Dev-only; not shipped, not in the zip.
 
 Covers the engine-side guarantees the cross-language goldens deliberately
-avoid (errors, deadlocks, policy contrasts) plus the load-time whitelist
+avoid (errors, deadlocks, policy contrasts) plus the load-time admission
 refusals and determinism:
 
   * double-run byte-equality of every v4_parallel_* / v4_gate_* golden
     through the REAL interpreter under the virtual clock;
-  * the interleave-safe whitelist refusal messages (practical, guard,
-    nested parallel, split/read-only device rules);
+  * effect-model admission refusals (blocking op, no-walker op, guard,
+    nested parallel, split/read-only device rules derived from declared
+    ownership, serialize-required practical conflicts) — session ten's
+    semantic replacement for the name whitelist;
+  * the effect table (_SCRIPT4_CONC) agreeing byte for byte with the
+    Studio registry via shared/goldens/v4_conc_table.json;
+  * practical-in-branch execution: ledger-arbitrated holds/taps, queue
+    handoff, cancellation stripping a practical's holds at its seam;
   * input arbitration corners: exclusive conflict error, queue vs priority
     waiter order, share merge, deadlock detection, fail-policy op failure;
   * stop-inside-a-branch event order (holds release BEFORE the stop row);
@@ -115,15 +121,27 @@ def test_golden_determinism():
             "%s: two runs byte-identical" % n)
 
 
-# ---- 2. whitelist refusals --------------------------------------------------
+# ---- 2. effect-model admission refusals -------------------------------------
 
 def test_whitelist():
-    print("[2] load-time whitelist refusals (named reasons)")
+    print("[2] load-time admission refusals (effect-model reasons)")
+    # Session ten: the practicals are ADMITTED now — the old refusal case
+    # inverts into an acceptance check (compatibility widening).
     d = dead_of([par([[{"id": "r1", "type": "rattle_until", "params": {}}],
+                      [sleep("b1", 10)]], input="share")])
+    chk(not d, "rattle_until inside a branch now loads clean (dead=%r)" % d)
+
+    d = dead_of([par([[{"id": "s1", "type": "shake", "params": {}}],
                       [sleep("b1", 10)]])])
-    chk("'rattle_until' inside a Fork branch" in (d or "")
+    chk("'shake' inside a Fork branch" in (d or "")
         and "holds the walker" in (d or ""),
-        "practical refused with the honest reason: %r" % d)
+        "a blocking op is refused with the honest reason: %r" % d)
+
+    d = dead_of([par([[{"id": "h1", "type": "hud_text",
+                        "params": {"text": "x"}}], [sleep("b1", 10)]])])
+    chk("'hud_text' inside a Fork branch" in (d or "")
+        and "no interleave-safe branch walker" in (d or ""),
+        "a no-walker op is refused with the honest reason: %r" % d)
 
     d = dead_of([par([[{"id": "g1", "type": "guard", "params": {},
                         "children": [sleep("x", 10)]}], [sleep("b1", 10)]])])
@@ -147,9 +165,54 @@ def test_whitelist():
     chk("keyboard branch" in (d or ""),
         "mouse op in the keyboard branch refused: %r" % d)
 
+    # Derived device rules cover the practicals: probe_dig owns the mouse,
+    # so it can never sit in the keyboard half of a split.
+    d = dead_of([par([[{"id": "p1", "type": "probe_dig", "params": {}}],
+                      [sleep("b", 10)]], input="split_kb_mouse")])
+    chk("'probe_dig'" in (d or "") and "keyboard branch" in (d or ""),
+        "a mouse-owning practical is refused in the keyboard half: %r" % d)
+
     d = dead_of([par([[tap("k", "1", 40)], [sleep("b", 10)]],
                      input="read_only")])
     chk("read-only" in (d or ""), "input in a read-only Fork refused: %r" % d)
+
+    d = dead_of([par([[{"id": "h1", "type": "hold_key_until",
+                        "params": {"key": "S"}}], [sleep("b", 10)]],
+                     input="read_only")])
+    chk("'hold_key_until'" in (d or "") and "read-only" in (d or ""),
+        "a key-owning practical is refused in a read-only Fork: %r" % d)
+
+    # SERIALIZE REQUIRED: two branches statically owning one token under
+    # exclusive input refuse at load WHEN a practical is involved… (the
+    # FIRST conflicting token is named — for two rattles that is the W
+    # momentum key, registered before their mouse ownership; the Studio
+    # classifier orders identically)
+    d = dead_of([par([
+        [{"id": "r1", "type": "rattle_until", "params": {}}],
+        [{"id": "r2", "type": "rattle_until", "params": {}}]])])
+    chk("both drive the W key" in (d or "")
+        and "queue, share or priority" in (d or ""),
+        "two exclusive rattles refuse on their first shared token: %r" % d)
+    # momentum off on both sides: the conflict falls to the mouse.
+    d = dead_of([par([
+        [{"id": "r1", "type": "rattle_until",
+          "params": {"momentum_w": False}}],
+        [{"id": "r2", "type": "rattle_until",
+          "params": {"momentum_w": False}}]])])
+    chk("both drive the left mouse button" in (d or ""),
+        "two exclusive mouse-owning practicals refuse with the fix: %r" % d)
+
+    # …but a legacy-only conflict still LOADS (its arbitration is a pinned
+    # runtime error — the goldens-must-not-shift compatibility rule).
+    d = dead_of([par([[pin("a1", "W")], [tap("b2", "W", 40)]])])
+    chk(not d, "a legacy-only exclusive conflict still loads (dead=%r)" % d)
+
+    # queue arbitrates the same practical pair: loads clean.
+    d = dead_of([par([
+        [{"id": "r1", "type": "rattle_until", "params": {}}],
+        [{"id": "r2", "type": "rattle_until", "params": {}}]],
+        input="queue")])
+    chk(not d, "the same pair under queue loads clean (dead=%r)" % d)
 
     d = dead_of([{"id": "w", "type": "wait", "params": {"ms": 500},
                   "branches": [[sleep("x", 10)], [sleep("y", 10)]]}])
@@ -282,12 +345,96 @@ def test_capabilities():
         "flows.INPUT_NODE_TYPES counts `parallel` as input-producing")
 
 
+# ---- 6. effect table agreement ----------------------------------------------
+
+def test_conc_table():
+    """The engine's _SCRIPT4_CONC must agree with the Studio registry's
+    NODE_CONC byte for byte — both sides pin to the same golden JSON
+    (Studio asserts registry -> golden in tests/parallel-validate.test.ts;
+    this asserts engine -> golden), so the admission rule can never drift
+    between the two schedulers."""
+    print("[6] effect table agrees with the Studio registry (golden JSON)")
+    path = os.path.join(GOLDENS, "v4_conc_table.json")
+    chk(os.path.isfile(path), "v4_conc_table.json exists in the goldens")
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8") as f:
+        studio = json.load(f)
+    engine = {t: po._conc_norm(t) for t in po._SCRIPT4_CONC}
+    chk(sorted(studio) == sorted(engine),
+        "both tables declare the same %d ops" % len(engine))
+    diff = [t for t in sorted(studio)
+            if t in engine and studio[t] != engine[t]]
+    chk(not diff, "per-op records byte-identical (diff: %r)" % diff[:5])
+    # Admission invariants: never narrower than the legacy whitelist, and
+    # exactly the legacy 27 + the seven session-ten practicals.
+    chk(po._SCRIPT4_PARALLEL_SAFE <= po._SCRIPT4_PAR_ADMISSIBLE,
+        "admission is a superset of the legacy whitelist")
+    new = sorted(po._SCRIPT4_PAR_ADMISSIBLE - po._SCRIPT4_PARALLEL_SAFE)
+    chk(new == ["fill_to_full", "fill_wait", "hold_key_until", "probe_dig",
+                "pulse_key", "rattle_until", "walk_back_x"],
+        "the widening is exactly the seven practicals: %r" % (new,))
+
+
+# ---- 7. practicals inside branches ------------------------------------------
+
+def test_practicals_in_branch():
+    """Branch-walker behavior the goldens deliberately avoid: queue handoff
+    against a practical's held key, and cancellation stripping a
+    practical's ledger holds at its suspension seam (policy contrast to
+    the race golden)."""
+    print("[7] practical branch walkers (arbitration + cancellation)")
+    # hold_key_until holds S through the ledger; a sibling tap of S queues
+    # until the hold releases at the condition hit.
+    got, err = run_script([par([
+        [{"id": "a1", "type": "hold_key_until",
+          "params": {"key": "S", "cond": {"$expr": {"read": "cue_pan"}},
+                     "timeout_ms": 400, "confirm": 1, "extra_ms": 0,
+                     "store": "reached"}}],
+        [sleep("b1", 50), tap("b2", "S", 40)]], input="queue")],
+        variables=[{"name": "reached", "type": "bool", "initial": False}],
+        scenario={"cues": [["pan", 100, 9000]],
+                  "capacity": [[0, 1.0], [600000, 1.0]]})
+    chk(err is None, "queue-contested hold_key_until runs (err=%r)" % err)
+    if err is None:
+        chk(key_events(got) == [
+            "key_down:S@0", "key_up:S@100",
+            "key_down:S@100", "key_up:S@140"],
+            "the queued tap acquires S exactly at the practical's release")
+        chk(got["finalVars"].get("reached") is True,
+            "hold_key_until stores the hit")
+
+    # any-join: the timer wins while pulse_key is mid-cadence — the loser
+    # is abandoned at its seam, no store write, taps stop at the instant.
+    got, err = run_script([par([
+        [{"id": "a1", "type": "pulse_key",
+          "params": {"key": "W", "cond": {"$expr": {"lit": False}},
+                     "max_ms": 5000, "on_ms": 11, "off_ms": 1,
+                     "confirm": 1, "store": "caught"}}],
+        [sleep("b1", 30)]], join="any", store="won")],
+        variables=[{"name": "caught", "type": "bool", "initial": False},
+                   {"name": "won", "type": "bool", "initial": False}])
+    chk(err is None, "any-join cancels pulse_key mid-cadence (err=%r)" % err)
+    if err is None:
+        chk(got["finalVars"].get("won") is True
+            and got["finalVars"].get("caught") is False,
+            "the cancelled practical never writes its store")
+        ev = key_events(got)
+        chk(ev and ev[-1].startswith("key_up:W@"),
+            "a mid-tap W hold is stripped on cancellation: %r" % (ev[-2:],))
+        chk(not any(int(e.rsplit("@", 1)[1]) > 30 and e.startswith("key_down")
+                    for e in ev),
+            "no W press happens after the cancelling instant")
+
+
 def main():
     test_golden_determinism()
     test_whitelist()
     test_arbitration()
     test_stop_semantics()
     test_capabilities()
+    test_conc_table()
+    test_practicals_in_branch()
     print()
     print("PARALLEL:", "ALL PASS" if not FAILS
           else "%d FAILURES" % len(FAILS))

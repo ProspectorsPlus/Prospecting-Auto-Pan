@@ -4681,12 +4681,208 @@ _SCRIPT4_PARALLEL_SAFE = frozenset((
     "mark_phase", "mark_event", "stat_add", "stat_set",
     "stop", "stop_hard", "raise_error",
 ))
-# Device split for input="split_kb_mouse" (validated: branch 0 keyboard,
-# branch 1 mouse) and the read_only input scan.
+# LEGACY device split lists (input="split_kb_mouse" / "read_only"). The
+# live rule now derives device ownership from the effect table below
+# (_SCRIPT4_CONC kb/mouse == "owns"), which covers the newly admitted
+# practicals automatically; these survive as the compatibility baseline.
 _SCRIPT4_PAR_KB_TYPES = frozenset(("key_pin", "key_unpin", "key_press",
                                    "tap_key"))
 _SCRIPT4_PAR_MOUSE_TYPES = frozenset(("btn_down", "btn_up", "click"))
 _SCRIPT4_PAR_INPUT_TYPES = _SCRIPT4_PAR_KB_TYPES | _SCRIPT4_PAR_MOUSE_TYPES
+
+# ---- v4 concurrency effect table (docs/PARALLEL_IR.md, session ten) --------
+# The per-op effect model that REPLACES the name whitelist as the ADMISSION
+# rule: every v4-reachable op declares what it actually does (keyboard/mouse
+# ownership, screen reads, state writes, branch execution semantics). This
+# is DATA mirroring Studio's registry NODE_CONC byte for byte — both sides
+# are pinned to shared/goldens/v4_conc_table.json (engine_parallel_tests.py
+# asserts this table against that golden; tests/parallel-validate.test.ts
+# asserts the registry side). Only non-default fields appear; _conc_norm
+# materializes defaults exactly like the Studio concOf().
+#   kb/mouse: "owns" = presses/holds that device (ledger-arbitrated)
+#   screen:   reads the screen (cues / capacity / pixels / vision)
+#   state:    shared-state domains written (Studio "stateWrites")
+#   stats:    writes session stats
+#   cancellable: has suspension seams inside a branch
+#   blocking: holds the walker for its whole duration (refusal reason)
+#   branch:   "seams" | "instant" | "no" — the admission field
+_SCRIPT4_CONC = {
+    # admissible with suspension seams (cooperative branch walkers)
+    "sleep_ms": {"cancellable": True, "branch": "seams"},
+    "wait_expr": {"screen": True, "state": ("vars",), "cancellable": True,
+                  "branch": "seams"},
+    "key_pin": {"kb": "owns", "cancellable": True, "branch": "seams"},
+    "key_unpin": {"kb": "owns", "branch": "instant"},
+    "btn_down": {"mouse": "owns", "cancellable": True, "branch": "seams"},
+    "btn_up": {"mouse": "owns", "branch": "instant"},
+    "key_press": {"kb": "owns", "cancellable": True, "branch": "seams"},
+    "tap_key": {"kb": "owns", "cancellable": True, "branch": "seams"},
+    "click": {"mouse": "owns", "state": ("cursor",), "cancellable": True,
+              "branch": "seams"},
+    "set_var": {"state": ("vars",), "branch": "instant"},
+    "log": {"state": ("log",), "branch": "instant"},
+    "comment": {"branch": "instant"},
+    "group": {"cancellable": True, "branch": "seams"},
+    "branch": {"cancellable": True, "branch": "seams"},
+    "loop": {"cancellable": True, "branch": "seams"},
+    "while": {"cancellable": True, "branch": "seams"},
+    "for_range": {"state": ("vars",), "cancellable": True,
+                  "branch": "seams"},
+    "repeat": {"cancellable": True, "branch": "seams"},
+    "break_loop": {"branch": "instant"},
+    "continue_loop": {"branch": "instant"},
+    "mark_phase": {"state": ("phase",), "branch": "instant"},
+    "mark_event": {"state": ("events",), "branch": "instant"},
+    "stat_add": {"stats": True, "state": ("stats",), "branch": "instant"},
+    "stat_set": {"stats": True, "state": ("stats",), "branch": "instant"},
+    "stop": {"branch": "instant"},
+    "stop_hard": {"branch": "instant"},
+    "raise_error": {"branch": "instant"},
+    # admissible practicals (session ten): generator walkers on the region
+    # clock, every input edge through the ownership ledger
+    "probe_dig": {"kb": "owns", "mouse": "owns", "screen": True,
+                  "state": ("vars", "events", "stats"), "stats": True,
+                  "cancellable": True, "branch": "seams"},
+    "fill_to_full": {"mouse": "owns", "screen": True,
+                     "state": ("vars", "stats"), "stats": True,
+                     "cancellable": True, "branch": "seams"},
+    "fill_wait": {"screen": True, "state": ("vars", "hud"),
+                  "cancellable": True, "branch": "seams"},
+    "hold_key_until": {"kb": "owns", "screen": True, "state": ("vars",),
+                       "cancellable": True, "branch": "seams"},
+    "pulse_key": {"kb": "owns", "screen": True, "state": ("vars",),
+                  "cancellable": True, "branch": "seams"},
+    "rattle_until": {"kb": "owns", "mouse": "owns", "screen": True,
+                     "state": ("vars", "events", "phase", "stats"),
+                     "stats": True, "cancellable": True, "branch": "seams"},
+    "walk_back_x": {"kb": "owns", "screen": True,
+                    "state": ("vars", "events"), "cancellable": True,
+                    "branch": "seams"},
+    # refused: hold the walker for their whole duration
+    "dig": {"mouse": "owns", "screen": True, "stats": True,
+            "state": ("stats",), "blocking": True},
+    "shake": {"kb": "owns", "mouse": "owns", "screen": True, "stats": True,
+              "state": ("events", "stats"), "blocking": True},
+    "hold_key": {"kb": "owns", "blocking": True},
+    "wait": {"blocking": True},
+    "relic": {"kb": "owns", "mouse": "owns", "blocking": True},
+    "notify": {"state": ("notify",), "blocking": True},
+    "wait_cue": {"kb": "owns", "screen": True, "blocking": True},
+    "wait_cap": {"screen": True, "blocking": True},
+    "move_mouse": {"mouse": "owns", "state": ("cursor",), "blocking": True},
+    "drag_mouse": {"mouse": "owns", "state": ("cursor",), "blocking": True},
+    "long_press": {"kb": "owns", "mouse": "owns", "blocking": True},
+    "key_hold": {"kb": "owns", "blocking": True},
+    "key_combo": {"kb": "owns", "blocking": True},
+    "key_seq": {"kb": "owns", "blocking": True},
+    "type_text": {"kb": "owns", "blocking": True},
+    "mouse_btn": {"mouse": "owns", "state": ("cursor",), "blocking": True},
+    "scroll": {"mouse": "owns", "blocking": True},
+    "wait_image": {"screen": True, "blocking": True},
+    "click_image": {"mouse": "owns", "screen": True, "state": ("cursor",),
+                    "blocking": True},
+    "move_image": {"mouse": "owns", "screen": True, "state": ("cursor",),
+                   "blocking": True},
+    # refused: no interleave-safe branch walker exists yet
+    "if_cue": {"screen": True},
+    "if_cap": {"screen": True},
+    "if_not": {"screen": True},
+    "detect_pixel": {"screen": True, "state": ("vars",)},
+    "if_image": {"screen": True},
+    "hud_text": {"state": ("hud",)},
+    "set_clipboard": {"state": ("clipboard",)},
+    "key_down": {"kb": "owns"},
+    "key_up": {"kb": "owns"},
+    # release_keys would strip SIBLING branches' ledger holds — refused.
+    "release_keys": {"kb": "owns", "mouse": "owns"},
+    "guard": {},
+    # nested Fork: refused with its own named reason everywhere.
+    "parallel": {"kb": "owns", "mouse": "owns", "blocking": True},
+}
+
+
+def _conc_norm(t):
+    """Normalized effect record (defaults materialized) — the exact shape
+    Studio's concOf() serializes into v4_conc_table.json."""
+    c = _SCRIPT4_CONC.get(t, {})
+    return {
+        "kb": c.get("kb", "none"),
+        "mouse": c.get("mouse", "none"),
+        "screen": c.get("screen", False),
+        "stateWrites": list(c.get("state", ())),
+        "stats": c.get("stats", False),
+        "cancellable": c.get("cancellable", False),
+        "blocking": c.get("blocking", False),
+        "branch": c.get("branch", "no"),
+    }
+
+
+# Fork-branch admission, DERIVED from the effect table (the whitelist
+# replacement). Every legacy-whitelisted type MUST stay admitted — asserted
+# right here so a table edit can never silently narrow admission.
+_SCRIPT4_PAR_ADMISSIBLE = frozenset(
+    t for t, c in _SCRIPT4_CONC.items()
+    if c.get("branch") in ("seams", "instant"))
+assert _SCRIPT4_PARALLEL_SAFE <= _SCRIPT4_PAR_ADMISSIBLE, \
+    "effect-table admission narrowed below the legacy whitelist"
+# Device-owner sets for the split/read_only rules (supersede the legacy
+# *_TYPES lists; asserted to contain them).
+_SCRIPT4_PAR_KB_OWNERS = frozenset(
+    t for t, c in _SCRIPT4_CONC.items() if c.get("kb") == "owns")
+_SCRIPT4_PAR_MOUSE_OWNERS = frozenset(
+    t for t, c in _SCRIPT4_CONC.items() if c.get("mouse") == "owns")
+assert _SCRIPT4_PAR_KB_TYPES <= _SCRIPT4_PAR_KB_OWNERS
+assert _SCRIPT4_PAR_MOUSE_TYPES <= _SCRIPT4_PAR_MOUSE_OWNERS
+
+# Overlap keys map to their whitelist trace token (w -> W): one key, ONE
+# conflict identity (the same rule the trace/token layer uses).
+_SCRIPT4_PAR_TOKEN_OVERLAP = {"w": "W", "a": "A", "s": "S", "d": "D",
+                              "space": "Space", "shift": "Shift"}
+
+
+def _par_owned_tokens(b):
+    """(key tokens, owns_mouse) one op statically owns — mirror of the
+    Studio classifier's ownedTokens (shared/graph/analyze.ts). Key params
+    of every owning op are literal choices in the schema, so resolution is
+    exact; the honesty notes live with the Studio twin."""
+    t = b.get("type")
+    p = b.get("params") or {}
+
+    def lit(k):
+        v = p.get(k)
+        return None if isinstance(v, dict) else v
+
+    key = lit("key") if isinstance(lit("key"), str) else ""
+    if t in ("key_pin", "key_unpin", "tap_key", "hold_key_until",
+             "pulse_key"):
+        return ([key] if key else []), False
+    if t == "key_press":
+        name = _script3_key_name(key)
+        if name is None:
+            return [], False
+        return [_SCRIPT4_PAR_TOKEN_OVERLAP.get(name, name)], False
+    if t == "walk_back_x":
+        # holds its walk key AND taps A/D (diagonal side + recenter)
+        keys = [key or "S"]
+        for side in ("A", "D"):
+            if side not in keys:
+                keys.append(side)
+        return keys, False
+    if t in ("btn_down", "btn_up", "click", "fill_to_full"):
+        return [], True
+    if t == "probe_dig":
+        nv = lit("nudge_ms")
+        nudges = not (isinstance(nv, (int, float)) and nv == 0)
+        return (["W"] if nudges else []), True
+    if t == "rattle_until":
+        keys = []
+        if lit("momentum_w") is not False:
+            keys.append("W")
+        sc = lit("start_confirm_ms")
+        if isinstance(sc, (int, float)) and sc > 0:
+            keys.append("S")
+        return keys, True
+    return [], False
 
 
 def _par_scan_types(blocks, hit):
@@ -5507,23 +5703,36 @@ class ScriptRunner:
                          "two branches")
             return -1, depth
         n, deep = 0, depth
+        # Effect-model admission (session ten): the per-op _SCRIPT4_CONC
+        # table decides who may enter a branch (the whitelist replacement,
+        # never narrower than it — asserted at the table). Device rules
+        # derive from declared ownership so newly admitted practicals are
+        # covered automatically.
         for ai, arm in enumerate(brs):
             bad = _par_scan_types(
-                arm, lambda t: t if t not in _SCRIPT4_PARALLEL_SAFE else None)
+                arm,
+                lambda t: t if t not in _SCRIPT4_PAR_ADMISSIBLE else None)
             if bad:
                 if bad == "parallel":
                     self.dead = ("the active custom script nests a Fork "
                                  "inside a Fork branch -- nested Fork is "
                                  "not supported yet")
-                else:
+                elif _SCRIPT4_CONC.get(bad, {}).get("blocking"):
                     self.dead = ("the active custom script puts %r inside "
                                  "a Fork branch -- it cannot run there "
                                  "yet: it holds the walker for its whole "
                                  "duration" % (bad,))
+                else:
+                    self.dead = ("the active custom script puts %r inside "
+                                 "a Fork branch -- it cannot run there "
+                                 "yet: it has no interleave-safe branch "
+                                 "walker" % (bad,))
                 return -1, deep
             if inp == "read_only":
                 hit = _par_scan_types(
-                    arm, lambda t: t if t in _SCRIPT4_PAR_INPUT_TYPES
+                    arm,
+                    lambda t: t if (t in _SCRIPT4_PAR_KB_OWNERS
+                                    or t in _SCRIPT4_PAR_MOUSE_OWNERS)
                     else None)
                 if hit:
                     self.dead = ("the active custom script produces input "
@@ -5531,8 +5740,8 @@ class ScriptRunner:
                                  % (hit,))
                     return -1, deep
             if inp == "split_kb_mouse":
-                wrong = (_SCRIPT4_PAR_MOUSE_TYPES if ai == 0
-                         else _SCRIPT4_PAR_KB_TYPES)
+                wrong = (_SCRIPT4_PAR_MOUSE_OWNERS if ai == 0
+                         else _SCRIPT4_PAR_KB_OWNERS)
                 hit = _par_scan_types(
                     arm, lambda t: t if t in wrong else None)
                 if hit:
@@ -5546,6 +5755,51 @@ class ScriptRunner:
                 return -1, kd
             n += kn
             deep = max(deep, kd)
+        # SERIALIZE-REQUIRED refusal (exclusive/fail only): two branches
+        # statically owning one input token cannot both run. Refused ONLY
+        # when a newly admitted practical is involved — conflicts among
+        # legacy-whitelisted ops keep their pinned runtime arbitration
+        # (the goldens-must-not-shift compatibility rule). Mirrors the
+        # Studio classifier (classifyForkBranches in shared/graph/analyze).
+        if inp in ("exclusive", "fail"):
+            owners = {}            # token -> (branch idx, op type)
+            conflicted = set()
+            for ai, arm in enumerate(brs):
+                stack = list(arm)
+                while stack:
+                    node = stack.pop(0)
+                    if not isinstance(node, dict):
+                        continue
+                    keys, owns_mouse = _par_owned_tokens(node)
+                    toks = [("k", k) for k in keys]
+                    if owns_mouse:
+                        toks.append(("m", 0))
+                    for tok in toks:
+                        prev = owners.get(tok)
+                        if prev is None:
+                            owners[tok] = (ai, node.get("type"))
+                        elif prev[0] != ai and tok not in conflicted:
+                            conflicted.add(tok)
+                            t_a, t_b = prev[1], node.get("type")
+                            if (t_a not in _SCRIPT4_PARALLEL_SAFE
+                                    or t_b not in _SCRIPT4_PARALLEL_SAFE):
+                                label = ("the left mouse button"
+                                         if tok[0] == "m"
+                                         else "the %s key" % tok[1])
+                                self.dead = (
+                                    "the active custom script forks "
+                                    "branches %d and %d that both drive "
+                                    "%s under %s input (%r, %r) -- use "
+                                    "queue, share or priority, or move "
+                                    "one branch after the Join"
+                                    % (prev[0] + 1, ai + 1, label, inp,
+                                       t_a, t_b))
+                                return -1, deep
+                    kids = []
+                    for lst in (node.get("children"), node.get("else")):
+                        if isinstance(lst, list):
+                            kids.extend(lst)
+                    stack = kids + stack
         return n, deep
 
     def _tick_release(self):
@@ -7601,7 +7855,24 @@ class ScriptRunner:
             raise _ParStop("script: %s" % msg, True)
         elif t == "raise_error":
             self._do_raise_error(sc.det, p, kids)
+        elif t == "hold_key_until":
+            yield from self._par_hold_key_until(sc, bi, p)
+        elif t == "pulse_key":
+            yield from self._par_pulse_key(sc, bi, p)
+        elif t == "probe_dig":
+            yield from self._par_probe_dig(sc, bi, p)
+        elif t == "fill_to_full":
+            yield from self._par_fill_to_full(sc, bi, p)
+        elif t == "fill_wait":
+            yield from self._par_fill_wait(sc, bi, p)
+        elif t == "rattle_until":
+            yield from self._par_rattle_until(sc, bi, p)
+        elif t == "walk_back_x":
+            yield from self._par_walk_back_x(sc, bi, p)
         else:
+            # The load-time admission (_SCRIPT4_PAR_ADMISSIBLE) and this
+            # dispatch are the same contract; reaching here for an admitted
+            # op means the effect table and the walkers drifted.
             raise ValueError("%r cannot run inside a Fork branch" % (t,))
         return
 
@@ -7846,6 +8117,413 @@ class ScriptRunner:
                 return
             except _ParContinue:
                 continue
+
+    # ---- practical branch walkers (session ten; docs/PARALLEL_IR.md §5) ----
+    # Each mirrors its solo _do_ handler's decision points EXACTLY, but on
+    # the REGION clock (sc.now) with every input edge riding the ownership
+    # ledger and every internal wait yielded as a seam — so practicals
+    # interleave, arbitrate, and cancel like any other branch op. The
+    # Studio VM's br* twins implement the identical trajectories
+    # (conformance-pinned by the v4_parallel_practical/prospect/race
+    # goldens). NO try/finally here: a cancelled branch generator is
+    # abandoned at its seam and its held inputs release through the ledger
+    # (_strip_holds), never through finally blocks that would double-
+    # release. The classic_pace grab seam does not apply inside a branch:
+    # branches always pace on the region clock.
+
+    def _par_acq_down(self, sc, bi, tok):
+        """Acquire + register one hold; the physical edge fires when this
+        branch is the first holder."""
+        for y in self._par_acquire(sc, bi, tok):
+            yield y
+        if sc.down(bi, tok):
+            if tok[0] == "k":
+                key_down(tok[1])
+            else:
+                mouse_down()
+
+    def _par_drop_up(self, sc, bi, tok):
+        """Drop one hold; physical release when the last holder is gone.
+        Releases never suspend (plain method, not a generator)."""
+        if sc.up(bi, tok):
+            if tok[0] == "k":
+                key_up(tok[1])
+            else:
+                mouse_up()
+
+    def _par_tap_tok(self, sc, bi, tok, hold_ms):
+        """One ledger-arbitrated tap: acquire, down, hold, up."""
+        yield from self._par_acq_down(sc, bi, tok)
+        yield float(hold_ms)
+        self._par_drop_up(sc, bi, tok)
+
+    def _par_wait_fn(self, sc, fn, timeout_ms, confirm, min_ms, poll_ms):
+        """_wait_classic_fn on the SCHEDULER clock: check first, FULL poll
+        seams (may overshoot the deadline), no final at-deadline check.
+        Returns the hit through StopIteration.value (use `yield from`)."""
+        start = sc.now
+        deadline = start + timeout_ms
+        gate = start + min_ms
+        hits = 0
+        while sc.now < deadline:
+            if sc.now >= gate:
+                if fn():
+                    hits += 1
+                    if hits >= confirm:
+                        return True
+                else:
+                    hits = 0
+            yield float(poll_ms)
+        return False
+
+    def _par_wait_sec(self, sc, fn, timeout_ms, confirm):
+        """_par_wait_fn in the SECONDS domain: walk_back_x's drift ledger
+        is pinned to seconds-domain doubles (dust included), so its waits
+        resolve deadlines in seconds exactly like _do_walk_back_x."""
+        start = sc.now / 1000.0
+        deadline = start + timeout_ms / 1000.0
+        hits = 0
+        while sc.now / 1000.0 < deadline:
+            if fn():
+                hits += 1
+                if hits >= confirm:
+                    return True
+            else:
+                hits = 0
+            yield 25.0
+        return False
+
+    def _par_hold_key_until(self, sc, bi, p):
+        """hold_key_until in a branch: ledger-held key, condition polls on
+        the region clock, the extra-depth hold, then release."""
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return
+        timeout = self._pi(p, "timeout_ms", 4000, 1, _SCRIPT_WAIT_MAX_MS)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        extra = self._pi(p, "extra_ms", 0, 0, 5000)
+        self.pass_activity = True
+        tok = ("k", code)
+        yield from self._par_acq_down(sc, bi, tok)
+        reached = yield from self._par_wait_fn(
+            sc, lambda: _sv_truthy(self._pv_eval(p.get("cond", True))),
+            timeout, confirm, 0, 25)
+        if reached and extra > 0:
+            yield float(extra)
+        self._par_drop_up(sc, bi, tok)
+        self._store_result(p, "store", reached)
+
+    def _par_pulse_key(self, sc, bi, p):
+        """pulse_key in a branch: ledger taps, one condition read per tap."""
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return
+        max_ms = self._pi(p, "max_ms", 400, 1, _SCRIPT_WAIT_MAX_MS)
+        on_ms = self._pi(p, "on_ms", 11, 1, 200)
+        off_ms = self._pi(p, "off_ms", 1, 1, 200)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        self.pass_activity = True
+        tok = ("k", code)
+        deadline = sc.now + float(max_ms)
+        hits = 0
+        reached = False
+        while sc.now < deadline:
+            yield from self._par_tap_tok(sc, bi, tok, on_ms)
+            yield float(off_ms)
+            if _sv_truthy(self._pv_eval(p.get("cond", True))):
+                hits += 1
+                if hits >= confirm:
+                    reached = True
+                    break
+            else:
+                hits = 0
+        self._store_result(p, "store", reached)
+
+    def _par_probe_dig(self, sc, bi, p):
+        """probe_dig in a branch: ledger digs with late-rise credit, W
+        nudges between rounds, same stats/events as the solo op."""
+        det = sc.det
+        rounds = self._pi(p, "rounds", 5, 1, 20)
+        in_place = self._pi(p, "in_place", 3, 1, 10)
+        click_ms = self._pi(p, "click_ms", 75, 5, 600)
+        probe_ms = self._pi(p, "probe_ms", 320, 50, 5000)
+        rise = self._pi(p, "rise_frac", 3, 1, 50) / 100.0
+        nudge_ms = self._pi(p, "nudge_ms", 90, 0, 2000)
+        gap_ms = self._pi(p, "gap_ms", 80, 0, 2000)
+        settle_ms = self._pi(p, "settle_ms", 60, 0, 5000)
+        self.pass_activity = True
+        hit_any = False
+        for rnd in range(rounds):
+            if rnd == 0 and settle_ms > 0:
+                yield float(settle_ms)
+            prev_before = None
+            for _t in range(in_place):
+                before = det.cap_fill()
+                if prev_before is not None and (
+                        before > prev_before + rise
+                        or det.capacity_full()):
+                    hit = True   # the PREVIOUS dig registered late
+                else:
+                    self._stat_write("dig_clicks", "add", 1)
+                    yield from self._par_tap_tok(sc, bi, ("m", 0), click_ms)
+                    hit = yield from self._par_wait_fn(
+                        sc,
+                        lambda b=before: det.cap_fill() > b + rise
+                        or det.capacity_full(),
+                        probe_ms, 1, 0, 25)
+                prev_before = before
+                if hit:
+                    self._note_dig4()
+                    hit_any = True
+                    break
+            if hit_any:
+                break
+            self._event_op("nudge",
+                           "no dig registered, nudging forward to find land")
+            self._stat_write("nudges", "add", 1)
+            if nudge_ms > 0:
+                yield from self._par_tap_tok(sc, bi, ("k", KEY_W), nudge_ms)
+            if gap_ms > 0:
+                yield float(gap_ms)
+        self._store_result(p, "store", hit_any)
+
+    def _par_fill_to_full(self, sc, bi, p):
+        """fill_to_full in a branch: ledger digs + capacity watch."""
+        det = sc.det
+        max_digs = self._pi(p, "max_digs", 8, 1, 50)
+        fill_ms = self._pi(p, "fill_ms", 250, 50, 5000)
+        click_ms = self._pi(p, "click_ms", 75, 5, 600)
+        self.pass_activity = True
+        full = False
+        for i in range(max_digs):
+            if det.capacity_full():
+                full = True
+                break
+            if i > 0:
+                self._stat_write("dig_clicks", "add", 1)
+                yield from self._par_tap_tok(sc, bi, ("m", 0), click_ms)
+            yield from self._par_wait_fn(
+                sc, det.capacity_full, fill_ms, 1, 0, 25)
+        if not full:
+            full = bool(det.capacity_full())
+        self._store_result(p, "store", full)
+
+    def _par_fill_wait(self, sc, bi, p):
+        """fill_wait in a branch: the fixed animation wait with the
+        int-truncated min/max slice walk. Solo it also streams the HUD
+        geode countdown; the branch walker deliberately does NOT (an
+        abandoned cancelled branch could never clear the countdown) —
+        declared in the effect table on both sides."""
+        det = sc.det
+        delay = self._pi(p, "delay_ms", 250, 0, _SCRIPT_WAIT_MAX_MS)
+        self.pass_activity = True
+        ms = max(0, int(delay))
+        hit = False
+        end = sc.now + float(ms)
+        while sc.now < end:
+            if det is not None and det.capacity_full():
+                hit = True
+                break
+            State.last_progress = time.perf_counter()  # animation = progress
+            if p.get("progress_store"):
+                self._store_result(
+                    p, "progress_store",
+                    (time.perf_counter() - self._t0) * 1000.0)
+            left = end - sc.now
+            yield float(int(min(120.0, max(15.0, left))))
+        self._store_result(p, "store", hit)
+
+    def _par_rattle_until(self, sc, bi, p):
+        """rattle_until in a branch: the full do_shake core (glide
+        pre-roll, W momentum drop on Deposit, start-confirm deeper-S
+        retry, capacity bail, drain stall, cycle counting) with every
+        input edge on the ledger and every sleep a seam."""
+        det = sc.det
+        clicks = self._pi(p, "clicks", 0, 0, 100)
+        click_ms = self._pi(p, "click_ms", 18, 1, 200)
+        gap_ms = self._pi(p, "gap_ms", 14, 0, 500)
+        hold_ms = self._pi(p, "hold_ms", 1500, 100, _SCRIPT_WAIT_MAX_MS)
+        momentum_w = p.get("momentum_w") is True
+        lead_ms = self._pi(p, "lead_ms", 0, 0, 10000)
+        bail_ms = self._pi(p, "bail_ms", 500, 0, _SCRIPT_WAIT_MAX_MS)
+        start_delay_ms = self._pi(p, "start_delay_ms", 0, 0, 10000)
+        start_confirm_ms = self._pi(p, "start_confirm_ms", 0, 0, 10000)
+        start_retries = self._pi(p, "start_retries", 2, 0, 5)
+        retry_deeper_ms = self._pi(p, "retry_deeper_ms", 70, 0, 1000)
+        stall_ms = self._pi(p, "stall_ms", 0, 0, 10000)
+        check_every = self._pi(p, "check_every", 1, 1, 20)
+        empty_frac = self._pi(p, "empty_frac", 4, 0, 50) / 100.0
+        settle_ms = self._pi(p, "settle_ms", 150, 0, _SCRIPT_WAIT_MAX_MS)
+        count_cycle = p.get("count_cycle") is True
+        self.pass_activity = True
+        w_tok = ("k", KEY_W)
+        t0 = sc.now
+        if start_delay_ms > 0:
+            yield float(start_delay_ms)
+        w_down = False
+        if momentum_w:
+            yield from self._par_acq_down(sc, bi, w_tok)
+            w_down = True
+            if lead_ms > 0:
+                self._phase_op("glide")
+                yield float(lead_ms)
+                t0 = sc.now
+                self._phase_op("shake")
+        started = emptied = bailed = stalled = False
+        n_clicks = 0
+        fixed = clicks > 0
+        end = sc.now + float(hold_ms)
+        retries_used = 0
+        stall_fill = 2.0
+        stall_t = sc.now
+        confirm_at = t0 + float(start_confirm_ms)
+        bail_at = t0 + float(bail_ms)
+        while (n_clicks < clicks if fixed else sc.now < end):
+            yield from self._par_tap_tok(sc, bi, ("m", 0), click_ms)
+            n_clicks += 1
+            if check_every > 1 and not fixed and (n_clicks % check_every):
+                yield float(gap_ms)
+                continue
+            if not started and det.on_shake():
+                started = True
+                stall_t = sc.now
+            f = det.cap_fill()               # ONE grab -> empty + stall
+            if not fixed and f < empty_frac:
+                emptied = True
+                break
+            if stall_ms > 0 and not fixed and started:
+                if f < stall_fill - 0.005:
+                    stall_fill = f
+                    stall_t = sc.now
+                elif sc.now - stall_t > float(stall_ms):
+                    stalled = True
+                    break
+            if w_down and det.on_deposit():
+                self._par_drop_up(sc, bi, w_tok)
+                w_down = False
+            if (start_confirm_ms > 0 and not fixed and not started
+                    and retries_used < start_retries
+                    and sc.now > confirm_at
+                    and det.capacity_full()):
+                retries_used += 1
+                self._stat_write("shake_retries", "add", 1)
+                self._event_op(
+                    "shake_start_retry",
+                    "no shake start in %dms -- deeper S tap, retry %d/%d"
+                    % (start_confirm_ms, retries_used, start_retries))
+                if w_down:
+                    self._par_drop_up(sc, bi, w_tok)
+                    w_down = False
+                yield from self._par_tap_tok(sc, bi, ("k", KEY_S),
+                                             retry_deeper_ms)
+                if momentum_w:
+                    yield from self._par_acq_down(sc, bi, w_tok)
+                    w_down = True
+                confirm_at = sc.now + float(start_confirm_ms)
+                bail_at = sc.now + float(bail_ms)
+                end = max(end, sc.now + 600.0)
+            if (not fixed and sc.now > bail_at
+                    and det.capacity_full()):
+                bailed = True
+                break
+            yield float(gap_ms)
+        if fixed:
+            emptied = det.cap_fill() < empty_frac
+        if w_down:
+            self._par_drop_up(sc, bi, w_tok)
+        if emptied:
+            if count_cycle:
+                self._stat_write("cycles", "add", 1)
+                if not State.cycle_dirty:
+                    self._stat_write("clean_cycles", "add", 1)
+                if State.stats:
+                    _nc = time.perf_counter()
+                    if State.last_cycle_end:
+                        _cd = (_nc - State.last_cycle_end) * 1000.0
+                        if 300 < _cd < 120000:
+                            State.stats.cycle_ms.append(_cd)
+                            if len(State.stats.cycle_ms) > 600:
+                                del State.stats.cycle_ms[
+                                    :len(State.stats.cycle_ms) - 600]
+                    State.last_cycle_end = _nc
+            State.cycle_dirty = False
+            State.last_progress = time.perf_counter()
+            self._phase_op("settle")
+            if settle_ms > 0:
+                yield float(settle_ms)
+        else:
+            self.pass_dirty = True
+            self._stat_write("shake_misses", "add", 1)
+            self._event_op("shake_fail",
+                           "shake never started (glitch)" if not started
+                           else "shake stalled mid-drain (game dropped it)"
+                           if stalled else "shake ran but pan didn't empty")
+        outcome = ("emptied" if emptied else "bailed" if bailed
+                   else "stall" if stalled else "glitch" if not started
+                   else "timeout")
+        self._store_result(p, "store", outcome)
+
+    def _par_walk_back_x(self, sc, bi, p):
+        """walk_back_x in a branch: recenter tap, drift-biased diagonal,
+        straight remainder, extra depth — the drift ledger's seconds-domain
+        double arithmetic pinned to the Studio walker byte for byte. The
+        walk budget (tb) starts AFTER both keys are acquired, so time spent
+        queued for a contested key never counts as walking."""
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return
+        strafe_ms = self._pi(p, "strafe_ms", 220, 0, 10000)
+        recenter_ms = self._pi(p, "recenter_ms", 400, 0, 10000)
+        timeout = self._pi(p, "timeout_ms", 4000, 1, _SCRIPT_WAIT_MAX_MS)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        extra = self._pi(p, "extra_ms", 0, 0, 5000)
+        bal_name = p.get("balance_var") or ""
+        dir_name = p.get("dir_var") or ""
+        for _nm in (bal_name, dir_name):
+            if self.var_decls.get(_nm) != "number":
+                raise ValueError('variable "%s" is not declared' % (_nm,))
+        balance = float(self.vars.get(bal_name, 0.0))
+        x_dir = int(float(self.vars.get(dir_name, 0.0)))
+        self.pass_activity = True
+
+        def cond_fn():
+            return _sv_truthy(self._pv_eval(p.get("cond", True)))
+
+        if recenter_ms > 0 and abs(balance) > recenter_ms:
+            corr = KEY_A if balance > 0 else KEY_D
+            applied = min(abs(balance), recenter_ms * 2.0)
+            yield from self._par_tap_tok(sc, bi, ("k", corr),
+                                         max(1, int(applied * 0.7)))
+            balance += (-applied if balance > 0 else applied)
+            self._event_op("recenter",
+                           "drifted %dms off centre -> strafe back"
+                           % int(applied))
+        if balance > 0:
+            side, sgn = KEY_A, -1
+        elif balance < 0:
+            side, sgn = KEY_D, +1
+        else:
+            side, sgn = (KEY_D, +1) if x_dir == 0 else (KEY_A, -1)
+            x_dir ^= 1
+        yield from self._par_acq_down(sc, bi, ("k", code))
+        yield from self._par_acq_down(sc, bi, ("k", side))
+        tb = sc.now / 1000.0
+        diag_ms = (min(strafe_ms, timeout) if strafe_ms > 0 else timeout)
+        reached = yield from self._par_wait_sec(sc, cond_fn, diag_ms,
+                                                confirm)
+        self._par_drop_up(sc, bi, ("k", side))   # no mid-walk kink
+        balance += sgn * (sc.now / 1000.0 - tb) * 1000.0
+        if not reached:                          # STRAIGHT back for the rest
+            rem = timeout - (sc.now / 1000.0 - tb) * 1000.0
+            if rem > 0:
+                reached = yield from self._par_wait_sec(sc, cond_fn, rem,
+                                                        confirm)
+        if reached and extra > 0:
+            yield float(extra)                   # keep holding -> deeper
+        self._par_drop_up(sc, bi, ("k", code))
+        self._store_result(p, "balance_var", balance)
+        self._store_result(p, "dir_var", float(x_dir))
+        self._store_result(p, "store", reached)
 
     def _do_parallel(self, det, p, kids):
         b = self._cur
