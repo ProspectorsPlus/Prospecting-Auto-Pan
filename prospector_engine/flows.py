@@ -184,9 +184,17 @@ def parse_flows(eng, text):
         err = _check_trigger(f.get("trigger"), i)
         if err:
             return None, err
-        if (f["trigger"]["type"] == "variable"
-                and not eng._expr_shape_ok(f["trigger"].get("expr"), {})):
-            return None, "flow #%d variable expr is malformed" % i
+        if f["trigger"]["type"] == "variable":
+            # Session ten (Studio adapter attachments): a variable trigger
+            # may name variables the flow DECLARES (the compiler's
+            # generated active-window variables travel in "variables"), so
+            # shape-check against those declarations instead of {}.
+            decls = {v.get("name"): v.get("type")
+                     for v in (f.get("variables") or [])
+                     if isinstance(v, dict) and isinstance(v.get("name"),
+                                                          str)}
+            if not eng._expr_shape_ok(f["trigger"].get("expr"), decls):
+                return None, "flow #%d variable expr is malformed" % i
         body = f.get("body")
         if not isinstance(body, list) or not body:
             return None, "flow %r needs a body block list" % fid
@@ -398,6 +406,15 @@ class FlowManager(object):
         if ty == "variable":
             try:
                 stub = _stub(eng)
+                # Session ten (Studio adapter attachments): the trigger may
+                # watch the ACTIVE Studio program's variables — the stub
+                # borrows the live runner's var map read-only, so generated
+                # active-window variables (set by a node's lowered
+                # head/tail) really gate the flow. No live runner, or an
+                # undeclared name, evaluates false exactly as before.
+                runner = getattr(st, "script_runner", None)
+                if runner is not None and getattr(runner, "vars", None):
+                    stub.vars = runner.vars
                 cur = bool(eng._sv_truthy(
                     eng._script_eval(t["expr"], stub, det)))
             except Exception:

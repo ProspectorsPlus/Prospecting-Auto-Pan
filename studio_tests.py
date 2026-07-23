@@ -1962,6 +1962,133 @@ finally:
     _sh18.rmtree(_mdir, ignore_errors=True)
 
 # =============================================================================
+print("[19] mark_rung (session ten): state-only breadcrumb + flow seam")
+# =============================================================================
+# mark_rung {id: R1..R4} calls the existing _note_rung_fired seam: the flow
+# manager's recovery{rung} trigger and meta.recovery see the firing; NOTHING
+# is emitted (no event, no input, no sleep) and flow continues.
+install_stubs()
+fresh_state()
+
+
+class _RungRT(object):
+    def __init__(self):
+        self.fired = []
+
+    def note_builtin_fired(self, rid):
+        self.fired.append(rid)
+
+
+def runner_v4_for(blocks, ticks=200, variables=None):
+    """runner_for, but a VERSION 4 document (mark_rung is a v4 op)."""
+    s = {"format": "ppscript", "version": 4, "name": "T", "blocks": blocks}
+    if variables:
+        s["variables"] = variables
+    r = po.ScriptRunner(json.dumps(s), "T")
+    det = FakeDet()
+    det_live[0] = det
+    for _ in range(ticks):
+        if not po.State.running:
+            break
+        r.tick(det)
+    return r, det
+
+
+_rt = _RungRT()
+po.State.recovery = _rt
+_r19, _det19 = runner_v4_for([
+    {"id": "a", "type": "mark_rung", "params": {"id": "R2"}},
+    {"id": "b", "type": "set_var", "params": {"name": "x", "value": 1}},
+], ticks=10, variables=[{"name": "x", "type": "number", "initial": 0}])
+# the top-level program loops (one firing per pass) -- every firing must
+# carry the declared id and nothing else
+check("mark_rung feeds _note_rung_fired with its id",
+      len(_rt.fired) >= 1 and set(_rt.fired) == {"R2"}, _rt.fired)
+check("mark_rung emits nothing (no event/input/sleep actions)",
+      not [a for a in ACTIONS if a and a[0] in ("event", "kd", "ku", "md", "mu", "tap", "sleep")],
+      ACTIONS[:6])
+check("flow continues after mark_rung", po.State.running, ACTIONS[-3:])
+
+fresh_state()
+po.State.recovery = None  # no recovery runtime: still safe, still a no-op
+_r19b, _ = runner_v4_for([
+    {"id": "a", "type": "mark_rung", "params": {"id": "R1"}},
+], ticks=5)
+check("mark_rung without a recovery runtime is safe", po.State.running)
+
+fresh_state()
+_r19c, _ = runner_v4_for([
+    {"id": "a", "type": "mark_rung", "params": {"id": "R9"}},
+], ticks=5)
+check("an unknown rung id safe-stops with the reason named",
+      any(a[0] == "safe_stop" and "unknown recovery rung" in a[1] for a in ACTIONS),
+      ACTIONS[:4])
+check("mark_rung sits in the v4 handler table and the conc table (instant, no effects)",
+      "mark_rung" in po._SCRIPT_HANDLERS_V4
+      and po._conc_norm("mark_rung") == {
+          "kb": "none", "mouse": "none", "screen": False, "stateWrites": [],
+          "stats": False, "cancellable": False, "blocking": False,
+          "branch": "instant"})
+po.State.recovery = None
+
+# =============================================================================
+print("[20] flow variable triggers see the live Studio program's variables")
+# =============================================================================
+# Session ten (adapter attachments): a FLOWS_JSON variable trigger may name
+# variables it declares; at runtime the stub borrows the ACTIVE script
+# runner's vars, so compiler-generated active-window variables really gate
+# attachment flows. No live runner -> false, exactly as before.
+import importlib as _importlib19
+_flows_mod = _importlib19.import_module("prospector_engine.flows")
+
+_flow_doc = json.dumps({"_flows": 1, "flows": [{
+    "id": "att_probe_bg", "name": "att window",
+    "trigger": {"type": "variable", "expr": {"var": "aw_win"}},
+    "priority": 0, "input": "none",
+    "body": [{"id": "f1", "type": "log", "params": {"message": "bg"}}],
+    "version": 2,
+    "variables": [{"name": "aw_win", "type": "bool", "initial": False}],
+    "max_ms": 10000,
+}]})
+_flows, _ferr = _flows_mod.parse_flows(po, _flow_doc)
+check("a variable trigger naming a DECLARED variable parses", _ferr is None, _ferr)
+
+_flow_bad = json.dumps({"_flows": 1, "flows": [{
+    "id": "att_bad", "name": "bad",
+    "trigger": {"type": "variable", "expr": {"var": "never_declared"}},
+    "priority": 0, "input": "none",
+    "body": [{"id": "f1", "type": "log", "params": {"message": "bg"}}],
+    "version": 2, "max_ms": 10000,
+}]})
+_flows_b, _ferr_b = _flows_mod.parse_flows(po, _flow_bad)
+check("an undeclared variable in the trigger is still refused at parse",
+      _ferr_b is not None and "variable expr" in _ferr_b, _ferr_b)
+
+fresh_state()
+_mgr = _flows_mod.FlowManager(po, _flows)
+
+
+class _FakeRunner19(object):
+    vars = {"aw_win": False}
+    var_decls = {"aw_win": "bool"}
+
+
+po.State.script_runner = _FakeRunner19()
+_det20 = FakeDet()
+_run20 = _mgr.runs[0]
+_due_a = _mgr._due(_run20, _det20, 0)      # window closed -> not due
+_FakeRunner19.vars["aw_win"] = True
+_due_b = _mgr._due(_run20, _det20, 0)      # rising edge -> due
+_due_c = _mgr._due(_run20, _det20, 0)      # still true -> edge consumed
+check("the variable trigger reads the LIVE runner's vars (rising edge)",
+      _due_a is False and _due_b is True and _due_c is False,
+      (_due_a, _due_b, _due_c))
+po.State.script_runner = None
+_run20.expr_prev = False
+_due_d = _mgr._due(_run20, _det20, 0)      # no live runner -> false as before
+check("no live runner evaluates false exactly as before", _due_d is False)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

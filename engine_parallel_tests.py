@@ -367,13 +367,14 @@ def test_conc_table():
             if t in engine and studio[t] != engine[t]]
     chk(not diff, "per-op records byte-identical (diff: %r)" % diff[:5])
     # Admission invariants: never narrower than the legacy whitelist, and
-    # exactly the legacy 27 + the seven session-ten practicals.
+    # exactly the legacy 27 + the seven session-ten practicals + mark_rung
+    # (the adapter-wave state-only breadcrumb: instant, no effects).
     chk(po._SCRIPT4_PARALLEL_SAFE <= po._SCRIPT4_PAR_ADMISSIBLE,
         "admission is a superset of the legacy whitelist")
     new = sorted(po._SCRIPT4_PAR_ADMISSIBLE - po._SCRIPT4_PARALLEL_SAFE)
-    chk(new == ["fill_to_full", "fill_wait", "hold_key_until", "probe_dig",
-                "pulse_key", "rattle_until", "walk_back_x"],
-        "the widening is exactly the seven practicals: %r" % (new,))
+    chk(new == ["fill_to_full", "fill_wait", "hold_key_until", "mark_rung",
+                "probe_dig", "pulse_key", "rattle_until", "walk_back_x"],
+        "the widening is the seven practicals + mark_rung: %r" % (new,))
 
 
 # ---- 7. practicals inside branches ------------------------------------------

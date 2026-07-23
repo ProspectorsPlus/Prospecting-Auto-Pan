@@ -4733,6 +4733,10 @@ _SCRIPT4_CONC = {
     "continue_loop": {"branch": "instant"},
     "mark_phase": {"state": ("phase",), "branch": "instant"},
     "mark_event": {"state": ("events",), "branch": "instant"},
+    # _do_mark_rung: state-only breadcrumb into the recovery runtime via
+    # _note_rung_fired -- no emission, no input, no time (session ten,
+    # docs/ADAPTER_PORTS.md in the Studio repo).
+    "mark_rung": {"branch": "instant"},
     "stat_add": {"stats": True, "state": ("stats",), "branch": "instant"},
     "stat_set": {"stats": True, "state": ("stats",), "branch": "instant"},
     "stop": {"branch": "instant"},
@@ -7326,6 +7330,21 @@ class ScriptRunner:
         self._event_op(etype, reason)
         return None
 
+    def _do_mark_rung(self, det, p, kids):
+        """mark_rung (session ten): state-only breadcrumb through the
+        existing _note_rung_fired seam -- the flow manager's recovery{rung}
+        triggers and meta.recovery see the firing exactly as they do for
+        the builtin ladder. Emits NOTHING (no event, no trace row), sends
+        no input, and takes no time; the Studio VM twin is a pure no-op,
+        pinned trace-invisible by the conformance golden."""
+        rid = str(p.get("id") or "")
+        if rid not in ("R1", "R2", "R3", "R4"):
+            safe_stop("the script marks an unknown recovery rung (%r)"
+                      % (rid,))
+            return None
+        _note_rung_fired(rid)
+        return None
+
     def _do_stat_add(self, det, p, kids):
         stat = str(p.get("stat") or "")[:32]
         if stat not in _SCRIPT4_CORE_STATS \
@@ -7850,6 +7869,8 @@ class ScriptRunner:
             self._do_mark_phase(sc.det, p, kids)
         elif t == "mark_event":
             self._do_mark_event(sc.det, p, kids)
+        elif t == "mark_rung":
+            self._do_mark_rung(sc.det, p, kids)
         elif t == "stat_add":
             self._do_stat_add(sc.det, p, kids)
         elif t == "stat_set":
@@ -8627,6 +8648,7 @@ _SCRIPT_HANDLERS_V4.update({
     "btn_up": ScriptRunner._do_btn_up,
     "mark_phase": ScriptRunner._do_mark_phase,
     "mark_event": ScriptRunner._do_mark_event,
+    "mark_rung": ScriptRunner._do_mark_rung,
     "stat_add": ScriptRunner._do_stat_add,
     "stat_set": ScriptRunner._do_stat_set,
     "guard": ScriptRunner._do_guard,
