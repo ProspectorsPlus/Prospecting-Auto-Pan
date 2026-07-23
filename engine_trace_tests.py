@@ -488,12 +488,60 @@ def test_classic_shards(update):
                 "been awaited (S at %s)" % (s[0][0] if s else "n/a"))
 
 
+# ---------------------------------------------------------------------------
+def test_classic_geode(update):
+    """GEODE slow-fill mode (Studio detach parity companions). Same fixture
+    home and vendoring rules as the shards scenarios."""
+    for name in ("classic-geode", "classic-geode-miss"):
+        print("[trace] %s" % name)
+        path = os.path.join(GOLD, name + ".scenario.json")
+        transcript, world, trace = run_scenario(path, "pold_tr_" +
+                                                name.replace("-", "_"))
+        eng = world.po
+        compare_golden(name, trace_doc(name, trace), update)
+        chk(world.inputs.all_released(),
+            "%s: all inputs released at exit" % name)
+        mp = mouse_pairs(trace)
+        hold = max(1, eng.GEODE_DIG_MS)
+        taps = [(d, u) for d, u in mp if u - d == hold]
+        evs = event_types(transcript)
+        if name == "classic-geode":
+            chk(not evs, "geode: healthy run -- zero safety events")
+            chk(len(taps) == 1,
+                "geode: ONE geode tap fills the pan (got %d)" % len(taps))
+            # the geode shake rides the standard click cadence but under
+            # the GEODE_SHAKE_HOLD window; presence of the rattle proves
+            # the geode-flavored shake ran.
+            clicks = [(d, u) for d, u in mp
+                      if u - d == eng.SHAKE_CLICK_MS]
+            chk(len(clicks) >= 3,
+                "geode: the shake rattle ran (%d clicks)" % len(clicks))
+        if name == "classic-geode-miss":
+            chk("nudge" in evs,
+                "geode-miss: the dead round emits the nudge event")
+            nudges = [(d, u) for d, u in key_pairs(trace, "W")
+                      if u - d == eng.LAND_PROBE_NUDGE_MS]
+            chk(len(nudges) >= 1,
+                "geode-miss: nudge W rides LAND_PROBE_NUDGE_MS (%d)"
+                % eng.LAND_PROBE_NUDGE_MS)
+            # the full animation wait ran: tap-up to nudge-down spans the
+            # start window plus the whole GEODE_DELAY_MS animation.
+            w = key_pairs(trace, "W")
+            if taps and w:
+                span = w[0][0] - taps[0][1]
+                lo = max(120, eng.GEODE_START_MS) + max(50, eng.GEODE_DELAY_MS)
+                chk(span >= lo,
+                    "geode-miss: the dead tap waited the start window + the "
+                    "full animation (%dms >= %dms)" % (span, lo))
+
+
 if __name__ == "__main__":
     update = "--update" in sys.argv
     test_classic_standard(update)
     test_stuck_ladder(update)
     test_stuck_full(update)
     test_classic_shards(update)
+    test_classic_geode(update)
     print()
     if update:
         print("TRACE GOLDENS REGENERATED")
