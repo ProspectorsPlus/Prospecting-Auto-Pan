@@ -16,7 +16,7 @@ import json
 MAGIC = "PPE1"
 PREFIX = MAGIC + " "
 PROTOCOL_MAJOR = 1
-PROTOCOL_MINOR = 4   # 1.1: adds the "error" stop reason (fatal-exception path)
+PROTOCOL_MINOR = 5   # 1.1: adds the "error" stop reason (fatal-exception path)
                      # 1.2: adds the scriptV3 capability (PPScript v3 accepted
                      #      by script.setActive; PPSCRIPT_V3.md in Studio)
                      # 1.3: adds the vision capability -- studio_assets image
@@ -36,6 +36,15 @@ PROTOCOL_MINOR = 4   # 1.1: adds the "error" stop reason (fatal-exception path)
                      #      meta run_id/recovery/flows, and the persistent
                      #      run id "r<epoch>-<pid>-<n>" carried in
                      #      run.started/run.stopped/run.stats.
+                     # 1.5: durable runner identity (purely additive). The
+                     #      engine object in hello AND engine.describe gains
+                     #      instance (a GUID persisted at <home>/instance_id,
+                     #      minted once, read forever after), exePath +
+                     #      frozen (the executable actually running), and
+                     #      dataDir (the engine home). run.started and the
+                     #      run.start / run.stop acks carry instanceId, so
+                     #      hosts can verify WHICH runner install executed
+                     #      the program they published.
 
 # ---- ack error codes (closed set, protocol section 3.3) ---------------------
 E_UNSUPPORTED = "UNSUPPORTED"

@@ -1918,6 +1918,69 @@ def _machine_id():
     return _MID_CACHE
 
 
+# ---- runner identity (protocol 1.5) -----------------------------------------
+# One durable GUID per data dir, shared with the engine: both read/mint the
+# SAME <data dir>/instance_id file, so the publish acknowledgement this app
+# stamps and the instanceId the engine carries in run.started are the same
+# identity. Prospector Studio verifies them against each other.
+_INSTANCE_ID_CACHE = {}
+
+
+def _runner_instance_id():
+    """Read-or-mint the durable instance GUID for the CURRENT data dir.
+    The file always wins (the engine may have minted it first); an
+    unwritable dir still gets a stable in-process GUID -- identity beats
+    durability, and every consumer treats the field as optional."""
+    d = DATA_DIR
+    path = os.path.join(d, "instance_id")
+    try:
+        with open(path, encoding="utf-8") as f:
+            val = f.read().strip()
+        if val:
+            _INSTANCE_ID_CACHE[d] = val
+            return val
+    except OSError:
+        pass
+    cached = _INSTANCE_ID_CACHE.get(d)
+    if cached:
+        return cached
+    import uuid
+    val = str(uuid.uuid4())
+    _INSTANCE_ID_CACHE[d] = val
+    try:
+        os.makedirs(d, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(val + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return val
+
+
+_ENGINE_FP_CACHE = {}
+
+
+def _engine_fingerprint():
+    """The vendored engine's source fingerprint (sha256[:16] of
+    prospector_engine/engine.py) -- the same value the engine reports as
+    engine.sourceFingerprint in hello. Best-effort "" when the source is
+    not readable (exotic frozen layouts)."""
+    try:
+        import prospector_engine
+        path = os.path.join(os.path.dirname(prospector_engine.__file__),
+                            "engine.py")
+        st = os.stat(path)
+        key = (path, st.st_mtime, st.st_size)
+        hit = _ENGINE_FP_CACHE.get("fp")
+        if hit and hit[0] == key:
+            return hit[1]
+        fp = hashlib.sha256(open(path, "rb").read()).hexdigest()[:16]
+        _ENGINE_FP_CACHE["fp"] = (key, fp)
+        return fp
+    except Exception:
+        return ""
+
 
 class Api:
     def __init__(self):
@@ -1936,6 +1999,7 @@ class Api:
         self._run_mode = ""       # provenance: mode the current run started under
         self._run_rev = ""        # provenance: pushed revision it started from
         self._push_pending = False   # classic push deferred while a run is live
+        self._engine_instance = None  # last engine.hello identity (1.5 mirror)
         self._classic_push_warned = False  # malformed push: log once, not per loop
         self._classic_toast = None   # applied-push toast queued until the UI is up
         self._studio_status_stop = threading.Event()
@@ -1962,6 +2026,47 @@ class Api:
         only here). {} when absent/unreadable."""
         info = _read_json(PUSH_FILE, None)
         return info if isinstance(info, dict) else {}
+
+    def _studio_instance_info(self):
+        """The runner-identity object for the status mirror (1.5): the
+        live engine's hello identity when one has spoken this session,
+        else the app-side truth -- the same durable GUID file, this
+        process, the vendored engine source. Consumers must treat every
+        field (and the whole object) as optional."""
+        info = getattr(self, "_engine_instance", None)
+        if isinstance(info, dict) and info.get("instanceId"):
+            return dict(info)
+        out = {"instanceId": _runner_instance_id(), "pid": os.getpid(),
+               "exePath": sys.executable or "", "dataDir": DATA_DIR}
+        fp = _engine_fingerprint()
+        if fp:
+            out["fingerprint"] = fp
+        try:
+            from prospector_engine import protocol as _proto
+            out["protocol"] = {"major": _proto.PROTOCOL_MAJOR,
+                               "minor": _proto.PROTOCOL_MINOR}
+        except Exception:
+            pass
+        return out
+
+    def _studio_push_ack(self, d, push):
+        """The publish acknowledgement for the mirror (1.5): what this
+        runner last APPLIED. Classic pushes come from the scripts-store
+        meta (stamped by _apply_classic_push; a pre-1.5 stamp without
+        appliedAt/instanceId is echoed as-is). Script/build publishes are
+        applied by construction the moment the pushed entry is the active
+        one -- acknowledge those with this runner's durable GUID. None
+        when nothing was ever applied/acknowledged."""
+        if push.get("kind") == "classic" or not push:
+            a = (d["meta"].get("last_classic_push_ack")
+                 or d["meta"].get("last_classic_push"))
+            return dict(a) if isinstance(a, dict) and a.get("name") else None
+        name = push.get("name")
+        if isinstance(name, str) and name and name == d["active"]:
+            return {"name": name, "rev": str(push.get("rev") or ""),
+                    "at": push.get("at"),
+                    "instanceId": _runner_instance_id()}
+        return None
 
     # ---- classic handoff: Studio pushes a classic preset -------------------
     def _apply_classic_push(self):
@@ -2023,6 +2128,12 @@ class Api:
             return
         d = _studio_load()
         d["meta"]["last_classic_push"] = stamp
+        # 1.5 publish acknowledgement: WHO applied it and WHEN, kept
+        # BESIDE the dedup stamp (which stays exactly {name, rev, at} --
+        # the applied-once comparison and older readers depend on that
+        # shape). The mirror echoes this as its `ack` object.
+        d["meta"]["last_classic_push_ack"] = dict(
+            stamp, appliedAt=time.time(), instanceId=_runner_instance_id())
         try:
             _studio_write(d)
         except OSError:
@@ -2075,6 +2186,7 @@ class Api:
                  for p in _studio_params(
                      _studio_normalize(d["scripts"].get(d["active"])))} \
             if d["active"] else {}
+        pending = bool(getattr(self, "_push_pending", False))
         return {"mode": mode, "active": d["active"], "rev": rev,
                 "kind": kind,
                 "run": getattr(self, "_macro_status", "off"),
@@ -2085,7 +2197,16 @@ class Api:
                 # classic-handoff defer flag: Studio can show "update
                 # pending" instead of wondering why nothing switched.
                 "run_id": str(st.get("run_id") or ""),
-                "push_pending": bool(getattr(self, "_push_pending", False)),
+                "push_pending": pending,
+                # 1.5 runner identity + publish acknowledgement. Consumers
+                # MUST treat these as optional (older mirrors lack them):
+                # instance = which runner install answers, ack = the last
+                # APPLIED push, ackPending/pendingRev = a deferred classic
+                # push waiting for the live run to end.
+                "instance": self._studio_instance_info(),
+                "ack": self._studio_push_ack(d, push),
+                "ackPending": pending,
+                "pendingRev": str(push.get("rev") or "") if pending else "",
                 "stats": stats}
 
     def _studio_status_loop(self):
@@ -5139,6 +5260,20 @@ class Api:
             self._macro_status = "stopped"
         elif ev == "engine.log":
             self._on_engine_diag(d.get("text", ""))
+        elif ev == "engine.hello":
+            # 1.5 runner identity: the engine's durable instance GUID,
+            # executable and home, mirrored into the status file at 1 Hz
+            # so Prospector Studio can verify WHICH runner is answering.
+            eng = d.get("engine") or {}
+            proto = d.get("protocol")
+            self._engine_instance = {
+                "instanceId": str(eng.get("instance") or ""),
+                "pid": d.get("pid"),
+                "exePath": str(eng.get("exePath") or ""),
+                "dataDir": str(d.get("home") or ""),
+                "fingerprint": str(eng.get("sourceFingerprint") or ""),
+                "protocol": proto if isinstance(proto, dict) else None,
+            }
         elif ev == "engine.bye":
             if d.get("reason") == "fatal":
                 _emit_log("[engine] refused: %s -- %s"

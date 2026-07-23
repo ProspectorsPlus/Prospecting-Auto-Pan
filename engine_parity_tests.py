@@ -54,6 +54,10 @@ def normalize(stdout_text):
             continue
         n += 1
         d = dict(obj["data"])
+        # 1.5 identity artifacts (durable instance GUID) are per-install
+        # truths pinned by the contract tests, not parity content: strip
+        # them so additive identity fields never churn these goldens.
+        d.pop("instanceId", None)
         if obj["ev"] == "engine.hello":
             d["pid"] = 0
             d["home"] = "<home>"
@@ -61,7 +65,15 @@ def normalize(stdout_text):
             eng["sourceFingerprint"] = "<fp>"
             eng["version"] = "<v>"
             eng["platform"] = "<os>"
+            for k in ("instance", "exePath", "frozen", "dataDir"):
+                eng.pop(k, None)          # same 1.5 identity strip as above
             d["engine"] = eng
+            pr = dict(d.get("protocol", {}))
+            if "minor" in pr:
+                # additive minors must not churn parity goldens; the true
+                # minor is contract-test-pinned (hello minor == library)
+                pr["minor"] = "<m>"
+            d["protocol"] = pr
         out.append(json.dumps({"seq": n, "ev": obj["ev"], "data": d},
                               sort_keys=True))
     return "\n".join(out) + "\n"

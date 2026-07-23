@@ -1,4 +1,4 @@
-{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "recorder": true, "scriptV3": true, "simulated": true, "vision": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": 4}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
+{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "recorder": true, "scriptV3": true, "simulated": true, "vision": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": "<m>"}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
 {"data": {"level": "info", "text": "[QUIT]"}, "ev": "engine.log", "seq": 2}
 {"data": {"level": "info", "text": "Stopped, all inputs released."}, "ev": "engine.log", "seq": 3}
 {"data": {"message": "engine main loop ended", "reason": "shutdown"}, "ev": "engine.bye", "seq": 4}

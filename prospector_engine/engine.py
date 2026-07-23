@@ -4658,6 +4658,49 @@ _SCRIPT4_OPS = _SCRIPT2_OPS + ("xor", "nand", "nor", "contains",
                                "starts_with", "ends_with")
 _SCRIPT4_NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789_")
 
+# ---- v4 parallel (docs/PARALLEL_IR.md; Studio types.ts mirrors these) -------
+_SCRIPT4_PAR_JOINS = ("all", "any", "n_of_m", "first_terminal", "race")
+_SCRIPT4_PAR_INPUTS = ("exclusive", "share", "queue", "priority",
+                       "cancel_lower", "fail", "split_kb_mouse", "read_only")
+# The interleave-safe whitelist: the ONLY node types a `parallel` branch may
+# contain. Everything else (practicals, guard, hooks, nested parallel) holds
+# the walker for its whole duration and is refused AT LOAD with a named
+# reason -- the honest v1 of true concurrency. Studio's validator enforces
+# the identical list (PARALLEL_SAFE_TYPES in shared/ir/types.ts).
+_SCRIPT4_PARALLEL_SAFE = frozenset((
+    "sleep_ms", "wait_expr",
+    "key_pin", "key_unpin", "btn_down", "btn_up",
+    "key_press", "tap_key", "click",
+    "set_var", "log", "comment", "group",
+    "branch", "loop", "while", "for_range", "repeat",
+    "break_loop", "continue_loop",
+    "mark_phase", "mark_event", "stat_add", "stat_set",
+    "stop", "stop_hard", "raise_error",
+))
+# Device split for input="split_kb_mouse" (validated: branch 0 keyboard,
+# branch 1 mouse) and the read_only input scan.
+_SCRIPT4_PAR_KB_TYPES = frozenset(("key_pin", "key_unpin", "key_press",
+                                   "tap_key"))
+_SCRIPT4_PAR_MOUSE_TYPES = frozenset(("btn_down", "btn_up", "click"))
+_SCRIPT4_PAR_INPUT_TYPES = _SCRIPT4_PAR_KB_TYPES | _SCRIPT4_PAR_MOUSE_TYPES
+
+
+def _par_scan_types(blocks, hit):
+    """Walk a branch body (children/else included) calling hit(type) for
+    every node; the first truthy return aborts the scan and is returned."""
+    for b in blocks:
+        if not isinstance(b, dict):
+            continue
+        r = hit(b.get("type"))
+        if r:
+            return r
+        for lst in (b.get("children"), b.get("else")):
+            if isinstance(lst, list) and lst:
+                r = _par_scan_types(lst, hit)
+                if r:
+                    return r
+    return None
+
 
 def _script4_name_ok(name, prefix, maxlen):
     """studio_*/c_* custom-name rule shared with the Studio validator."""
@@ -4676,7 +4719,11 @@ def _script3_required_caps(blocks):
         cap = _SCRIPT3_CAP_OF.get(b.get("type"))
         if cap:
             need.add(cap)
-        for lst in (b.get("children"), b.get("else")):
+        lists = [b.get("children"), b.get("else")]
+        brs = b.get("branches")
+        if isinstance(brs, list):
+            lists.extend(brs)
+        for lst in lists:
             if isinstance(lst, list) and lst:
                 need.update(_script3_required_caps(lst))
     return need
@@ -4982,6 +5029,292 @@ def _script2_stop_safe(blocks):
     return True
 
 
+# ---- v4 parallel scheduler (docs/PARALLEL_IR.md) ----------------------------
+# Branch bodies are restricted to the interleave-safe whitelist, so each
+# branch runs as a lightweight GENERATOR sub-walker over the shared runner
+# state, yielding at every time seam. ONE cooperative scheduler drives them:
+# always resume the branch with the earliest ready time (ties: lowest branch
+# index), advance real/virtual time only when no branch is resumable at the
+# current instant. The whole region runs to completion inside one
+# ScriptRunner._step call, like a practical.
+
+class _ParBreak(Exception):
+    """break_loop inside a parallel branch."""
+
+
+class _ParContinue(Exception):
+    """continue_loop inside a parallel branch."""
+
+
+class _ParStop(Exception):
+    """stop / stop_hard inside a parallel branch: the scheduler releases
+    every branch-held input FIRST, then routes through safe_stop -- the
+    same event order the Studio VM produces."""
+
+    def __init__(self, msg, hard):
+        Exception.__init__(self, msg)
+        self.msg = msg
+        self.hard = hard
+
+
+class _ParFail(Exception):
+    """input='fail' conflict: deterministic op failure (store=false)."""
+
+
+class _ParCancelled(Exception):
+    """input='cancel_lower': the RUNNING branch lost the conflict."""
+
+
+class _ParallelSched:
+    """Deterministic cooperative scheduler for one `parallel` region.
+
+    Invariants (conformance-pinned against the Studio TS VM):
+      * one branch computes at a time; switches happen only at time seams;
+      * resume order: min(readyTime), ties by branch index;
+      * time advances only to min(readyTime) -- real mode sleeps the gap
+        through _script_sleep (25 ms abort-aware slices), the conformance
+        harness advances its virtual clock by the identical deltas;
+      * cancellation lands at the cancelled branch's suspension seam: its
+        own held inputs release at the cancelling instant, branch order;
+      * the input ownership ledger arbitrates every branch key/button write
+        per the declared policy (docs/PARALLEL_IR.md section 4)."""
+
+    def __init__(self, runner, det, branches, join, n_want, input_policy):
+        self.r = runner
+        self.det = det
+        self.join = join if join in _SCRIPT4_PAR_JOINS else "all"
+        self.input = (input_policy if input_policy in _SCRIPT4_PAR_INPUTS
+                      else "exclusive")
+        self.now = 0.0                 # region-relative virtual ms
+        count = len(branches)
+        if self.join == "all":
+            self.need = count
+        elif self.join == "n_of_m":
+            self.need = max(1, min(int(n_want), count))
+        else:                          # any / race / first_terminal
+            self.need = 1
+        self.completed = 0
+        self.holders = {}              # token -> {branch index: hold count}
+        self.excl_owner = {}           # token -> branch index (exclusive)
+        self.waiters = {}              # token -> [branch index], arrival order
+        self.reserved = {}             # token -> branch index (handoff)
+        self.brs = []
+        for i, arm in enumerate(branches):
+            self.brs.append({
+                "bi": i,
+                "gen": self._root(i, arm if isinstance(arm, list) else []),
+                "ready": 0.0,
+                "status": "run",       # run|block|done|cancelled|terminal
+                "blocked_on": None,
+                "hold_order": [],      # tokens in first-acquire order
+            })
+
+    def _root(self, bi, nodes):
+        try:
+            for y in self.r._par_run_nodes(self, bi, nodes):
+                yield y
+        except (_ParBreak, _ParContinue):
+            pass                       # loose break/continue ends the branch
+
+    # ---- input ownership ledger --------------------------------------------
+
+    def count_of(self, bi, tok):
+        return (self.holders.get(tok) or {}).get(bi, 0)
+
+    def total_holders(self, tok):
+        return sum((self.holders.get(tok) or {}).values())
+
+    def _others(self, tok, bi):
+        h = self.holders.get(tok) or {}
+        return [b for b, c in h.items() if b != bi and c > 0]
+
+    def _tok_label(self, tok):
+        if tok[0] == "m":
+            return "the left mouse button"
+        return "the %s key" % self.r._par_key_name(tok[1])
+
+    def touch(self, bi, tok):
+        """May branch bi write this input now? 'ok' | 'wait'; conflicts
+        raise per the policy (docs/PARALLEL_IR.md section 4)."""
+        others = self._others(tok, bi)
+        pol = self.input
+        if pol == "exclusive":
+            own = self.excl_owner.get(tok)
+            if own is None:
+                self.excl_owner[tok] = bi
+                return "ok"
+            if own == bi:
+                return "ok"
+            raise ValueError(
+                "two Fork branches both drive %s under exclusive input; "
+                "use share or queue" % self._tok_label(tok))
+        if pol in ("share", "split_kb_mouse", "read_only"):
+            return "ok"
+        if pol == "fail":
+            if others:
+                raise _ParFail()
+            return "ok"
+        if pol in ("queue", "priority"):
+            if not others:
+                res = self.reserved.get(tok)
+                if res is not None and res != bi:
+                    return "wait"      # freed but promised to another waiter
+                self.reserved.pop(tok, None)
+                return "ok"
+            q = self.waiters.setdefault(tok, [])
+            if bi not in q:
+                q.append(bi)
+            return "wait"
+        if pol == "cancel_lower":
+            if not others:
+                return "ok"
+            other = others[0]
+            if bi < other:
+                self._cancel(self.brs[other])
+                return "ok"
+            raise _ParCancelled()
+        return "ok"
+
+    def down(self, bi, tok):
+        """Register one hold. True = the PHYSICAL press happens now."""
+        h = self.holders.setdefault(tok, {})
+        was = sum(h.values())
+        h[bi] = h.get(bi, 0) + 1
+        br = self.brs[bi]
+        if tok not in br["hold_order"]:
+            br["hold_order"].append(tok)
+        return was == 0
+
+    def up(self, bi, tok):
+        """Drop one hold. True = the PHYSICAL release happens now (last
+        holder gone); a freed token is handed to its next waiter."""
+        h = self.holders.get(tok)
+        if not h or h.get(bi, 0) <= 0:
+            return False
+        h[bi] -= 1
+        if h[bi] <= 0:
+            h.pop(bi, None)
+        if sum(h.values()) == 0:
+            q = self.waiters.get(tok) or []
+            if q:
+                if self.input == "priority":
+                    q.sort()           # lowest branch index acquires first
+                nxt = q.pop(0)
+                self.reserved[tok] = nxt
+                w = self.brs[nxt]
+                if w["status"] == "block" and w["blocked_on"] == tok:
+                    w["status"] = "run"
+                    w["blocked_on"] = None
+                    w["ready"] = self.now
+            return True
+        return False
+
+    def _release_phys(self, tok):
+        r = self.r
+        if tok[0] == "k":
+            code = tok[1]
+            key_up(code)
+            r.held_v3.discard(code)
+        else:
+            mouse_up()
+            r.held_v3_buttons.discard("left")
+
+    def _strip_holds(self, br):
+        for tok in br["hold_order"]:
+            while self.count_of(br["bi"], tok) > 0:
+                if self.up(br["bi"], tok):
+                    self._release_phys(tok)
+        br["hold_order"] = []
+
+    def _cancel(self, br):
+        if br["status"] not in ("run", "block"):
+            return
+        if br["status"] == "block":
+            q = self.waiters.get(br["blocked_on"]) or []
+            if br["bi"] in q:
+                q.remove(br["bi"])
+        br["status"] = "cancelled"
+        br["blocked_on"] = None
+        self._strip_holds(br)
+
+    def _cancel_rest(self):
+        for br in self.brs:
+            self._cancel(br)
+
+    def _release_everything(self):
+        """Abnormal unwind: every ledger-tracked hold releases (branch
+        order, acquire order within a branch) BEFORE the stop/error row --
+        the exact order the Studio VM produces."""
+        for br in self.brs:
+            self._strip_holds(br)
+
+    # ---- the loop -----------------------------------------------------------
+
+    def run(self):
+        """True = join satisfied; False = the op completed unsatisfied
+        (fail-policy conflict, cancelled-away completions); None = the run
+        stopped/aborted mid-region (no store write, the stop funnel owns
+        cleanup)."""
+        while True:
+            if self.completed >= self.need:
+                self._cancel_rest()
+                return True
+            run_brs = [b for b in self.brs if b["status"] == "run"]
+            if not run_brs:
+                if any(b["status"] == "block" for b in self.brs):
+                    self._release_everything()
+                    raise ValueError(
+                        "the Fork deadlocked: every remaining branch is "
+                        "waiting for input another branch still holds")
+                return False
+            b = min(run_brs, key=lambda x: (x["ready"], x["bi"]))
+            if b["ready"] > self.now:
+                if not _script_sleep(b["ready"] - self.now):
+                    return None
+                self.now = b["ready"]
+            if not (State.running and State.alive):
+                return None
+            try:
+                y = next(b["gen"])
+            except StopIteration:
+                b["status"] = "done"
+                self.completed += 1
+                self._note_progress()
+                continue
+            except _ParCancelled:
+                self._cancel(b)
+                continue
+            except _ParFail:
+                self._cancel_rest()
+                self._release_everything()
+                return False
+            except _ParStop as st:
+                self._release_everything()
+                safe_stop(st.msg, hard=st.hard)
+                return None
+            except Exception:
+                if self.join == "first_terminal":
+                    b["status"] = "terminal"
+                    self._strip_holds(b)
+                    self.completed += 1
+                    continue
+                self._release_everything()
+                raise
+            if not (State.running and State.alive):
+                return None
+            if isinstance(y, tuple) and y and y[0] == "block":
+                b["status"] = "block"
+                b["blocked_on"] = y[1]
+            else:
+                b["ready"] = self.now + float(y)
+            self._note_progress()
+
+    def _note_progress(self):
+        now = time.perf_counter()
+        State.last_progress = now
+        self.r.last_step_t = now
+
+
 class ScriptRunner:
     """Walks the block tree with an explicit frame stack (no recursion at run
     time). One call to tick() = one block step. A fresh runner is built for
@@ -5078,8 +5411,9 @@ class ScriptRunner:
         elif deep > max_depth:
             self.dead = "the active custom script is nested too deeply"
         elif n < 0:
-            self.dead = "the active custom script contains blocks this " \
-                        "version does not understand"
+            if not self.dead:
+                self.dead = "the active custom script contains blocks " \
+                            "this version does not understand"
         elif self.version >= 2 and not self._check_exprs(blocks):
             pass                      # _check_exprs filled self.dead
         else:
@@ -5109,6 +5443,15 @@ class ScriptRunner:
                     or not isinstance(b.get("params", {}), dict)):
                 return -1, deep
             n += 1
+            if b.get("type") == "parallel":
+                pn, pd = self._shape_parallel(b, depth)
+                if pn < 0:
+                    return -1, pd
+                n += pn
+                deep = max(deep, pd)
+                continue
+            if b.get("branches") is not None:
+                return -1, deep     # branches ride ONLY the parallel op
             kids = b.get("children")
             if isinstance(kids, list) and kids:
                 kn, kd = self._shape(kids, depth + 1)
@@ -5129,6 +5472,75 @@ class ScriptRunner:
                             return -1, kd
                         n += kn
                         deep = max(deep, kd)
+        return n, deep
+
+    def _shape_parallel(self, b, depth):
+        """Load-time validation of one `parallel` op (docs/PARALLEL_IR.md):
+        2..8 branch lists, no children/else, sane join/input params, the
+        interleave-safe whitelist (named refusal), split/read-only device
+        rules. Returns (blocks counted, max depth) or (-1, depth)."""
+        brs = b.get("branches")
+        p = b.get("params") or {}
+        if (not isinstance(brs, list) or not (2 <= len(brs) <= 8)
+                or any(not isinstance(a, list) for a in brs)
+                or (isinstance(b.get("children"), list) and b.get("children"))
+                or b.get("else") is not None):
+            return -1, depth
+        jv = p.get("join", "all")
+        if jv is None:
+            jv = "all"
+        if jv not in _SCRIPT4_PAR_JOINS:
+            return -1, depth
+        inp = p.get("input", "exclusive")
+        if inp is None:
+            inp = "exclusive"
+        if inp not in _SCRIPT4_PAR_INPUTS:
+            return -1, depth
+        if inp == "split_kb_mouse" and len(brs) != 2:
+            self.dead = ("the active custom script splits keyboard and "
+                         "mouse across a Fork that does not have exactly "
+                         "two branches")
+            return -1, depth
+        n, deep = 0, depth
+        for ai, arm in enumerate(brs):
+            bad = _par_scan_types(
+                arm, lambda t: t if t not in _SCRIPT4_PARALLEL_SAFE else None)
+            if bad:
+                if bad == "parallel":
+                    self.dead = ("the active custom script nests a Fork "
+                                 "inside a Fork branch -- nested Fork is "
+                                 "not supported yet")
+                else:
+                    self.dead = ("the active custom script puts %r inside "
+                                 "a Fork branch -- it cannot run there "
+                                 "yet: it holds the walker for its whole "
+                                 "duration" % (bad,))
+                return -1, deep
+            if inp == "read_only":
+                hit = _par_scan_types(
+                    arm, lambda t: t if t in _SCRIPT4_PAR_INPUT_TYPES
+                    else None)
+                if hit:
+                    self.dead = ("the active custom script produces input "
+                                 "(%r) inside a read-only Fork branch"
+                                 % (hit,))
+                    return -1, deep
+            if inp == "split_kb_mouse":
+                wrong = (_SCRIPT4_PAR_MOUSE_TYPES if ai == 0
+                         else _SCRIPT4_PAR_KB_TYPES)
+                hit = _par_scan_types(
+                    arm, lambda t: t if t in wrong else None)
+                if hit:
+                    self.dead = ("the active custom script uses %r in the "
+                                 "%s branch of a keyboard/mouse split Fork"
+                                 % (hit, "keyboard" if ai == 0
+                                    else "mouse"))
+                    return -1, deep
+            kn, kd = self._shape(arm, depth + 1)
+            if kn < 0:
+                return -1, kd
+            n += kn
+            deep = max(deep, kd)
         return n, deep
 
     def _tick_release(self):
@@ -5704,7 +6116,11 @@ class ScriptRunner:
                                      "malformed wired value on block %r"
                                      % (b.get("id", "?"),))
                         return False
-            for lst in (b.get("children"), b.get("else")):
+            lists = [b.get("children"), b.get("else")]
+            brs = b.get("branches")
+            if isinstance(brs, list):
+                lists.extend(brs)
+            for lst in lists:
                 if isinstance(lst, list) and lst \
                         and not self._check_exprs(lst):
                     return False
@@ -7023,6 +7439,387 @@ class ScriptRunner:
         self._store_result(p, "store", reached)
         return None
 
+    # ---- v4 parallel: Fork / Join (docs/PARALLEL_IR.md) --------------------
+    # The handler runs the WHOLE region to completion within this one _step
+    # call (like a practical). Branch bodies are generator sub-walkers over
+    # the whitelisted node set; _ParallelSched drives them deterministically.
+
+    def _par_key_name(self, code):
+        """Trace-token name for a keycode (whitelist tokens win, then v3
+        names) -- the same resolution the conformance harness uses, so
+        cross-language error messages match byte for byte."""
+        m = getattr(self, "_par_names", None)
+        if m is None:
+            m = {}
+            for tok, c in _SCRIPT_KEYS.items():
+                if c is not None and c not in m:
+                    m[c] = tok
+            for name, c in V3_KEYCODES.items():
+                m.setdefault(c, name)
+            self._par_names = m
+        return m.get(code, str(code))
+
+    def _par_acquire(self, sc, bi, tok):
+        """Generator helper: yields until the ledger grants the write."""
+        while True:
+            if sc.touch(bi, tok) == "ok":
+                return
+            yield ("block", tok)
+
+    def _par_run_nodes(self, sc, bi, nodes):
+        for b in nodes:
+            if not (State.running and State.alive):
+                return                 # a safe stop fired mid-segment
+            for y in self._par_run_node(sc, bi, b):
+                yield y
+
+    def _par_run_node(self, sc, bi, b):
+        t = b.get("type")
+        p = b.get("params") or {}
+        kids = b.get("children") if isinstance(b.get("children"), list) else []
+        self._cur = b
+        self.steps += 1
+        self._emit_block(b)
+        if t == "sleep_ms":
+            ms = self._pi(p, "ms", 50, _SCRIPT4_SLEEP_MIN_MS,
+                          _SCRIPT_WAIT_MAX_MS)
+            self.pass_activity = True
+            yield float(ms)
+        elif t == "wait_expr":
+            for y in self._par_wait_expr(sc, bi, p):
+                yield y
+        elif t == "key_pin":
+            for y in self._par_key_pin(sc, bi, p):
+                yield y
+        elif t == "key_unpin":
+            for y in self._par_key_unpin(sc, bi, p):
+                yield y
+        elif t == "btn_down":
+            for y in self._par_btn_down(sc, bi):
+                yield y
+        elif t == "btn_up":
+            for y in self._par_btn_up(sc, bi):
+                yield y
+        elif t == "key_press":
+            for y in self._par_key_press(sc, bi, p):
+                yield y
+        elif t == "tap_key":
+            for y in self._par_tap_key(sc, bi, p):
+                yield y
+        elif t == "click":
+            for y in self._par_click(sc, bi, p):
+                yield y
+        elif t == "branch":
+            taken = _sv_truthy(self._pv_eval(p.get("cond", True)))
+            els = b.get("else") if isinstance(b.get("else"), list) else []
+            for y in self._par_run_nodes(sc, bi, kids if taken else els):
+                yield y
+        elif t == "group":
+            for y in self._par_run_nodes(sc, bi, kids):
+                yield y
+        elif t == "loop":
+            for y in self._par_loop(sc, bi, b, p, kids):
+                yield y
+        elif t == "while":
+            for y in self._par_while(sc, bi, p, kids):
+                yield y
+        elif t == "for_range":
+            for y in self._par_for_range(sc, bi, p, kids):
+                yield y
+        elif t == "repeat":
+            for y in self._par_repeat(sc, bi, p, kids):
+                yield y
+        elif t == "break_loop":
+            raise _ParBreak()
+        elif t == "continue_loop":
+            raise _ParContinue()
+        elif t == "set_var":
+            self._do_set_var(sc.det, p, kids)
+        elif t == "log":
+            self._do_log(sc.det, p, kids)
+        elif t == "comment":
+            pass
+        elif t == "mark_phase":
+            self._do_mark_phase(sc.det, p, kids)
+        elif t == "mark_event":
+            self._do_mark_event(sc.det, p, kids)
+        elif t == "stat_add":
+            self._do_stat_add(sc.det, p, kids)
+        elif t == "stat_set":
+            self._do_stat_set(sc.det, p, kids)
+        elif t == "stop":
+            msg = str(p.get("message") or "Stopped by the script")[:120]
+            self.pass_dirty = True
+            raise _ParStop("script: %s" % msg, False)
+        elif t == "stop_hard":
+            msg = str(p.get("message") or "Stopped by the script")[:120]
+            self.pass_dirty = True
+            raise _ParStop("script: %s" % msg, True)
+        elif t == "raise_error":
+            self._do_raise_error(sc.det, p, kids)
+        else:
+            raise ValueError("%r cannot run inside a Fork branch" % (t,))
+        return
+
+    def _par_wait_expr(self, sc, bi, p):
+        timeout = self._pi(p, "timeout_ms", 3000, 1, _SCRIPT_WAIT_MAX_MS)
+        confirm = self._pi(p, "confirm", 1, 1, 10)
+        min_ms = self._pi(p, "min_ms", 0, 0, _SCRIPT_WAIT_MAX_MS)
+        poll = self._pi(p, "poll_ms", 25, 1, 1000)
+        self.pass_activity = True
+        start = sc.now
+        deadline = start + timeout
+        gate = start + min_ms
+        hits = 0
+        ok = False
+        # Classic wait discipline on the scheduler clock: check first, then
+        # a FULL poll seam (may overshoot the deadline), no final check.
+        while sc.now < deadline:
+            if sc.now >= gate:
+                if _sv_truthy(self._pv_eval(p.get("cond", True))):
+                    hits += 1
+                    if hits >= confirm:
+                        ok = True
+                        break
+                else:
+                    hits = 0
+            yield float(poll)
+        self._store_result(p, "store", ok)
+        if not ok and p.get("on_timeout") == "stop":
+            self.pass_dirty = True
+            raise _ParStop("the condition never held within %d ms (wait)"
+                           % timeout, False)
+
+    def _par_key_pin(self, sc, bi, p):
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return
+        self.pass_activity = True
+        tok = ("k", code)
+        if sc.count_of(bi, tok) > 0:
+            return                     # this branch already pins it
+        if sc.total_holders(tok) == 0 and code in self.held_v3:
+            return                     # pre-Fork pin: sequential no-op
+        for y in self._par_acquire(sc, bi, tok):
+            yield y
+        if sc.down(bi, tok):
+            key_down(code)
+        self.held_v3.add(code)
+
+    def _par_key_unpin(self, sc, bi, p):
+        code, aborted = self._key(p, "key", movement_only=True)
+        if aborted or code is None:
+            return
+        tok = ("k", code)
+        if sc.count_of(bi, tok) > 0:
+            self.held_v3.discard(code)
+            if sc.up(bi, tok):
+                key_up(code)
+            return
+        if sc.total_holders(tok) == 0 and code in self.held_v3:
+            self.held_v3.discard(code)     # pre-Fork pin (sequential rule)
+            key_up(code)
+        # a key held by ANOTHER branch: unpin releases own pins only
+        return
+        yield  # pragma: no cover -- keeps this a generator
+
+    def _par_btn_down(self, sc, bi):
+        self.pass_activity = True
+        tok = ("m", 0)
+        if sc.count_of(bi, tok) > 0:
+            return
+        if sc.total_holders(tok) == 0 and "left" in self.held_v3_buttons:
+            return                     # pre-Fork pinned button
+        for y in self._par_acquire(sc, bi, tok):
+            yield y
+        if sc.down(bi, tok):
+            mouse_down()
+        self.held_v3_buttons.add("left")
+
+    def _par_btn_up(self, sc, bi):
+        tok = ("m", 0)
+        if sc.count_of(bi, tok) > 0:
+            self.held_v3_buttons.discard("left")
+            if sc.up(bi, tok):
+                mouse_up()
+            return
+        if sc.total_holders(tok) == 0 and "left" in self.held_v3_buttons:
+            self.held_v3_buttons.discard("left")
+            mouse_up()
+        return
+        yield  # pragma: no cover -- keeps this a generator
+
+    def _par_key_press(self, sc, bi, p):
+        code, bad = self._v3_key(p)
+        if bad:
+            return
+        hold = self._pi(p, "hold_ms", 40, 10, 2000)
+        self.pass_activity = True
+        tok = ("k", code)
+        for y in self._par_acquire(sc, bi, tok):
+            yield y
+        if sc.down(bi, tok):
+            key_down(code)
+        yield float(hold)
+        if sc.up(bi, tok):
+            key_up(code)
+
+    def _par_tap_key(self, sc, bi, p):
+        code, bad = self._key(p, "key")
+        if bad or code is None:
+            return
+        hold = self._pi(p, "hold_ms", 40, 1, 2000)
+        self.pass_activity = True
+        tok = ("k", code)
+        for y in self._par_acquire(sc, bi, tok):
+            yield y
+        if sc.down(bi, tok):
+            key_down(code)
+        yield float(hold)
+        if sc.up(bi, tok):
+            key_up(code)
+
+    def _par_click(self, sc, bi, p):
+        hold = self._pi(p, "hold_ms", 40, 1, 5000)
+        at = p.get("at", "none")
+        self.pass_activity = True
+        if at == "center":
+            r = find_roblox_rect()
+            if r:
+                self._cursor = (r[0] + r[2] // 2, r[1] + r[3] // 2)
+                move_cursor(r[0] + r[2] // 2, r[1] + r[3] // 2)
+                yield 30.0
+            else:
+                log("[script] no Roblox window found; clicking in place")
+        elif at == "autopan":
+            bp = globals().get("AUTOPAN_BTN_PIXEL") or [0, 0]
+            if bp and int(bp[0]) and int(bp[1]):
+                self._cursor = (int(bp[0]), int(bp[1]))
+                move_cursor(int(bp[0]), int(bp[1]))
+                yield 30.0
+            else:
+                log("[script] Auto Pan button not calibrated; "
+                    "clicking in place")
+        tok = ("m", 0)
+        for y in self._par_acquire(sc, bi, tok):
+            yield y
+        if sc.down(bi, tok):
+            mouse_down()
+        yield float(hold)
+        if sc.up(bi, tok):
+            mouse_up()
+
+    def _par_loop(self, sc, bi, b, p, kids):
+        mode = str(p.get("mode") or "while")
+        max_iters = self._pi(p, "max_iters", 100000, 1, _SCRIPT2_WHILE_MAX)
+        yield_ms = self._pi(p, "yield_ms", 0, 0, 1000)
+        free = 0
+        for _i in range(max_iters):
+            lap_start = sc.now
+            self.steps += 1
+            if yield_ms > 0:
+                yield float(yield_ms)
+            if mode == "while" \
+                    and not _sv_truthy(self._pv_eval(p.get("cond", True))):
+                return
+            try:
+                for y in self._par_run_nodes(sc, bi, kids):
+                    yield y
+            except _ParBreak:
+                return
+            except _ParContinue:
+                pass
+            if mode == "until" \
+                    and _sv_truthy(self._pv_eval(p.get("cond", True))):
+                return
+            if sc.now == lap_start:
+                free += 1
+                if free >= _SCRIPT4_LOOP_FREE_LAPS:
+                    raise _ParStop(
+                        "a loop is spinning without doing anything (no "
+                        "time passes); add a wait or a breath per lap",
+                        False)
+            else:
+                free = 0
+
+    def _par_while(self, sc, bi, p, kids):
+        max_iters = self._pi(p, "max_iters", 10000, 1, _SCRIPT2_WHILE_MAX)
+        for _i in range(max_iters):
+            yield 10.0                 # the classic While lap breath
+            self.steps += 1
+            if not _sv_truthy(self._pv_eval(p.get("cond", True))):
+                return
+            try:
+                for y in self._par_run_nodes(sc, bi, kids):
+                    yield y
+            except _ParBreak:
+                return
+            except _ParContinue:
+                continue
+
+    def _par_for_range(self, sc, bi, p, kids):
+        name = p.get("var") or ""
+        if self.var_decls.get(name) != "number":
+            raise ValueError('variable "%s" is not declared' % (name,))
+        v_from = self._pi(p, "from", 0, -1000000, 1000000)
+        v_to = self._pi(p, "to", 10, -1000000, 1000000)
+        step = self._pi(p, "step", 1, -1000000, 1000000)
+        if step == 0:
+            raise ValueError("For range: the step is 0")
+        laps = 0
+        v = v_from
+        while (v < v_to) if step > 0 else (v > v_to):
+            laps += 1
+            if laps > _SCRIPT2_WHILE_MAX:
+                return
+            self.steps += 1
+            self.vars[name] = float(v)
+            if self.on_set_var:
+                try:
+                    self.on_set_var(name, float(v))
+                except Exception:
+                    pass
+            try:
+                for y in self._par_run_nodes(sc, bi, kids):
+                    yield y
+            except _ParBreak:
+                return
+            except _ParContinue:
+                pass
+            v += step
+
+    def _par_repeat(self, sc, bi, p, kids):
+        raw = p.get("times")
+        if isinstance(raw, dict) and "$expr" in raw:
+            times = self._pi(p, "times", 1, 0, 1000)
+        else:
+            times = self._pi(p, "times", 1, 1, 1000)
+        for _i in range(times):
+            try:
+                for y in self._par_run_nodes(sc, bi, kids):
+                    yield y
+            except _ParBreak:
+                return
+            except _ParContinue:
+                continue
+
+    def _do_parallel(self, det, p, kids):
+        b = self._cur
+        branches = b.get("branches")
+        if not isinstance(branches, list) \
+                or not (2 <= len(branches) <= 8):
+            raise ValueError("parallel needs 2 to 8 branches")
+        join = p.get("join") or "all"
+        n_want = self._pi(p, "n", 2, 1, 8)
+        input_policy = p.get("input") or "exclusive"
+        self.pass_activity = True
+        sc = _ParallelSched(self, det, branches, join, n_want, input_policy)
+        outcome = sc.run()
+        if outcome is None:
+            return None                # stopped/aborted: the funnel owns it
+        self._store_result(p, "store", outcome)
+        return None
+
 
 # One handler per schema block type; studio_tests.py asserts this table stays
 # in lockstep with STUDIO_BLOCKS in prospecting_ui.py.
@@ -7102,6 +7899,7 @@ _SCRIPT_HANDLERS_V4.update({
     "fill_wait": ScriptRunner._do_fill_wait,
     "rattle_until": ScriptRunner._do_rattle_until,
     "walk_back_x": ScriptRunner._do_walk_back_x,
+    "parallel": ScriptRunner._do_parallel,
 })
 
 

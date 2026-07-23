@@ -1794,6 +1794,174 @@ check("capabilities: ops/reads/caps advertised from the live tables",
       and _caps["caps"] == sorted(po._SCRIPT3_CAPS), None)
 
 # =============================================================================
+print("[18] runner identity — durable instance GUID + publish acknowledgement")
+# =============================================================================
+# Protocol 1.5: the app and the engine share ONE instance_id file per data
+# dir; the status mirror carries {instance} and {ack} so Prospector Studio
+# can verify WHICH runner acknowledged WHICH push; a classic push deferred
+# behind a live run is ackPending with the pending rev. Everything added is
+# optional to consumers -- older mirrors simply lack the keys.
+import shutil as _sh18
+import tempfile as _tf18
+
+check("protocol 1.5: minor covers the identity fields",
+      _pr.PROTOCOL_MINOR >= 5, _pr.PROTOCOL_MINOR)
+
+_mdir = _tf18.mkdtemp()
+_saved_attrs = {k: getattr(app, k) for k in
+                ("SCRIPTS_FILE", "CONFIG_FILE", "DATA_DIR", "STATUS_FILE",
+                 "PUSH_FILE", "BUILDS_FILE", "STUDIO_LAUNCH", "STUDIO_SCRIPT")}
+app.SCRIPTS_FILE = os.path.join(_mdir, "prospecting_scripts.json")
+app.CONFIG_FILE = os.path.join(_mdir, "prospecting_config.json")
+app.STATUS_FILE = os.path.join(_mdir, "studio_macro_status.json")
+app.PUSH_FILE = os.path.join(_mdir, "studio_push.json")
+app.BUILDS_FILE = os.path.join(_mdir, "prospecting_builds.json")
+app.DATA_DIR = _mdir
+app.STUDIO_LAUNCH = True
+app.STUDIO_SCRIPT = "Pushed Build"
+app._STUDIO_LIST_CACHE["key"] = None
+api_i = None
+try:
+    # -- the durable GUID: file wins, minted once, engine-compatible --------
+    app._INSTANCE_ID_CACHE.clear()
+    _idf = os.path.join(_mdir, "instance_id")
+    with open(_idf, "w") as f:
+        f.write("engine-minted-guid-0001\n")
+    check("instance GUID: an engine-minted file is honored verbatim",
+          app._runner_instance_id() == "engine-minted-guid-0001")
+    os.remove(_idf)
+    app._INSTANCE_ID_CACHE.clear()
+    _g1 = app._runner_instance_id()
+    check("instance GUID: minted once when absent", bool(_g1) and len(_g1) >= 8, _g1)
+    check("instance GUID: persisted into <data dir>/instance_id",
+          os.path.exists(_idf) and open(_idf).read().strip() == _g1)
+    app._INSTANCE_ID_CACHE.clear()          # "restart": read path, not cache
+    check("instance GUID: a second boot reads the same GUID",
+          app._runner_instance_id() == _g1)
+    from prospector_engine import ipc as _ipc18
+    check("instance GUID: the ENGINE reads the same file for this home",
+          _ipc18.instance_identity(_mdir) == _g1)
+
+    api_i = app.Api()
+    api_i._studio_status_stop.set()          # deterministic: drive by hand
+    _t18 = getattr(api_i, "_studio_status_thread", None)
+    if _t18 is not None:
+        _t18.join(timeout=3.0)
+
+    # -- mirror instance object: app-side fallback (no engine hello yet) ----
+    snap = api_i._studio_status_snapshot()
+    inst = snap.get("instance")
+    check("mirror instance: present with the durable GUID + data dir",
+          isinstance(inst, dict) and inst.get("instanceId") == _g1
+          and inst.get("dataDir") == _mdir and bool(inst.get("exePath")), inst)
+    check("mirror instance: protocol rides along (minor >= 5)",
+          isinstance(inst.get("protocol"), dict)
+          and inst["protocol"].get("minor", 0) >= 5, inst.get("protocol"))
+    import hashlib as _hl18
+    _efp = _hl18.sha256(open(os.path.join(
+        ROOT, "prospector_engine", "engine.py"), "rb").read()).hexdigest()[:16]
+    check("mirror instance: fingerprint IS the vendored engine source",
+          inst.get("fingerprint") == _efp, (inst.get("fingerprint"), _efp))
+
+    # -- mirror instance object: the engine's hello wins once it speaks -----
+    api_i._on_engine_event({"t": "ev", "seq": 1, "ts": 0.0,
+                            "ev": "engine.hello", "data": {
+                                "protocol": {"major": 1, "minor": 5},
+                                "engine": {"version": "9.9.9",
+                                           "sourceFingerprint": "cafe0123beef4567",
+                                           "platform": "mac",
+                                           "instance": "hello-guid-42",
+                                           "exePath": "/usr/bin/python3",
+                                           "frozen": False,
+                                           "dataDir": _mdir},
+                                "pid": 4242, "home": _mdir,
+                                "capabilities": {}, "state": "idle"}})
+    inst = api_i._studio_status_snapshot().get("instance")
+    check("mirror instance: hello identity mirrored verbatim",
+          inst.get("instanceId") == "hello-guid-42" and inst.get("pid") == 4242
+          and inst.get("fingerprint") == "cafe0123beef4567"
+          and inst.get("dataDir") == _mdir, inst)
+    api_i._engine_instance = None            # back to the app-side truth
+
+    # -- classic push: the ack object names WHO applied it, WHEN ------------
+    tpl = json.loads(json.dumps(app._studio_templates()[0]))
+    tpl["name"] = "Pushed Build"
+    check("identity fixture saves clean", api_i.studio_save(tpl, None)["ok"])
+    api_i.studio_mode("studio")
+    with open(app.BUILDS_FILE, "w") as f:
+        json.dump({"Speed Build": {"DIG_CLICK_MS": 777, "TRACKER_MODE": False,
+                                   "_meta": {"desc": "", "created": 1,
+                                             "updated": 1, "used": 0}}}, f)
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Speed Build", "rev": "a1b2c3d4",
+                   "kind": "classic", "at": 1111, "app": "ProspectorStudio"}, f)
+    api_i._apply_classic_push()
+    d18 = app._studio_load()
+    check("dedup stamp keeps its exact pre-1.5 shape {name, rev, at}",
+          d18["meta"].get("last_classic_push")
+          == {"name": "Speed Build", "rev": "a1b2c3d4", "at": 1111},
+          d18["meta"].get("last_classic_push"))
+    _ack = d18["meta"].get("last_classic_push_ack")
+    check("applied ack stamped with appliedAt + instanceId",
+          isinstance(_ack, dict) and _ack.get("name") == "Speed Build"
+          and _ack.get("rev") == "a1b2c3d4" and _ack.get("at") == 1111
+          and _ack.get("instanceId") == _g1
+          and isinstance(_ack.get("appliedAt"), float), _ack)
+    snap = api_i._studio_status_snapshot()
+    check("mirror ack echoes the applied classic push",
+          snap.get("ack") == _ack and snap.get("ackPending") is False
+          and snap.get("pendingRev") == "",
+          {k: snap.get(k) for k in ("ack", "ackPending", "pendingRev")})
+
+    # -- deferred classic push: ackPending truth, old ack preserved ---------
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Speed Build", "rev": "55667788",
+                   "kind": "classic", "at": 2222}, f)
+    api_i.proc = object()                    # a run is live
+    api_i._apply_classic_push()
+    snap = api_i._studio_status_snapshot()
+    check("deferred push: ackPending with the PENDING rev",
+          snap.get("ackPending") is True and snap.get("pendingRev") == "55667788"
+          and snap.get("push_pending") is True,
+          {k: snap.get(k) for k in ("ackPending", "pendingRev")})
+    check("deferred push: the ack still names the OLD applied rev",
+          (snap.get("ack") or {}).get("rev") == "a1b2c3d4", snap.get("ack"))
+    api_i.proc = None
+    api_i._apply_classic_push()              # run over: the deferred push lands
+    snap = api_i._studio_status_snapshot()
+    check("run over: ack flips to the new rev, nothing pending",
+          (snap.get("ack") or {}).get("rev") == "55667788"
+          and (snap.get("ack") or {}).get("instanceId") == _g1
+          and snap.get("ackPending") is False and snap.get("pendingRev") == "",
+          snap.get("ack"))
+
+    # -- script/build push: acknowledged the moment it is the active entry --
+    api_i.studio_mode("studio")              # restores "Pushed Build" active
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Pushed Build", "rev": "beefcafe",
+                   "kind": "script", "at": 3333}, f)
+    snap = api_i._studio_status_snapshot()
+    check("script push: ack carries rev + this runner's GUID",
+          (snap.get("ack") or {}).get("rev") == "beefcafe"
+          and (snap.get("ack") or {}).get("instanceId") == _g1, snap.get("ack"))
+    with open(app.PUSH_FILE, "w") as f:
+        json.dump({"v": 1, "name": "Some Other Script", "rev": "beefcafe",
+                   "kind": "script", "at": 4444}, f)
+    check("script push naming a non-active entry is NOT acknowledged",
+          api_i._studio_status_snapshot().get("ack") is None)
+finally:
+    if api_i is not None:
+        api_i._studio_status_stop.set()
+        _t18 = getattr(api_i, "_studio_status_thread", None)
+        if _t18 is not None:
+            _t18.join(timeout=3.0)
+    for k, v in _saved_attrs.items():
+        setattr(app, k, v)
+    app._STUDIO_LIST_CACHE["key"] = None
+    app._INSTANCE_ID_CACHE.clear()
+    _sh18.rmtree(_mdir, ignore_errors=True)
+
+# =============================================================================
 print()
 if FAILS:
     print("STUDIO TESTS: %d FAILURES" % len(FAILS))

@@ -58,6 +58,48 @@ def source_fingerprint(path):
         return hashlib.sha256(f.read()).hexdigest()[:16]
 
 
+def instance_identity(home):
+    """The engine's durable instance GUID (protocol 1.5): minted once into
+    <home>/instance_id and read on every later boot, so hosts can tell
+    "the same runner install answered again" from "a different runner owns
+    this home". An absent/unreadable/empty file mints a fresh GUID; a
+    failed persist still returns the minted value (identity beats
+    durability -- consumers treat the field as optional either way)."""
+    import uuid
+    path = os.path.join(home, "instance_id")
+    try:
+        with open(path, encoding="utf-8") as f:
+            val = f.read().strip()
+        if val:
+            return val
+    except OSError:
+        pass
+    val = str(uuid.uuid4())
+    try:
+        os.makedirs(home, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(val + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return val
+
+
+def engine_identity(po, home, instance):
+    """The engine object served in hello AND engine.describe (1.5): the
+    pre-1.5 version/fingerprint/platform triple plus the durable instance
+    GUID, the executable actually running, and the data directory (the
+    engine home). One builder so the two surfaces can never drift."""
+    return {"version": ENGINE_VERSION,
+            "sourceFingerprint": source_fingerprint(po.__file__),
+            "platform": "win" if sys.platform == "win32" else "mac",
+            "instance": instance,
+            "exePath": sys.executable or "",
+            "frozen": bool(getattr(sys, "frozen", False)),
+            "dataDir": home}
+
+
 class InstanceLock(object):
     """Machine-scoped single-live-engine lock (architecture section 3,
     ISS-136/141): one well-known path per OS user, independent of --home.
@@ -136,6 +178,7 @@ class FrameEmit(object):
         self.po = po
         self.simulated = simulated
         self.server = None            # backref for tick-committed acks (C4)
+        self.instance_id = None       # durable GUID (1.5; Server sets it)
         self._next_origin = None      # origin for the next run.started
         self._wlock = threading.Lock()
         self._seq = 0
@@ -187,9 +230,7 @@ class FrameEmit(object):
         self._ev("engine.hello", {
             "protocol": {"major": protocol.PROTOCOL_MAJOR,
                          "minor": protocol.PROTOCOL_MINOR},
-            "engine": {"version": ENGINE_VERSION,
-                       "sourceFingerprint": source_fingerprint(po.__file__),
-                       "platform": "win" if sys.platform == "win32" else "mac"},
+            "engine": engine_identity(po, home, self.instance_id),
             "pid": os.getpid(), "home": home,
             "capabilities": caps, "state": "idle"})
 
@@ -222,6 +263,9 @@ class FrameEmit(object):
         d = {"mode": self._mode_label(), "origin": origin}
         if d["mode"] == "script":
             d["script"] = getattr(po, "SCRIPT_ACTIVE", "")
+        if self.instance_id:
+            # 1.5: WHICH runner install this run executes on
+            d["instanceId"] = self.instance_id
         self._ev("run.started", self._rd(d))
 
     def run_init_committed(self):
@@ -386,6 +430,9 @@ class Server(object):
         self.emit = FrameEmit(po, simulated=simulated)
         self.emit.server = self
         self.lock = InstanceLock(host)
+        # 1.5 durable identity: one GUID per engine home, persisted forever
+        self.instance_id = instance_identity(home)
+        self.emit.instance_id = self.instance_id
         self._shutdown = threading.Event()
         # C4 transition serialization (protocol section 2): every run-state
         # mutation happens under this one mutex with its source-state guard
@@ -574,13 +621,15 @@ class Server(object):
         with self.state_lock:
             req, self._start_inflight = self._start_inflight, None
         if req is not None and req.get("cid") is not None:
-            self._ack_ok(req["cid"], {"runId": self.emit.run_id})
+            self._ack_ok(req["cid"], {"runId": self.emit.run_id,
+                                      "instanceId": self.instance_id})
 
     def on_run_stopped(self, run_id, seq):
         with self.state_lock:
             req, self._stop_inflight = self._stop_inflight, None
         if req is not None and req.get("cid") is not None:
-            self._ack_ok(req["cid"], {"runId": run_id, "finalSeq": seq})
+            self._ack_ok(req["cid"], {"runId": run_id, "finalSeq": seq,
+                                      "instanceId": self.instance_id})
 
     def _heartbeat_loop(self):
         while not self._shutdown.is_set():
@@ -802,7 +851,6 @@ class Server(object):
             self.emit.relic_set(i, float(s), "cmd")
             self._ack_ok(cid, {"applied": True})
         elif cmd == "engine.describe":
-            po_f = source_fingerprint(po.__file__)
             caps = capabilities(po, self.emit.simulated)
             sch = [{"key": k, "type": s["type"], "default": s["default"],
                     "applies": s["applies"]}
@@ -810,10 +858,7 @@ class Server(object):
             self._ack_ok(cid, {
                 "protocol": {"major": protocol.PROTOCOL_MAJOR,
                              "minor": protocol.PROTOCOL_MINOR},
-                "engine": {"version": ENGINE_VERSION,
-                           "sourceFingerprint": po_f,
-                           "platform": "win" if sys.platform == "win32"
-                           else "mac"},
+                "engine": engine_identity(po, self.home, self.instance_id),
                 "capabilities": caps,
                 "settingsSchema": sch,
                 "commands": list(self.served),

@@ -46,11 +46,11 @@ def spawn(scenario, extra_args=None, home=None):
                             text=True, encoding="utf-8", bufsize=1, cwd=ROOT)
 
 
-def run_batch(scenario, extra_args=None, timeout=180):
+def run_batch(scenario, extra_args=None, timeout=180, home=None):
     """Run a self-terminating sim scenario with stdin HELD OPEN (closing
     stdin means 'host died' per protocol section 10.2 and would race the
     scenario). Returns (stdout, stderr, returncode)."""
-    p = spawn(scenario, extra_args=extra_args)
+    p = spawn(scenario, extra_args=extra_args, home=home)
     try:
         out = p.stdout.read()          # engine exits by itself -> EOF
         err = p.stderr.read()
@@ -518,6 +518,87 @@ def test_run_commands():
             "ev.pause-resume.origins: command pause tagged origin=cmd")
         a = cli.request("run.stop")
         chk(a.get("ok") is True, "cmd.run-stop: valid from paused")
+        cli.shutdown()
+    finally:
+        cli.kill()
+
+
+def test_instance_identity():
+    """Protocol 1.5: the durable instance GUID -- persisted at
+    <home>/instance_id, surfaced in hello + engine.describe alongside
+    exePath/dataDir, carried by run.started and the run.start/run.stop
+    acks, and stable across engine restarts of the same home."""
+    print("[contract] durable instance identity (1.5)")
+    from prospector_engine import ipc as ipc_mod
+
+    # unit: mint once, read thereafter; empty file re-mints
+    ud = tempfile.mkdtemp(prefix="ppe-home-")
+    g1 = ipc_mod.instance_identity(ud)
+    g2 = ipc_mod.instance_identity(ud)
+    chk(bool(g1) and g1 == g2 and len(g1) >= 8,
+        "id.unit: minted once, read thereafter (%r)" % (g1,))
+    with open(os.path.join(ud, "instance_id")) as f:
+        chk(f.read().strip() == g1,
+            "id.unit: <home>/instance_id holds the GUID")
+    with open(os.path.join(ud, "instance_id"), "w") as f:
+        f.write("")
+    g3 = ipc_mod.instance_identity(ud)
+    chk(bool(g3), "id.unit: an empty/unreadable file re-mints")
+
+    # two sequential boots of the SAME home read the same GUID
+    home = tempfile.mkdtemp(prefix="ppe-home-")
+    out1, _e1, rc1 = run_batch("start-idle-quit", home=home)
+    frames1, _d1, _p1 = parse_stream(out1)
+    hellos = events(frames1, "engine.hello")
+    chk(rc1 == 0 and bool(hellos), "id.boot1: clean batch run with hello")
+    h1 = hellos[0]["data"]
+    eng1 = h1.get("engine", {})
+    inst1 = eng1.get("instance")
+    chk(isinstance(inst1, str) and len(inst1) >= 8,
+        "id.hello: engine.instance is a GUID (got %r)" % (inst1,))
+    chk(h1["protocol"]["minor"] == protocol.PROTOCOL_MINOR
+        and protocol.PROTOCOL_MINOR >= 5,
+        "id.protocol: 1.5 minor served (hello minor == library minor)")
+    chk(eng1.get("dataDir") == home and bool(eng1.get("exePath"))
+        and isinstance(eng1.get("frozen"), bool),
+        "id.hello: dataDir is the home; exePath + frozen present")
+    idf = os.path.join(home, "instance_id")
+    on_disk = open(idf).read().strip() if os.path.exists(idf) else None
+    chk(on_disk == inst1, "id.persist: <home>/instance_id == hello GUID")
+    out2, _e2, _rc2 = run_batch("start-idle-quit", home=home)
+    frames2, _d2, _p2 = parse_stream(out2)
+    h2 = events(frames2, "engine.hello")[0]["data"]
+    chk(h2.get("engine", {}).get("instance") == inst1,
+        "id.persist: second boot of the same home reads the same GUID")
+
+    # interactive: describe + the run.start/run.stop acks carry it
+    from prospector_engine.client import EngineClient
+    evs = []
+    cli = EngineClient(
+        [sys.executable, ENGINE], home=home, host="lite-test", cwd=ROOT,
+        allow_simulated=True, on_event=evs.append,
+        extra_args=["--sim", os.path.join(ROOT, "engine_scenarios",
+                                          "idle-command.json")]).spawn()
+    try:
+        chk(cli.wait_ready(), "id.client: engine ready")
+        chk((cli.hello or {}).get("engine", {}).get("instance") == inst1,
+            "id.persist: third boot (client) still the same GUID")
+        a = cli.request("engine.describe")
+        de = (a.get("result") or {}).get("engine", {})
+        chk(a.get("ok") is True and de.get("instance") == inst1
+            and de.get("dataDir") == home and bool(de.get("exePath")),
+            "id.describe: engine.instance/dataDir/exePath served")
+        a = cli.request("run.start", {"mode": "auto"})
+        chk(a.get("ok") is True
+            and a["result"].get("instanceId") == inst1,
+            "id.run-start.ack: carries instanceId")
+        starts = [e for e in evs if e["ev"] == "run.started"]
+        chk(bool(starts) and starts[-1]["data"].get("instanceId") == inst1,
+            "id.run-started: event carries instanceId")
+        a = cli.request("run.stop", {"reason": "user"})
+        chk(a.get("ok") is True
+            and a["result"].get("instanceId") == inst1,
+            "id.run-stop.ack: carries instanceId")
         cli.shutdown()
     finally:
         cli.kill()
@@ -1039,6 +1120,7 @@ if __name__ == "__main__":
     test_instance_lock()
     test_protocol_mismatch()
     test_run_commands()
+    test_instance_identity()
     test_mode_derivation()
     test_relic_hotkey_events()
     test_calibration_commands()

@@ -379,8 +379,9 @@ def test_wire_plan_describe():
     cli = C._make_client("idle-command").spawn()
     try:
         chk(cli.wait_ready(), "wire: engine ready")
-        chk(cli.hello["protocol"]["minor"] == 4,
-            "wire: hello protocol minor is 4 (1.4 adds plan.describe)")
+        chk(cli.hello["protocol"]["minor"] >= 4,
+            "wire: hello protocol minor is >= 4 (1.4 adds plan.describe; "
+            "1.5 adds durable instance identity)")
         a = cli.request("plan.describe")
         chk(a.get("ok") is True and a["result"]["plan"]["_plan"] == 1,
             "wire: plan.describe acked with a _plan:1 document")

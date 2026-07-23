@@ -81,6 +81,9 @@ INPUT_NODE_TYPES = frozenset((
     "type_text", "set_clipboard", "release_keys", "mouse_btn", "scroll",
     "click_image", "move_image",
     "walk_back_x",
+    # v4 parallel: its branches can hold/press keys and buttons, so the
+    # whole Fork region counts as input-producing for flow arbitration.
+    "parallel",
 ))
 
 
