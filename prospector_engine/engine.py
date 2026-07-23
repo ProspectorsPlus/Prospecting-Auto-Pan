@@ -6777,6 +6777,42 @@ class ScriptRunner:
         self._store_result(p, "store", full)
         return None
 
+    def _do_fill_wait(self, det, p, kids):
+        """v4 engine-op practical: the geode FIXED animation wait, a
+        line-for-line port of _geode_wait. The float trajectory (deadline
+        from perf_counter, int-truncated min/max slices) is the parity
+        contract -- an expression-level mirror of this loop cannot land on
+        the same instants once truncation meets 1-ulp dust, which is why
+        this is an engine op and not a materializer approximation. Bails
+        only on Stop or a real FULL read, keeps the no-progress watchdog
+        quiet (a running animation IS progress), and streams the same HUD
+        countdown Classic does."""
+        delay = self._pi(p, "delay_ms", 250, 0, _SCRIPT_WAIT_MAX_MS)
+        label = _sv_text(self._pv_eval(p.get("label", "")))[:40]
+        self.pass_activity = True
+        ms = max(0, int(delay))
+        emit_geode_timer(ms, label)
+        hit = False
+        end = time.perf_counter() + ms / 1000.0
+        try:
+            while State.running and time.perf_counter() < end:
+                if det is not None and det.capacity_full():
+                    hit = True
+                    break
+                State.last_progress = time.perf_counter()  # animation = progress
+                if p.get("progress_store"):
+                    # the program's lastprog mirror, updated at the same
+                    # instants native updates State.last_progress
+                    self._store_result(
+                        p, "progress_store",
+                        (time.perf_counter() - self._t0) * 1000.0)
+                left = (end - time.perf_counter()) * 1000.0
+                sleep_ms(int(min(120.0, max(15.0, left))))
+        finally:
+            emit_geode_timer(0)
+        self._store_result(p, "store", hit)
+        return None
+
     def _do_rattle_until(self, det, p, kids):
         clicks = self._pi(p, "clicks", 0, 0, 100)
         click_ms = self._pi(p, "click_ms", 18, 1, 200)
@@ -6981,6 +7017,7 @@ _SCRIPT_HANDLERS_V4.update({
     "pulse_key": ScriptRunner._do_pulse_key,
     "probe_dig": ScriptRunner._do_probe_dig,
     "fill_to_full": ScriptRunner._do_fill_to_full,
+    "fill_wait": ScriptRunner._do_fill_wait,
     "rattle_until": ScriptRunner._do_rattle_until,
 })
 
