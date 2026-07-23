@@ -426,6 +426,29 @@ class World(object):
             return False
         po.wait_until = _wait_until
 
+        # _wait_fill_smart is the same deliberate busy-wait pattern (screen
+        # grabs pace it on hardware); unpaced under the virtual clock a
+        # DIG_FILL_SMART entry would spin forever without advancing time —
+        # the probe/verifier hang. Same 25 ms virtual poller, same logic.
+        def _wait_fill_smart(det):
+            deadline = po.time.perf_counter() + po.DIG_SMART_CAP_MS / 1000.0
+            last = det.cap_fill()
+            last_rise = po.time.perf_counter()
+            while po.State.running and po.time.perf_counter() < deadline:
+                if det.capacity_full():
+                    return True
+                f = det.cap_fill()
+                now = po.time.perf_counter()
+                if f > last + 0.005:
+                    po._note_dig_registered()
+                    last, last_rise = f, now
+                elif now - last_rise > po.DIG_PLATEAU_MS / 1000.0:
+                    po.log("    fill: bar plateaued below FULL -> dig again now")
+                    return det.capacity_full()
+                clock.adv(POLL_MS)
+            return det.capacity_full()
+        po._wait_fill_smart = _wait_fill_smart
+
         po.key_down = inputs.key_down
         po.key_up = inputs.key_up
         po.mouse_down = inputs.mouse_down
