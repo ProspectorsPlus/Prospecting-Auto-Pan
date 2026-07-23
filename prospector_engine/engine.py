@@ -55,6 +55,10 @@ import gc
 import os
 import json
 import time
+_STDLIB_TIME = time   # sim harnesses replace the `time` GLOBAL with a
+                      # TimeShim; this alias keeps the genuine module, so
+                      # `time is _STDLIB_TIME` is the one honest "am I on
+                      # real hardware?" test (see _wait_classic_seam).
 import threading
 import subprocess
 import urllib.request
@@ -5348,6 +5352,7 @@ class ScriptRunner:
         self.stats_mode = "auto"      # v4: "manual" disables the pass-wrap
                                       # cycle heuristic (stat ops own stats)
         self._dig_burst_t = -1e9      # v4 probe_dig: registered-dig burst
+        self._floor_done = False      # first-tick full release_all floor
         self._image_cache = {}        # vision: asset id -> (mtime, HxWx3)
         self._stuck_at_pass = 0       # test hook: fire on_stuck after pass N
         self._pending_stuck = False
@@ -5544,15 +5549,25 @@ class ScriptRunner:
         return n, deep
 
     def _tick_release(self):
-        """The per-step anti-drift release. Identical to release_all() until a
-        v3 key_down/mouse-button-down deliberately holds input across nodes —
-        those spared holds are the runner's OWN registry, cleared by key_up /
-        release_keys, and the full release_all() on every stop/abort/quit path
-        still releases them (the safety funnel is untouched)."""
-        if not self.held_v3 and not self.held_v3_buttons:
+        """The per-step anti-drift release, registry-authoritative. The FIRST
+        tick of a walk (and every fresh slate after want_reset) still runs the
+        full release_all() floor — the same clean-input start a Classic run
+        gets. Between blocks, though, the whole-vocabulary floor is not a
+        safety feature: it is ~16 real CGEvents posted into the game at every
+        boundary (the session-ten Shards pacing counterexample — Classic pays
+        that burst once per LEG, a detached build was paying it once per
+        BLOCK), while everything the runner can actually leave down lives in
+        the held-set registries (platform key_down registers BEFORE posting,
+        platform_mac.py:177, so a crash between down and up cannot escape
+        them). Steady state is therefore the exact registry diff — spared v3
+        holds kept, everything tracked-but-unspared released, NOTHING posted
+        when nothing is held. Every stop/abort/quit path still funnels through
+        the full release_all() floor (protocol 10.1), untouched."""
+        if not self._floor_done:
+            self._floor_done = True
             release_all()
             return
-        # Sparing path: the held registry is authoritative here (the full
+        # Registry diff: the held registries are authoritative here (the full
         # idempotent floor still fires on every stop/abort path).
         for c in set(_HELD_KEYS) - self.held_v3:
             try:
@@ -5575,6 +5590,7 @@ class ScriptRunner:
         self.pass_activity = False
         self.pass_dirty = False
         self.pass_started = time.perf_counter()
+        self._floor_done = False      # fresh slate -> full floor once more
 
     # ---- param helpers (defensive re-clamp; the editor validated already) --
     def _pi(self, p, key, dflt, lo, hi):
@@ -6905,6 +6921,25 @@ class ScriptRunner:
             lambda: _sv_truthy(self._pv_eval(p.get("cond", True))),
             timeout_ms, confirm, min_ms, poll_ms)
 
+    def _wait_classic_seam(self, p, timeout_ms, confirm, min_ms):
+        """A lifted Classic busy-wait seam. Native Classic paces these loops
+        by the screen grabs themselves (wait_until, this module) and fires
+        the follow-up input the moment the read flips — the animation-skip
+        seams live on that reaction time, so on REAL hardware this delegates
+        to the module wait_until (grab-paced hot loop, zero added
+        quantization, per-lap State.running stop check) instead of sleeping
+        whole 25 ms polls Classic never slept (the session-ten Shards pacing
+        counterexample: a 0-25 ms reaction tax at every cue seam). Under ANY
+        virtual clock (`time` replaced by a harness TimeShim) it keeps the
+        exact _wait_classic(poll=25) trajectory the detached-trace and
+        conformance goldens pinned — byte parity is untouched in the domain
+        where it is defined, whichever poller model the harness installs."""
+        if time is _STDLIB_TIME:
+            return wait_until(
+                lambda: _sv_truthy(self._pv_eval(p.get("cond", True))),
+                timeout_ms, confirm=confirm, min_ms=min_ms)
+        return self._wait_classic(p, timeout_ms, confirm, min_ms, 25)
+
     def _dig_once4(self, click_ms):
         """dig_once (PERFECT=False path) with the attempt stat + observer."""
         self._stat_write("dig_clicks", "add", 1)
@@ -6970,7 +7005,14 @@ class ScriptRunner:
         min_ms = self._pi(p, "min_ms", 0, 0, _SCRIPT_WAIT_MAX_MS)
         poll = self._pi(p, "poll_ms", 25, 1, 1000)
         self.pass_activity = True
-        ok = self._wait_classic(p, timeout, confirm, min_ms, poll)
+        if p.get("classic_pace") is True:
+            # Lifter-stamped: this wait stands in for a native grab-paced
+            # busy wait (e.g. the shards dig-confirm proof). Real mode
+            # reacts grab-paced like Classic; the sim trajectory is the
+            # same pinned 25 ms poller either way.
+            ok = self._wait_classic_seam(p, timeout, confirm, min_ms)
+        else:
+            ok = self._wait_classic(p, timeout, confirm, min_ms, poll)
         self._store_result(p, "store", ok)
         if not ok and State.running and p.get("on_timeout") == "stop":
             self.pass_dirty = True
@@ -7081,9 +7123,11 @@ class ScriptRunner:
         key_down(code)
         reached = False
         try:
-            # go_water core: hold, poll the condition on the classic 25 ms
-            # seam, keep holding a touch longer after the hit.
-            reached = self._wait_classic(p, timeout, confirm, 0, 25)
+            # go_water core: hold, watch the condition exactly the way the
+            # native leg does (grab-paced busy wait; the sim world pins the
+            # same seam to its 25 ms virtual poller), keep holding a touch
+            # longer after the hit.
+            reached = self._wait_classic_seam(p, timeout, confirm, 0)
             if reached and extra > 0:
                 sleep_ms(extra)
         finally:
@@ -7422,14 +7466,14 @@ class ScriptRunner:
             try:
                 diag_ms = (min(strafe_ms, timeout) if strafe_ms > 0
                            else timeout)
-                reached = self._wait_classic(p, diag_ms, confirm, 0, 25)
+                reached = self._wait_classic_seam(p, diag_ms, confirm, 0)
             finally:
                 key_up(side)                 # released -> no mid-walk kink
             balance += sgn * (time.perf_counter() - tb) * 1000.0
             if not reached:                  # STRAIGHT back for the rest
                 rem = timeout - (time.perf_counter() - tb) * 1000.0
                 if rem > 0:
-                    reached = self._wait_classic(p, rem, confirm, 0, 25)
+                    reached = self._wait_classic_seam(p, rem, confirm, 0)
             if reached and extra > 0:
                 sleep_ms(extra)              # keep holding -> a bit deeper
         finally:

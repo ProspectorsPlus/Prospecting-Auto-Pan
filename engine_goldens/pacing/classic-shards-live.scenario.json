@@ -1,0 +1,16 @@
+{
+  "name": "classic-shards-live",
+  "_comment": "The LIVE shards detach-verification scenario: the classic-shards choreography (engine_goldens/classic_trace/classic-shards.scenario.json) with NO SHARDS_* keys in the scenario config, so the ENTRY under verification drives its own click count / confirm window / assume-full — the scenario config would otherwise override the very knobs being verified. Both the native Classic run and the detached program replay the same world on the dust-free virtual clock, so a custom-timing entry that drifts off this choreography's happy path still produces byte-comparable (identical or honestly divergent) traces. Studio-tracked: this is a verification harness input, not a golden.",
+  "window": [0, 0, 1440, 900],
+  "config": {
+    "RELICS_ENABLED": false,
+    "WEBHOOK_URL": "",
+    "WEBHOOK_SECRET": ""
+  },
+  "schedule": [[0, "toggle"], [2800, "quit"]],
+  "cues": { "PAN": [[2250, 2700]] },
+  "capacity": [[0, 0.0], [199, 0.0], [200, 1.0], [2499, 1.0], [2500, 0.0], [600000, 0.0]],
+  "screen": [{ "rect": [0, 0, 1, 1], "rgb": [16, 16, 16], "from_ms": 0 }],
+  "_screen_comment": "Whole-box capacity paint (see classic-shards): keyframes are 0/1 only.",
+  "duration_ms": 600000
+}
