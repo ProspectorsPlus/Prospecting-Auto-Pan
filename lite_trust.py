@@ -640,7 +640,7 @@ def _win_elevated():
 def capability_statuses(settings=None):
     """{cap_id: {"status": ..., "detail": ...}} using real checks only.
 
-    Statuses: granted / not_granted (mac TCC), available / untested (win),
+    Statuses: granted / not_granted (mac TCC), untested (win),
     configured / disabled (network opt-ins), not_requested (NOT_REQUIRED),
     info (informational), unknown (check unavailable).
     `settings` is the loaded config dict for the opt-in rows (optional).

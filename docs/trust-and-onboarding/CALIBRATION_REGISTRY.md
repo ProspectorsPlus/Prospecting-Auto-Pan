@@ -37,7 +37,7 @@ CURRENT_SYSTEM.md §8.7.)
 
 ## Status semantics
 
-`calibration_status(cfg, health, window_found)` returns one of six statuses per item
+`calibration_status(cfg, health, window_found)` returns one of five statuses per item
 (`lite_onboarding.py:379-443`); the wizard renders them with text labels, never colour alone
 (`prospecting_app.py:10018`):
 
