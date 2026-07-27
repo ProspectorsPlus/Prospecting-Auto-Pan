@@ -1,0 +1,67 @@
+{
+ "schema": 1,
+ "note": "Example screenshots for the guided-calibration wizard. Every image must be a REAL, owner-approved capture of the game with personal data removed (names, chat, private overlays). No image ships until its entry has approved:true AND a file present; until then the wizard shows an honest 'example pending' placeholder, never a fabricated picture. Annotations use fractional coordinates (0-1) over the image: {type: point|rect|label, x, y, w, h, label}.",
+ "capture_instructions": "Owner: open Roblox Prospecting at the target moment (see per-item alt text), then use the Capture-example button on the wizard's calibration page (dev build, owner machine only). Crop/redact in Preview if needed, re-save over the same file, then Approve.",
+ "items": {
+  "roblox_window": {
+   "file": "", "approved": false,
+   "alt": "The Roblox Prospecting game window on the primary display, showing the river bank with the pan HUD visible.",
+   "annotations": []
+  },
+  "cap_bar": {
+   "file": "", "approved": false,
+   "alt": "The pan-fill capacity bar at the bottom of the screen; markers show the exact LEFT and RIGHT tips of the yellow bar to click.",
+   "annotations": []
+  },
+  "pan_prompt": {
+   "file": "", "approved": false,
+   "alt": "The white 'Pan' prompt as it appears near the hotbar when standing at the water; a marker shows the pixel to click in the centre of the text.",
+   "annotations": []
+  },
+  "deposit_prompt": {
+   "file": "", "approved": false,
+   "alt": "The white 'Collect Deposit' prompt when standing on land at a deposit; a marker shows the pixel to click.",
+   "annotations": []
+  },
+  "shake_prompt": {
+   "file": "", "approved": false,
+   "alt": "The white 'Shake' prompt while holding a filled pan; a marker shows the pixel to click.",
+   "annotations": []
+  },
+  "dig_green": {
+   "file": "", "approved": false,
+   "alt": "The dig meter mid-dig with its GREEN target zone visible; a marker shows a pixel inside the green zone.",
+   "annotations": []
+  },
+  "money_region": {
+   "file": "", "approved": false,
+   "alt": "The money counter in the game HUD with a tight rectangle drawn around just the number.",
+   "annotations": []
+  },
+  "shards_region": {
+   "file": "", "approved": false,
+   "alt": "The shards counter with a tight rectangle around the number.",
+   "annotations": []
+  },
+  "find_region": {
+   "file": "", "approved": false,
+   "alt": "A find pop-up (item found toast) with a rectangle around the area where pop-ups stack.",
+   "annotations": []
+  },
+  "fortune_river": {
+   "file": "", "approved": false,
+   "alt": "The Fortune River event UI with markers on the open button, home button and the scan band.",
+   "annotations": []
+  },
+  "autopan_button": {
+   "file": "", "approved": false,
+   "alt": "The Auto Pan toggle button with a marker on its centre.",
+   "annotations": []
+  },
+  "cue_masks": {
+   "file": "", "approved": false,
+   "alt": "A prompt close-up showing the letter-mask selection (green = kept pixels) from the guided cue capture.",
+   "annotations": []
+  }
+ }
+}

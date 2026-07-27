@@ -670,7 +670,9 @@ NOTIFY_STATS       = True
 NOTIFY_SAFE_STOP   = True
 NOTIFY_RECOVERIES  = False
 NOTIFY_ERRORS      = True
-NOTIFY_SCREENSHOT  = True   # attach a screenshot to safe-stop / recover / hard-stop / stats DMs
+NOTIFY_SCREENSHOT  = False  # attach a screenshot to safe-stop / recover / hard-stop / stats
+                            # DMs. Off unless the user turns it on: enabling
+                            # notifications alone must never send screen content.
 SHOT_TARGET_W      = 1280   # downscale screenshots to about this width before sending
 
 # --- AUTO-STOP TIMER ---------------------------------------------------------
@@ -3029,11 +3031,27 @@ def _webhook_payload(event, message, stats=None):
             "stats": st}
 
 
+def _webhook_tls_context():
+    """A VERIFYING TLS context, always. Bundled Pythons sometimes ship with an
+    empty default trust store; when that happens the certifi CA bundle
+    (packaged with the app) is loaded instead. There is deliberately no
+    unverified mode: a notification whose certificate cannot be checked is
+    dropped, never sent with verification off (ISS-157 hardening)."""
+    import ssl as _ssl
+    ctx = _ssl.create_default_context()
+    try:
+        if ctx.cert_store_stats().get("x509_ca", 0) == 0:
+            import certifi
+            ctx.load_verify_locations(certifi.where())
+    except Exception:
+        pass
+    return ctx
+
+
 def _webhook_send(url, payload, img_b64=None):
-    """Deliver a payload to a webhook URL, blocking. Attaches the screenshot
-    as a real multipart file upload (attachment://shot.png) so it renders in
-    Discord. Retries once without SSL verification because the bundled macOS
-    Python often ships without certificates. Returns (ok, error_string)."""
+    """Deliver a payload to a webhook URL, blocking. Certificate verification
+    is mandatory -- a failed TLS handshake drops the notification with an
+    error, it never retries unverified. Returns (ok, error_string)."""
     import ssl as _ssl
     try:
         if img_b64:
@@ -3046,12 +3064,15 @@ def _webhook_send(url, payload, img_b64=None):
             headers["x-macro-secret"] = WEBHOOK_SECRET
         req = urllib.request.Request(url, data=data, headers=headers)
         try:
-            urllib.request.urlopen(req, timeout=8)
+            urllib.request.urlopen(req, timeout=8,
+                                   context=_webhook_tls_context())
         except Exception as e1:
             if getattr(e1, "code", None):          # a real HTTP rejection
                 return False, "HTTP %s" % e1.code
-            urllib.request.urlopen(req, timeout=8,
-                                   context=_ssl._create_unverified_context())
+            if isinstance(e1, _ssl.SSLError) or isinstance(
+                    getattr(e1, "reason", None), _ssl.SSLError):
+                return False, "TLS certificate verification failed (dropped)"
+            raise
         return True, ""
     except Exception as e:
         return False, str(e)

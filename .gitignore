@@ -96,3 +96,7 @@ zi0waoYL
 
 # obsolete source-mode installer kept locally only
 windows/Install.bat
+
+# dev-run onboarding state (packaged builds keep it in the user data dir)
+onboarding_state.json
+.write_probe

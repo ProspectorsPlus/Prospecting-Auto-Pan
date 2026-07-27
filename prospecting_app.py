@@ -24,14 +24,25 @@ import urllib.request
 import urllib.error
 import hashlib
 
+try:
+    import lite_trust
+    import lite_onboarding
+except ImportError:      # windows/ dev checkout: the modules live one level up
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), os.pardir))
+    import lite_trust
+    import lite_onboarding
+
 # ---- identity ---------------------------------------------------------------
 # One version source of truth for the app, the packages and the About panel.
-# PROJECT_URL is the public open-source repository; while it is empty every
-# "view source / releases" control hides itself and the app never invents a
-# URL. Prospector Lite makes NO automatic network request: no update check,
-# no analytics, no remote content fetch (see PRIVACY.md / NETWORK_BEHAVIOR).
+# PROJECT_URL is the public source repository (source available for
+# inspection; licence status in LICENSE_CHOICE_REQUIRED.md); while it is
+# empty every "view source / releases" control hides itself and the app never
+# invents a URL. Prospector Lite makes NO automatic network request: no
+# update check, no analytics, no remote content fetch (see PRIVACY.md /
+# NETWORK_BEHAVIOR).
 APP_NAME    = "Prospector Lite"
-VERSION     = "1.0.0-rc.1"
+VERSION     = "1.0.0-rc.2"
 PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
@@ -294,8 +305,28 @@ def _sensing():
         _SENSING.store.path = CONFIG_FILE
     return _SENSING
 
-# First run when frozen: seed the writable config from the bundled default so the
-# baked-in webhook URL/secret are present without the user touching anything.
+
+_ONBOARD = None
+
+
+def _onboarding():
+    """The first-run wizard state machine (lite_onboarding.Onboarding),
+    created lazily against the live DATA_DIR. Users who completed the old
+    single welcome screen migrate straight to FINISHED -- their working
+    install is never forced back through setup."""
+    global _ONBOARD
+    if _ONBOARD is None:
+        _ONBOARD = lite_onboarding.Onboarding(
+            DATA_DIR, lite_trust.platform_key(), version=VERSION)
+        try:
+            _ONBOARD.migrate_legacy(bool(load_saved().get("WELCOME_SEEN")))
+        except Exception:
+            pass
+    return _ONBOARD
+
+# First run when frozen: seed the writable config from the bundled sanitized
+# default (sane settings, webhook empty + disabled -- see the tracked
+# windows/prospecting_config.json and public_release_tests.scan_default_config).
 if FROZEN and not os.path.exists(CONFIG_FILE):
     try:
         shutil.copyfile(_resource("prospecting_config.json"), CONFIG_FILE)
@@ -412,6 +443,23 @@ def _read_json(path, fallback):
             return json.load(f)
     except (FileNotFoundError, ValueError, OSError):
         return fallback
+
+
+def _tls_context():
+    """A VERIFYING TLS context, always. Bundled Pythons sometimes ship with an
+    empty default trust store; when that happens the certifi CA bundle (packaged
+    with the app) is loaded instead. There is deliberately no unverified mode:
+    a request whose certificate cannot be checked fails, it is never retried
+    with verification off."""
+    import ssl
+    ctx = ssl.create_default_context()
+    try:
+        if ctx.cert_store_stats().get("x509_ca", 0) == 0:
+            import certifi
+            ctx.load_verify_locations(certifi.where())
+    except Exception:
+        pass
+    return ctx
 
 
 def load_saved():
@@ -2433,12 +2481,13 @@ class Api:
             return {"ok": False, "error": str(e)}
 
     def export_tutorials(self):
-        """Owner only: write the combined overrides to a file ready to publish
-        as tutorial_content.json on the website, which every install pulls."""
+        """Owner only: write the combined overrides to a file that can ship
+        as the packaged tutorial_content.json default. Local content only --
+        Prospector Lite has no remote tutorial fetch."""
         if not _is_owner():
             return {"ok": False, "error": "Not the owner machine."}
         over = {}
-        for src in (_tutorial_remote(), _tutorial_local()):
+        for src in (_tutorial_local(),):
             o = (src.get("overrides")
                  if isinstance(src.get("overrides"), dict) else src)
             for k, v in (o or {}).items():
@@ -2497,7 +2546,10 @@ class Api:
             req = urllib.request.Request(
                 url, data=json.dumps(payload).encode("utf-8"), headers=hdrs)
             try:
-                urllib.request.urlopen(req, timeout=8)
+                # Certificate verification is mandatory: there is no retry
+                # with verification off (see docs/trust-and-onboarding/
+                # DISCORD_NOTIFICATIONS.md).
+                urllib.request.urlopen(req, timeout=8, context=_tls_context())
             except Exception as e1:
                 if getattr(e1, "code", None):
                     if e1.code == 401:
@@ -2505,8 +2557,13 @@ class Api:
                                 "secret. The WEBHOOK_SECRET in this build must match "
                                 "the bot's secret."}
                     return {"ok": False, "error": "HTTP %s from the notify bot" % e1.code}
-                urllib.request.urlopen(
-                    req, timeout=8, context=_ssl._create_unverified_context())
+                if isinstance(e1, _ssl.SSLError) or isinstance(
+                        getattr(e1, "reason", None), _ssl.SSLError):
+                    return {"ok": False, "error":
+                            "The webhook server's TLS certificate could not be "
+                            "verified, so nothing was sent. Check the URL; "
+                            "Prospector Lite never disables certificate checks."}
+                raise
             return {"ok": True, "user": user}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -2527,10 +2584,13 @@ class Api:
                 "engine_fp": _engine_fingerprint(),
                 "migrated": _MIGRATE_SUMMARY or ""}
         try:
-            bi = _read_json(_resource("build_info.json"), {})
-            if isinstance(bi, dict):
-                info["commit"] = str(bi.get("commit", ""))[:12]
-                info["build_date"] = str(bi.get("date", ""))
+            ident = lite_trust.build_identity(version=VERSION,
+                                              project_url=PROJECT_URL)
+            info["commit"] = ident["commit_short"]
+            info["build_date"] = ident["date"]
+            info["identity"] = ident
+            if ident.get("project_url"):
+                info["project_url"] = ident["project_url"]
         except Exception:
             pass
         return info
@@ -2554,7 +2614,9 @@ class Api:
         the OS default viewer. Whitelisted names only; JS can never open an
         arbitrary path."""
         allowed = {"PRIVACY.md", "SECURITY.md", "README.md",
-                   "THIRD_PARTY_NOTICES.md"}
+                   "THIRD_PARTY_NOTICES.md", "PERMISSIONS.md",
+                   "CALIBRATION_GUIDE.md", "TRUST_CENTER.md",
+                   "VERIFY_DOWNLOAD.md", "LICENSE_CHOICE_REQUIRED.md"}
         if name not in allowed:
             return False
         for base in (getattr(sys, "_MEIPASS", None), HERE,
@@ -2577,9 +2639,18 @@ class Api:
     def welcome_state(self):
         cur = load_saved()
         show = not bool(cur.get("WELCOME_SEEN"))
+        setup_needed = False
+        try:
+            setup_needed = not _onboarding().finished()
+        except Exception:
+            pass
         if STUDIO_LAUNCH:
             show = False        # the Studio host owns its own onboarding
-        return {"show": show, "info": self.app_info()}
+            setup_needed = False
+        return {"show": show, "setup_needed": setup_needed,
+                "resume": (_onboarding().state.get("state")
+                           if setup_needed else ""),
+                "info": self.app_info()}
 
     def welcome_done(self, always_show=False):
         """Persist that onboarding was seen (Continue). always_show=True
@@ -2593,7 +2664,612 @@ class Api:
             os.replace(tmp, CONFIG_FILE)
         except OSError:
             pass
+        try:
+            _onboarding().mark("WELCOME_COMPLETE")
+        except Exception:
+            pass
         return {"ok": True}
+
+    # ---- trust & permissions (registry-driven; see lite_trust.py) --------
+    # Every status below comes from a real check; every test runs the real
+    # capability; nothing here can trigger an OS prompt except the explicit
+    # trust_request() the user clicks.
+
+    def trust_state(self):
+        """Everything the Trust & Permissions screen and the Trust Center
+        render: capability definitions + live statuses, platform, build
+        identity, onboarding state and the data directory."""
+        try:
+            saved = load_saved()
+        except Exception:
+            saved = {}
+        caps = []
+        statuses = lite_trust.capability_statuses(saved)
+        for cap in lite_trust.CAPABILITIES:
+            c = dict(cap)
+            c.pop("source_references", None)
+            c["refs"] = [{"module": m, "symbol": s or "(module)", "why": w}
+                         for (m, s, w) in cap["source_references"]]
+            c["live"] = statuses.get(cap["id"],
+                                     {"status": "unknown", "detail": ""})
+            caps.append(c)
+        ob = _onboarding()
+        return {
+            "platform": lite_trust.platform_key(),
+            "capabilities": caps,
+            "identity": lite_trust.build_identity(version=VERSION,
+                                                  project_url=PROJECT_URL),
+            "onboarding": ob.state,
+            "data_dir": DATA_DIR,
+            "frozen": FROZEN,
+            "dev_note": ("" if FROZEN else
+                         "Running from source: macOS attributes these "
+                         "permissions to your terminal/IDE, not to a "
+                         "Prospector Lite app bundle."),
+        }
+
+    def trust_request(self, cap_id):
+        """Trigger the real OS permission request -- called only from the
+        clearly-labelled button on the capability card."""
+        res = lite_trust.request_permission(str(cap_id or ""))
+        try:
+            _onboarding().mark("TRUST_STARTED")
+        except Exception:
+            pass
+        return res
+
+    def trust_open_settings(self, cap_id):
+        """Open the exact System Settings pane for the capability."""
+        return lite_trust.open_settings(str(cap_id or ""))
+
+    def trust_test_screen(self):
+        """The real screen-detection test: one small centre grab, size +
+        non-blankness reported, preview shown once in-app, frame discarded.
+        On macOS the first call also registers the app in the Screen
+        Recording pane."""
+        return lite_trust.test_screen_capture(with_preview=True)
+
+    def trust_test_key(self):
+        """Arm the sandbox keyboard test: after a short delay one harmless
+        key press+release is posted so the focused in-app field can observe
+        both edges (down AND up = clean release proven)."""
+        threading.Thread(target=lite_trust.post_test_key,
+                         daemon=True).start()
+        return {"ok": True, "armed": True}
+
+    def trust_test_pointer(self):
+        """2-pixel pointer wiggle, verified by reading the cursor position
+        back. No clicks, nothing sent to any app."""
+        return lite_trust.test_pointer_wiggle()
+
+    def trust_test_hotkey(self, timeout=8):
+        """Arm the Safe Stop test: listen (only) for Esc / Ctrl+K for a few
+        seconds and report back through window.__hotkeyResult."""
+        def _run():
+            res = lite_trust.await_stop_hotkey(timeout=float(timeout or 8))
+            try:
+                if _window is not None:
+                    _window.evaluate_js(
+                        "window.__hotkeyResult && __hotkeyResult(%s)"
+                        % json.dumps(res))
+            except Exception:
+                pass
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "armed": True,
+                "keys": "Esc or Ctrl+K"}
+
+    def trust_manifest(self):
+        """The build's trust manifest: per-capability source references at
+        the exact build commit (bundled at package time; generated live
+        from source in dev runs)."""
+        return lite_trust.load_manifest(version=VERSION,
+                                        project_url=PROJECT_URL)
+
+    def trust_view_code(self, cap_id, ref_index=0):
+        """Open the exact-commit source URL for a capability reference, or
+        return the local file + symbol when no public repository URL is
+        configured (an honest local fallback -- never a moving branch)."""
+        man = self.trust_manifest()
+        for cap in man.get("capabilities", []):
+            if cap.get("id") != cap_id:
+                continue
+            refs = cap.get("references", [])
+            try:
+                ref = refs[int(ref_index)]
+            except (IndexError, ValueError, TypeError):
+                return {"ok": False, "error": "no such reference"}
+            url = ref.get("url") or ""
+            if url:
+                self.open_external(url)
+                return {"ok": True, "opened": url}
+            loc = "%s :: %s (lines %s-%s) @ commit %s" % (
+                ref.get("file"), ref.get("symbol"),
+                ref.get("line_start"), ref.get("line_end"),
+                (man.get("generated_from") or "unknown")[:12])
+            return {"ok": True, "opened": "", "local": loc,
+                    "file": ref.get("file"), "symbol": ref.get("symbol"),
+                    "note": "No public repository URL is configured in "
+                            "this build, so the exact local reference is "
+                            "shown instead."}
+        return {"ok": False, "error": "unknown capability"}
+
+    def webhook_payload_preview(self):
+        """The EXACT notification payload a run event would send, built by
+        the same engine code that sends it (prospector_engine.engine.
+        _webhook_payload), with example stats. Secrets are not included --
+        the optional x-macro-secret header is redacted by design."""
+        try:
+            from prospector_engine import engine as _ppe
+            saved = load_saved()
+            user = str(saved.get("WEBHOOK_USER") or "")
+            old = _ppe.WEBHOOK_USER
+            try:
+                _ppe.WEBHOOK_USER = user
+                payload = _ppe._webhook_payload(
+                    "stats", "Example: 120 pans, 96/hr",
+                    {"cycles": 120, "pans_per_hr": 96,
+                     "runtime_s": 4500, "recoveries": 1})
+            finally:
+                _ppe.WEBHOOK_USER = old
+            hdrs = {"Content-Type": "application/json",
+                    "User-Agent": "ProspectorLite/1.0"}
+            if str(saved.get("WEBHOOK_SECRET") or "").strip():
+                hdrs["x-macro-secret"] = "(your secret -- never shown or "\
+                                         "logged)"
+            return {"ok": True, "payload": payload, "headers": hdrs,
+                    "url_set": bool(str(saved.get("WEBHOOK_URL")
+                                        or "").strip()),
+                    "enabled": bool(saved.get("WEBHOOK_ENABLED")),
+                    "screenshot_optin":
+                        bool(saved.get("NOTIFY_SCREENSHOT"))}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    # ---- onboarding state machine (lite_onboarding.py) -------------------
+
+    def onboarding_state(self):
+        return _onboarding().state
+
+    def onboarding_mark(self, state):
+        """Advance the wizard (forward-only; rerun/reset go backward)."""
+        return _onboarding().mark(str(state or ""))
+
+    def onboarding_decline(self, cap_id, declined=True):
+        return _onboarding().decline_optional(str(cap_id or ""),
+                                              bool(declined))
+
+    def onboarding_rerun(self):
+        """Reopen the full wizard from the Trust step (Help / Trust
+        Center). Nothing is deleted."""
+        return _onboarding().rerun()
+
+    def onboarding_reset(self):
+        """Reset ONLY the wizard progress -- builds, calibration, settings
+        and history are untouched."""
+        return _onboarding().reset()
+
+    # ---- guided calibration (drives the SAME engine + save path as the
+    # Calibrate tab; the registry lives in lite_onboarding.py) -------------
+
+    def calibration_registry(self):
+        """Registry items + live statuses for the guided-calibration step
+        and the Trust Center."""
+        cfg = load_saved()
+        health = None
+        found = None
+        s = _sensing()
+        if s is not None:
+            try:
+                health = s.health()
+            except Exception:
+                health = None
+            try:
+                found = bool(s.detect_window())
+            except Exception:
+                found = None
+        statuses = lite_onboarding.calibration_status(
+            cfg, health=health, window_found=found)
+        items = []
+        for item in lite_onboarding.CALIBRATION_ITEMS:
+            it = dict(item)
+            it["refs"] = [{"module": m, "symbol": sym or "(module)",
+                           "why": w}
+                          for (m, sym, w) in item["source_references"]]
+            it.pop("source_references", None)
+            it["live"] = statuses.get(item["id"], {})
+            items.append(it)
+        ready, blockers = lite_onboarding.calibration_ready(statuses)
+        return {"items": items, "ready": ready, "blockers": blockers,
+                "auto_calibrate": bool(cfg.get("AUTO_CALIBRATE", True)),
+                "owner": bool(_is_owner() and not FROZEN),
+                "schema": lite_onboarding.CALIBRATION_SCHEMA}
+
+    # ---- calibration example screenshots (assets/onboarding/calibration) --
+    # Honest pipeline: an example image is shown ONLY when a real, owner-
+    # approved capture exists in the shipped asset manifest. Until then the
+    # wizard shows a clearly-labelled pending note -- never a fabricated
+    # screenshot. The owner capture tool below runs only on the owner's dev
+    # checkout (never in packaged builds).
+
+    def _example_manifest_path(self):
+        return os.path.join(_resource(os.path.join("assets", "onboarding",
+                                                   "calibration")),
+                            "manifest.json")
+
+    def calibration_example(self, item_id):
+        """The example image + annotations for a wizard item, as a data URL
+        (webviews cannot load arbitrary file paths). Placeholder when no
+        approved asset exists."""
+        item_id = str(item_id or "")
+        base = os.path.dirname(self._example_manifest_path())
+        man = _read_json(self._example_manifest_path(), {})
+        entry = (man.get("items") or {}).get(item_id)
+        if not isinstance(entry, dict):
+            return {"placeholder": True, "alt": ""}
+        out = {"alt": entry.get("alt", ""),
+               "annotations": entry.get("annotations") or []}
+        rel = entry.get("file") or ""
+        path = os.path.join(base, rel) if rel else ""
+        if entry.get("approved") and rel and os.path.isfile(path) \
+                and os.path.realpath(path).startswith(
+                    os.path.realpath(base)):
+            try:
+                import base64
+                with open(path, "rb") as f:
+                    out["img"] = ("data:image/png;base64,"
+                                  + base64.b64encode(f.read()).decode())
+                out["placeholder"] = False
+                return out
+            except OSError:
+                pass
+        out["placeholder"] = True
+        if rel and not entry.get("approved"):
+            out["pending_review"] = True
+        return out
+
+    def owner_example_capture(self, item_id):
+        """OWNER + dev checkout only: capture the current screen as the raw
+        example for `item_id`. Saved un-approved; the owner crops/redacts
+        the PNG (any editor), then approves it. Never available in packaged
+        builds, so end users can neither see nor trigger this."""
+        if FROZEN or not _is_owner():
+            return {"ok": False, "error": "Owner dev tool only."}
+        item_id = str(item_id or "")
+        mp = self._example_manifest_path()
+        man = _read_json(mp, {})
+        if item_id not in (man.get("items") or {}):
+            return {"ok": False, "error": "Unknown item."}
+        try:
+            import mss
+            import mss.tools
+            with mss.mss() as sct:
+                img = sct.grab(sct.monitors[1])
+                rel = os.path.join("common", "%s.png" % item_id)
+                dest = os.path.join(os.path.dirname(mp), rel)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                mss.tools.to_png(img.rgb, (img.width, img.height),
+                                 output=dest)
+            man["items"][item_id]["file"] = rel
+            man["items"][item_id]["approved"] = False
+            tmp = mp + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(man, f, indent=1)
+            os.replace(tmp, mp)
+            return {"ok": True, "path": dest,
+                    "note": "Saved UN-approved. Crop/redact the PNG, then "
+                            "approve it. It ships only after approval."}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def owner_example_approve(self, item_id, approved=True):
+        """OWNER + dev checkout only: mark an example as reviewed/approved
+        (or revoke approval)."""
+        if FROZEN or not _is_owner():
+            return {"ok": False, "error": "Owner dev tool only."}
+        mp = self._example_manifest_path()
+        man = _read_json(mp, {})
+        entry = (man.get("items") or {}).get(str(item_id or ""))
+        if not isinstance(entry, dict):
+            return {"ok": False, "error": "Unknown item."}
+        entry["approved"] = bool(approved)
+        tmp = mp + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(man, f, indent=1)
+        os.replace(tmp, mp)
+        return {"ok": True, "approved": bool(approved)}
+
+    # ---- readiness check (Step 4) ----------------------------------------
+
+    def readiness_check(self):
+        """Run every readiness probe and return a readable checklist.
+        Required failures block Start Macro (launch() enforces the same
+        conditions) but never block the app itself."""
+        plat = lite_trust.platform_key()
+        items = []
+
+        def add(iid, title, status, detail, fix=""):
+            items.append({"id": iid, "title": title, "status": status,
+                          "detail": detail, "fix": fix})
+
+        saved = load_saved()
+        caps = lite_trust.capability_statuses(saved)
+        for cid, title in (("screen_detection", "Screen detection"),
+                           ("input_control", "Keyboard & mouse control"),
+                           ("stop_hotkeys", "Safe Stop hotkeys")):
+            st = caps.get(cid, {}).get("status")
+            if plat == "mac":
+                if st == "granted":
+                    add(cid, title, "pass", "Permission granted.")
+                elif st == "not_granted":
+                    add(cid, title, "fail",
+                        "macOS has not granted this permission.",
+                        fix="trust")
+                else:
+                    add(cid, title, "warn",
+                        "Could not read the permission state.",
+                        fix="trust")
+            else:
+                add(cid, title, "info",
+                    "No OS permission needed; use the Trust tab tests to "
+                    "prove it works.", fix="trust")
+        # Roblox window (informational -- Roblox may simply not be open)
+        s = _sensing()
+        found = None
+        if s is not None:
+            try:
+                found = bool(s.detect_window())
+            except Exception:
+                found = None
+        if found is True:
+            add("roblox", "Roblox window", "pass", "Roblox window found.")
+        else:
+            add("roblox", "Roblox window", "info",
+                "Roblox is not open right now -- open it before starting "
+                "a run.")
+        # Required calibration
+        reg = self.calibration_registry()
+        if reg["ready"]:
+            detail = ("Required items are user-calibrated."
+                      if not reg["auto_calibrate"] else
+                      "Auto-calibration covers the required items; manual "
+                      "calibration makes them exact.")
+            add("calibration", "Required calibration", "pass", detail,
+                fix="calibration")
+        else:
+            add("calibration", "Required calibration", "fail",
+                "Required items need attention: %s"
+                % ", ".join(reg["blockers"]), fix="calibration")
+        # Data directory write probe
+        try:
+            probe = os.path.join(DATA_DIR, ".write_probe")
+            with open(probe, "w") as f:
+                f.write("ok")
+            os.remove(probe)
+            add("datadir", "Data folder", "pass",
+                "Writable: %s" % DATA_DIR)
+        except OSError as e:
+            add("datadir", "Data folder", "fail",
+                "Cannot write to %s (%s)" % (DATA_DIR, e))
+        # Settings save + reload probe (non-destructive round-trip)
+        try:
+            cur = load_saved()
+            marker = int(time.time())
+            cur["_READINESS_PROBE"] = marker
+            tmp = CONFIG_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(cur, f, indent=2)
+            os.replace(tmp, CONFIG_FILE)
+            back = load_saved().get("_READINESS_PROBE")
+            cur = load_saved()
+            cur.pop("_READINESS_PROBE", None)
+            with open(tmp, "w") as f:
+                json.dump(cur, f, indent=2)
+            os.replace(tmp, CONFIG_FILE)
+            if back == marker:
+                add("settings", "Settings save & reload", "pass",
+                    "Round-trip verified.")
+            else:
+                add("settings", "Settings save & reload", "fail",
+                    "The saved value did not read back.")
+        except Exception as e:
+            add("settings", "Settings save & reload", "fail", str(e))
+        # Build identity
+        ident = lite_trust.build_identity(version=VERSION,
+                                          project_url=PROJECT_URL)
+        if ident["commit"] != "unknown":
+            add("identity", "Build identity", "pass",
+                "v%s @ %s%s" % (ident["version"], ident["commit_short"],
+                                " (modified source)" if ident["dirty"]
+                                else ""))
+        else:
+            add("identity", "Build identity", "warn",
+                "No build stamp found (source run outside git?).")
+        # Network defaults
+        url = str(saved.get("WEBHOOK_URL") or "").strip()
+        if not url and not saved.get("WEBHOOK_ENABLED"):
+            add("network", "Network defaults", "pass",
+                "No network features enabled. Normal use is fully "
+                "offline.")
+        else:
+            add("network", "Network defaults", "info",
+                "Discord notifications are configured (your own webhook). "
+                "Everything else is offline.")
+        add("platform", "Platform", "info",
+            "%s / %s%s" % (ident["os"], ident["arch"],
+                           "" if FROZEN else " (running from source)"))
+        result = {"items": items,
+                  "ok": not any(i["status"] == "fail" for i in items),
+                  "when": int(time.time())}
+        try:
+            ob = _onboarding()
+            ob.record_readiness({"ok": result["ok"],
+                                 "when": result["when"],
+                                 "fails": [i["id"] for i in items
+                                           if i["status"] == "fail"]})
+        except Exception:
+            pass
+        return result
+
+    def quit_app(self):
+        """User-clicked Exit from the wizard. Same teardown as closing the
+        window (inputs released, engine stopped)."""
+        def _later():
+            time.sleep(0.2)
+            try:
+                _quit_everything(self)
+            except Exception:
+                pass
+            os._exit(0)
+        threading.Thread(target=_later, daemon=True).start()
+        return {"ok": True}
+
+    # ---- local data management (Trust Center) ----------------------------
+
+    _DATA_FILES = (
+        ("prospecting_config.json", "Settings + calibration (the config)"),
+        ("prospecting_builds.json", "Saved builds"),
+        ("prospecting_scripts.json", "Studio scripts library"),
+        ("run_history.json", "Run history"),
+        ("tutorial_content.json", "Tutorial/help overrides"),
+        ("prospecting_secrets.json",
+         "Local secrets (Coach API key) -- never exported"),
+        ("onboarding_state.json", "Setup wizard progress"),
+        ("studio_macro_status.json", "Studio live-status mirror"),
+        ("studio_push.json", "Studio publish handshake"),
+        ("instance_id", "Engine instance identity (random local id)"),
+        (".migrated_from_prospectors_plus", "One-time migration marker"),
+    )
+
+    def data_manifest(self):
+        """What actually lives in the data folder, with sizes -- the Trust
+        Center's Local Data table. Only known Prospector Lite files are
+        listed or ever touched by the delete actions."""
+        out = []
+        for name, why in self._DATA_FILES:
+            p = os.path.join(DATA_DIR, name)
+            if os.path.exists(p):
+                try:
+                    size = os.path.getsize(p)
+                except OSError:
+                    size = 0
+                out.append({"name": name, "purpose": why, "bytes": size})
+        logdir = os.path.join(DATA_DIR, "run_logs")
+        if os.path.isdir(logdir):
+            try:
+                n = len(os.listdir(logdir))
+                size = sum(os.path.getsize(os.path.join(logdir, f))
+                           for f in os.listdir(logdir))
+            except OSError:
+                n, size = 0, 0
+            out.append({"name": "run_logs/",
+                        "purpose": "Full logs of past runs (%d files)" % n,
+                        "bytes": size})
+        return {"dir": DATA_DIR, "files": out}
+
+    def open_data_folder(self):
+        try:
+            if sys.platform == "darwin":
+                subprocess.run(["open", DATA_DIR], check=False, timeout=10)
+            elif os.name == "nt":
+                os.startfile(DATA_DIR)  # noqa: attribute exists on Windows
+            else:
+                subprocess.run(["xdg-open", DATA_DIR], check=False,
+                               timeout=10)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def delete_local_data(self, kind):
+        """Scoped deletion, known files only, never a recursive wipe of an
+        arbitrary path. kinds: history | logs | wizard | secrets | all.
+        The UI double-confirms 'all'."""
+        global _ONBOARD
+        kind = str(kind or "")
+        removed = []
+
+        def rm(rel):
+            p = os.path.join(DATA_DIR, rel)
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+                    removed.append(rel)
+            except OSError:
+                pass
+
+        def rm_logs():
+            d = os.path.join(DATA_DIR, "run_logs")
+            if os.path.isdir(d):
+                for f in os.listdir(d):
+                    try:
+                        os.remove(os.path.join(d, f))
+                        removed.append("run_logs/" + f)
+                    except OSError:
+                        pass
+
+        if kind == "history":
+            rm("run_history.json")
+            rm_logs()
+        elif kind == "logs":
+            rm_logs()
+        elif kind == "wizard":
+            # Reset IN PLACE (a fresh NOT_STARTED file) rather than deleting:
+            # a deleted file would let the legacy WELCOME_SEEN bridge re-mark
+            # the wizard finished, so it would never reopen.
+            try:
+                _onboarding().reset()
+                removed.append("onboarding_state.json (reset)")
+            except Exception:
+                pass
+        elif kind == "secrets":
+            rm("prospecting_secrets.json")
+        elif kind == "all":
+            for name, _why in self._DATA_FILES:
+                rm(name)
+            rm_logs()
+            for extra in ("prospecting_config.json.bak",
+                          "prospecting_scripts.json.bak"):
+                rm(extra)
+            _ONBOARD = None
+        else:
+            return {"ok": False, "error": "unknown kind"}
+        return {"ok": True, "removed": len(removed)}
+
+    def export_diagnostics(self):
+        """Save a diagnostics summary (readiness + identity + statuses).
+        Contains NO secrets: no webhook URL, no API key, no config dump."""
+        try:
+            ident = lite_trust.build_identity(version=VERSION,
+                                              project_url=PROJECT_URL)
+            payload = {
+                "app": APP_NAME, "identity": ident,
+                "capabilities": lite_trust.capability_statuses(
+                    load_saved()),
+                "readiness": self.readiness_check(),
+                "calibration": {
+                    k: v["live"]["status"] if isinstance(v, dict) else v
+                    for k, v in
+                    ((i["id"], i) for i in
+                     self.calibration_registry()["items"])},
+                "data_dir": DATA_DIR,
+            }
+            try:
+                import webview
+            except Exception:
+                webview = None
+            if _window is not None and webview is not None:
+                res = _window.create_file_dialog(
+                    webview.SAVE_DIALOG,
+                    save_filename="prospector-lite-diagnostics.json",
+                    file_types=("JSON file (*.json)", "All files (*.*)"))
+                if not res:
+                    return {"cancelled": True}
+                path = res if isinstance(res, str) else res[0]
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, indent=1)
+                return {"ok": True, "path": str(path)}
+            return {"ok": False, "error": "unavailable"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def save_pixels(self, pixels, colors=None, fr=None):
         """Save calibrated pixel coordinates. [Phase 04 C8] The semantic
@@ -2823,8 +3499,11 @@ class Api:
         body = json.dumps(payload).encode()
         req = urllib.request.Request(url, data=body, method="POST", headers=headers)
 
-        def _do(ctxssl=None):
-            with urllib.request.urlopen(req, timeout=40, context=ctxssl) as r:
+        def _do():
+            # Verified TLS only -- an unreachable or badly-certified endpoint
+            # is an error, never a reason to weaken certificate checks.
+            with urllib.request.urlopen(req, timeout=40,
+                                        context=_tls_context()) as r:
                 return json.loads(r.read().decode("utf-8", "replace"))
         try:
             data = _do()
@@ -2844,14 +3523,10 @@ class Api:
                 hint = ", rate/credit limit hit on your account."
             return {"reply": "%s API error %d%s %s" % (provname, e.code, hint, detail),
                     "changes": [], "topic": "api", "askStats": False, "chips": []}
-        except Exception:
-            try:
-                import ssl as _ssl
-                data = _do(_ssl._create_unverified_context())
-            except Exception as e2:
-                return {"reply": "Couldn't reach the %s API (%s). You can switch back to "
-                                 "the offline brain in Coach settings (⚙)." % (provname, e2),
-                        "changes": [], "topic": "api", "askStats": False, "chips": []}
+        except Exception as e2:
+            return {"reply": "Couldn't reach the %s API (%s). You can switch back to "
+                             "the offline brain in Coach settings (⚙)." % (provname, e2),
+                    "changes": [], "topic": "api", "askStats": False, "chips": []}
         if anthropic:
             txt = "".join(b.get("text", "") for b in data.get("content", [])
                           if isinstance(b, dict) and b.get("type") == "text")
@@ -4185,6 +4860,21 @@ class Api:
             self.save_relics(relics, enabled)
         if self.proc is not None:
             return "already running"
+        # Trust gate: a macro that cannot see the screen, press keys or hear
+        # its Safe Stop hotkey is unsafe to start. Only a DEFINITIVE
+        # not-granted state blocks (an unreadable state never does), and only
+        # Start is blocked -- the rest of the app stays fully usable.
+        if lite_trust.platform_key() == "mac":
+            try:
+                _caps = lite_trust.capability_statuses()
+                _missing = [cid for cid in ("screen_detection",
+                                            "input_control", "stop_hotkeys")
+                            if _caps.get(cid, {}).get("status")
+                            == "not_granted"]
+            except Exception:
+                _missing = []
+            if _missing:
+                return "perm:" + ",".join(_missing)
         if STUDIO_LAUNCH:
             # Top-level CLASSIC | STUDIO BUILD | STUDIO SCRIPT invariant:
             # each Studio mode must have an active entry of its own kind,
@@ -5877,6 +6567,17 @@ def build_html():
         '<div id="scgrid" class="stgrid"></div></section>')
 
     nav("keys", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 9.5h.01M9.5 9.5h.01M13 9.5h.01M16.5 9.5h.01M6.5 13.5h11"/></svg>', "Keybinds")
+
+    # Trust Center: permissions, data, network, build identity, source.
+    # Rendered by JS from the same lite_trust registry the setup wizard uses.
+    nav("trust", '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 8.4-7 10-4-1.6-7-5.6-7-10V6z"/><path d="M9.2 12.2l2 2 3.6-4"/></svg>', "Trust Center")
+    panels.append(
+        '<section class="panel" id="ptrust"><div class="phead"><h2>Trust Center</h2>'
+        '<p class="chint">Every permission, every byte stored, every network '
+        'path &mdash; with live status, real tests and the exact source '
+        'behind each capability. Nothing here is marketing: each claim is '
+        'backed by a check you can run.</p></div>'
+        '<div id="tcbody"><p class="chint">Loading&hellip;</p></div></section>')
     _kbrows = [("HOTKEY_TOGGLE", "Start / Stop"), ("HOTKEY_PAUSE", "Pause / Resume (keeps session)"),
                ("HOTKEY_RELIC_RESET", "Reset relic timers to full"),
                ("HOTKEY_SOFTSTOP", "Soft-stop (test)"),
@@ -6146,7 +6847,7 @@ def build_html():
         '</div>'
         '</section>')
     nav_html = {n["id"]: n["html"] for n in navs}
-    PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "studio", "keys", "settings"]
+    PINNED = ["run", "cycle", "builds", "cal", "relics", "hist", "studio", "keys", "trust", "settings"]
     GROUPS = [
         ("Modes", ["Treasure chest", "Shards", "Geodes"]),
         ("Tracking", ["Earnings", "Tracker"]),
@@ -7146,6 +7847,77 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  .wel-links a{color:var(--accent);font-size:12.5px;text-decoration:none}
  .wel-links a:hover{text-decoration:underline}
  .gc-ver{color:var(--dim);font-size:11.5px;font-weight:600;margin-left:6px}
+ /* ---- setup wizard (first-run steps 2-4) + Trust Center ---- */
+ #setup{position:fixed;inset:0;z-index:980;display:none;background:var(--bg);flex-direction:column}
+ #setup.show{display:flex;animation:fadeIn .3s var(--ease)}
+ .sup-head{display:flex;align-items:center;gap:18px;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--bg2);flex-wrap:wrap}
+ .sup-brand{display:inline-flex;align-items:center;gap:9px;font-weight:800;font-size:15px}
+ .sup-rail{display:flex;gap:4px;list-style:none;margin:0;padding:0;flex-wrap:wrap}
+ .sup-rail li{display:flex;align-items:center;gap:7px;padding:6px 11px;border-radius:9px;color:var(--dim);font-size:12.5px;font-weight:700}
+ .sup-rail li .n{width:20px;height:20px;border-radius:50%;border:1.5px solid var(--line2);display:inline-flex;align-items:center;justify-content:center;font-size:11px}
+ .sup-rail li.cur{color:var(--accent-lit);background:var(--sand-dim)}
+ .sup-rail li.cur .n{border-color:var(--accent);color:var(--accent-lit)}
+ .sup-rail li.done{color:var(--mut)}
+ .sup-rail li.done .n{border-color:#7faf5d;color:#7faf5d}
+ .sup-body{flex:1;overflow-y:auto;padding:24px;max-width:1060px;width:100%;margin:0 auto;box-sizing:border-box}
+ .sup-foot{display:flex;gap:12px;align-items:center;padding:13px 22px;border-top:1px solid var(--line);background:var(--bg2)}
+ .sup-note{color:var(--mut);font-size:12.5px}
+ .sup-h1{font-size:21px;font-weight:800;margin:0 0 6px}
+ .sup-sub{color:var(--mut);font-size:13.5px;line-height:1.55;margin:0 0 18px;max-width:76ch}
+ .plat-tabs{display:flex;gap:4px;margin:0 0 16px;padding:3px;background:var(--bg2);border:1px solid var(--line2);border-radius:11px;width:max-content}
+ .plat-tabs button{background:transparent;border:0;border-radius:8px;color:var(--mut);padding:7px 16px;font:inherit;font-weight:700;cursor:pointer}
+ .plat-tabs button[aria-selected="true"]{background:var(--sand-dim);color:var(--accent-lit);box-shadow:inset 0 0 0 1px var(--accent)}
+ .plat-badge{display:inline-block;margin-left:10px;padding:3px 9px;border-radius:99px;background:var(--sand-dim);color:var(--accent-lit);font-size:11px;font-weight:800;letter-spacing:.4px}
+ .cap-card{border:1px solid var(--line2);border-radius:13px;background:var(--panel);padding:15px 17px;margin:0 0 13px}
+ .cap-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+ .cap-title{font-weight:800;font-size:14.5px}
+ .cap-badge{padding:2.5px 9px;border-radius:99px;font-size:10.5px;font-weight:800;letter-spacing:.4px;border:1px solid var(--line2);color:var(--mut)}
+ .cap-badge.req{background:rgba(194,146,76,.14);border-color:rgba(194,146,76,.4);color:var(--accent-lit)}
+ .cap-badge.opt{background:rgba(90,140,190,.12);border-color:rgba(90,140,190,.35);color:#9ec4e8}
+ .cap-st{margin-left:auto;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:800}
+ .cap-st .dot{width:9px;height:9px;border-radius:50%;background:var(--dim)}
+ .cap-st.ok{color:#8fce7d}.cap-st.ok .dot{background:#7faf5d}
+ .cap-st.no{color:#f0a6a6}.cap-st.no .dot{background:#e07a6a}
+ .cap-st.mid{color:#e8cf8f}.cap-st.mid .dot{background:#d9a441}
+ .cap-st.off{color:var(--mut)}.cap-st.off .dot{background:var(--line2)}
+ .cap-desc{color:var(--mut);font-size:13px;line-height:1.55;margin:8px 0 10px;max-width:82ch}
+ .cap-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px 16px;margin:0 0 11px}
+ .cap-facts div{font-size:12px;color:var(--mut);line-height:1.5}
+ .cap-facts b{display:block;color:var(--txt);font-size:11px;letter-spacing:.4px;text-transform:uppercase;margin-bottom:2px}
+ .cap-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+ .cap-actions .btn2{font-size:12px}
+ .cap-more{margin-top:9px}
+ .cap-more summary{cursor:pointer;color:var(--accent);font-size:12.5px;font-weight:700}
+ .cap-more[open] summary{margin-bottom:7px}
+ .cap-test{margin-top:10px;border:1px dashed var(--line2);border-radius:10px;padding:10px 12px;font-size:12.5px;color:var(--mut);display:none}
+ .cap-test.show{display:block}
+ .cap-test img{max-width:240px;border-radius:7px;border:1px solid var(--line2);display:block;margin:8px 0}
+ .cap-test input{background:var(--field);border:1px solid var(--line2);border-radius:8px;color:var(--txt);padding:8px 10px;font:inherit;width:220px}
+ .sup-group{margin:22px 0 10px;color:var(--dim);font-size:11.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase}
+ .cal-keys{font-family:ui-monospace,Menlo,monospace;font-size:11px;color:var(--dim)}
+ .cal-eg{margin:8px 0;padding:9px 11px;border:1px dashed var(--line2);border-radius:9px;font-size:12px;color:var(--dim)}
+ .cal-eg img{max-width:320px;display:block;border-radius:7px;border:1px solid var(--line2);margin-top:6px}
+ .rdy-item{display:flex;gap:11px;align-items:flex-start;border:1px solid var(--line2);border-radius:11px;background:var(--panel);padding:11px 14px;margin:0 0 9px}
+ .rdy-item .mark{font-weight:900;font-size:12px;min-width:44px;text-align:center;padding:3px 7px;border-radius:8px}
+ .rdy-item.pass .mark{color:#8fce7d;background:rgba(127,175,93,.12)}
+ .rdy-item.fail .mark{color:#f0a6a6;background:rgba(224,122,106,.12)}
+ .rdy-item.warn .mark{color:#e8cf8f;background:rgba(217,164,65,.12)}
+ .rdy-item.info .mark{color:var(--mut);background:var(--bg2)}
+ .rdy-item .t{font-weight:800;font-size:13px}
+ .rdy-item .d{color:var(--mut);font-size:12.5px;line-height:1.5}
+ .rdy-item .btn2{margin-left:auto;flex-shrink:0}
+ #supReturn{position:fixed;right:18px;bottom:18px;z-index:985;display:none;background:var(--accent);color:#241a02;font-weight:800;border:0;border-radius:99px;padding:11px 18px;cursor:pointer;box-shadow:0 8px 22px rgba(0,0,0,.4)}
+ #supReturn.show{display:block}
+ .tc-sec{border:1px solid var(--line2);border-radius:13px;background:var(--panel);padding:15px 17px;margin:0 0 14px}
+ .tc-sec h3{margin:0 0 8px;font-size:14px}
+ .tc-kv{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;font-size:12.5px}
+ .tc-kv b{color:var(--mut);font-weight:600}
+ .tc-kv span{font-family:ui-monospace,Menlo,monospace;word-break:break-all}
+ .tc-files{width:100%;border-collapse:collapse;font-size:12.5px}
+ .tc-files td{padding:5px 8px;border-top:1px solid var(--line);color:var(--mut)}
+ .tc-files td:first-child{font-family:ui-monospace,Menlo,monospace;color:var(--txt)}
+ .tc-danger{border-color:rgba(224,122,106,.4)}
+ pre.tc-pre{background:var(--bg2);border:1px solid var(--line2);border-radius:9px;padding:10px;font-size:11px;overflow-x:auto;max-height:260px;color:var(--mut);white-space:pre-wrap;word-break:break-all}
 </style></head><body>
  <div id="splash">
    <div class="sp-logo"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospector <b>Lite</b></div>
@@ -7159,18 +7931,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      <div class="gl-top"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospector Lite</div>
      <div class="gl-quote">
        <p>&ldquo;Set it up once and let it dig. Prospector Lite runs the whole panning loop while you&rsquo;re away.&rdquo;</p>
-       <footer>free &amp; open source</footer>
+       <footer>free &middot; source available for inspection</footer>
      </div>
    </div>
    <div class="gate-right">
      <div class="gate-card" role="dialog" aria-labelledby="welTitle">
        <div class="gc-logo"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospector Lite <span class="gc-ver" id="welVer"></span></div>
        <h1 id="welTitle">Welcome</h1>
-       <div class="gc-sub">An open-source macro for Roblox <i>Prospecting</i>. It reads your screen and presses ordinary keys and clicks &mdash; nothing more.</div>
+       <div class="gc-sub">A free macro for Roblox <i>Prospecting</i>, with its source available for inspection. It reads your screen and presses ordinary keys and clicks &mdash; nothing more.</div>
        <ul class="wel-list">
          <li><b>External only.</b> It never injects into Roblox, never modifies the game or its files, and never reads game memory.</li>
          <li><b>Private by design.</b> Everything stays on this computer: no account, no access code, no analytics, and no network requests unless you set up optional notifications yourself.</li>
-         <li><b>Permissions.</b> macOS asks for Screen Recording (to see the game) and Accessibility (to press keys). Windows needs no admin rights.</li>
+         <li><b>Permissions.</b> macOS asks for Screen Recording (to see the game), Accessibility (to press keys) and Input Monitoring (so the Safe&nbsp;Stop hotkey always works). The next step explains and tests each one before macOS shows any prompt. Windows needs no admin rights.</li>
          <li><b>Safe Stop.</b> Esc or Ctrl+K stops the macro instantly and releases every key and mouse button.</li>
        </ul>
        <button type="button" id="welGo" class="btn">Continue</button>
@@ -7185,6 +7957,27 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      </div>
    </div>
  </div>
+
+ <div id="setup" role="dialog" aria-modal="true" aria-labelledby="supTitle">
+   <div class="sup-head">
+     <span class="sup-brand"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> <span id="supTitle">Prospector Lite setup</span></span>
+     <ol class="sup-rail" id="supRail" aria-label="Setup steps">
+       <li data-step="welcome"><span class="n">1</span> Welcome</li>
+       <li data-step="trust"><span class="n">2</span> Trust &amp; Permissions</li>
+       <li data-step="cal"><span class="n">3</span> Guided Calibration</li>
+       <li data-step="ready"><span class="n">4</span> Readiness Check</li>
+       <li data-step="app"><span class="n">5</span> Prospector Lite</li>
+     </ol>
+   </div>
+   <div class="sup-body" id="supBody" tabindex="-1"></div>
+   <div class="sup-foot">
+     <button type="button" class="btn2" id="supBack">&larr; Back</button>
+     <div class="grow"></div>
+     <span class="sup-note" id="supNote" aria-live="polite"></span>
+     <button type="button" class="btn" id="supNext">Continue &rarr;</button>
+   </div>
+ </div>
+ <button type="button" id="supReturn" aria-label="Return to setup">&larr; Return to setup</button>
 
  <div class="topbar">
    <div class="brand"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospector <b>Lite</b></div>
@@ -7338,7 +8131,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    var TOUR_LABEL={main:'Tour',calibrate:'Calibration',cycle:'Cycle tuning',recovery:'Recovery',modes:'Modes',tracking:'Tracking',builds:'Builds',relics:'Relics',alerts:'Alerts and limits',studio:'Studio'};
    var TOUR_LIST=[['main','The full tour'],['calibrate','Calibration'],['cycle','Cycle tuning'],['recovery','Recovery and safety nets'],['modes','Modes: Treasure, Shards, Geodes'],['tracking','Tracking'],['builds','Builds'],['relics','Relics'],['alerts','Notifications and auto-stop'],['studio','Studio: build your own mode']];
    var TAB_TOURS={cal:'calibrate',cycle:'cycle',builds:'builds',relics:'relics','Earnings':'tracking','Tracker':'tracking','Notifications':'alerts','Auto-stop':'alerts','Treasure chest':'modes','Shards':'modes','Geodes':'modes',studio:'studio'};
-   var PINNED_TABS={run:1,cycle:1,builds:1,cal:1,relics:1,hist:1,studio:1,keys:1};
+   var PINNED_TABS={run:1,cycle:1,builds:1,cal:1,relics:1,hist:1,studio:1,keys:1,trust:1};
    var TOURS={},HELPMAP={},OWNER=false,LOADED=false,builtExplain=false;
    var TOUR=[],ti=0,curName='main',running=false;
    try{document.body.appendChild(T('tour'));}catch(e){}
@@ -7446,7 +8239,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      menuEl.innerHTML='<div class="tmhd">Tutorials</div>'+TOUR_LIST.map(function(t){
        return '<button type="button" data-tour="'+t[0]+'">'+t[1]+(seen(t[0])?' <span class="tmdone">seen</span>':'')+'</button>';}).join('')
        +'<div class="tmhd" style="margin-top:4px">App</div>'
-       +'<button type="button" id="tmwelcome">Welcome, privacy &amp; version</button>';
+       +'<button type="button" id="tmwelcome">Welcome, privacy &amp; version</button>'
+       +'<button type="button" id="tmtrust">Trust Center</button>'
+       +'<button type="button" id="tmsetup">Re-run setup wizard</button>';
      document.body.appendChild(menuEl);
      menuEl.style.top=(r.bottom+8)+'px';
      menuEl.style.right=Math.max(10,window.innerWidth-r.right)+'px';
@@ -7454,6 +8249,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        b.onclick=function(){window.startTour(b.getAttribute('data-tour'));};});
      var wb=menuEl.querySelector('#tmwelcome');
      if(wb)wb.onclick=function(){if(window.openWelcome)window.openWelcome();};
+     var tcb=menuEl.querySelector('#tmtrust');
+     if(tcb)tcb.onclick=function(){closeMenu();var t=document.querySelector('.tab[data-tab="trust"]');if(t)t.click();};
+     var sb=menuEl.querySelector('#tmsetup');
+     if(sb)sb.onclick=function(){closeMenu();if(window.__setupRerun)__setupRerun();};
      document.addEventListener('mousedown',menuAway,true);}
    var tb=T('tourbtn');if(tb)tb.onclick=openMenu;
    function buildExplain(){if(builtExplain)return;builtExplain=true;
@@ -8144,11 +8943,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  // tabs
  $$('.tab').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));
    $$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');
-   const id=b.dataset.tab; const pid=(id==='run'||id==='cycle'||id==='builds'||id==='cal'||id==='relics'||id==='hist'||id==='studio'||id==='keys')?('p'+id):('p_'+id);
+   const id=b.dataset.tab; const pid=(id==='run'||id==='cycle'||id==='builds'||id==='cal'||id==='relics'||id==='hist'||id==='studio'||id==='keys'||id==='trust')?('p'+id):('p_'+id);
    document.getElementById(pid).classList.add('active');
    const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
    if(id==='hist')loadHistory();
-   if(id==='builds')loadBuildsPage();});
+   if(id==='builds')loadBuildsPage();
+   if(id==='trust'&&window.__tcRender)__tcRender();});
  document.querySelectorAll('.grouphdr').forEach(h=>h.onclick=()=>h.closest('.navgroup').classList.toggle('collapsed'));
  (function(){const ns=document.getElementById('navsearch');if(!ns)return;
    ns.addEventListener('input',()=>{const q=ns.value.trim().toLowerCase();
@@ -8398,6 +9198,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    if(r==='classic-with-active-build'){toast('A Studio entry is still active — switch to its Studio mode, or Reset Studio in Settings.');return;}
    if(r==='mode-kind-mismatch'){toast('The active entry does not match the selected mode — re-pick it on its own tab.');
      if(window.modeRefresh)modeRefresh();return;}
+   if(typeof r==='string'&&r.indexOf('perm:')===0){
+     toast('Start is disabled until macOS grants: '+r.slice(5).replace(/_/g,' ')+' — opening the Trust Center.');
+     const tb=document.querySelector('.tab[data-tab="trust"]');if(tb)tb.click();return;}
    if(r!=='launched'&&r!=='already running'){toast(r||'Could not start.');return;}
    setRunning(true);toast('Launched, Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
@@ -9072,19 +9875,328 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  }catch(e){}}
  function _startApp(){if(document.body.dataset.welinit==='1')return;document.body.dataset.welinit='1';
    init();if(window.maybeStartTour)setTimeout(window.maybeStartTour,900);}
+ let _setupNeeded=false;
  async function boot(){let w={show:false};try{w=await _api().welcome_state();}catch(e){}
    await new Promise(r=>setTimeout(r,650));splashHide();
-   _welInfo=(w&&w.info)||{};welcomeFill(_welInfo);
-   if(w&&w.show){welcomeShow();}else{_startApp();}}
+   _welInfo=(w&&w.info)||{};welcomeFill(_welInfo);_setupNeeded=!!(w&&w.setup_needed);
+   if(w&&w.show){welcomeShow();}
+   else if(_setupNeeded&&window.SETUP){SETUP.resume((w&&w.resume)||'');}
+   else{_startApp();}}
  (function(){const b=document.getElementById('welGo');if(!b)return;
    b.addEventListener('click',async()=>{const ag=document.getElementById('welAgain');
      try{await _api().welcome_done(!!(ag&&ag.checked));}catch(e){}
-     welcomeHide();_startApp();});
+     welcomeHide();
+     if(_setupNeeded&&window.SETUP){SETUP.open('trust');}else{_startApp();}});
    const sc=document.getElementById('welSrc');if(sc)sc.onclick=e=>{e.preventDefault();try{_api().open_external((_welInfo&&_welInfo.project_url)||'');}catch(_){}};
    const pv=document.getElementById('welPriv');if(pv)pv.onclick=e=>{e.preventDefault();try{_api().open_doc('PRIVACY.md');}catch(_){}};
    const se=document.getElementById('welSec');if(se)se.onclick=e=>{e.preventDefault();try{_api().open_doc('SECURITY.md');}catch(_){}};
    document.addEventListener('keydown',e=>{if(e.key==='Escape'){const g=document.getElementById('gate');
      if(g&&g.classList.contains('show')&&document.body.dataset.welinit==='1')welcomeHide();}});})();
+
+ // ---- setup wizard (steps 2-4) + Trust Center ------------------------------
+ // Registry-driven: everything rendered here comes from Api.trust_state /
+ // calibration_registry / readiness_check, which in turn read lite_trust.py
+ // and lite_onboarding.py. No status is invented in the UI layer.
+ (function(){
+   const E=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+   const $id=id=>document.getElementById(id);
+   let ST=null, PAGE='trust', PLAT='mac', DET='mac', CAL=null;
+   const PAGES=['trust','cal','ready'];
+   function railSet(){const done={welcome:1};PAGES.forEach((p,i)=>{if(PAGES.indexOf(PAGE)>i)done[p]=1;});
+     document.querySelectorAll('#supRail li').forEach(li=>{const s=li.dataset.step;
+       li.classList.toggle('cur',s===PAGE);li.classList.toggle('done',!!done[s]&&s!==PAGE);
+       if(s===PAGE)li.setAttribute('aria-current','step');else li.removeAttribute('aria-current');});}
+   function stDot(st){ // status -> colour class + label (text carries meaning, never colour alone)
+     const m={granted:['ok','Granted'],available:['ok','Available'],configured:['mid','Configured'],
+       not_granted:['no','Not granted'],disabled:['off','Off (default)'],not_requested:['off','Never requested'],
+       info:['off','No permission'],unknown:['mid','Unknown']};
+     return m[st]||['mid',st||'?'];}
+   function reqBadge(l){if(l==='REQUIRED_FOR_CORE')return '<span class="cap-badge req">Required</span>';
+     if(l==='REQUIRED_FOR_SPECIFIC_FEATURE')return '<span class="cap-badge req">Required for a feature</span>';
+     if(l==='OPTIONAL')return '<span class="cap-badge opt">Optional</span>';
+     if(l==='NOT_REQUIRED')return '<span class="cap-badge">Never requested</span>';
+     return '<span class="cap-badge">Info</span>';}
+   function capCard(c,compact){
+     const live=c.live||{},[cls,lab]=stDot(live.status);
+     const osl=(c.operating_system_label||{})[PLAT]||'';
+     const real=(PLAT===DET); // action buttons only on the platform we are actually on
+     let acts='';
+     if(c.id==='screen_detection'||c.id==='input_control'||c.id==='stop_hotkeys'){
+       if(real&&DET==='mac'&&live.status!=='granted')
+         acts+='<button type="button" class="btn2" data-act="request" data-cap="'+c.id+'">Request access&hellip;</button>';
+       if(real&&DET==='mac')
+         acts+='<button type="button" class="btn2" data-act="settings" data-cap="'+c.id+'">Open System Settings</button>';
+       if(real)acts+='<button type="button" class="btn2" data-act="test" data-cap="'+c.id+'">Test '+E(c.title.split(' ')[0].toLowerCase()==='safe'?'Safe Stop':c.title)+'</button>';
+     }
+     if(c.id==='discord_notifications'&&real){
+       acts+='<button type="button" class="btn2" data-act="preview" data-cap="'+c.id+'">Preview exact payload</button>';
+       acts+='<button type="button" class="btn2" data-act="notifpage" data-cap="'+c.id+'">Configure (Notifications page)</button>';}
+     acts+='<button type="button" class="btn2" data-act="code" data-cap="'+c.id+'">View code</button>';
+     let facts='<div class="cap-facts">'
+       +'<div><b>Data it can access</b>'+E(c.data_accessed)+'</div>'
+       +'<div><b>Kept on disk</b>'+E(c.data_retained)+'</div>'
+       +'<div><b>Leaves this computer</b>'+E(c.network_behaviour)+'</div>'
+       +(osl?('<div><b>'+(PLAT==='mac'?'macOS label':'Windows')+'</b>'+E(osl)+'</div>'):'')+'</div>';
+     let more='<details class="cap-more"><summary>Why this is needed, what happens if you decline, how to revoke</summary>'
+       +'<div class="cap-desc">'+E(c.detailed_explanation)+'</div>'
+       +'<div class="cap-desc"><b>If you decline:</b> '+E(c.declined_behaviour)+'</div>'
+       +'<div class="cap-desc"><b>To revoke:</b> '+E((c.revoke_instructions||{})[PLAT]||'')+'</div>'
+       +(c.privacy_notes?('<div class="cap-desc"><b>Privacy note:</b> '+E(c.privacy_notes)+'</div>'):'')
+       +'</details>';
+     return '<div class="cap-card" data-capid="'+c.id+'"><div class="cap-head">'
+       +'<span class="cap-title">'+E(c.title)+'</span>'+reqBadge(c.required_level)
+       +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></div>'
+       +'<div class="cap-desc">'+E(c.short_description)+' '+E(live.detail||'')+'</div>'
+       +(compact?'':facts)
+       +'<div class="cap-actions">'+acts+'</div>'
+       +'<div class="cap-test" id="captest_'+c.id+'" aria-live="polite"></div>'
+       +(compact?'':more)+'</div>';}
+   function wireCards(box){
+     box.querySelectorAll('button[data-act]').forEach(b=>{b.onclick=async()=>{
+       const cap=b.dataset.cap, act=b.dataset.act, out=$id('captest_'+cap);
+       const show=h=>{if(out){out.classList.add('show');out.innerHTML=h;}};
+       if(act==='request'){show('Asking macOS&hellip; if a prompt appears it is the system asking, with this app named.');
+         let r={};try{r=await _api().trust_request(cap);}catch(e){r={ok:false,error:String(e)};}
+         if(r.granted){show('Granted. Use Test to prove it works.');}
+         else{show(E(r.note||r.error||'macOS listed the app in System Settings; flip the switch there, then Test. A restart of the app may be needed.'));}
+         refresh(false);return;}
+       if(act==='settings'){try{await _api().trust_open_settings(cap);}catch(e){}
+         show('System Settings should now be open at the right pane. Flip the switch for Prospector Lite, come back, and Test. If the pane did not open: System Settings &rarr; Privacy &amp; Security &rarr; '+E(((ST&&ST.capabilities.find(x=>x.id===cap)||{}).permission_category||{}).mac||'')+'.');return;}
+       if(act==='test'){
+         if(cap==='screen_detection'){show('Capturing a small centre patch&hellip;');
+           let r={};try{r=await _api().trust_test_screen();}catch(e){r={error:String(e)};}
+           if(r.ok){show((r.nonblank?'&#10003; Capture works &mdash; ':'&#9888; ')+E(r.note||'')+' ('+r.width+'&times;'+r.height+' px, shown once, not saved)'+(r.preview?('<img src="'+r.preview+'" alt="one-shot capture preview">'):''));}
+           else{show('&#10007; '+E(r.error||'failed')+' &mdash; '+E(r.note||''));}
+           refresh(false);return;}
+         if(cap==='input_control'){
+           show('Click into the box below, then press Start test. The app will type one harmless letter into its own box and wiggle the pointer 2&nbsp;px &mdash; nothing is sent to Roblox or any other app.'
+             +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><input id="sandkey_'+cap+'" placeholder="test lands here" aria-label="Input test target"> <button type="button" class="btn2" id="sandgo_'+cap+'">Start test</button></div><div id="sandout_'+cap+'" style="margin-top:7px"></div>');
+           const go=$id('sandgo_'+cap);if(go)go.onclick=async()=>{
+             const f=$id('sandkey_'+cap), o=$id('sandout_'+cap);let down=false,up=false;
+             if(f){f.value='';f.focus();}
+             const h1=e=>{if((e.key||'').toLowerCase()==='t'){down=true;}};
+             const h2=e=>{if((e.key||'').toLowerCase()==='t'){up=true;}};
+             window.addEventListener('keydown',h1,true);window.addEventListener('keyup',h2,true);
+             let pr={};try{pr=await _api().trust_test_pointer();}catch(e){}
+             try{await _api().trust_test_key();}catch(e){}
+             setTimeout(()=>{window.removeEventListener('keydown',h1,true);window.removeEventListener('keyup',h2,true);
+               const kb=down&&up?'&#10003; keystroke arrived AND released cleanly':(down?'&#9888; key-down seen but no key-up':'&#10007; no keystroke arrived (grant Accessibility, then retry)');
+               const mo=pr&&pr.ok?(pr.moved?'&#10003; pointer moved and was restored':'&#10007; pointer did not move'):'&#9888; pointer test unavailable';
+               if(o)o.innerHTML=kb+'<br>'+mo;refresh(false);},2400);};
+           return;}
+         if(cap==='stop_hotkeys'){show('Armed for 8 seconds &mdash; press <b>Esc</b> or <b>Ctrl+K</b> now (click into Roblox or anywhere first if you like: it must work globally).');
+           window.__hotkeyResult=r=>{const o=$id('captest_'+cap);if(!o)return;
+             o.innerHTML=r&&r.heard?('&#10003; Heard <b>'+E(r.heard)+'</b> &mdash; Safe Stop works.'):('&#10007; '+E((r&&r.note)||'Nothing heard.'));refresh(false);};
+           try{await _api().trust_test_hotkey(8);}catch(e){}return;}
+         return;}
+       if(act==='preview'){show('Building the exact payload from the same engine code that sends it&hellip;');
+         let r={};try{r=await _api().webhook_payload_preview();}catch(e){r={error:String(e)};}
+         if(r.ok){show('This is EVERYTHING a notification sends (example stats). Screenshot attach is a separate opt-in, currently '+(r.screenshot_optin?'ON':'OFF')+'.<pre class="tc-pre">'+E(JSON.stringify({headers:r.headers,body:r.payload},null,1))+'</pre>');}
+         else{show('&#10007; '+E(r.error||'failed'));}return;}
+       if(act==='notifpage'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="Notifications"],.tab[data-tab="notifications"]');
+         const nt=t||document.querySelector('.tab[data-tab="settings"]');if(nt)nt.click();
+         const real=document.querySelector('#p_Notifications')?document.querySelector('.tab[data-tab="Notifications"]'):null;if(real)real.click();return;}
+       if(act==='code'){let r={};try{r=await _api().trust_view_code(cap,0);}catch(e){r={error:String(e)};}
+         if(r.opened){show('Opened the exact-commit source in your browser.');}
+         else if(r.local){show('No public repository URL is configured in this build, so here is the exact local reference (never a moving branch):<pre class="tc-pre">'+E(r.local)+'</pre>');}
+         else{show('&#10007; '+E(r.error||'failed'));}return;}
+     };});}
+   function platTabs(){return '<div class="plat-tabs" role="tablist" aria-label="Platform">'
+     +'<button role="tab" id="plat_mac" aria-selected="'+(PLAT==='mac')+'">macOS'+(DET==='mac'?' (this computer)':'')+'</button>'
+     +'<button role="tab" id="plat_win" aria-selected="'+(PLAT==='win')+'">Windows'+(DET==='win'?' (this computer)':'')+'</button></div>';}
+   function wirePlat(box,rerender){['mac','win'].forEach(p=>{const b=$id('plat_'+p);if(b)b.onclick=()=>{PLAT=p;rerender();};
+     const t=box.querySelector('.plat-tabs');if(t)t.onkeydown=e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){PLAT=(PLAT==='mac'?'win':'mac');rerender();const nb=$id('plat_'+PLAT);if(nb)nb.focus();}};});}
+   function renderTrust(){PAGE='trust';railSet();const b=$id('supBody');if(!ST){b.innerHTML='<p class="sup-sub">Loading&hellip;</p>';return;}
+     const caps=ST.capabilities.filter(c=>(c.platforms||[]).indexOf(PLAT)>=0);
+     const req=caps.filter(c=>c.required_level.indexOf('REQUIRED')===0);
+     const opt=caps.filter(c=>c.required_level==='OPTIONAL');
+     const none=caps.filter(c=>c.required_level==='NOT_REQUIRED'||c.required_level==='INFORMATIONAL_ONLY');
+     b.innerHTML='<h2 class="sup-h1">Trust &amp; Permissions<span class="plat-badge">'+(DET==='mac'?'macOS detected':(DET==='win'?'Windows detected':DET))+'</span></h2>'
+       +'<p class="sup-sub">Before the operating system shows a single prompt, here is every capability this app has: what it is for, what it can touch, and how to test and revoke it. Nothing is requested until you click a button below. '+(ST.dev_note?E(ST.dev_note):'')+'</p>'
+       +platTabs()
+       +'<div class="sup-group">Required for the macro</div>'+req.map(c=>capCard(c,false)).join('')
+       +'<div class="sup-group">Optional &mdash; off by default</div>'+opt.map(c=>capCard(c,false)).join('')
+       +'<div class="sup-group">Never requested (so you can see we know)</div>'+none.map(c=>capCard(c,true)).join('');
+     wirePlat(b,renderTrust);wireCards(b);
+     $id('supBack').textContent='← Welcome';$id('supNext').textContent='Continue to Calibration →';
+     $id('supNote').textContent=(DET==='mac')?'You can continue any time - Start Macro stays disabled until the required permissions work.':'Windows has no permission prompts here - run the tests to prove everything works.';
+     b.focus();}
+   function calStatus(st){const m={ok:['ok','Calibrated'],auto:['mid','Auto'],'default':['mid','Default'],stale:['no','Stale'],unset:['off','Not set'],off:['off','Off']};return m[st]||['mid',st||'?'];}
+   async function renderCal(){PAGE='cal';railSet();const b=$id('supBody');
+     b.innerHTML='<p class="sup-sub">Loading calibration&hellip;</p>';
+     try{CAL=await _api().calibration_registry();}catch(e){CAL=null;}
+     if(!CAL){b.innerHTML='<p class="sup-sub">Calibration engine unavailable.</p>';return;}
+     const req=CAL.items.filter(i=>i.required), opt=CAL.items.filter(i=>!i.required);
+     const card=i=>{const live=i.live||{},[cls,lab]=calStatus(live.status);
+       let acts='';
+       if(i.action==='detect')acts+='<button type="button" class="btn2" data-cal="detect" data-item="'+i.id+'">Detect Roblox window</button>';
+       if(i.action==='wizard')acts+='<button type="button" class="btn2" data-cal="wizard" data-item="'+i.id+'">Calibrate (guided)</button>';
+       if(i.action==='pixel')acts+='<button type="button" class="btn2" data-cal="pixel" data-item="'+i.id+'" data-key="'+E((i.keys||[])[0]||'')+'">Calibrate this pixel</button>';
+       if(i.action==='region')acts+='<button type="button" class="btn2" data-cal="region" data-item="'+i.id+'" data-key="'+E(((i.keys||[])[0]||'').replace('_TL_PIXEL',''))+'">Draw the box</button>';
+       if(i.action==='tab')acts+='<button type="button" class="btn2" data-cal="tab" data-item="'+i.id+'">Open the Calibrate tab</button>';
+       acts+='<button type="button" class="btn2" data-cal="test" data-item="'+i.id+'">Test</button>';
+       acts+='<button type="button" class="btn2" data-cal="code" data-item="'+i.id+'">View code</button>';
+       return '<div class="cap-card" data-calid="'+i.id+'"><div class="cap-head"><span class="cap-title">'+E(i.title)+'</span>'
+         +(i.required?'<span class="cap-badge req">Required</span>':'<span class="cap-badge opt">Optional'+(i.condition?(' &middot; '+E(i.condition)):'')+'</span>')
+         +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></div>'
+         +'<div class="cap-desc">'+E(i.purpose)+' '+E(live.detail||'')+'</div>'
+         +'<div class="cal-eg" id="caleg_'+i.id+'">'+E(i.instructions)+(i.keys&&i.keys.length?(' <span class="cal-keys">('+i.keys.join(', ')+')</span>'):'')+'</div>'
+         +(i.skip_consequence?('<div class="cap-desc"><b>If you skip it:</b> '+E(i.skip_consequence)+'</div>'):'')
+         +'<div class="cap-actions">'+acts+'</div>'
+         +'<div class="cap-test" id="caltest_'+i.id+'" aria-live="polite"></div></div>';};
+     b.innerHTML='<h2 class="sup-h1">Guided Calibration</h2>'
+       +'<p class="sup-sub">The macro is driven by a handful of screen positions. Auto-calibration places the required ones from a built-in profile so it runs out of the box; calibrating by hand makes them exact for YOUR window. This wizard drives the same calibration engine and the same save file as the Calibrate tab &mdash; there is exactly one set of values.</p>'
+       +'<div class="sup-group">Required</div>'+req.map(card).join('')
+       +'<div class="sup-group">Optional &mdash; only for the features you turn on</div>'+opt.map(card).join('');
+     b.querySelectorAll('button[data-cal]').forEach(btn=>{btn.onclick=async()=>{
+       const item=btn.dataset.item, act=btn.dataset.cal, out=$id('caltest_'+item);
+       const show=h=>{if(out){out.classList.add('show');out.innerHTML=h;}};
+       if(act==='detect'){show('Looking for the Roblox window&hellip;');
+         let r={};try{r=await _api().detect_roblox();}catch(e){}
+         show(r&&r.found?('&#10003; Found at '+E(JSON.stringify(r.rect||''))):'&#10007; Not found &mdash; open Roblox on your primary display, then retry.');
+         renderCalSoon();return;}
+       if(act==='wizard'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="cal"]');if(t)t.click();
+         const w=$id('wizbtn');if(w)w.click();return;}
+       if(act==='pixel'){show('The full-screen picker opens on top &mdash; click the exact pixel, then Confirm.');
+         try{await _api().start_overlay_calibrate(btn.dataset.key);}catch(e){show('&#10007; '+E(String(e)));}return;}
+       if(act==='region'){show('The full-screen picker opens on top &mdash; drag a box, then Confirm.');
+         try{await _api().start_overlay_region(btn.dataset.key);}catch(e){show('&#10007; '+E(String(e)));}return;}
+       if(act==='tab'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="cal"]');if(t)t.click();return;}
+       if(act==='test'){show('Sampling the saved points live&hellip;');
+         let r={};try{r=await _api().sample_pixels();}catch(e){r={error:String(e)};}
+         if(r&&!r.error){show('<pre class="tc-pre">'+E(JSON.stringify(r,null,1))+'</pre>');}
+         else{show('&#10007; '+E((r&&r.error)||'failed'));}return;}
+       if(act==='code'){const it=(CAL.items||[]).find(x=>x.id===item)||{};const ref=(it.refs||[])[0];
+         show(ref?('Implemented in <b>'+E(ref.module.replace(/\./g,'/'))+'.py</b> &mdash; '+E(ref.symbol)+' ('+E(ref.why)+'). Exact line-anchored links live in the Trust Center.'):'No reference.');return;}
+     };});
+     CAL.items.forEach(async i=>{let ex=null;try{ex=await _api().calibration_example(i.id);}catch(e){}
+       const eg=$id('caleg_'+i.id);if(!eg||!ex)return;
+       let h='<b>'+E(i.instructions)+'</b>'+(i.keys&&i.keys.length?(' <span class="cal-keys">('+i.keys.join(', ')+')</span>'):'');
+       if(ex.img){h+='<div style="position:relative;display:inline-block;margin-top:6px"><img src="'+ex.img+'" alt="'+E(ex.alt)+'">'
+         +'<svg style="position:absolute;inset:0;width:100%;height:100%" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">'
+         +(ex.annotations||[]).map(a=>{if(a.type==='rect')return '<rect x="'+(a.x*100)+'" y="'+(a.y*100)+'" width="'+((a.w||0)*100)+'" height="'+((a.h||0)*100)+'" fill="none" stroke="#ff5b5b" stroke-width="0.6" vector-effect="non-scaling-stroke"/>';
+           if(a.type==='point')return '<circle cx="'+(a.x*100)+'" cy="'+(a.y*100)+'" r="1.4" fill="none" stroke="#ff5b5b" stroke-width="0.6"/>';
+           return '';}).join('')+'</svg></div>'
+         +(ex.annotations||[]).filter(a=>a.label).map(a=>'<div style="margin-top:4px">&#9656; '+E(a.label)+'</div>').join('');}
+       else{h+='<div style="margin-top:6px">Example screenshot: '+(ex.pending_review?'captured, awaiting owner review.':'not yet available in this build.')+' It will show: <i>'+E(ex.alt||i.instructions)+'</i></div>';}
+       if(CAL.owner){h+='<div class="cap-actions" style="margin-top:7px"><button type="button" class="btn2" data-owncap="'+i.id+'">Owner: capture example</button>'
+         +(ex.pending_review?('<button type="button" class="btn2" data-ownok="'+i.id+'">Owner: approve</button>'):'')
+         +(ex.img?('<button type="button" class="btn2" data-ownrev="'+i.id+'">Owner: revoke approval</button>'):'')+'</div>';}
+       eg.innerHTML=h;
+       eg.querySelectorAll('button[data-owncap]').forEach(ob=>{ob.onclick=async()=>{try{const r=await _api().owner_example_capture(ob.dataset.owncap);toast(r&&r.ok?('Captured: '+r.note):((r&&r.error)||'failed'));renderCalSoon();}catch(e){}};});
+       eg.querySelectorAll('button[data-ownok]').forEach(ob=>{ob.onclick=async()=>{try{await _api().owner_example_approve(ob.dataset.ownok,true);toast('Approved');renderCalSoon();}catch(e){}};});
+       eg.querySelectorAll('button[data-ownrev]').forEach(ob=>{ob.onclick=async()=>{try{await _api().owner_example_approve(ob.dataset.ownrev,false);toast('Approval revoked');renderCalSoon();}catch(e){}};});});
+     $id('supBack').textContent='← Trust & Permissions';$id('supNext').textContent='Continue to Readiness →';
+     $id('supNote').textContent=CAL.ready?'Required calibration is covered - you can continue.':'Required items need attention: '+CAL.blockers.join(', ');
+     b.focus();}
+   let _calTimer=null;function renderCalSoon(){if(PAGE!=='cal')return;clearTimeout(_calTimer);_calTimer=setTimeout(()=>{if(PAGE==='cal')renderCal();},600);}
+   const _prevCalRefresh=window.__calRefresh;
+   window.__calRefresh=function(){if(_prevCalRefresh)try{_prevCalRefresh();}catch(e){}renderCalSoon();};
+   async function renderReady(){PAGE='ready';railSet();const b=$id('supBody');
+     b.innerHTML='<p class="sup-sub">Running the readiness checks&hellip;</p>';
+     let rc=null;try{rc=await _api().readiness_check();}catch(e){}
+     if(!rc){b.innerHTML='<p class="sup-sub">Readiness check unavailable.</p>';return;}
+     const row=i=>{const m={pass:'PASS',fail:'FAIL',warn:'WARN',info:'INFO'};
+       const fix=i.fix?('<button type="button" class="btn2" data-fix="'+E(i.fix)+'">Fix now</button>'):'';
+       return '<div class="rdy-item '+E(i.status)+'"><span class="mark">'+(m[i.status]||'?')+'</span>'
+         +'<div><div class="t">'+E(i.title)+'</div><div class="d">'+E(i.detail)+'</div></div>'+fix+'</div>';};
+     b.innerHTML='<h2 class="sup-h1">Readiness Check</h2>'
+       +'<p class="sup-sub">'+(rc.ok?'Everything required passed. You are ready to prospect.':'Some required items need attention. You can still enter the app &mdash; only Start Macro stays disabled until they pass, and the Run tab will say exactly why.')+'</p>'
+       +rc.items.map(row).join('')
+       +'<div class="cap-actions" style="margin-top:14px">'
+       +'<button type="button" class="btn2" id="rdyRetest">Retest</button>'
+       +'<button type="button" class="btn2" id="rdyDiag">Export diagnostic summary</button>'
+       +'<button type="button" class="btn2" id="rdyFolder">Open data folder</button>'
+       +'<button type="button" class="btn2" id="rdyQuit">Exit app</button></div>';
+     b.querySelectorAll('button[data-fix]').forEach(f=>{f.onclick=()=>{if(f.dataset.fix==='trust')renderTrust();else if(f.dataset.fix==='calibration')renderCal();};});
+     const rt=$id('rdyRetest');if(rt)rt.onclick=renderReady;
+     const dg=$id('rdyDiag');if(dg)dg.onclick=async()=>{try{const r=await _api().export_diagnostics();if(r&&r.ok)toast('Saved '+r.path);}catch(e){}};
+     const fo=$id('rdyFolder');if(fo)fo.onclick=()=>{try{_api().open_data_folder();}catch(e){}};
+     const qb=$id('rdyQuit');if(qb)qb.onclick=()=>{mconfirm('Quit Prospector Lite? Setup progress is saved and resumes next launch.',()=>{try{_api().quit_app();}catch(e){}});};
+     $id('supBack').textContent='← Calibration';$id('supNext').textContent=rc.ok?'Finish setup →':'Enter the app anyway →';
+     $id('supNote').textContent='';b.focus();}
+   async function refresh(render){try{ST=await _api().trust_state();DET=ST.platform||'mac';if(render!==false&&PAGE==='trust')renderTrust();}catch(e){}}
+   window.SETUP={
+     open:async function(page){await refresh(false);PLAT=DET==='win'?'win':'mac';
+       const s=$id('setup');if(s)s.classList.add('show');$id('supReturn').classList.remove('show');
+       try{_api().onboarding_mark('TRUST_STARTED');}catch(e){}
+       if(page==='cal')renderCal();else if(page==='ready')renderReady();else renderTrust();},
+     resume:function(state){const map={NOT_STARTED:'trust',WELCOME_COMPLETE:'trust',TRUST_STARTED:'trust',TRUST_COMPLETE:'cal',CALIBRATION_STARTED:'cal',CALIBRATION_COMPLETE:'ready',READINESS_COMPLETE:'ready'};
+       this.open(map[state]||'trust');},
+     suspend:function(){const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.add('show');
+       if(document.body.dataset.welinit!=='1')_startApp();},
+     calRefresh:renderCalSoon};
+   $id('supReturn').onclick=()=>{$id('supReturn').classList.remove('show');const s=$id('setup');if(s)s.classList.add('show');
+     if(PAGE==='cal')renderCal();else if(PAGE==='ready')renderReady();else renderTrust();};
+   $id('supBack').onclick=()=>{if(PAGE==='trust'){const s=$id('setup');if(s)s.classList.remove('show');welcomeShow();}
+     else if(PAGE==='cal')renderTrust();else renderCal();};
+   $id('supNext').onclick=async()=>{
+     if(PAGE==='trust'){try{await _api().onboarding_mark('TRUST_COMPLETE');}catch(e){}renderCal();}
+     else if(PAGE==='cal'){try{await _api().onboarding_mark('CALIBRATION_STARTED');await _api().onboarding_mark('CALIBRATION_COMPLETE');}catch(e){}renderReady();}
+     else{try{await _api().onboarding_mark('READINESS_COMPLETE');await _api().onboarding_mark('FINISHED');}catch(e){}
+       const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.remove('show');_startApp();}};
+   window.__setupRerun=async function(){try{await _api().onboarding_rerun();}catch(e){}SETUP.open('trust');};
+   // window focus refreshes permission statuses (granting in System Settings
+   // and coming back updates the cards without any polling loop)
+   window.addEventListener('focus',()=>{const s=$id('setup');
+     if((s&&s.classList.contains('show')&&PAGE==='trust')||document.querySelector('#ptrust.active'))refresh(true);
+     if(document.querySelector('#ptrust.active')&&window.__tcRender)__tcRender();});
+   // ---- Trust Center tab ----
+   window.__tcRender=async function(){const box=$id('tcbody');if(!box)return;
+     box.innerHTML='<p class="chint">Loading&hellip;</p>';
+     let st=null,man=null,dm=null;try{st=await _api().trust_state();}catch(e){}
+     try{man=await _api().trust_manifest();}catch(e){}
+     try{dm=await _api().data_manifest();}catch(e){}
+     if(!st){box.innerHTML='<p class="chint">Trust state unavailable.</p>';return;}
+     ST=st;DET=st.platform||'mac';PLAT=DET==='win'?'win':'mac';
+     const id=st.identity||{};
+     const kv=o=>'<div class="tc-kv">'+Object.keys(o).map(k=>'<b>'+E(k)+'</b><span>'+E(o[k])+'</span>').join('')+'</div>';
+     let h='';
+     h+='<div class="tc-sec"><h3>Permissions &amp; capability tests</h3><div class="cap-desc">Live status from the operating system; every Test runs the real capability.</div><div id="tccaps">'
+       +st.capabilities.filter(c=>(c.platforms||[]).indexOf(PLAT)>=0).map(c=>capCard(c,false)).join('')+'</div></div>';
+     h+='<div class="tc-sec"><h3>Build identity</h3>'+kv({
+       'Version':id.version||'','Commit':(id.commit||'')+(id.dirty?' (built from modified source)':''),
+       'Built':id.date||'(source run)','Platform':(id.os||'')+' / '+(id.arch||''),
+       'Package':id.package||'','Signed':id.signed?'yes':'no (unsigned build)',
+       'Notarized':id.notarized?'yes':'no','Licence':id.licence_status||''})+'</div>';
+     h+='<div class="tc-sec"><h3>Source code</h3><div class="cap-desc">'
+       +(id.project_url?('Repository: <a href="#" id="tcrepo">'+E(id.project_url)+'</a> &mdash; every View Code button opens the file at commit '+E(id.commit_short||'')+', never a moving branch.')
+       :('No public repository URL is configured in this build, so View Code buttons show the exact local file + symbol + commit instead. The trust manifest below is generated from the exact source of this build.'))
+       +'</div>'+(man&&man.capabilities?('<details class="cap-more"><summary>Trust manifest ('+man.capabilities.length+' capabilities, commit '+E((man.generated_from||'').slice(0,12))+')</summary><pre class="tc-pre">'+E(JSON.stringify(man,null,1))+'</pre></details>'):'')+'</div>';
+     h+='<div class="tc-sec"><h3>Network behaviour</h3><div class="cap-desc">Normal startup and macro use make ZERO network requests. The only outbound paths are the two optional, off-by-default features above (your own Discord webhook, your own Coach AI key) and links you click. TLS certificate verification can never be disabled. There is no update check, no analytics, no telemetry.</div></div>';
+     h+='<div class="tc-sec"><h3>Roblox safety boundary</h3><div class="cap-desc">Prospector Lite never injects into Roblox, never reads or writes another process’s memory, never modifies game files and never intercepts network traffic. It sees pixels and presses ordinary keys — the same boundary a human at the keyboard has. Verify: the source scans in public_release_tests.py fail the build if any process-memory API appears.</div></div>';
+     if(dm){h+='<div class="tc-sec"><h3>Local data</h3><div class="cap-desc">Everything lives in <span class="cal-keys">'+E(dm.dir)+'</span> — nothing is written into the app bundle.</div>'
+       +'<table class="tc-files">'+dm.files.map(f=>'<tr><td>'+E(f.name)+'</td><td>'+E(f.purpose)+'</td><td>'+(f.bytes>1048576?((f.bytes/1048576).toFixed(1)+' MB'):((f.bytes/1024).toFixed(1)+' KB'))+'</td></tr>').join('')+'</table>'
+       +'<div class="cap-actions" style="margin-top:10px">'
+       +'<button type="button" class="btn2" id="tcOpen">Open data folder</button>'
+       +'<button type="button" class="btn2" id="tcExpCal">Export calibration</button>'
+       +'<button type="button" class="btn2" id="tcDiag">Export diagnostics</button>'
+       +'<button type="button" class="btn2" id="tcDelHist">Delete history</button>'
+       +'<button type="button" class="btn2" id="tcDelLogs">Delete logs</button>'
+       +'<button type="button" class="btn2 tc-danger" id="tcDelAll">Delete ALL local data&hellip;</button>'
+       +'</div></div>';}
+     h+='<div class="tc-sec"><h3>Setup wizard</h3><div class="cap-desc">Re-run the full first-run wizard (trust, calibration, readiness) any time. Re-running deletes nothing.</div>'
+       +'<div class="cap-actions"><button type="button" class="btn2" id="tcRerun">Re-run setup wizard</button>'
+       +'<button type="button" class="btn2" id="tcResetOb">Reset wizard progress only</button></div></div>';
+     h+='<div class="tc-sec"><h3>Security reporting</h3><div class="cap-desc">Found a vulnerability? SECURITY.md explains how to report it privately.</div>'
+       +'<div class="cap-actions"><button type="button" class="btn2" id="tcSec">Open SECURITY.md</button>'
+       +'<button type="button" class="btn2" id="tcPriv">Open PRIVACY.md</button>'
+       +'<button type="button" class="btn2" id="tcPerm">Open PERMISSIONS.md</button></div></div>';
+     box.innerHTML=h;wireCards(box);
+     const w=(i,f)=>{const el=$id(i);if(el)el.onclick=f;};
+     w('tcOpen',()=>{try{_api().open_data_folder();}catch(e){}});
+     w('tcExpCal',async()=>{try{const r=await _api().export_calibration();if(r&&r.ok)toast('Saved '+r.path);}catch(e){}});
+     w('tcDiag',async()=>{try{const r=await _api().export_diagnostics();if(r&&r.ok)toast('Saved '+r.path);}catch(e){}});
+     w('tcDelHist',()=>{mconfirm('Delete run history and all run logs?',async()=>{try{await _api().delete_local_data('history');toast('History deleted');__tcRender();}catch(e){}});});
+     w('tcDelLogs',()=>{mconfirm('Delete all run logs?',async()=>{try{await _api().delete_local_data('logs');toast('Logs deleted');__tcRender();}catch(e){}});});
+     w('tcDelAll',()=>{mconfirm('Delete ALL Prospector Lite data on this computer - settings, calibration, builds, scripts, history, secrets? This cannot be undone.',()=>{mconfirm('Really delete everything? The app returns to a fresh first run.',async()=>{try{await _api().delete_local_data('all');toast('All local data deleted');__tcRender();}catch(e){}});});});
+     w('tcRerun',()=>{if(window.__setupRerun)__setupRerun();});
+     w('tcResetOb',()=>{mconfirm('Reset the setup wizard to a fresh first run? Builds, calibration and settings are NOT touched.',async()=>{try{await _api().onboarding_reset();toast('Wizard reset - it will open on next launch');}catch(e){}});});
+     w('tcSec',()=>{try{_api().open_doc('SECURITY.md');}catch(e){}});
+     w('tcPriv',()=>{try{_api().open_doc('PRIVACY.md');}catch(e){}});
+     w('tcPerm',()=>{try{_api().open_doc('PERMISSIONS.md');}catch(e){}});
+     const rp=$id('tcrepo');if(rp)rp.onclick=e=>{e.preventDefault();try{_api().open_external(id.project_url);}catch(_){}};};
+ })();
 
  // ---- Coach: offline tuning assistant ----
  (function(){
