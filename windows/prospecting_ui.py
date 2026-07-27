@@ -252,7 +252,9 @@ SECTION_HINT = {
     "Geodes": "For geode builds with a very slow fill animation. Taps the dig a "
               "set number of times, waits out the animation between each (so it "
               "won't false-nudge while the fill is still catching up), then runs "
-              "the normal walk-back + momentum shake -- not treasure's strafe.",
+              "the normal walk-back + momentum shake -- not treasure's strafe. "
+              "Turn on the green dig-bar confirm so a tap that MISSED nudges "
+              "straight away instead of costing that whole animation.",
     "Easy tuning": "Plain-language tweaks. Type how much MORE you want of each move "
                    "and the macro adjusts the underlying timings for you.",
     "Mode / Dig": "How each dig works and how many it takes to fill the pan.",
