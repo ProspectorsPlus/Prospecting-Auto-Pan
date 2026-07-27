@@ -4,13 +4,13 @@
 > [PROJECT_MEMORY.md](PROJECT_MEMORY.md). Status of each item is tracked in TASKS.md / PROGRESS.md.
 
 ## What it is
-Prospector Studio is a visual, no-code scripting system inside Prospectors Plus. Users compose
+Prospector Studio is a visual, no-code scripting system inside Prospector Lite. Users compose
 custom farming behaviours ("custom modes") from Prospecting-specific blocks in a dedicated Studio
 window, run them through the real engine with the real calibrated detection, and share them as
 single `.ppscript` files. The relationship to the macro mirrors "Roblox vs Roblox Studio".
 
 ## Who it is for
-The invited, mostly non-power users of Prospectors Plus, plus the owner. No coding knowledge is
+The mostly non-power users of Prospector Lite, plus the owner. No coding knowledge is
 assumed: visual blocks, plain-English parameter labels, tagged hover-help on everything, inline
 validation that names the fix, and a guided tour.
 
@@ -49,7 +49,7 @@ Both platform copies stay byte-identical for shared code and the full verificati
   `{id, type, params:{...}, children:[...]}` with stable string ids.
 - Storage: `prospecting_scripts.json` beside the config (respects `_data_dir()` when frozen),
   read/written only through Api methods, two-phase writes.
-- Share: `.ppscript` = `{_ppscript:1, app:"Prospectors Plus", script:{...}}` via native dialogs,
+- Share: `.ppscript` = `{_ppscript:1, app:"Prospector Lite", script:{...}}` via native dialogs,
   auto-rename on clash, mirroring the `.ppbuild` flow.
 - Strict Python-side schema validation on load, import, save, and before run: unknown types,
   missing/extra params, out-of-range values, nesting depth > 16, > 500 blocks, non-finite numbers

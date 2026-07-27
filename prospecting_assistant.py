@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Prospectors Plus -- local tuning assistant ("Coach").
+Prospector Lite -- local tuning assistant ("Coach").
 
 A fully offline expert system. No API, no network, no key. It encodes the
 macro's domain knowledge: every tunable knob, the symptoms users report, the
@@ -1014,7 +1014,7 @@ def system_prompt(ctx):
     builds = ctx.get("builds") or {}
     hist = ctx.get("history") or []
     lines = [
-        "You are Coach, a tuning assistant built into the Prospectors Plus macro "
+        "You are Coach, a tuning assistant built into the Prospector Lite macro "
         "(a Roblox auto-pan tool). You help the user fix problems and improve "
         "efficiency by adjusting SETTINGS only. You cannot change code, and you must "
         "never propose calibration pixels or the Discord username.",

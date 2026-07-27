@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Prospectors Plus engine launcher.
+"""Prospector Lite engine launcher.
 
 [Phase 04 C6] The engine implementation moved to prospector_engine/engine.py
-(the one shared runtime for Prospectors Plus / Prospector Lite and Prospector
+(the one shared runtime for Prospector Lite and Prospector
 Studio). This launcher keeps every historical entrypoint working unchanged:
 
     python3 prospecting_old.py [calibrate|calibrate-text|log|monitor]

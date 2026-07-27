@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verification protocol for the Prospectors Plus tutorial work.
+"""Verification protocol for the Prospector Lite tutorial work.
 Run from the repo root. Checks (per tutorial_handoff/02_TOUR_SYSTEM.md §7):
   1. py_compile all 8 active python files
   2. node --check every <script> from all six HTML surfaces (both copies)

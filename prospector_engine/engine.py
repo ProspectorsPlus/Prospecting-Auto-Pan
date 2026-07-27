@@ -29,12 +29,12 @@ SETUP
           System Settings > Privacy & Security > Accessibility
           System Settings > Privacy & Security > Screen Recording
     3.  Calibrate (prints PIXEL + RGB + GREEN/WHITE/YELLOW tags under cursor):
-          python3 prospecting_macro.py calibrate
+          python3 prospecting_old.py calibrate
         - Hover the GREEN end of the dig bar      -> DIG_TRIGGER_PIXEL
         - Hover the RIGHT END of the capacity bar -> CAP_FULL_PIXEL
           (the spot that is gray when not full and YELLOW when full)
     4.  Run:
-          python3 prospecting_macro.py
+          python3 prospecting_old.py
         Tab into Roblox, press F8 to start, F8 to pause, Esc to quit.
 
 SETUP (WINDOWS)
@@ -3041,7 +3041,7 @@ def _webhook_send(url, payload, img_b64=None):
             payload["screenshot_format"] = "png"
         data = json.dumps(payload).encode("utf-8")
         headers = {"Content-Type": "application/json",
-                   "User-Agent": "ProspectorsPlus/1.0"}
+                   "User-Agent": "ProspectorLite/1.0"}
         if WEBHOOK_SECRET:
             headers["x-macro-secret"] = WEBHOOK_SECRET
         req = urllib.request.Request(url, data=data, headers=headers)

@@ -1,4 +1,4 @@
-# Prospectors Plus — Calibration (share this with users)
+# Prospector Lite — Calibration (share this with users)
 
 Calibration tells the macro **where to look** on *your* screen. Do it once.
 You only need to redo it if you change your screen resolution or Roblox UI scale.
@@ -7,7 +7,7 @@ You only need to redo it if you change your screen resolution or Roblox UI scale
 
 1. Open **Prospecting** in Roblox so you can see the HUD (the capacity bar and the
    bottom prompts like *Pan* / *Shake* / *Collect Deposit*).
-2. In Prospectors Plus open the **Calibrate** tab → click **✨ Guided calibration**.
+2. In Prospector Lite open the **Calibrate** tab → click **✨ Guided calibration**.
 3. Follow the steps. For each one, do what it says in-game, then click **Detect**:
    - **Capacity bar** — dig until the bar is **completely full (all yellow)**, then Detect. It scans the screen and finds the bar's ends.
    - **"Pan" prompt** — stand in the **water** so the white *Pan* prompt shows, then Detect.

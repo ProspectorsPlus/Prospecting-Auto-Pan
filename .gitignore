@@ -2,39 +2,94 @@ __pycache__/
 *.pyc
 .DS_Store
 **/.DS_Store
-ACCESS_CODES_PRIVATE.txt
+
+# ---- user data (never commit) ------------------------------------------------
 run_history.json
 prospecting_builds.json
 prospecting_scripts.json
 windows/prospecting_scripts.json
 windows/run_history.json
 windows/prospecting_builds.json
+run_logs/
+coach_history.json
+tutorial_content.json
+tutorial_remote_cache.json
+instance_id
+studio_macro_status.json
+studio_open_request.json
+studio_push.json
+prospecting_calib_log.csv
+*.bak
 
 # secrets — personal API keys, never commit / never bundle
 prospecting_secrets.json
 windows/prospecting_secrets.json
 Fable5/fable_secrets.json
 
-# personal ACTIVE config (has your unlock state, calibration, webhook) — the
-# public build ships windows/prospecting_config.json (sanitized) instead.
-# Run once:  git rm --cached prospecting_config.json
-# (anchored to repo root — windows/prospecting_config.json is the sanitized
-#  PUBLIC default and must stay tracked)
+# personal ACTIVE config (calibration, webhook). The public build ships
+# windows/prospecting_config.json (sanitized) instead; that one stays tracked.
 /prospecting_config.json
 
-# personal chat transcript
-coach_history.json
-
-# stray/temp
-zi0waoYL
-
-# private analytics endpoint (host yourself)
-
-ANALYTICS_SETUP.md
-
-# local-only: old version extracted from tag v1.0.0 for A/B testing (regenerable)
-Prospectors_Old_v1.0.0/
-
-# macOS DMG build output
+# ---- build output ------------------------------------------------------------
 build/
 dist/
+release/
+Output/
+*.icns
+build_info.json
+node_modules/
+package.json
+package-lock.json
+
+# ---- private / pre-1.0 material kept locally, not part of the public tree ----
+ACCESS_CODES_PRIVATE.txt
+ACCESS_CODES_GUIDE.md
+ANALYTICS_SETUP.md
+tools/gen_codes.py
+gate_preview.html
+docs/codes.json
+docs/index.html
+docs/version.json
+docs/favicon.svg
+docs/.nojekyll
+Prospectors Plus Windows.zip
+Prospectors Plus.app/
+Prospectors_Plus_Knowledge_Base.md
+Prospectors_Old_v1.0.0/
+PROJECT_MEMORY.md
+PROGRESS.md
+TASKS.md
+IMPLEMENTATION_PLAN.md
+HANDOFF_FOR_FABLE.md
+PREVIEW_VISUALS_PLAN.md
+RELEASE_v*.md
+RELEASE_GUIDE.md
+RELEASE_NOTES_TEMPLATE.md
+ADVANCED_REBUILD_PROMPT.md
+CYCLE_SMOOTHNESS_FIX_PROMPT.md
+FINDS_DETECTION_REWORK_PROMPT.md
+FINDS_LESSONS.md
+DISSECTION_old_v1.0.0_vs_current.md
+Prospecting_Macro_Report.md
+BOT_SCREENSHOT.md
+FABLE5_RELEASE_CHECKLIST.md
+prospecting_macro.py
+prospecting_new.py
+prospecting_other.py
+prospecting_friend.py
+finds_current_code.py
+run_old.py
+run_old.command
+_run_macro.command
+Set icon.command
+Fable5/
+prospecting-calculator-new-main/
+prospectors-discord-bot/
+Prospector Studio Docs/
+Prospector Studio Docs.zip
+tutorial_handoff/
+.claude/
+_t2.js
+_t3.js
+_test_resolve.js
+zi0waoYL

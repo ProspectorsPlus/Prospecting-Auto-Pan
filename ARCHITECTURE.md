@@ -40,7 +40,7 @@ two-phase (tmp file + `os.replace`).
 
 ### .ppscript file
 ```json
-{"_ppscript": 1, "app": "Prospectors Plus", "script": {script}}
+{"_ppscript": 1, "app": "Prospector Lite", "script": {script}}
 ```
 Import: parse -> strict validation -> sanitize (drop unknown fields, clamp params, regenerate ids
 if broken) -> auto-rename on clash -> save. Never executed; only walked as data.
