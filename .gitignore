@@ -93,3 +93,6 @@ _t2.js
 _t3.js
 _test_resolve.js
 zi0waoYL
+
+# obsolete source-mode installer kept locally only
+windows/Install.bat

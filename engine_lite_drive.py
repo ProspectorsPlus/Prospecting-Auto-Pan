@@ -57,7 +57,6 @@ def drive_legacy(app):
     app.DATA_DIR = home
     app.CONFIG_FILE = os.path.join(home, "prospecting_config.json")
     api = app.Api()
-    api._report_usage = lambda: None
     r = api.launch()
     chk(r == "launched", "legacy: launch() -> launched")
     chk(api._ipc is False, "legacy: flag off resolves to legacy path")
@@ -115,7 +114,6 @@ def drive_ipc(app):
     app.DATA_DIR = home
     app.CONFIG_FILE = os.path.join(home, "prospecting_config.json")
     api = app.Api()
-    api._report_usage = lambda: None
     r = api.launch()
     chk(r == "launched", "ipc: launch() -> launched")
     chk(api._ipc is True, "ipc: flag on resolves to EngineClient path")

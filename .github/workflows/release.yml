@@ -1,0 +1,51 @@
+name: Release (draft, manual publish)
+
+# Tag-driven release pipeline. Pushing a tag like v1.0.0-rc.1:
+#   1. runs the full CI test matrix,
+#   2. builds both platform packages,
+#   3. attaches everything to a DRAFT GitHub release.
+# Nothing goes public until a maintainer reviews the draft and clicks
+# Publish. Configure a protected "release" environment for an extra
+# required-reviewer gate (see RELEASING.md).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    uses: ./.github/workflows/ci.yml
+  windows:
+    needs: tests
+    uses: ./.github/workflows/build-windows.yml
+  macos:
+    needs: tests
+    uses: ./.github/workflows/build-macos.yml
+
+  draft-release:
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge checksums
+        run: |
+          cat artifacts/*/SHA256SUMS-*.txt > artifacts/SHA256SUMS.txt
+          cat artifacts/SHA256SUMS.txt
+
+      - name: Create DRAFT release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            artifacts/prospector-lite-windows/*
+            artifacts/prospector-lite-macos/*
+            artifacts/SHA256SUMS.txt

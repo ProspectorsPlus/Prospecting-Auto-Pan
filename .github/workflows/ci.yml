@@ -1,0 +1,78 @@
+name: CI
+
+# Test-only workflow: never builds releases, never publishes, never sees
+# secrets. Runs the full local suite on both supported platforms.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:   # release.yml runs the same matrix before building
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            py: "3.12"
+          - os: windows-latest
+            py: "3.12"
+    runs-on: ${{ matrix.os }}
+    steps:
+      # NOTE: before enabling on a public repo, consider pinning these
+      # actions to full commit SHAs (see RELEASING.md).
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.py }}
+
+      - name: Install runtime deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            python -m pip install pywebview pyobjc mss numpy pillow pynput
+          else
+            python -m pip install pywebview pythonnet mss numpy pillow pynput
+          fi
+
+      - name: Compile checks
+        shell: bash
+        run: |
+          python -m py_compile prospecting_app.py prospecting_old.py \
+            prospecting_ui.py prospecting_assistant.py \
+            windows/prospecting_app.py windows/prospecting_old.py \
+            windows/prospecting_ui.py windows/prospecting_assistant.py \
+            prospector_engine/*.py
+
+      - name: Public-release gate (branding / privacy / access / network)
+        run: python public_release_tests.py
+
+      - name: UI + protocol checks
+        run: python tour_check.py
+
+      - name: Finds simulation
+        run: python finds_sim.py
+
+      - name: Studio suite
+        run: python studio_tests.py
+
+      - name: Legacy detector selftest
+        run: python prospecting_selftest.py
+
+      - name: Engine suites
+        shell: bash
+        run: |
+          for t in engine_contract_tests.py engine_parity_tests.py \
+                   engine_characterization.py studio_conformance.py \
+                   engine_plan_tests.py engine_trace_tests.py \
+                   engine_flow_tests.py engine_pacing_tests.py \
+                   engine_parallel_tests.py engine_lite_drive.py; do
+            echo "== $t"; python "$t"
+          done

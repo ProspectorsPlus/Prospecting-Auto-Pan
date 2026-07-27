@@ -1,94 +1,91 @@
 #!/bin/bash
 # ============================================================================
-# Prospectors Plus - macOS DMG builder.  Double-click this file (or run it in
-# Terminal) ON YOUR MAC to produce a drag-to-install DMG.  It bundles the app
-# source INSIDE the .app (Contents/Resources/app), so the installed app works
-# from /Applications with no source files lying around.
+# Prospector Lite — macOS package builder.
 #
-#   Output:  dist/ProspectorsPlus-<version>.dmg
+# Produces a SELF-CONTAINED "Prospector Lite.app" (PyInstaller bundles Python
+# and every library; users install nothing) and wraps it in a drag-to-install
+# DMG:   dist/ProspectorLite-<version>-macos-<arch>.dmg
 #
-# Requires: macOS (hdiutil, sips, iconutil - all built in).  No Xcode needed.
-# The end user just needs Python 3 installed; the app installs its Python libs
-# on first launch.
+# Usage:      ./build_dmg.command
+# CI usage:   PYTHON=python ./build_dmg.command   (uses that interpreter's
+#             site-packages instead of creating a local build venv)
+# Signing:    unsigned by default (ad-hoc signature only). Set CODESIGN_ID to
+#             a "Developer ID Application: ..." identity to really sign;
+#             notarization is a separate manual step (see RELEASING.md).
+#
+# No secrets, webhooks or personal configuration are ever bundled: the app
+# ships the tracked, sanitized windows/prospecting_config.json as its default
+# config (see prospector_lite_mac.spec).
 # ============================================================================
-set -e
+set -euo pipefail
 cd "$(dirname "$0")"
-ROOT="$(pwd)"
-VERSION="$(grep -m1 'VERSION *= *"' prospecting_app.py | sed -E 's/.*"([0-9.]+)".*/\1/')"
-APPNAME="Prospectors Plus"
-STAGE="build/dmg"
-APPDIR="$STAGE/$APPNAME.app"
 
-echo "==> Building $APPNAME $VERSION DMG"
-rm -rf build/dmg "dist/ProspectorsPlus-$VERSION.dmg"
-mkdir -p "$STAGE" dist
+APPNAME="Prospector Lite"
+VERSION="$(python3 -c "import re;print(re.search(r'VERSION\s*=\s*\"([^\"]+)\"',open('prospecting_app.py').read()).group(1))")"
+ARCH="$(uname -m)"
+DMG="dist/ProspectorLite-${VERSION}-macos-${ARCH}.dmg"
 
-# 1) copy the .app template, then bundle the live source into Resources/app
-cp -R "$APPNAME.app" "$APPDIR"
-mkdir -p "$APPDIR/Contents/Resources/app"
-# (prospecting_builds.json is deliberately NOT shipped — it's your personal
-#  builds file; Windows builds don't ship it either)
-for f in prospecting_app.py prospecting_old.py prospecting_ui.py \
-         prospecting_assistant.py prospecting_prices.json icon.png; do
-  [ -e "$f" ] && cp "$f" "$APPDIR/Contents/Resources/app/" || true
-done
-# [Phase 04 C6] the engine package (prospector_engine/) ships next to the
-# launcher shim; __pycache__ must not ride along
-cp -R prospector_engine "$APPDIR/Contents/Resources/app/prospector_engine"
-find "$APPDIR/Contents/Resources/app/prospector_engine" -name __pycache__ -type d -prune -exec rm -rf {} +
-# ship a CLEAN default config (never your personal one with unlock/webhook)
-python3 - "$APPDIR/Contents/Resources/app/prospecting_config.json" <<'PY'
-import json, sys
-# start from the sanitized public build config
-base = json.load(open("windows/prospecting_config.json"))
-json.dump(base, open(sys.argv[1], "w"), indent=2)
-PY
-# optional: inject your private analytics webhook from your local secrets file
-if [ -f prospecting_secrets.json ]; then
-  python3 - "$APPDIR/Contents/Resources/app/prospecting_config.json" <<'PY'
-import json, sys
-try:
-    sec = json.load(open("prospecting_secrets.json"))
-    p = sys.argv[1]; d = json.load(open(p)); changed = []
-    for k in ("SYNC_URL", "WEBHOOK_URL", "WEBHOOK_SECRET"):
-        v = str(sec.get(k, "") or "").strip()
-        if v:
-            d[k] = v; changed.append(k)
-    if changed:
-        json.dump(d, open(p, "w"), indent=2)
-        print("   (injected %s from prospecting_secrets.json)" % ", ".join(changed))
-except Exception:
-    pass
-PY
+echo "==> Building $APPNAME $VERSION ($ARCH)"
+rm -rf "build/$APPNAME" "build/dmgroot" "dist/$APPNAME" "dist/$APPNAME.app" "$DMG"
+mkdir -p build dist
+
+# 1) interpreter: an isolated build venv by default, or $PYTHON when set (CI)
+if [ -n "${PYTHON:-}" ]; then
+  PYB="$PYTHON"
+else
+  if [ ! -x build/venv/bin/python ]; then
+    echo "==> Creating build venv"
+    python3 -m venv build/venv
+  fi
+  build/venv/bin/pip -q install --upgrade pip
+  build/venv/bin/pip -q install pyinstaller pywebview pyobjc mss numpy pillow pynput
+  PYB=build/venv/bin/python
 fi
 
-# 2) icon: make Resources/icon.icns from icon.png if it's missing/stale
-if [ -f icon.png ]; then
-  TMPSET="build/icon.iconset"; rm -rf "$TMPSET"; mkdir -p "$TMPSET"
+# 2) build identity stamp (embedded, shown in the welcome/About surfaces)
+"$PYB" - <<'PY'
+import json, subprocess, datetime, os
+c = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
+                   text=True).stdout.strip()
+os.makedirs("build", exist_ok=True)
+json.dump({"commit": c, "date": datetime.date.today().isoformat()},
+          open("build/build_info.json", "w"))
+PY
+
+# 3) icon: icon.icns from icon.png
+if [ -f icon.png ] && [ ! -f build/icon.icns ]; then
+  rm -rf build/icon.iconset && mkdir -p build/icon.iconset
   for s in 16 32 64 128 256 512; do
-    sips -z $s $s icon.png --out "$TMPSET/icon_${s}x${s}.png" >/dev/null 2>&1 || true
-    d=$((s*2)); sips -z $d $d icon.png --out "$TMPSET/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
+    sips -z $s $s icon.png --out "build/icon.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true
+    d=$((s*2)); sips -z $d $d icon.png --out "build/icon.iconset/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
   done
-  iconutil -c icns "$TMPSET" -o "$APPDIR/Contents/Resources/icon.icns" 2>/dev/null || true
+  iconutil -c icns build/icon.iconset -o build/icon.icns 2>/dev/null || true
 fi
 
-chmod +x "$APPDIR/Contents/MacOS/launch"
+# 4) the self-contained .app
+"$PYB" -m PyInstaller --noconfirm prospector_lite_mac.spec
 
-# 3) ad-hoc code-sign so Gatekeeper is less aggressive (unsigned still needs a
-#    right-click > Open the first time; that's normal for indie apps).
-codesign --force --deep --sign - "$APPDIR" 2>/dev/null || \
-  echo "   (codesign skipped - app still runs via right-click > Open)"
+# 5) sign: real identity when provided, ad-hoc otherwise (arm64 requires a
+#    signature to run at all; ad-hoc still means right-click > Open once)
+if [ -n "${CODESIGN_ID:-}" ]; then
+  echo "==> Signing with $CODESIGN_ID"
+  codesign --force --deep --options runtime --sign "$CODESIGN_ID" "dist/$APPNAME.app"
+else
+  codesign --force --deep --sign - "dist/$APPNAME.app" 2>/dev/null || \
+    echo "   (ad-hoc codesign skipped)"
+fi
 
-# 4) lay out the DMG folder with an /Applications shortcut for drag-install
-mkdir -p "$STAGE/root"
-cp -R "$APPDIR" "$STAGE/root/"
-ln -sf /Applications "$STAGE/root/Applications"
+# 6) smoke check: the frozen binary must answer the offline capability probe
+OUT="$("dist/$APPNAME.app/Contents/MacOS/$APPNAME" --capabilities)"
+[ "${#OUT}" -gt 10 ] || { echo "smoke test FAILED"; exit 1; }
+echo "==> Frozen smoke test ok (--capabilities answered)"
 
-# 5) build the compressed DMG
-hdiutil create -volname "$APPNAME $VERSION" \
-  -srcfolder "$STAGE/root" -ov -format UDZO \
-  "dist/ProspectorsPlus-$VERSION.dmg" >/dev/null
+# 7) drag-install DMG
+mkdir -p build/dmgroot
+cp -R "dist/$APPNAME.app" build/dmgroot/
+ln -sf /Applications build/dmgroot/Applications
+hdiutil create -volname "$APPNAME $VERSION" -srcfolder build/dmgroot \
+  -ov -format UDZO "$DMG" >/dev/null
 
-echo "==> Done:  dist/ProspectorsPlus-$VERSION.dmg"
-echo "    Drag it to test, or attach it to the GitHub Release next to the .exe."
-open dist 2>/dev/null || true
+shasum -a 256 "$DMG"
+echo "==> Done: $DMG"
