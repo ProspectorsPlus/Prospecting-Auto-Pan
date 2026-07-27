@@ -1487,10 +1487,13 @@ UI_HELP = {
                      "checked.",
     "cal:DIG_TRIGGER_PIXEL": "**The green dig-bar target**, the little bar that flashes "
                              "green frames before a dig registers.\n"
-                             "when: only for Perfect dig or the green-confirm options in "
-                             "Shards and Geodes.\n"
+                             "when: Perfect dig, or the green-confirm options in Shards "
+                             "and Geodes. Geode green confirm reads this pixel to tell a "
+                             "tap that LANDED from one that missed, so calibrate it "
+                             "before turning that on.\n"
                              "pairs: Perfect dig (release on green), off = timed hold | "
-                             "Green dig-bar confirms the click\n"
+                             "Green dig-bar confirms the click | Green dig-bar confirms "
+                             "the dig\n"
                              "Note: skip it otherwise; it is not part of the normal loop.",
     "cal:MONEY": "**One drag around the money total** in the bottom-right HUD.\n"
                  "steps: press Draw box | drag corner to corner around the "
@@ -1718,8 +1721,10 @@ PIXEL_FIELDS = [
     ("SHAKE_PIX", "'Shake' text",
      "A pixel on the white 'Shake' prompt (shown while shaking).",
      [830, 981]),
-    ("DIG_TRIGGER_PIXEL", "Green dig pixel (Perfect mode only)",
-     "The GREEN target on the dig skill bar. Only needed if you turn Perfect dig on.",
+    ("DIG_TRIGGER_PIXEL", "Green dig pixel (Perfect + green confirm)",
+     "The GREEN target on the dig skill bar. Needed for Perfect dig and for "
+     "the green-confirm options in Shards and Geodes -- geode green confirm "
+     "reads THIS pixel to tell a tap that landed from one that missed.",
      [1078, 532]),
     ("MONEY_TL_PIXEL", "Money counter: TOP-LEFT corner",
      "Top-left corner of the money region (bottom-right HUD). Leave generous "
