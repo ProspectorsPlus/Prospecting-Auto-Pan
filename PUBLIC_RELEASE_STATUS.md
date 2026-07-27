@@ -112,11 +112,27 @@ Version bumped to 1.0.0-rc.2 (all three copies in agreement). Shipped:
 - Docs/audits refreshed to rc.2 across README-level and
   docs/public-release/.
 
-Still open: onboarding/trust suite finishing in parallel; rc.2 package
-rebuild + checksums/SBOM; independent verifier pass; Windows runtime still
-never executed (CI prepared, unverified); owner actions unchanged —
-license, secret revocation + fresh history, public URL, approved example
-screenshots, signing credentials.
+Completed since: `onboarding_trust_tests.py` landed (ALL PASS, in CI);
+three independent fresh-context verifiers ran over the candidate. Their
+P1 — the release gate itself went red because its scanners matched the
+new rc.2 evidence docs/tests/acceptance files once tracked — is FIXED
+(scanner allowances + an exec-free test harness) along with every P2
+(sandbox input test now refuses to post unless the app is frontmost;
+dev-run build identity prefers live git over stale packaging stamps;
+Coach base URLs must be https unless localhost) and the actionable P3s
+(Windows rows start "untested" instead of asserted green; manual
+calibration without real values reads "unset" and blocks; Coach key
+migrates to the 0600 secrets file; probe-file readiness check;
+release-manifest.json now covered by SHA256SUMS.txt). Gate, onboarding
+suite, tour_check and the engine battery re-run ALL PASS at the fix
+commit; the final DMG + artifacts were rebuilt from that clean tree
+(commit eb9bbba) and the packaged probes re-passed (0 sockets, bridge
+live, identity dirty=false).
+
+Still open: Windows runtime still never executed (CI prepared,
+unverified); owner actions unchanged — license, secret revocation +
+fresh history, public URL, approved example screenshots, signing
+credentials.
 
 ## If interrupted, resume with
 ```

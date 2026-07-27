@@ -5,8 +5,10 @@ what remains a human step. Automated probes live in
 `packaging/packaged_acceptance.command`; run them against any DMG.
 
 Build under test: `ProspectorLite-1.0.0-rc.2-macos-arm64.dmg`, built from
-commit `0b2a536` (clean tree, `dirty: false`), ad-hoc signed (unsigned
-release), macOS arm64, 2026-07-27.
+commit `eb9bbba` (clean tree, `dirty: false`; the independent-verifier fix
+commit), ad-hoc signed (unsigned release), macOS arm64, 2026-07-27. An
+earlier build from `0b2a536` passed the same probes before the verifier
+fixes were applied; the final artifact is the `eb9bbba` build.
 
 ## Automated probes (executed this release — all passed)
 
@@ -16,7 +18,7 @@ release), macOS arm64, 2026-07-27.
 | 2 | Self-contained offline probe (`--capabilities`) from the mounted app, no system Python | PASS | 3,846-byte manifest answered |
 | 3 | Clean first boot with an isolated `PP_DATA_DIR`: app stays alive, JS↔Python bridge comes up (boot() → `welcome_state` → `onboarding_state.json` created in the isolated home), nothing written into the read-only bundle | PASS | state file observed in the temp home |
 | 4 | Zero open network sockets during first boot | PASS | `lsof -a -p <pid> -i` = 0 rows |
-| 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.2 @ 0b2a5367f909 dirty=False` |
+| 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.2 @ eb9bbba83ce9 dirty=False` |
 | 6 | Bundle contents: `trust_manifest.json`, `PERMISSIONS.md`, `PRIVACY.md`, `SECURITY.md`, `TRUST_CENTER.md` present; no personal files (`prospecting_secrets.json`, `coach_history.json`, `run_history.json`, access-code files) | PASS | find over the mounted bundle |
 
 Additionally executed on the source tree at the same commit: the full

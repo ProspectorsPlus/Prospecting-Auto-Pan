@@ -40,10 +40,15 @@ echo "==> [2] --capabilities answered (${#OUT} bytes) from the mounted app"
 
 PP_DATA_DIR="$HOMEDIR" PP_NO_HUD=1 "$MNT/$APP/$BIN" &
 PID=$!
-sleep 12
-if ! kill -0 "$PID" 2>/dev/null; then
-  echo "FAIL: app exited during first boot"; exit 1
-fi
+# poll up to 30 s: the first launch of a freshly-signed binary from a
+# read-only image can take a while (XProtect scan + WebKit first paint)
+for _i in $(seq 1 30); do
+  [ -f "$HOMEDIR/onboarding_state.json" ] && break
+  if ! kill -0 "$PID" 2>/dev/null; then
+    echo "FAIL: app exited during first boot"; exit 1
+  fi
+  sleep 1
+done
 # -a ANDs the selectors (plain "-p PID -i" would OR them and list every
 # socket on the machine). lsof exits 1 when it matches NOTHING -- which is
 # the expected zero-sockets case -- so guard it from set -o pipefail.
