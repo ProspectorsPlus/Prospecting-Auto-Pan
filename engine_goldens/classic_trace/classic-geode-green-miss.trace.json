@@ -1,0 +1,85 @@
+{
+ "_trace": 1,
+ "scenario": "classic-geode-green-miss",
+ "summary": {
+  "counts": {
+   "key_down": 2,
+   "key_up": 2,
+   "mouse_down": 6,
+   "mouse_up": 6
+  },
+  "events": 16,
+  "first_t": 80,
+  "last_t": 6670
+ },
+ "trace": [
+  {
+   "ev": "mouse_down",
+   "t": 80
+  },
+  {
+   "ev": "mouse_up",
+   "t": 85
+  },
+  {
+   "ev": "mouse_down",
+   "t": 885
+  },
+  {
+   "ev": "mouse_up",
+   "t": 890
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1690
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1695
+  },
+  {
+   "ev": "key_down",
+   "key": "W",
+   "t": 3995
+  },
+  {
+   "ev": "key_up",
+   "key": "W",
+   "t": 4085
+  },
+  {
+   "ev": "mouse_down",
+   "t": 4165
+  },
+  {
+   "ev": "mouse_up",
+   "t": 4170
+  },
+  {
+   "ev": "mouse_down",
+   "t": 4970
+  },
+  {
+   "ev": "mouse_up",
+   "t": 4975
+  },
+  {
+   "ev": "mouse_down",
+   "t": 5775
+  },
+  {
+   "ev": "mouse_up",
+   "t": 5780
+  },
+  {
+   "ev": "key_down",
+   "key": "W",
+   "t": 6580
+  },
+  {
+   "ev": "key_up",
+   "key": "W",
+   "t": 6670
+  }
+ ]
+}

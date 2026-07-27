@@ -536,6 +536,109 @@ def test_classic_geode(update):
 
 
 # ---------------------------------------------------------------------------
+def test_classic_geode_green(update):
+    """GEODE_GREEN_CONFIRM: the dig skill-bar's green zone as PROOF the tap
+    started a dig, so a tap that never landed costs one GEODE_START_MS window
+    instead of the whole GEODE_DELAY_MS fill animation (12000ms on the shipped
+    Geode preset). Three worlds: green shows (healthy, one tap), green never
+    shows and the bar never moves (fast-fail after the one-time proof), and
+    green never shows but the digs register anyway (mis-calibrated pixel ->
+    self-disarm). Same fixture home and vendoring rules as classic-geode."""
+    for name in ("classic-geode-green", "classic-geode-green-miss",
+                 "classic-geode-green-lie"):
+        print("[trace] %s" % name)
+        path = os.path.join(GOLD, name + ".scenario.json")
+        transcript, world, trace = run_scenario(path, "pold_tr_" +
+                                                name.replace("-", "_"))
+        eng = world.po
+        compare_golden(name, trace_doc(name, trace), update)
+        chk(world.inputs.all_released(),
+            "%s: all inputs released at exit" % name)
+        mp = mouse_pairs(trace)
+        hold = max(1, eng.GEODE_DIG_MS)
+        taps = [(d, u) for d, u in mp if u - d == hold]
+        w = key_pairs(trace, "W")
+        evs = event_types(transcript)
+        startwin = max(120, eng.GEODE_START_MS)
+        delay = max(50, eng.GEODE_DELAY_MS)
+
+        if name == "classic-geode-green":
+            # Green proves tap #1, so the re-tap budget is never touched and
+            # the leg is shape-identical to plain classic-geode.
+            chk(not evs, "geode-green: healthy run -- zero safety events")
+            chk(len(taps) == 1,
+                "geode-green: green proves the FIRST tap -- exactly one tap, "
+                "no re-taps (got %d)" % len(taps))
+            chk(eng.State.geode_green_ok is True,
+                "geode-green: a green-proved tap latches the fast path "
+                "without spending a calibration probe")
+            chk(not eng.State.recal_reason,
+                "geode-green: a working green pixel raises no recalibration "
+                "flag (got %r)" % eng.State.recal_reason)
+
+        if name == "classic-geode-green-miss":
+            tries = max(1, eng.GEODE_START_TRIES)
+            chk(len(taps) == 2 * tries,
+                "geode-green-miss: both dead rounds spend the whole "
+                "GEODE_START_TRIES budget (%d taps, expected %d)"
+                % (len(taps), 2 * tries))
+            # Re-taps ride the start window back-to-back: GEODE_START_TRIES
+            # finally does something (it was declared but dead before).
+            gaps = [taps[i + 1][0] - taps[i][1] for i in range(tries - 1)]
+            chk(all(g == startwin for g in gaps),
+                "geode-green-miss: each re-tap follows one GEODE_START_MS "
+                "window (%r, expected all %d)" % (gaps, startwin))
+            chk(evs == ["nudge", "nudge"],
+                "geode-green-miss: each dead round nudges once -- got %r"
+                % evs)
+            chk(len(w) == 2 and len(taps) == 6,
+                "geode-green-miss: two nudges over two rounds of three taps")
+            if len(w) == 2 and len(taps) == 6:
+                # Round 1 pays the animation ONCE as the calibration proof;
+                # round 2 skips it. The saving is exactly GEODE_DELAY_MS.
+                r1 = w[0][0] - taps[2][1]
+                r2 = w[1][0] - taps[5][1]
+                chk(r1 == startwin + delay,
+                    "geode-green-miss: round 1 pays the one-time proof -- "
+                    "start window + full animation (%dms, expected %dms)"
+                    % (r1, startwin + delay))
+                chk(r2 == startwin,
+                    "geode-green-miss: round 2 SKIPS the fill wait -- the "
+                    "last dead tap nudges after the start window alone "
+                    "(%dms, expected %dms)" % (r2, startwin))
+                chk(r1 - r2 == delay,
+                    "geode-green-miss: green confirm saves exactly "
+                    "GEODE_DELAY_MS per dead round (%dms saved, delay %dms)"
+                    % (r1 - r2, delay))
+                chk((w[1][0] - taps[3][0]) - (w[0][0] - taps[0][0]) == -delay,
+                    "geode-green-miss: round 2 is one whole animation "
+                    "shorter than round 1 end to end")
+            chk(eng.State.geode_green_ok is True,
+                "geode-green-miss: a dead tap with no capacity move proves "
+                "the green pixel truthful")
+
+        if name == "classic-geode-green-lie":
+            # The digs DO register with no green: the pixel is wrong, not the
+            # land. Disarm rather than nudge away from good ground.
+            chk(len(taps) == max(1, eng.GEODE_START_TRIES),
+                "geode-green-lie: the unproven tap budget is spent once "
+                "(got %d taps)" % len(taps))
+            chk(eng.State.geode_green_ok is False,
+                "geode-green-lie: a dig that registers with no green "
+                "DISARMS green confirm for the run")
+            chk("re-calibrate" in eng.State.recal_reason
+                and "Green dig pixel" in eng.State.recal_reason,
+                "geode-green-lie: the run raises the recalibrate flag naming "
+                "the pixel to fix (got %r)" % eng.State.recal_reason)
+            chk("nudge" not in evs,
+                "geode-green-lie: a mis-calibrated pixel never nudges away "
+                "from land that digs fine -- got %r" % evs)
+            chk(bool(key_pairs(trace, "S")),
+                "geode-green-lie: the confirmed dig hands off to go_water "
+                "exactly like plain geode")
+
+
+# ---------------------------------------------------------------------------
 def test_classic_x(update):
     """X_PATTERN walk-back (Studio detach parity companion for walk_back_x).
     Same fixture home and vendoring rules as the shards scenarios. The world
@@ -679,6 +782,7 @@ if __name__ == "__main__":
     test_stuck_full(update)
     test_classic_shards(update)
     test_classic_geode(update)
+    test_classic_geode_green(update)
     test_classic_x(update)
     test_script_clock_grid(update)
     print()

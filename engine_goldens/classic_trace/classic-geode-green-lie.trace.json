@@ -1,0 +1,61 @@
+{
+ "_trace": 1,
+ "scenario": "classic-geode-green-lie",
+ "summary": {
+  "counts": {
+   "key_down": 2,
+   "key_up": 2,
+   "mouse_down": 3,
+   "mouse_up": 3
+  },
+  "events": 10,
+  "first_t": 80,
+  "last_t": 2900
+ },
+ "trace": [
+  {
+   "ev": "mouse_down",
+   "t": 80
+  },
+  {
+   "ev": "mouse_up",
+   "t": 85
+  },
+  {
+   "ev": "mouse_down",
+   "t": 885
+  },
+  {
+   "ev": "mouse_up",
+   "t": 890
+  },
+  {
+   "ev": "mouse_down",
+   "t": 1690
+  },
+  {
+   "ev": "mouse_up",
+   "t": 1695
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 2615
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 2840
+  },
+  {
+   "ev": "key_down",
+   "key": "S",
+   "t": 2840
+  },
+  {
+   "ev": "key_up",
+   "key": "S",
+   "t": 2900
+  }
+ ]
+}

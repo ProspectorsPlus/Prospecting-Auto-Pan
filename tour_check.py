@@ -81,8 +81,8 @@ def check_copy(tag, path, uipath):
     markup = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.S)
     keys = re.findall(r'data-key="([^"]+)"', markup)
     uniq = set(keys)
-    if len(uniq) == 144: ok('144 unique data-keys')
-    else: fail(f'{tag}: {len(uniq)} unique data-keys (want 144); dupes/missing!')
+    if len(uniq) == 146: ok('146 unique data-keys')
+    else: fail(f'{tag}: {len(uniq)} unique data-keys (want 146); dupes/missing!')
     if len(keys) != len(uniq):
         from collections import Counter
         fail(f'{tag} duplicated keys: ' + str([k for k, c in Counter(keys).items() if c > 1]))

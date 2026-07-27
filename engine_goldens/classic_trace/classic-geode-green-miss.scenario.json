@@ -1,0 +1,56 @@
+{
+  "name": "classic-geode-green-miss",
+  "_comment": "GEODE_GREEN_CONFIRM dead-round path -- the reason the setting exists. Same world as classic-geode-miss (capacity never moves, no cues) but with green confirm ON and the dig-bar green pixel never painted, so the green proof can never fire. Round 1 spends the full GEODE_START_TRIES tap budget (each tap costs one GEODE_START_MS window) and then pays the GEODE_DELAY_MS animation ONCE as the one-time calibration proof: the bar did not move, so green told the truth and State.geode_green_ok latches True. Every later dead round spends only the tap budget and nudges W straight away -- the animation wait is skipped entirely, which is the whole point (on the shipped Geode preset that delay is 12000ms). The measurable invariant is that round 2's dead round is exactly GEODE_DELAY_MS shorter than round 1's. The quit lands inside a post-nudge PROBE_GAP sleep, same stop-discipline rule as classic-geode-miss. Companion to classic-geode-miss; same vendoring rules.",
+  "window": [
+    0,
+    0,
+    1440,
+    900
+  ],
+  "config": {
+    "GEODE_MODE": true,
+    "GEODE_GREEN_CONFIRM": true,
+    "RELICS_ENABLED": false,
+    "WEBHOOK_URL": "",
+    "WEBHOOK_SECRET": ""
+  },
+  "schedule": [
+    [
+      0,
+      "toggle"
+    ],
+    [
+      6720,
+      "quit"
+    ]
+  ],
+  "cues": {},
+  "capacity": [
+    [
+      0,
+      0.0
+    ],
+    [
+      600000,
+      0.0
+    ]
+  ],
+  "screen": [
+    {
+      "rect": [
+        0,
+        0,
+        1,
+        1
+      ],
+      "rgb": [
+        16,
+        16,
+        16
+      ],
+      "from_ms": 0
+    }
+  ],
+  "_screen_comment": "Whole-box capacity paint (see classic-shards): keyframes are 0/1 only. The dig-trigger pixel is never painted, so dig_bar_green() is False for the whole run -- that is the point of this scenario.",
+  "duration_ms": 600000
+}

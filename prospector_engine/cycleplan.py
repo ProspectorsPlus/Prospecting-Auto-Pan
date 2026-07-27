@@ -224,16 +224,30 @@ def _leg_dig(ctx, mode):
                            "formula": "190000 / max(1, DIG_SPEED) + 25"},
         }
     elif mode == "geode":
+        green = bool(ctx.note("GEODE_GREEN_CONFIRM"))
         leg["variant"] = {
             "name": "geode",
-            "semantics": "slow-fill dig: tap, wait the whole fill "
-                         "animation, judge by capacity; a missing green "
-                         "never nudges on its own",
+            "semantics": (
+                "slow-fill dig: tap, wait the whole fill animation, judge "
+                "by capacity; the green dig-bar proves the tap STARTED a "
+                "dig, so a tap with no green is re-tapped at once and a "
+                "dead tap budget ends the round WITHOUT paying the "
+                "animation"
+                if green else
+                "slow-fill dig: tap, wait the whole fill animation, judge "
+                "by capacity; a missing green never nudges on its own"),
             "digs_to_fill": ctx.v("GEODE_DIGS_TO_FILL"),
             "dig_hold": ctx.t("GEODE_DIG_MS"),
             "per_dig_wait": ctx.t("GEODE_DELAY_MS"),
             "start_window": ctx.t("GEODE_START_MS"),
-            "start_tries": ctx.v("GEODE_START_TRIES"),
+            # start_tries only bites under green confirm: without that proof
+            # a re-tap cannot tell a dead tap from a slow one.
+            "start_tries": ctx.v(
+                "GEODE_START_TRIES",
+                note=None if green else
+                "green confirm is off, so the leg taps ONCE and lets the "
+                "capacity bar judge after the animation"),
+            "green_confirm": ctx.v("GEODE_GREEN_CONFIRM"),
             "confirm_full": ctx.v("GEODE_CONFIRM_FULL"),
         }
     return leg

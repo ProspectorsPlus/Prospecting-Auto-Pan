@@ -571,6 +571,22 @@ GEODE_START_MS       = 800   # after a click, how long to wait for the dig to
                              # before re-clicking -- the timer only runs once a
                              # dig is confirmed running
 GEODE_START_TRIES    = 3     # re-click this many times if a dig won't start
+                             # (only GEODE_GREEN_CONFIRM can tell a dead tap
+                             # from a slow one, so it gates these re-clicks)
+GEODE_GREEN_CONFIRM  = False # trust the dig skill-bar's GREEN zone as proof the
+                             # dig actually STARTED. Geode builds spend the whole
+                             # GEODE_DELAY_MS animation before the capacity bar
+                             # can judge anything, so a tap that missed (off
+                             # land) costs that entire wait before the nudge.
+                             # Green shows within frames, so with this on a tap
+                             # with no green is re-tapped inside GEODE_START_MS
+                             # and a dead tap budget nudges NOW instead of ~12 s
+                             # later. Off = the old forgiving path, where a
+                             # missing green never nudges on its own. Needs the
+                             # Perfect-dig green pixel calibrated; if the dig
+                             # provably registers with no green the run disarms
+                             # it and flags a recalibration rather than walking
+                             # away from good land.
 GEODE_SHAKE_CHECK    = 3     # geode shake: rattle this many clicks between
                              # screen reads (>1 = smoother/faster + drains fuller)
 GEODE_SHAKE_HOLD_MS  = 8000  # the geode shovel slows the SHAKE too, so keep
@@ -1454,6 +1470,13 @@ class State:
     earn = None              # EARNINGS: live OCR tracker (or None)
     finds = None             # FINDS: live OCR watcher (or None)
     dig_burst_t = 0.0        # registered-dig burst clock (fixes inflation)
+    geode_green_ok = None    # GEODE_GREEN_CONFIRM verdict for THIS run:
+                             #   None  -> armed but not proven yet
+                             #   True  -> green is trustworthy; a tap with no
+                             #            green skips the fill wait outright
+                             #   False -> a dig registered with no green, so the
+                             #            green pixel is mis-calibrated ->
+                             #            disarmed for the rest of the run
     assume_full_until = 0.0  # SHARDS: treat capacity as FULL until this
     last_cycle_end = 0.0     # per-cycle duration tracking
     ap_next_check = 0.0      # AUTO PAN GUARD: next scheduled button read
@@ -4169,6 +4192,77 @@ def _geode_wait(ms, label, det):
         emit_geode_timer(0)
 
 
+def _geode_green_verdict(moved):
+    """One-time calibration proof for GEODE_GREEN_CONFIRM, settled the first
+    time a run taps with no green at all. That tap still pays the fill
+    animation and lets the CAPACITY bar judge it:
+
+      bar rose  -> the dig plainly DID run and the green pixel is the thing
+                   that is wrong. Disarm the fast path for the rest of the run
+                   and flag a recalibration, rather than nudging away from
+                   perfectly good land on a bad pixel.
+      bar still -> the green pixel told the truth, so every later tap with no
+                   green can skip the whole GEODE_DELAY_MS wait.
+
+    Costs at most one animation per run, and only when green confirm is on."""
+    State.geode_green_ok = not moved
+    if moved:
+        State.recal_reason = ("the dig registered but the green dig-bar pixel "
+                              "never showed -- re-calibrate 'Green dig pixel' "
+                              "before using geode green-confirm")
+        log("    geode: green-confirm DISARMED for this run (a dig registered "
+            "with no green -- the green pixel looks mis-calibrated)")
+    else:
+        log("    geode: green-confirm proven -- later dead taps skip the fill "
+            "wait")
+
+
+def _geode_tap(det, before, was_empty, hold, startwin):
+    """One geode dig tap plus its start-proof window. Returns True when the dig
+    should be TAKEN AS STARTED (so the caller waits out the fill animation),
+    and False only when GEODE_GREEN_CONFIRM is armed and the whole tap budget
+    went by with no proof at all.
+
+    Green confirm OFF is exactly the old single tap: look briefly for a start,
+    ignore the answer, and let the capacity bar judge after the animation -- a
+    missing green must never nudge on its own (that caused the false-nudge +
+    break-out cascade). Green confirm ON trusts the dig skill-bar's green zone
+    as proof the dig started, which shows within frames instead of the whole
+    animation, so a tap that never landed is re-tapped inside GEODE_START_MS
+    (GEODE_START_TRIES taps) rather than costing the full GEODE_DELAY_MS. Green
+    only counts when the pixel is NOT already green as we tap, so green terrain
+    behind the bar -- or the tail of the previous animation -- cannot fake a
+    dig."""
+    use_green = (GEODE_GREEN_CONFIRM and State.geode_green_ok is not False
+                 and not det.dig_bar_green())
+    tries = max(1, GEODE_START_TRIES) if use_green else 1
+    saw_green = [False]
+
+    def proof():
+        if det.dig_bar_green():
+            saw_green[0] = True
+            return True
+        return ((was_empty and not det.pan_empty())
+                or det.cap_fill() > before + CAP_RISE_FRAC
+                or det.capacity_full())
+
+    for t in range(tries):
+        if State.stats:
+            State.stats.dig_clicks += 1
+        mouse_tap(hold)
+        if wait_until(proof, startwin, confirm=1):
+            if use_green and saw_green[0]:
+                State.geode_green_ok = True   # the pixel works: no probe needed
+            return True
+        if not use_green:
+            return True                       # judged by capacity, as always
+        if t + 1 < tries:
+            log(f"    geode: tap {t + 1}/{tries} never started a dig -> re-tap")
+            if not State.running:
+                break
+    return False
+
+
 def _geode_dig(det):
     """GEODE DIG (opt-in, GEODE_MODE): fast-tap dig on a build with a VERY slow
     fill animation (e.g. 10% dig-speed geode shovels). Each dig: click, briefly
@@ -4177,9 +4271,12 @@ def _geode_dig(det):
     CAPACITY -- if the bar rose the dig registered (keep going / stop at FULL); if
     a whole dig+animation moved NOTHING, we're off land -> nudge forward. A
     missing green NEVER nudges on its own (that caused the false-nudge + break-out
-    cascade). GEODE_DIGS_TO_FILL = 0 means dig until the bar reads FULL (auto);
-    >0 means exactly that many. Done -> normal cycle: walk to water + momentum
-    shake (NOT treasure's strafe)."""
+    cascade) unless GEODE_GREEN_CONFIRM is on, which makes green the proof the
+    dig started: a tap with no green is re-tapped at once and a dead tap budget
+    ends the round WITHOUT paying the animation, so an off-land visit nudges in
+    ~GEODE_START_MS instead of ~GEODE_DELAY_MS. GEODE_DIGS_TO_FILL = 0 means dig
+    until the bar reads FULL (auto); >0 means exactly that many. Done -> normal
+    cycle: walk to water + momentum shake (NOT treasure's strafe)."""
     n_target = max(0, GEODE_DIGS_TO_FILL)
     hold     = max(1, GEODE_DIG_MS)
     delay    = max(50, GEODE_DELAY_MS)
@@ -4191,23 +4288,25 @@ def _geode_dig(det):
         if rnd == 0 and PRE_DIG_SETTLE_MS > 0:
             sleep_ms(PRE_DIG_SETTLE_MS)
         digs = 0
+        dead_start = False       # round ended on a PROVEN-dead tap budget
         while State.running and digs < hard_cap:
             before    = det.cap_fill()
             was_empty = det.pan_empty()
-            if State.stats:
-                State.stats.dig_clicks += 1
-            mouse_tap(hold)
             # green (if the dig trigger pixel is calibrated) confirms the dig
             # started + starts the timer promptly; if it doesn't show we still
-            # wait the animation and judge by capacity, so it never false-nudges.
-            wait_until(lambda _b=before, _e=was_empty:
-                       det.dig_bar_green()
-                       or (_e and not det.pan_empty())
-                       or det.cap_fill() > _b + CAP_RISE_FRAC
-                       or det.capacity_full(), startwin, confirm=1)
+            # wait the animation and judge by capacity, so it never false-nudges
+            # -- unless GEODE_GREEN_CONFIRM is armed and PROVEN, in which case a
+            # tap budget with no green is a dig that never happened.
+            started = _geode_tap(det, before, was_empty, hold, startwin)
+            if not started and State.geode_green_ok:
+                dead_start = True
+                break
             _geode_wait(delay, "geode fill %d%s" % (
                 digs + 1, ("/%d" % n_target) if n_target > 0 else ""), det)
-            if det.cap_fill() > before + CAP_RISE_FRAC or det.capacity_full():
+            moved = det.cap_fill() > before + CAP_RISE_FRAC or det.capacity_full()
+            if not started and State.geode_green_ok is None:
+                _geode_green_verdict(moved)   # settle the pixel, once per run
+            if moved:
                 digs += 1
                 State.land_fails = 0
                 State.breakouts  = 0
@@ -4219,9 +4318,19 @@ def _geode_dig(det):
             else:
                 break                        # full dig + animation moved nothing
         if digs == 0:
-            log(f"    geode: no fill after a full dig+animation (round {rnd + 1}) "
-                f"-> nudge W fwd")
-            emit_event("nudge", "geode dig: no fill after the animation -- nudging forward to find land")
+            if dead_start:
+                # GREEN CONFIRM: nothing ever started, so there was no
+                # animation to wait out -- we are here ~delay ms sooner.
+                log(f"    geode: no dig started in {max(1, GEODE_START_TRIES)} "
+                    f"tap(s), skipped the {delay} ms fill wait "
+                    f"(round {rnd + 1}) -> nudge W fwd")
+                emit_event("nudge", "geode dig: the green dig-bar never showed "
+                                    "-- no dig started, nudging forward to "
+                                    "find land")
+            else:
+                log(f"    geode: no fill after a full dig+animation "
+                    f"(round {rnd + 1}) -> nudge W fwd")
+                emit_event("nudge", "geode dig: no fill after the animation -- nudging forward to find land")
             if State.stats:
                 State.stats.nudges += 1
             key_down(KEY_W); sleep_ms(LAND_PROBE_NUDGE_MS); key_up(KEY_W)
@@ -8835,6 +8944,7 @@ class Supervisor:
         State.cycle_dirty = False
         State.fill_digs = []
         State.dig_burst_t = 0.0
+        State.geode_green_ok = None   # re-prove the green pixel each run
         State.last_cycle_end = 0.0
         State.assume_full_until = 0.0
         State.trk_last = None

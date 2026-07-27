@@ -92,6 +92,8 @@ SECTIONS = [
         ("GEODE_DIG_MS",         "Quick dig hold (ms)",                 "int", 5),
         ("GEODE_DELAY_MS",       "Animation delay per dig (ms)",        "int", 1500),
         ("GEODE_START_MS",       "Wait for the dig to start (ms)",      "int", 800),
+        ("GEODE_GREEN_CONFIRM",  "Green dig-bar confirms the dig",      "bool", False),
+        ("GEODE_START_TRIES",    "Re-taps if a dig won't start",        "int", 3),
         ("GEODE_CONFIRM_FULL",   "Wait for the bar to read full first", "bool", False),
         ("GEODE_SHAKE_HOLD_MS",  "Max shake time (ms)",                 "int", 8000),
     ]),
@@ -216,6 +218,7 @@ PRESET_V2 = {"PERFECT": False, "DIG_CLICK_MS": 75, "MAX_DIGS_TO_FILL": 8}
 PRESET_GEODE = {
                 "GEODE_MODE": True, "GEODE_DIGS_TO_FILL": 0, "GEODE_DIG_MS": 5,
                 "GEODE_DELAY_MS": 12000, "GEODE_START_MS": 800,
+                "GEODE_GREEN_CONFIRM": True, "GEODE_START_TRIES": 3,
                 "GEODE_CONFIRM_FULL": True, "GEODE_SHAKE_HOLD_MS": 10000,
                 "SHAKE_MOMENTUM_W": True, "SHAKE_CLICKS": 0, "SHAKE_CLICK_MS": 60,
                 "SHAKE_CLICK_GAP_MS": 0, "SHAKE_HOLD_MS": 6000, "SHAKE_BAIL_MS": 500,
@@ -559,6 +562,36 @@ HELP = {
                       "begins once a dig is confirmed running.\n"
                       "raise: your game is {{laggy to start digs}}.\n"
                       "pairs: Animation delay per dig",
+    "GEODE_GREEN_CONFIRM": "**Green-bar proof, the geode version.** Normally a geode "
+                           "tap that MISSED still costs the whole animation delay "
+                           "before the macro can tell -- so a dig off the edge of the "
+                           "land burns ~12 seconds doing nothing before it nudges. "
+                           "The green dig-bar shows within frames, so with this on a "
+                           "tap with no green is re-tapped immediately and a dead tap "
+                           "budget nudges straight away instead of waiting the "
+                           "animation out.\n"
+                           "when: slow geode gear where one tap fills the pan and a "
+                           "missed tap wastes a whole cycle.\n"
+                           "fixes: {{12 second pause before it nudges}}, {{stuck "
+                           "clicking off land}}\n"
+                           "steps: calibrate the Green dig pixel on the Calibrate "
+                           "page | turn this on\n"
+                           "pairs: Wait for the dig to start | Re-taps if a dig won't "
+                           "start\n"
+                           "Note: Perfect mode itself can stay OFF. It won't count "
+                           "green that was already showing before the tap, and if a "
+                           "dig ever registers with no green it disarms itself for "
+                           "the run and asks you to re-calibrate.",
+    "GEODE_START_TRIES": "**Re-tap budget** when Green dig-bar confirms the dig is on: "
+                         "how many taps to try before deciding this spot is not land "
+                         "and nudging forward. Each try costs one Wait for the dig to "
+                         "start.\n"
+                         "raise: taps genuinely miss a lot on your build.\n"
+                         "lower: you want it to give up and nudge faster.\n"
+                         "pairs: Green dig-bar confirms the dig | Wait for the dig to "
+                         "start\n"
+                         "Note: ignored unless Green dig-bar confirms the dig is on -- "
+                         "without that proof a re-tap can double-dig.",
     "GEODE_CONFIRM_FULL": "**Double-check the fill.** After the set number of digs, "
                           "also wait for the bar to actually read FULL before walking "
                           "back.\n"

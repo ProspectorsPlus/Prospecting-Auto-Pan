@@ -119,6 +119,7 @@ DEFAULT_BUILDS = {
     "Geode Farm": {
         "GEODE_MODE": True, "GEODE_DIGS_TO_FILL": 0, "GEODE_DIG_MS": 5,
         "GEODE_DELAY_MS": 12000, "GEODE_START_MS": 800, "GEODE_CONFIRM_FULL": True,
+        "GEODE_GREEN_CONFIRM": True, "GEODE_START_TRIES": 3,
         "GEODE_SHAKE_HOLD_MS": 10000, "SHAKE_MOMENTUM_W": True, "SHAKE_CLICKS": 0,
         "SHAKE_CLICK_MS": 60, "SHAKE_CLICK_GAP_MS": 0, "SHAKE_HOLD_MS": 6000,
         "SHAKE_BAIL_MS": 500, "SHAKE_START_CONFIRM_MS": 300,
@@ -131,14 +132,18 @@ DEFAULT_BUILDS = {
         "SHARDS_DIG_CLICKS": 0, "TREASURE_MODE": False, "CAP_EMPTY_FRAC": 0.04, "RELICS": [], "RELICS_ENABLED": False,
         "_meta": {"desc": "Geode farming \u2014 slow-animation dig then the normal "
                   "momentum shake (not treasure's strafe). Set 'Animation delay "
-                  "per dig' to match your geode's fill animation (~12s). Ships "
-                  "with Prospectors Plus.",
+                  "per dig' to match your geode's fill animation (~12s). The "
+                  "green dig-bar confirms each tap, so a tap that misses the "
+                  "land nudges at once instead of burning that whole animation "
+                  "-- calibrate the Green dig pixel. Ships with Prospectors "
+                  "Plus.",
                   "created": 1752000000, "updated": 1752000000,
                   "used": 0, "builtin": True},
     },
     "Geode Farm 1-Tap": {
         "GEODE_MODE": True, "GEODE_DIGS_TO_FILL": 0, "GEODE_DIG_MS": 15,
         "GEODE_DELAY_MS": 12000, "GEODE_START_MS": 800,
+        "GEODE_GREEN_CONFIRM": True, "GEODE_START_TRIES": 3,
         "GEODE_CONFIRM_FULL": True, "GEODE_SHAKE_HOLD_MS": 10000,
         "SHAKE_MOMENTUM_W": True, "SHAKE_CLICKS": 0, "SHAKE_CLICK_MS": 60,
         "SHAKE_CLICK_GAP_MS": 0, "SHAKE_HOLD_MS": 6000, "SHAKE_BAIL_MS": 500,
@@ -152,8 +157,11 @@ DEFAULT_BUILDS = {
         "EASY_WATER_RETURN_DELAY_MS": 0, "SHARDS_DIG_CLICKS": 0,
         "TREASURE_MODE": False, "CAP_EMPTY_FRAC": 0.04, "RELICS": [], "RELICS_ENABLED": False,
         "_meta": {"desc": "Geode farming, 1-tap variant -- one quick dig fills the "
-                  "pan, then the slow momentum shake. Tuned build; calibrate your "
-                  "own capacity + dig pixels. Ships with Prospectors Plus.",
+                  "pan, then the slow momentum shake. The green dig-bar confirms "
+                  "the tap, so a miss nudges at once instead of costing the whole "
+                  "~12s animation. Tuned build; calibrate your own capacity + dig "
+                  "pixels (the Green dig pixel included). Ships with Prospectors "
+                  "Plus.",
                   "created": 1752000000, "updated": 1752000000,
                   "used": 0, "builtin": True},
     },
@@ -7550,6 +7558,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      RECOVER_ENABLED:{k:'safety',p:3,pl:'getting stuck',seq:['stuck detected','nudges wiggle you free','loop resumes'],off:['no nudges','waits for safe stop']},
      BREAKOUT_ENABLED:{k:'safety',p:3,pl:'stuck loops',seq:['nudges failed','click burst + reposition','loop resumes'],off:['no break-out','waits for safe stop']},
      SHARDS_GREEN_CONFIRM:{k:'safety',p:3,pl:'false clicked reads',seq:['click sent','green bar confirms it','no double digs'],off:['bar-only proof','can double-click']},
+     GEODE_GREEN_CONFIRM:{k:'safety',p:3,pl:'a missed tap costing the whole animation delay',seq:['tap sent','green bar confirms it','no green = re-tap, then nudge'],off:['waits the full animation','~12s before it nudges']},
      FR_RECOVERY:{k:'safety',p:3,pl:'soft-stop dead ends in Fortune River spots',seq:['soft stop','fast-travel back','resume panning'],off:['no warp','stays parked']},
      SR_RECOVERY:{k:'safety',p:3,pl:'soft-stop dead ends in Starfall River spots',seq:['soft stop','fast-travel back','resume panning'],off:['no warp','stays parked']},
      SHAKE_RETRY_ENABLED:{k:'safety',p:2,pl:'a single failed shake',seq:['shake missed','try it again','cycle saved'],off:['miss just counts','stops sooner']},
@@ -7620,6 +7629,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      SHAKE_CLICKS:['shake starts','exactly this many clicks','stops, full or not'],
      SHARDS_DIG_CLICKS:['on land','exact dig clicks','walk back'],
      SHARDS_CLICK_RETRIES:['bar never moved','one more click each','nudge forward'],
+     GEODE_START_TRIES:['no green bar','one more tap each','nudge forward'],
      SHAKE_START_RETRIES:['no drain yet','deeper tap + click','normal bail'],
      LAND_DIG_TRIES:['probe missed','nudge + probe','safe stop'],
      FR_FIND_TRIES:['row not found','one full sweep each','re-open device'],
