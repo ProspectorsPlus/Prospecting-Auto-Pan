@@ -159,9 +159,9 @@ SECTIONS = [
         ("BURST_OFF_MS",       "Tap release per pulse (ms)",             "int", 1),
     ]),
     ("Notifications", [
-        ("WEBHOOK_ENABLED",    "DM me on Discord",                        "bool", False),
-        ("WEBHOOK_USER",       "Your Discord username",                   "str", ""),
-        ("WEBHOOK_STATS_MIN",  "Stats DM every N min (0 = off)",          "int", 60),
+        ("WEBHOOK_ENABLED",    "Discord notifications",                   "bool", False),
+        ("WEBHOOK_USER",       "Name to show in notifications",           "str", ""),
+        ("WEBHOOK_STATS_MIN",  "Stats post every N min (0 = off)",        "int", 60),
         ("NOTIFY_START",       "Notify: started",                        "bool", True),
         ("NOTIFY_STOP",        "Notify: stopped (manual / timer / bag full)", "bool", True),
         ("NOTIFY_STATS",       "Notify: periodic stats",                 "bool", True),
@@ -263,8 +263,8 @@ SECTION_HINT = {
     "Return to land (dig-probe)": "Finding land after a shake by test-digging.",
     "Recovery / safety": "What happens when something goes wrong.",
     "Recovery movement (jitter taps)": "Tiny tap timing used only during recovery.",
-    "Notifications": "Get DMs from the Prospectors bot on start, stop and stats. "
-                     "Just enter your Discord username.",
+    "Notifications": "Post run updates to your own Discord webhook on start, "
+                     "stop and stats. Off until you add a webhook URL.",
     "Auto-stop": "Automatically stop the macro after a set time.",
     "Window": "Make calibration survive the Roblox window being moved.",
     "Advanced tuning": "Experimental auto-tuning and movement patterns. "
@@ -979,21 +979,21 @@ HELP = {
                          "when: diagnosing stops remotely without walking to the "
                          "computer.\n"
                          "Note: turn off for text-only alerts.",
-    "WEBHOOK_ENABLED": "**Discord DMs from the Prospectors bot** for start, stop, "
-                       "safe-stop, auto-stop, bag-full and periodic stats.\n"
-                       "steps: join the Discord server | enter your Discord username "
-                       "below | press Send test notification\n"
+    "WEBHOOK_ENABLED": "**Discord notifications to your own webhook** for start, "
+                       "stop, safe-stop, auto-stop, bag-full and periodic stats.\n"
+                       "steps: create a webhook in your Discord server | paste "
+                       "its URL below | press Send test\n"
                        "when: any run you plan to walk away from.\n"
-                       "pairs: Your Discord username | Notify: safe-stop\n"
-                       "Note: you must share a server with the bot and have DMs "
-                       "open.",
-    "WEBHOOK_USER": "**Who the bot DMs.** Your exact Discord username; the bot "
-                    "resolves it and sends the alerts there.\n"
-                    "fixes: {{test says sent but nothing arrives}}, usually this "
-                    "or your DM privacy\n"
-                    "pairs: DM me on Discord\n"
-                    "Note: you must be in the server with DMs open.",
-    "WEBHOOK_STATS_MIN": "**The stats pulse**: how often to DM a stats update while "
+                       "pairs: Name to show in notifications | Notify: safe-stop\n"
+                       "Note: off by default; with no webhook URL saved the app "
+                       "sends nothing anywhere, ever.",
+    "WEBHOOK_USER": "**The name shown in notification cards** so shared "
+                    "channels know whose run it is. Any label you like; leave "
+                    "blank to omit it.\n"
+                    "fixes: {{test says sent but nothing arrives}}, usually a "
+                    "stale webhook URL\n"
+                    "pairs: Discord notifications",
+    "WEBHOOK_STATS_MIN": "**The stats pulse**: how often to post a stats update while "
                          "running. Sixty gives an hourly read on pans, rate and "
                          "recoveries.\n"
                          "raise: fewer pings on very long runs.\n"
@@ -1651,11 +1651,11 @@ UI_HELP = {
                 "Note: separate from the in-game controls the macro sends.",
     "testnotify": "**Sends a real test notification** through the exact path "
                   "the macro uses.\n"
-                  "steps: turn on DM me on Discord | enter your username | "
-                  "press this\n"
-                  "fixes: {{finding out at 3am that DMs never worked}}\n"
-                  "Note: if it says sent but nothing arrives, you are not in "
-                  "the server or DMs are closed.",
+                  "steps: save your webhook URL | turn on Discord "
+                  "notifications | press this\n"
+                  "fixes: {{finding out at 3am that alerts never worked}}\n"
+                  "Note: if it says sent but nothing arrives, re-copy the "
+                  "webhook URL from Discord.",
     "buildcard": "**A build: your whole setup under one name.** Load applies "
                  "every setting and relic at once; Overwrite re-captures your "
                  "current settings into it.\n"

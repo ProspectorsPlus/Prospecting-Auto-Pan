@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-prospecting_app.py -- native desktop app (its own window) for the Prospecting
-macro, built on pywebview. Tabbed settings, Start/Stop + live trace, a live
-calibrate readout, a relic timer editor, saved builds, and ? help on every field.
+prospecting_app.py -- Prospector Lite: native desktop app (its own window)
+for the Prospecting macro, built on pywebview. Tabbed settings, Start/Stop +
+live trace, a live calibrate readout, a relic timer editor, saved builds, and
+? help on every field.
 
 First time:   pip3 install pywebview --break-system-packages
-Run (or double-click "Prospectors Plus.app"):   python3 prospecting_app.py
+Run:          python3 prospecting_app.py
 
 If pywebview isn't installed it falls back to the browser settings UI.
 """
@@ -23,27 +24,96 @@ import urllib.request
 import urllib.error
 import hashlib
 
-# ---- version + update channel -------------------------------------------------
-# VERSION is compared against the "version" field in the JSON the app downloads
-# from UPDATE_MANIFEST_URL. If the site reports a newer version the app shows an
-# "Update available" banner that opens DOWNLOAD_PAGE_URL in the browser.
-# >>> EDIT THESE THREE LINES to point at your website <<<
-VERSION             = "4.2.0"
-UPDATE_MANIFEST_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/version.json"
-DOWNLOAD_PAGE_URL   = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/"
-ACCESS_CODES_URL    = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/codes.json"
-INSTALLER_URL       = "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/latest/download/ProspectorsPlusSetup.exe"
-TUTORIAL_CONTENT_URL = "https://prospectorsplus.github.io/Prospecting-Auto-Pan/tutorial_content.json"
+# ---- identity ---------------------------------------------------------------
+# One version source of truth for the app, the packages and the About panel.
+# PROJECT_URL is the public open-source repository; while it is empty every
+# "view source / releases" control hides itself and the app never invents a
+# URL. Prospector Lite makes NO automatic network request: no update check,
+# no analytics, no remote content fetch (see PRIVACY.md / NETWORK_BEHAVIOR).
+APP_NAME    = "Prospector Lite"
+VERSION     = "1.0.0-rc.1"
+PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
 HERE = (os.path.dirname(sys.executable) if FROZEN
         else os.path.dirname(os.path.abspath(__file__)))
 
 
+def _legacy_data_dir():
+    """Pre-1.0 ("Prospectors Plus") install location. Read-only source for the
+    one-time migration below; never written to and never deleted."""
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "Prospectors Plus")
+    return os.path.join(os.path.expanduser("~"), "Library",
+                        "Application Support", "Prospectors Plus")
+
+
+# Config keys the old invite-gate / tracking builds wrote. Prospector Lite has
+# no access code and no tracking: these are never read, never migrated, and
+# are scrubbed from any config this app loads or copies.
+_PRIVATE_LEGACY_KEYS = ("ACCESS_OK", "ACCESS_HASH", "ACCESS_MACHINE",
+                        "MACHINE_SALT", "SYNC_URL")
+
+_MIGRATE_SUMMARY = ""   # shown once on the welcome screen after an upgrade
+
+
+def _migrate_legacy_data(d):
+    """One-time import of user data from a "Prospectors Plus" install.
+    Copy-only (the old directory is never modified), idempotent (a marker
+    file records completion, and an already-populated new directory is left
+    alone), and private fields are stripped: the old access-gate and tracking
+    keys are dropped, never carried into Prospector Lite."""
+    global _MIGRATE_SUMMARY
+    marker = os.path.join(d, ".migrated_from_prospectors_plus")
+    if os.path.exists(marker) or os.path.exists(
+            os.path.join(d, "prospecting_config.json")):
+        return
+    old = _legacy_data_dir()
+    if not os.path.isdir(old) or os.path.realpath(old) == os.path.realpath(d):
+        return
+    copied = []
+    for name in ("prospecting_config.json", "prospecting_builds.json",
+                 "prospecting_scripts.json", "run_history.json",
+                 "tutorial_content.json"):
+        src = os.path.join(old, name)
+        if not os.path.isfile(src):
+            continue
+        try:
+            if name == "prospecting_config.json":
+                with open(src, encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    continue
+                for k in _PRIVATE_LEGACY_KEYS:
+                    data.pop(k, None)
+                tmp = os.path.join(d, name + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                os.replace(tmp, os.path.join(d, name))
+            else:
+                shutil.copyfile(src, os.path.join(d, name + ".tmp"))
+                os.replace(os.path.join(d, name + ".tmp"),
+                           os.path.join(d, name))
+            copied.append(name)
+        except (OSError, ValueError):
+            continue
+    try:
+        with open(marker, "w", encoding="utf-8") as f:
+            f.write("from: %s\ncopied: %s\n"
+                    % (old, ", ".join(copied) or "nothing"))
+    except OSError:
+        pass
+    if copied:
+        _MIGRATE_SUMMARY = ("Your Prospectors Plus data was imported (%s). "
+                            "The old folder was not modified."
+                            % ", ".join(copied))
+
+
 def _data_dir():
-    """Where read/write files (config, builds) live. When frozen we can't write
-    next to the .exe (Program Files is read-only for normal users), so use
-    %LOCALAPPDATA%\\Prospectors Plus. In dev it's just the script folder."""
+    """Where read/write files (config, builds) live. Packaged builds use the
+    platform-native per-user data directory; running from source keeps them
+    next to the scripts (unchanged dev behaviour)."""
     d = os.environ.get("PP_DATA_DIR")
     if d:
         # Embedded launches (Prospector Studio bundles this app) choose the
@@ -52,10 +122,20 @@ def _data_dir():
         os.makedirs(d, exist_ok=True)
         return d
     if FROZEN:
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        d = os.path.join(base, "Prospectors Plus")
-    else:
-        d = os.path.dirname(os.path.abspath(__file__))
+        if sys.platform == "darwin":
+            d = os.path.join(os.path.expanduser("~"), "Library",
+                             "Application Support", "Prospector Lite")
+        elif os.name == "nt":
+            base = (os.environ.get("APPDATA")
+                    or os.environ.get("LOCALAPPDATA")
+                    or os.path.expanduser("~"))
+            d = os.path.join(base, "Prospector Lite")
+        else:
+            d = os.path.join(os.path.expanduser("~"), ".prospector-lite")
+        os.makedirs(d, exist_ok=True)
+        _migrate_legacy_data(d)
+        return d
+    d = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -70,7 +150,6 @@ DATA_DIR = _data_dir()
 CONFIG_FILE = os.path.join(DATA_DIR, "prospecting_config.json")
 BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
 TUTORIAL_FILE = os.path.join(DATA_DIR, "tutorial_content.json")        # owner edits
-TUTORIAL_CACHE = os.path.join(DATA_DIR, "tutorial_remote_cache.json")  # site copy
 SCRIPTS_FILE = os.path.join(DATA_DIR, "prospecting_scripts.json")   # Studio scripts
 # Studio-launch cross-window state (both ignored outside PP_STUDIO_LAUNCH):
 #   STATUS_FILE  -- written by THIS app (atomic, seq-numbered): mode, active
@@ -224,14 +303,6 @@ if FROZEN and not os.path.exists(CONFIG_FILE):
         pass
 
 
-def _ver_tuple(s):
-    """'1.2.3' -> (1,2,3); tolerant of junk so a bad manifest never crashes."""
-    out = []
-    for part in str(s).strip().split("."):
-        num = "".join(ch for ch in part if ch.isdigit())
-        out.append(int(num) if num else 0)
-    return tuple(out) or (0,)
-
 # reuse the settings schema + help from the browser UI so they never drift apart.
 # Tolerant import: a missing name (e.g. an older prospecting_ui.py without the
 # new pixel schema) must NOT blank everything -- load each piece independently.
@@ -344,7 +415,32 @@ def _read_json(path, fallback):
 
 
 def load_saved():
-    return _read_json(CONFIG_FILE, {})
+    cfg = _read_json(CONFIG_FILE, {})
+    if isinstance(cfg, dict):
+        # Old invite-gate / tracking fields are dead: never surfaced, never
+        # honoured, and _scrub_config_file() removes them from disk once.
+        for _k in _PRIVATE_LEGACY_KEYS:
+            cfg.pop(_k, None)
+    return cfg
+
+
+def _scrub_config_file():
+    """One-time on-disk cleanup: rewrite the config without the legacy
+    access-gate / tracking keys. Atomic, best-effort, run at startup."""
+    raw = _read_json(CONFIG_FILE, {})
+    if not isinstance(raw, dict):
+        return
+    if not any(k in raw for k in _PRIVATE_LEGACY_KEYS):
+        return
+    for k in _PRIVATE_LEGACY_KEYS:
+        raw.pop(k, None)
+    try:
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(raw, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
+    except OSError:
+        pass
 
 
 # --- Secrets: the personal API key lives in a gitignored, NON-bundled file so it
@@ -379,26 +475,23 @@ def _save_coach_key(key):
 
 
 def _is_owner():
-    """Owner gate for the tutorial/help editor. True only on the owner's
-    machine: the gitignored secrets file must exist and carry either
-    "OWNER": true or the SYNC_URL (which is never in a user install's
-    secrets file; shipped configs carry it in prospecting_config.json,
-    not in secrets). Users never see edit controls."""
+    """Owner gate for the tutorial/help editor. True only on a machine whose
+    gitignored secrets file carries "OWNER": true. Users never see edit
+    controls, and nothing about this flag ever leaves the machine."""
     sec = _load_secrets()
-    return bool(sec.get("OWNER") is True or (sec.get("SYNC_URL") or "").strip())
+    return bool(sec.get("OWNER") is True)
 
 
 # ---- Tutorial + help content ------------------------------------------------
 # Every tutorial card ships here as the default. The owner can edit any card
 # (and any setting/button explanation) in-app; edits land in TUTORIAL_FILE as
 # overrides keyed by the card id (or "help:<KEY>" / "ui:<id>" for hover help).
-# The app also pulls TUTORIAL_CONTENT_URL into TUTORIAL_CACHE at launch so the
-# owner can push content updates to everyone without a release.
-# Merge order: defaults < remote cache < local owner edits.
+# Content is local-only: Prospector Lite never fetches remote tutorial text.
+# Merge order: defaults < local owner edits.
 TOUR_DEFAULTS = {
  "main": [
   {"id": "main.welcome", "tab": "run", "center": True,
-   "title": "Welcome to Prospectors Plus",
+   "title": "Welcome to Prospector Lite",
    "body": "This walks the whole macro: what each page does and how to fix the "
            "common problems. Use <b>Next</b> and <b>Back</b> (arrow keys work "
            "too); Esc closes it. Each big page also has its own short "
@@ -495,11 +588,11 @@ TOUR_DEFAULTS = {
   {"id": "main.alerts", "tab": "Notifications",
    "sel": "[data-key=\"WEBHOOK_ENABLED\"]", "row": True,
    "title": "Get pinged instead of babysitting",
-   "body": "Turn on <b>DM me on Discord</b> and enter your Discord username. "
-           "The Prospectors bot messages you when the macro starts, stops, "
-           "pauses on trouble, or on a stats schedule, with a screenshot if "
-           "you want. <b>Send test notification</b> below proves it works "
-           "before a long run."},
+   "body": "Add your own Discord webhook on this page and turn on <b>Discord "
+           "notifications</b>. The macro then posts to your channel when it "
+           "starts, stops, pauses on trouble, or on a stats schedule, with a "
+           "screenshot if you want. <b>Send test</b> proves it works before "
+           "a long run. Until you set this up, nothing is ever sent."},
   {"id": "main.builds", "tab": "builds", "sel": ".bldbar",
    "title": "Builds save your whole setup",
    "body": "A build is a snapshot of every setting plus relics. Load one to "
@@ -860,10 +953,11 @@ TOUR_DEFAULTS = {
  "alerts": [
   {"id": "alr.discord", "tab": "Notifications",
    "sel": "[data-key=\"WEBHOOK_ENABLED\"]", "row": True,
-   "title": "Discord DMs",
-   "body": "Turn on DM me on Discord and enter your Discord username. That "
-           "is the whole setup. The bot pings you about your runs so you do "
-           "not babysit the macro."},
+   "title": "Discord notifications",
+   "body": "Paste your own Discord webhook URL on the Notifications page and "
+           "turn on Discord notifications. That is the whole setup: the "
+           "macro posts run updates to your channel so you do not babysit "
+           "it. Off by default; nothing is sent until you configure it."},
   {"id": "alr.events", "tab": "Notifications",
    "sel": "[data-key=\"NOTIFY_SAFE_STOP\"]", "row": True,
    "title": "Pick your events",
@@ -988,43 +1082,13 @@ def _tutorial_local():
     return _read_json(TUTORIAL_FILE, {}) or {}
 
 
-def _tutorial_remote():
-    return _read_json(TUTORIAL_CACHE, {}) or {}
-
-
-def _tutorial_refresh_remote():
-    """Pull the published tutorial content into the local cache (background,
-    fail-open). Lets the owner update every install's tutorial text and media
-    by editing one file on the website, no release needed."""
-    def _pull():
-        try:
-            import ssl as _ssl
-            req = urllib.request.Request(
-                TUTORIAL_CONTENT_URL, headers={"User-Agent": "ProspectorsPlus"})
-            try:
-                raw = urllib.request.urlopen(req, timeout=8).read()
-            except Exception as e1:
-                if getattr(e1, "code", None):
-                    return
-                raw = urllib.request.urlopen(
-                    req, timeout=8,
-                    context=_ssl._create_unverified_context()).read()
-            data = json.loads(raw.decode("utf-8"))
-            if isinstance(data, dict):
-                with open(TUTORIAL_CACHE, "w") as f:
-                    json.dump(data, f, indent=1)
-        except Exception:
-            pass
-    threading.Thread(target=_pull, daemon=True).start()
-
-
 def _tutorial_merged():
-    """Defaults + remote cache + local owner edits, merged per entry id.
-    Overrides live flat: {"<card id>": {...}, "help:<KEY>": {...},
-    "ui:<id>": {...}}. A card override may replace title/body and add
-    img (a data url or web url) and vid (a YouTube link)."""
+    """Defaults + local owner edits, merged per entry id. Overrides live
+    flat: {"<card id>": {...}, "help:<KEY>": {...}, "ui:<id>": {...}}.
+    A card override may replace title/body and add img (a data url or web
+    url) and vid (a YouTube link)."""
     over = {}
-    for src in (_tutorial_remote(), _tutorial_local()):
+    for src in (_tutorial_local(),):
         o = src.get("overrides") if isinstance(src.get("overrides"), dict) else src
         for k, v in (o or {}).items():
             if isinstance(v, dict):
@@ -1560,7 +1624,7 @@ def _studio_validate(script):
         return _studio_validate_v2(script)
     elif v > STUDIO_SCHEMA_VERSION:
         errors.append("This script was made with a newer version of "
-                      "Prospectors Plus; update the app to open it.")
+                      "Prospector Lite; update the app to open it.")
     if not _studio_name_ok(script.get("name")):
         errors.append("The script needs a name: 1 to 60 printable characters, "
                       "no leading or trailing spaces.")
@@ -1882,50 +1946,6 @@ def _dpi_aware():
 # ============================================================================
 # JS <-> Python bridge
 # ============================================================================
-_MID_CACHE = None
-_REVOKE_CHECKED = False
-
-
-def _machine_id():
-    """Stable per-machine fingerprint (hashed), for the invite machine-lock.
-    macOS -> IOPlatformUUID; Windows -> registry MachineGuid; else a random
-    salt persisted in config. Never sent raw -- only a sha256 hex is stored /
-    beaconed, so it can't identify hardware, only tell two machines apart."""
-    global _MID_CACHE
-    if _MID_CACHE:
-        return _MID_CACHE
-    raw = ""
-    try:
-        if sys.platform == "darwin":
-            import subprocess, re as _re
-            out = subprocess.check_output(
-                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                timeout=4).decode("utf-8", "ignore")
-            m = _re.search(r'"IOPlatformUUID"\s*=\s*"([^"]+)"', out)
-            if m:
-                raw = m.group(1)
-        elif os.name == "nt":
-            import winreg
-            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                               r"SOFTWARE\Microsoft\Cryptography")
-            raw, _ = winreg.QueryValueEx(k, "MachineGuid")
-    except Exception:
-        raw = ""
-    if not raw:
-        try:
-            cur = load_saved()
-            raw = cur.get("MACHINE_SALT")
-            if not raw:
-                raw = hashlib.sha256(os.urandom(16)).hexdigest()
-                cur["MACHINE_SALT"] = raw
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
-        except Exception:
-            raw = "unknown-machine"
-    _MID_CACHE = hashlib.sha256(("PPMID:" + str(raw)).encode("utf-8")).hexdigest()
-    return _MID_CACHE
-
-
 # ---- runner identity (protocol 1.5) -----------------------------------------
 # One durable GUID per data dir, shared with the engine: both read/mint the
 # SAME <data dir>/instance_id file, so the publish acknowledgement this app
@@ -2434,30 +2454,31 @@ class Api:
 
     def test_webhook(self):
         """Send a real test notification through the exact path the engine
-        uses (WEBHOOK_URL, or the shipped SYNC_URL when that is empty), so
+        uses (the user's own WEBHOOK_URL; nothing is baked into the app), so
         users can prove their Discord pings work before a long run."""
         saved = load_saved()
         url = str(saved.get("WEBHOOK_URL") or "").strip()
         user = str(saved.get("WEBHOOK_USER") or "").strip()
         if not url:
             return {"ok": False,
-                    "error": "Notifications are not set up on this build yet."}
-        if not user:
+                    "error": "Add your own Discord webhook URL first (in the "
+                             "box below), then send a test."}
+        if not url.lower().startswith("https://"):
             return {"ok": False,
-                    "error": "Enter your Discord username first, then send a test."}
-        msg = "🔔 Test notification: this is what a Prospectors Plus alert looks like."
+                    "error": "The webhook URL must start with https://"}
+        msg = "🔔 Test notification: this is what a Prospector Lite alert looks like."
         fields = [{"name": "User", "value": (user or "(not set)")[:100],
                    "inline": True},
                   {"name": "Event", "value": "test", "inline": True}]
-        payload = {"username": "Prospectors Plus", "content": msg,
-                   "embeds": [{"title": "Prospectors Plus",
+        payload = {"username": APP_NAME, "content": msg,
+                   "embeds": [{"title": APP_NAME,
                                "description": msg, "color": 0xC2924C,
                                "fields": fields}],
                    "event": "test", "user": user, "stats": {}}
         try:
             import ssl as _ssl
             hdrs = {"Content-Type": "application/json",
-                    "User-Agent": "ProspectorsPlus/1.0"}
+                    "User-Agent": "ProspectorLite/1.0"}
             _sec = str(saved.get("WEBHOOK_SECRET") or "").strip()
             if _sec:
                 hdrs["x-macro-secret"] = _sec
@@ -2478,170 +2499,89 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    # ---- updates ----
+    # ---- app identity ----
+    # There is deliberately NO auto-update mechanism: the app never contacts
+    # any server on its own. Users update by downloading a new release
+    # themselves (the welcome/About surfaces link to PROJECT_URL when set).
     def app_version(self):
         return VERSION
 
-    def check_update(self):
-        """Fetch the version manifest from the website and compare. Never raises
-        -- if offline or the URL isn't set yet, just reports no update."""
+    def app_info(self):
+        """Identity for the About/welcome surfaces. No network: version and
+        build facts only, plus the public repository URL when configured."""
+        info = {"name": APP_NAME, "version": VERSION,
+                "platform": sys.platform, "frozen": FROZEN,
+                "project_url": PROJECT_URL,
+                "engine_fp": _engine_fingerprint(),
+                "migrated": _MIGRATE_SUMMARY or ""}
         try:
-            req = urllib.request.Request(UPDATE_MANIFEST_URL,
-                                         headers={"User-Agent": "ProspectorsPlus"})
-            with urllib.request.urlopen(req, timeout=6) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            latest = str(data.get("version", "")).strip()
-            if latest and _ver_tuple(latest) > _ver_tuple(VERSION):
-                return {"update": True, "version": latest,
-                        "current": VERSION,
-                        "url": data.get("url") or DOWNLOAD_PAGE_URL,
-                        "installer": data.get("installer") or INSTALLER_URL,
-                        "critical": bool(data.get("critical")),
-                        "notes": data.get("notes", "")}
-            return {"update": False, "version": VERSION}
-        except Exception as e:
-            return {"update": False, "error": str(e)}
+            bi = _read_json(_resource("build_info.json"), {})
+            if isinstance(bi, dict):
+                info["commit"] = str(bi.get("commit", ""))[:12]
+                info["build_date"] = str(bi.get("date", ""))
+        except Exception:
+            pass
+        return info
 
     def open_external(self, url):
+        """Open a URL in the OS browser. Only ever called with a URL the
+        user clicked; with no PROJECT_URL configured and no URL given it
+        does nothing at all."""
         try:
-            webbrowser.open(url or DOWNLOAD_PAGE_URL)
+            if not url:
+                url = PROJECT_URL
+            if not url:
+                return False
+            webbrowser.open(url)
             return True
         except Exception:
             return False
 
-    def do_update(self, url=None):
-        """One-click update for the installed Windows app: download the latest
-        installer and run it silently (it upgrades in place over the same install
-        and relaunches), then quit so the files can be replaced. On macOS / when
-        running from source we can't self-install, so we open the download page."""
-        target = url or INSTALLER_URL
-        frozen = bool(globals().get("FROZEN", False))
-        if not (frozen and sys.platform.startswith("win")):
-            try:
-                webbrowser.open(DOWNLOAD_PAGE_URL)
-            except Exception:
-                pass
-            return {"ok": False, "manual": True}
-        try:
-            import tempfile
-            tmp = os.path.join(tempfile.gettempdir(), "ProspectorsPlusSetup.exe")
-            req = urllib.request.Request(
-                target, headers={"User-Agent": "ProspectorsPlus"})
-            with urllib.request.urlopen(req, timeout=120) as r, open(tmp, "wb") as f:
-                while True:
-                    chunk = r.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-            # /SILENT shows a small progress bar; the installer's [Run] entry
-            # relaunches the app afterwards. We exit so the .exe can be replaced.
-            subprocess.Popen([tmp, "/SILENT", "/NORESTART", "/SUPPRESSMSGBOXES"],
-                             close_fds=True)
-
-            def _bye():
-                import time as _t
-                _t.sleep(1.3)
+    def open_doc(self, name):
+        """Open a bundled documentation file (privacy/security/readme) in
+        the OS default viewer. Whitelisted names only; JS can never open an
+        arbitrary path."""
+        allowed = {"PRIVACY.md", "SECURITY.md", "README.md",
+                   "THIRD_PARTY_NOTICES.md"}
+        if name not in allowed:
+            return False
+        for base in (getattr(sys, "_MEIPASS", None), HERE,
+                     os.path.dirname(HERE)):
+            if not base:
+                continue
+            p = os.path.join(base, name)
+            if os.path.isfile(p):
                 try:
-                    if _window is not None:
-                        _window.destroy()
+                    webbrowser.open("file://" + p)
+                    return True
                 except Exception:
-                    pass
-                os._exit(0)
-            threading.Thread(target=_bye, daemon=True).start()
-            return {"ok": True}
-        except Exception as e:
-            try:
-                webbrowser.open(DOWNLOAD_PAGE_URL)
-            except Exception:
-                pass
-            return {"ok": False, "error": str(e)}
+                    return False
+        return False
 
-    # ---- access gate ----
-    def access_state(self):
-        """Has this PC unlocked with a valid code AND is this the machine the
-        code was bound to? (machine-lock: copying the config to another
-        computer re-locks it, so a code can't be shared by handing over the
-        config.) Also re-checks the published code list once per launch so a
-        revoked code actually stops working -- offline / fetch errors NEVER
-        lock anyone out (fail open)."""
-        global _REVOKE_CHECKED
+    # ---- welcome / onboarding ----
+    # Prospector Lite has NO access code, licence check or account. The
+    # welcome screen is onboarding only: it explains what the app does, what
+    # it stores locally and which OS permissions it needs, then continues.
+    def welcome_state(self):
         cur = load_saved()
-        if not cur.get("ACCESS_OK"):
-            return {"unlocked": False}
-        bound = cur.get("ACCESS_MACHINE")
-        mid = _machine_id()
-        if bound and bound != mid:
-            return {"unlocked": False, "moved": True}
-        if not bound:                       # legacy unlock -> bind to this PC
-            try:
-                cur["ACCESS_MACHINE"] = mid
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
-            except OSError:
-                pass
-        h = cur.get("ACCESS_HASH")
-        if h and not _REVOKE_CHECKED:
-            _REVOKE_CHECKED = True          # at most one network check/launch
-            try:
-                import time as _t
-                url = ACCESS_CODES_URL + ("&" if "?" in ACCESS_CODES_URL else "?") \
-                      + "t=" + str(int(_t.time()))
-                req = urllib.request.Request(url, headers={
-                    "User-Agent": "ProspectorsPlus", "Cache-Control": "no-cache"})
-                with urllib.request.urlopen(req, timeout=4) as r:
-                    hashes = set(json.loads(r.read().decode("utf-8")).get("hashes") or [])
-                if hashes and h not in hashes:   # empty list = fail open too
-                    cur["ACCESS_OK"] = False
-                    try:
-                        with open(CONFIG_FILE, "w") as f:
-                            json.dump(cur, f, indent=2)
-                    except OSError:
-                        pass
-                    return {"unlocked": False, "revoked": True}
-            except Exception:
-                pass                        # offline etc.: never lock out
-        return {"unlocked": True}
-    def verify_access(self, code):
-        """Check an access code against the GitHub-hosted hashed list. On success
-        remember it on this PC so we don't ask again."""
-        norm = "".join((code or "").split()).upper()
-        if not norm:
-            return {"ok": False, "error": "Enter your access code."}
-        h = hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        show = not bool(cur.get("WELCOME_SEEN"))
+        if STUDIO_LAUNCH:
+            show = False        # the Studio host owns its own onboarding
+        return {"show": show, "info": self.app_info()}
+
+    def welcome_done(self, always_show=False):
+        """Persist that onboarding was seen (Continue). always_show=True
+        keeps the screen appearing at every launch (user preference)."""
+        cur = load_saved()
+        cur["WELCOME_SEEN"] = not bool(always_show)
         try:
-            import time as _t
-            url = ACCESS_CODES_URL + ("&" if "?" in ACCESS_CODES_URL else "?") \
-                  + "t=" + str(int(_t.time()))   # bust the GitHub Pages CDN cache
-            req = urllib.request.Request(url, headers={
-                "User-Agent": "ProspectorsPlus", "Cache-Control": "no-cache"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                data = json.loads(r.read().decode("utf-8"))
-            hashes = set(data.get("hashes") or [])
-        except urllib.error.HTTPError as e:
-            if e.code == 404:
-                return {"ok": False, "error": "The access list isn't published "
-                        "yet. Ask the owner to publish codes, then try again."}
-            return {"ok": False, "error": "Code server error (%s)." % e.code}
-        except Exception:
-            return {"ok": False, "error": "Couldn't reach the code server. "
-                    "Check your internet and try again."}
-        if h in hashes:
-            cur = load_saved()
-            cur["ACCESS_OK"] = True
-            cur["ACCESS_HASH"] = h
-            cur["ACCESS_MACHINE"] = _machine_id()   # bind code to THIS machine
-            try:
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
-            except OSError:
-                pass
-            try:
-                self._report_usage()               # beacon the redemption now
-            except Exception:
-                pass
-            return {"ok": True}
-        return {"ok": False,
-                "error": "That code isn't valid. Double-check and try again."}
+            tmp = CONFIG_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(cur, f, indent=2)
+            os.replace(tmp, CONFIG_FILE)
+        except OSError:
+            pass
+        return {"ok": True}
 
     def save_pixels(self, pixels, colors=None, fr=None):
         """Save calibrated pixel coordinates. [Phase 04 C8] The semantic
@@ -2660,7 +2600,7 @@ class Api:
         cur = load_saved()
         keys = ["CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX", "PAN_PIX",
                 "SHAKE_PIX", "DIG_TRIGGER_PIXEL"]
-        return {"app": "Prospectors Plus", "kind": "calibration",
+        return {"app": APP_NAME, "kind": "calibration",
                 "version": VERSION,
                 "pixels": {k: cur[k] for k in keys if k in cur},
                 "PIXEL_RATIOS": cur.get("PIXEL_RATIOS", {}),
@@ -3060,6 +3000,9 @@ class Api:
     def webhook_set(self, url):
         try:
             val = str(url or "").strip()
+            if val and not val.lower().startswith("https://"):
+                return {"ok": False,
+                        "error": "The webhook URL must start with https://"}
             ack = self._engine_settings_set({"WEBHOOK_URL": val})
             if ack is not None:
                 return {"ok": bool(ack.get("ok"))}
@@ -3384,7 +3327,7 @@ class Api:
         entry = _builds_all().get(name)
         if not isinstance(entry, dict):
             return {"ok": False, "error": "Build not found."}
-        payload = {"_ppbuild": 1, "app": "Prospectors Plus", "name": name,
+        payload = {"_ppbuild": 1, "app": APP_NAME, "name": name,
                    "entry": json.loads(json.dumps(entry))}
         try:
             import webview
@@ -3970,7 +3913,7 @@ class Api:
         s = d["scripts"].get(name)
         if not isinstance(s, dict):
             return {"ok": False, "error": "Script not found."}
-        payload = {"_ppscript": 1, "app": "Prospectors Plus",
+        payload = {"_ppscript": 1, "app": APP_NAME,
                    "script": json.loads(json.dumps(s))}
         try:
             import webview
@@ -4223,65 +4166,6 @@ class Api:
             return {"error": str(e)}
 
     # ---- run control ----
-    def _report_usage(self):
-        """Background sync ping (fire-and-forget; never blocks the launch).
-        Never under a Studio launch: the Prospector Macro companion sends
-        nothing anywhere (privacy contract of the integrated product)."""
-        if STUDIO_LAUNCH:
-            return
-        try:
-            cur = load_saved()
-            hook = (cur.get("SYNC_URL") or "").strip()
-            if not hook:
-                return
-            import urllib.request
-            user = cur.get("WEBHOOK_USER", "") or "(no name)"
-            code = cur.get("ACCESS_HASH", "") or "(none)"
-            machine = (cur.get("ACCESS_MACHINE") or _machine_id())[:16]
-
-            def _send():
-                ip, loc, isp = "?", "?", ""
-                try:
-                    with urllib.request.urlopen(
-                        "http://ip-api.com/json/?fields=query,country,regionName,city,isp",
-                        timeout=6) as r:
-                        j = json.loads(r.read().decode("utf-8"))
-                    ip = j.get("query", "?")
-                    loc = ", ".join([x for x in (j.get("city"), j.get("regionName"),
-                                                 j.get("country")) if x]) or "?"
-                    isp = j.get("isp", "") or ""
-                except Exception:
-                    pass
-                embed = {"title": "Macro run", "color": 0xc2924c, "fields": [
-                    {"name": "User", "value": str(user)[:200], "inline": True},
-                    {"name": "Version", "value": str(VERSION), "inline": True},
-                    {"name": "IP", "value": str(ip), "inline": True},
-                    {"name": "Location", "value": str(loc), "inline": True},
-                    {"name": "ISP", "value": str(isp or "?"), "inline": True},
-                    {"name": "Access code (hash)", "value": str(code)[:120], "inline": False},
-                    {"name": "Machine", "value": str(machine), "inline": True},
-                ]}
-                body = json.dumps({"username": "PP Analytics",
-                                   "embeds": [embed]}).encode("utf-8")
-                req = urllib.request.Request(
-                    hook, data=body,
-                    headers={"Content-Type": "application/json",
-                             "User-Agent": "ProspectorsPlus/1.0"})
-                try:
-                    urllib.request.urlopen(req, timeout=8)
-                except Exception:
-                    # macOS Python often lacks SSL certs -> verified HTTPS fails.
-                    # Retry without verification (fine for a one-way analytics post).
-                    try:
-                        import ssl as _ssl
-                        urllib.request.urlopen(
-                            req, timeout=8, context=_ssl._create_unverified_context())
-                    except Exception:
-                        pass
-            threading.Thread(target=_send, daemon=True).start()
-        except Exception:
-            pass
-
     def launch(self, data=None, relics=None, enabled=None):
         if data is not None:
             self.save_config(data)
@@ -4324,7 +4208,6 @@ class Api:
                              and _pp.get("name") == _sdp["active"] else "")
         except Exception:
             self._run_mode, self._run_rev = "", ""
-        self._report_usage()
         # When frozen there is no python.exe to run the .py macro, so re-launch
         # THIS exe with --run-macro (handled in main()). In dev, run the script.
         if FROZEN:
@@ -4338,6 +4221,7 @@ class Api:
         self.proc = subprocess.Popen(
             cmd, cwd=DATA_DIR, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
+            env=dict(os.environ, PPENGINE_HOME=DATA_DIR),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
         self._run_active = True
@@ -6170,19 +6054,30 @@ def build_html():
         extra = ""
         if title == "Notifications":
             extra = ('<div class="whbox">'
-                     '<p class="chint" style="margin:0 0 9px">Alerts are sent as a '
-                     'direct message to your own Discord. One-time setup:</p>'
+                     '<p class="chint" style="margin:0 0 9px">Notifications are '
+                     'OFF until you add your own Discord webhook. The app never '
+                     'sends anything anywhere until you do. One-time setup:</p>'
                      '<ol class="whsteps">'
-                     '<li>Join our Discord server with the button below. You must '
-                     'be a member for the bot to DM you.</li>'
-                     '<li>Type your exact Discord username in <b>Your Discord '
-                     'username</b> above.</li>'
-                     '<li>In Discord, allow direct messages from server members.</li>'
-                     '<li>Turn on <b>DM me on Discord</b>, then Send test.</li></ol>'
-                     '<div class="whactions">'
-                     '<button type="button" id="joinDiscord" class="dscbtn"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a15.8 15.8 0 0 1 3 1.4 15.9 15.9 0 0 0-11.6 0c.9-.6 2-1.1 3-1.4L9 4a17 17 0 0 0-4.3 1.3C2 9.2 1.2 13 1.6 16.8A17.2 17.2 0 0 0 6.8 19l.4-.6c-.8-.3-1.5-.7-2.2-1.1l.5-.4a11.4 11.4 0 0 0 9.8 0l.5.4c-.7.4-1.4.8-2.2 1.1l.4.6a17.1 17.1 0 0 0 5.2-2.2c.5-4.4-.8-8.2-3.3-11.5ZM8.9 14.3c-.9 0-1.7-.8-1.7-1.9s.7-1.9 1.7-1.9 1.7.9 1.7 1.9-.8 1.9-1.7 1.9Zm6.2 0c-.9 0-1.7-.8-1.7-1.9s.7-1.9 1.7-1.9 1.7.9 1.7 1.9-.8 1.9-1.7 1.9Z"/></svg> Join the Discord server</button>'
+                     '<li>In your Discord server: Server Settings &rarr; '
+                     'Integrations &rarr; Webhooks &rarr; New Webhook &rarr; '
+                     'Copy Webhook URL.</li>'
+                     '<li>Paste the URL below and press Save.</li>'
+                     '<li>Turn on <b>Discord notifications</b>, then Send '
+                     'test.</li></ol>'
+                     '<div class="whactions" style="align-items:center">'
+                     '<input id="whurl" type="password" autocomplete="off" '
+                     'spellcheck="false" placeholder="https://discord.com/api/webhooks/…" '
+                     'style="flex:1;min-width:130px;background:var(--field);'
+                     'color:var(--txt);border:1px solid var(--line2);'
+                     'border-radius:8px;padding:8px 10px;font:inherit;font-size:12.5px">'
+                     '<button type="button" id="whurlsave" class="btn2">Save</button>'
                      '<button type="button" id="testnotify" class="btn2">Send test</button></div>'
-                     '<p class="chint" style="margin:8px 0 0">Alerts go only to you.</p></div>'
+                     '<div class="detout" id="whurlout"></div>'
+                     '<p class="chint" style="margin:8px 0 0">Sent only to the '
+                     'webhook you configure: the event, run stats, the name '
+                     'above and (if enabled) a screenshot. Never your IP, '
+                     'location or system details. Delete the URL to switch '
+                     'notifications off completely.</p></div>'
                      '<div class="detout" id="notifyout"></div>')
         panels.append(
             f'<section class="panel" id="p_{title}"><div class="phead"><h2>{title}</h2>'
@@ -6369,7 +6264,7 @@ _CYCMODEL_JS = r''' function cycModel(V,AB){
  }/*CYCMODEL-END*/'''
 
 
-HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"><style>
+HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts only: no network fetch --><style>
  :root{--bg:#171310;--bg2:#1c1714;--panel:#221c18;--head:#181310;--line:#332a23;
   --line2:#463a2f;--txt:#ece0d0;--mut:#9c8e7c;--dim:#6a5d4d;--accent:#a8794a;
   --accent-lit:#caa06e;--accent2:#8a9b6a;--teal-lit:#9bc07e;--green:#7faf5d;
@@ -7214,7 +7109,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  @keyframes drift{0%{transform:translate(-2.5%,-1.5%)}100%{transform:translate(2.5%,1.5%)}}
  .gate-paths svg g{animation:drift 24s ease-in-out infinite alternate;transform-origin:center}
  .gate-right{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:32px}
- .gate-card{width:100%;max-width:360px;animation:fadeIn .55s var(--ease) .1s both}
+ .gate-card{width:100%;max-width:430px;animation:fadeIn .55s var(--ease) .1s both}
  .gate-card .gc-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;margin-bottom:28px}
  .gate-card .gc-logo .gl-pk{width:28px;height:28px;font-size:14px}
  .gate-card h1{font-size:24px;letter-spacing:-.3px;margin:0 0 6px;color:var(--txt)}
@@ -7226,14 +7121,22 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
  .gate-field input::placeholder{letter-spacing:1px;text-transform:none;color:var(--dim)}
  .gate-field input:focus{outline:0;border-color:var(--accent);box-shadow:0 0 0 3px rgba(194,146,76,.22)}
  .gate-field .ic{position:absolute;left:12px;top:50%;transform:translateY(-50%);font-size:15px;opacity:.8}
- #gateGo{width:100%;background:var(--accent);color:#241a02;font-size:15px;padding:13px;border-radius:11px;margin-top:2px}
- #gateGo:hover{filter:brightness(1.05);transform:translateY(-1px)}
- #gateGo[disabled]{opacity:.6;transform:none;cursor:default}
+ #welGo{width:100%;background:var(--accent);color:#241a02;font-size:15px;padding:13px;border-radius:11px;margin-top:2px}
+ #welGo:hover{filter:brightness(1.05);transform:translateY(-1px)}
+ #welGo[disabled]{opacity:.6;transform:none;cursor:default}
  .gate-err{min-height:18px;margin-top:11px;color:#f0a6a6;font-size:13px}
  .gate-foot{margin-top:24px;color:var(--dim);font-size:12.5px;line-height:1.6}
+ .wel-list{margin:0 0 18px;padding:0;list-style:none;text-align:left}
+ .wel-list li{margin:0 0 10px;font-size:13.5px;line-height:1.5;color:var(--mut)}
+ .wel-list li b{color:var(--txt)}
+ .wel-again{display:flex;gap:7px;align-items:center;justify-content:center;margin-top:12px;color:var(--dim);font-size:12.5px;cursor:pointer}
+ .wel-links{margin-top:14px;display:flex;gap:14px;justify-content:center}
+ .wel-links a{color:var(--accent);font-size:12.5px;text-decoration:none}
+ .wel-links a:hover{text-decoration:underline}
+ .gc-ver{color:var(--dim);font-size:11.5px;font-weight:600;margin-left:6px}
 </style></head><body>
  <div id="splash">
-   <div class="sp-logo"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospectors <b>Plus</b></div>
+   <div class="sp-logo"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospector <b>Lite</b></div>
    <div class="sp-sub">loading&hellip;</div>
    <div class="sp-bar"><i></i></div>
  </div>
@@ -7241,38 +7144,38 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    <div class="gate-left">
      <div class="gate-paths" id="gatePaths"></div>
      <div class="gate-fade"></div>
-     <div class="gl-top"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospectors Plus</div>
+     <div class="gl-top"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospector Lite</div>
      <div class="gl-quote">
-       <p>&ldquo;Set it up once, hand it a code, and let it dig. Prospectors Plus runs the whole loop while you&rsquo;re away.&rdquo;</p>
-       <footer>~ Prospectors Plus</footer>
+       <p>&ldquo;Set it up once and let it dig. Prospector Lite runs the whole panning loop while you&rsquo;re away.&rdquo;</p>
+       <footer>free &amp; open source</footer>
      </div>
    </div>
    <div class="gate-right">
-     <div class="gate-card">
-       <div class="gc-logo"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospectors Plus</div>
-       <h1>Enter your access code</h1>
-       <div class="gc-sub">Prospectors Plus is invite-only. Enter the access code you were given to unlock it.</div>
-       <form id="gateForm">
-         <div class="gate-field">
-           <span class="ic">&#128273;</span>
-           <input id="gateCode" placeholder="PPLUS-XXXX-XXXX" autocomplete="off" spellcheck="false">
-         </div>
-         <button type="submit" id="gateGo" class="btn">Unlock</button>
-         <div class="gate-err" id="gateErr"></div>
-       </form>
-       <div class="gate-foot">Don&rsquo;t have a code? Join our Discord server to request access.</div>
-       <button type="button" id="gateDiscord" class="dscbtn gate-dsc"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19.3 5.3A17 17 0 0 0 15 4l-.2.4a15.8 15.8 0 0 1 3 1.4 15.9 15.9 0 0 0-11.6 0c.9-.6 2-1.1 3-1.4L9 4a17 17 0 0 0-4.3 1.3C2 9.2 1.2 13 1.6 16.8A17.2 17.2 0 0 0 6.8 19l.4-.6c-.8-.3-1.5-.7-2.2-1.1l.5-.4a11.4 11.4 0 0 0 9.8 0l.5.4c-.7.4-1.4.8-2.2 1.1l.4.6a17.1 17.1 0 0 0 5.2-2.2c.5-4.4-.8-8.2-3.3-11.5ZM8.9 14.3c-.9 0-1.7-.8-1.7-1.9s.7-1.9 1.7-1.9 1.7.9 1.7 1.9-.8 1.9-1.7 1.9Zm6.2 0c-.9 0-1.7-.8-1.7-1.9s.7-1.9 1.7-1.9 1.7.9 1.7 1.9-.8 1.9-1.7 1.9Z"/></svg> Join the Discord server</button>
+     <div class="gate-card" role="dialog" aria-labelledby="welTitle">
+       <div class="gc-logo"><span class="gl-pk"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg></span> Prospector Lite <span class="gc-ver" id="welVer"></span></div>
+       <h1 id="welTitle">Welcome</h1>
+       <div class="gc-sub">An open-source macro for Roblox <i>Prospecting</i>. It reads your screen and presses ordinary keys and clicks &mdash; nothing more.</div>
+       <ul class="wel-list">
+         <li><b>External only.</b> It never injects into Roblox, never modifies the game or its files, and never reads game memory.</li>
+         <li><b>Private by design.</b> Everything stays on this computer: no account, no access code, no analytics, and no network requests unless you set up optional notifications yourself.</li>
+         <li><b>Permissions.</b> macOS asks for Screen Recording (to see the game) and Accessibility (to press keys). Windows needs no admin rights.</li>
+         <li><b>Safe Stop.</b> Esc or Ctrl+K stops the macro instantly and releases every key and mouse button.</li>
+       </ul>
+       <button type="button" id="welGo" class="btn">Continue</button>
+       <label class="wel-again"><input type="checkbox" id="welAgain"> Show this screen at every launch</label>
+       <div class="wel-links">
+         <a href="#" id="welSrc" style="display:none">View source</a>
+         <a href="#" id="welPriv">Privacy &amp; data</a>
+         <a href="#" id="welSec">Security</a>
+       </div>
+       <div class="gate-foot" id="welBuild"></div>
+       <div class="gate-foot" id="welMigr" style="display:none"></div>
      </div>
    </div>
  </div>
 
- <div class="upd" id="upd">
-   <span id="updtext"></span><span class="grow"></span>
-   <button id="upddl">Update now</button>
-   <button class="x" id="updx">Later</button>
- </div>
  <div class="topbar">
-   <div class="brand"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospectors <b>Plus</b></div>
+   <div class="brand"><svg class="pp-gem" viewBox="0 0 24 24" fill="none"><path d="M6.5 4h11l4 5.2L12 21 2.5 9.2z" fill="#fff"/><path d="M2.5 9.2h19M6.5 4l2.6 5.2L12 21M17.5 4l-2.6 5.2L12 21M9.1 9.2h5.8" stroke="#0a0908" stroke-opacity=".32" stroke-width=".8" stroke-linejoin="round"/></svg> Prospector <b>Lite</b></div>
    <div class="modestrip" id="modestrip" role="tablist" aria-label="Macro mode">
      <button type="button" class="mtab" id="mode_classic" role="tab" aria-selected="false" title="The proven built-in cycle — modes, routes, relics, recovery">Classic</button>
      <button type="button" class="mtab" id="mode_studio" role="tab" aria-selected="false" title="Run a prospecting build authored in Prospector Studio">Studio Build</button>
@@ -7529,12 +7432,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
      var btn=T('tourbtn');if(!btn)return;var r=btn.getBoundingClientRect();
      menuEl=document.createElement('div');menuEl.id='tourmenu';
      menuEl.innerHTML='<div class="tmhd">Tutorials</div>'+TOUR_LIST.map(function(t){
-       return '<button type="button" data-tour="'+t[0]+'">'+t[1]+(seen(t[0])?' <span class="tmdone">seen</span>':'')+'</button>';}).join('');
+       return '<button type="button" data-tour="'+t[0]+'">'+t[1]+(seen(t[0])?' <span class="tmdone">seen</span>':'')+'</button>';}).join('')
+       +'<div class="tmhd" style="margin-top:4px">App</div>'
+       +'<button type="button" id="tmwelcome">Welcome, privacy &amp; version</button>';
      document.body.appendChild(menuEl);
      menuEl.style.top=(r.bottom+8)+'px';
      menuEl.style.right=Math.max(10,window.innerWidth-r.right)+'px';
      menuEl.querySelectorAll('button[data-tour]').forEach(function(b){
        b.onclick=function(){window.startTour(b.getAttribute('data-tour'));};});
+     var wb=menuEl.querySelector('#tmwelcome');
+     if(wb)wb.onclick=function(){if(window.openWelcome)window.openWelcome();};
      document.addEventListener('mousedown',menuAway,true);}
    var tb=T('tourbtn');if(tb)tb.onclick=openMenu;
    function buildExplain(){if(builtExplain)return;builtExplain=true;
@@ -7818,7 +7725,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    function _pvTrig(K,v,mn,mx,u){u=u||'';v=Math.round(v);if(!(v>0))return _pvZeroCard(K);var f=_pvFrac(v,mn,mx,0.55);var lp=Math.round(15+77*f);var m=PV_TRG[K];var chips=m?_pvChips([_pvChip(esc(m[0])),_pvChip('<b>'+v+u+'</b>','on'),_pvChip(esc(m[1]),'bad')]):'';var inner;if(v<=12){inner='<b class="pvc-fills" data-pvsteps="'+v+'" data-pvw="'+lp+'" style="width:'+lp+'%"></b>';}else{inner='<b class="pvc-fillv" style="width:'+lp+'%;--pvw:'+lp+'%"></b>';}return '<div class="pvchart"><div class="pvc-hd">fires at <b>'+v+u+'</b></div>'+chips+'<div class="pvc-meter">'+inner+'<i class="pvc-line" style="left:'+lp+'%"></i></div><div class="pvc-note">A higher setting pushes the line right: more patience, slower to react.</div></div>';}
    function _pvTimer(K,v,u,mn,mx){var tr=PV_TRAIN[K];if(!tr)return _pvRead(K,v,u,mn,mx);var V=collect();var kOn=tr.on==='SELF'?K:tr.on,kOff=tr.off==='SELF'?K:tr.off;var vOn=parseFloat(tr.on==='SELF'?v:V[tr.on]);var vOff=parseFloat(tr.off==='SELF'?v:V[tr.off]);if(!isFinite(vOn)||vOn<0)vOn=1;if(!isFinite(vOff)||vOff<0)vOff=1;if(vOn+vOff<=0){vOn=1;vOff=1;}var dOn=1,dOff=1;try{if(typeof DEF!=='undefined'&&DEF){dOn=Math.max(1,parseFloat(DEF[kOn])||1);dOff=Math.max(1,parseFloat(DEF[kOff])||1);}}catch(e0){}var win=Math.max(4*(dOn+dOff),vOn+vOff,vOn/0.46,vOff/0.46);var twp=Math.max(1,Math.min(46,vOn/win*100)),gwp=Math.max(0.8,Math.min(46,vOff/win*100));var x=0.8,c2=0,ticks='';while(x+twp<=99&&c2<12){ticks+='<i class="pvc-tk" style="left:'+x.toFixed(2)+'%;width:'+twp.toFixed(2)+'%"></i>';x+=twp+gwp;c2++;}if(!c2)ticks='<i class="pvc-tk" style="left:0.8%;width:'+twp.toFixed(2)+'%"></i>';var rate=Math.round(1000/(vOn+vOff));var chips=_pvChips([_pvChip('<span class="pvc-cap">'+esc(tr.a.split(' ')[0])+'</span>'+esc(tr.a)+' '+Math.round(vOn)+'ms','on'),_pvChip(esc(tr.b)+' '+Math.round(vOff)+'ms'),_pvChip('repeats')]);return '<div class="pvchart"><div class="pvc-hd">'+esc(tr.hd)+' · <b>≈'+rate+' a second</b></div>'+chips+'<div class="pvc-tmr">'+ticks+'<i class="pvc-ph"></i></div><div class="pvc-note">Widths are to scale, so only the side you change moves.</div></div>';}
    function _pvRead(K,v,u,mn,mx){
-     if(K==='WEBHOOK_STATS_MIN'){if(!(v>0))return _pvZeroCard(K);var ph=Math.round(60/v*10)/10;return '<div class="pvchart"><div class="pvc-hd">every <b>'+v+'min</b></div><div class="pvc-dm"><i class="pvc-dma"></i><div><div class="pvc-dmt">Prospectors Plus</div><div class="pvc-dmb">40 pans, 612/hr, 91% clean, 41m</div></div></div>'+_pvChips([_pvChip('<b>'+(ph===Math.round(ph)?Math.round(ph):ph)+'</b> DM'+(ph===1?'':'s')+' per hour','on')])+'<div class="pvc-note">A pulse for your phone; spot a degraded run without the computer.</div></div>';}
+     if(K==='WEBHOOK_STATS_MIN'){if(!(v>0))return _pvZeroCard(K);var ph=Math.round(60/v*10)/10;return '<div class="pvchart"><div class="pvc-hd">every <b>'+v+'min</b></div><div class="pvc-dm"><i class="pvc-dma"></i><div><div class="pvc-dmt">Prospector Lite</div><div class="pvc-dmb">40 pans, 612/hr, 91% clean, 41m</div></div></div>'+_pvChips([_pvChip('<b>'+(ph===Math.round(ph)?Math.round(ph):ph)+'</b> DM'+(ph===1?'':'s')+' per hour','on')])+'<div class="pvc-note">A pulse for your phone; spot a degraded run without the computer.</div></div>';}
      if(K==='SAFE_STOP_RETRY_SEC'){var mr='';try{var V2=collect();if(isFinite(parseFloat(V2.SAFE_STOP_MAX_RETRIES)))mr=String(Math.round(parseFloat(V2.SAFE_STOP_MAX_RETRIES)));}catch(e2){}return '<div class="pvchart"><div class="pvc-hd">retry cadence · <b>'+Math.round(v)+'s</b></div><div class="pvc-cad"><div class="pvc-cadw">wait '+Math.round(v)+'s</div><div class="pvc-cadt">try</div><div class="pvc-cadw">wait '+Math.round(v)+'s</div><div class="pvc-cadt">try</div></div><div class="pvc-note">Up to <b>'+(mr||'3')+' retries</b> (your hard-stop limit), then it stops for real.</div></div>';}
      var m=PV_READ[K];if(!m)return '';
      var rate,rl;
@@ -7832,7 +7739,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    function _pvColour(K,el){var o=PV_COLK[K]||{};var fr=window.__pvfr||{};var rgb=(fr[o.k]&&(fr[o.k][0]|0)+(fr[o.k][1]|0)+(fr[o.k][2]|0)>0)?fr[o.k]:(o.d||[95,175,90]);var hex=_pvHex(rgb);var R=_pvRange(el);var v=isFinite(R.v)?R.v:0;var mx=isFinite(R.mx)?R.mx:60;var pct=Math.max(0,Math.min(1,v/(mx||60)));var sc=(0.32+0.66*pct).toFixed(2);var cg=_pvNbr(rgb);return '<div class="pvchart"><div class="pvc-hd">accepts <b>±'+Math.round(v)+'</b> per channel</div>'+_pvChips([_pvChip('matches '+esc(o.t||'the target colour'),'on'),_pvChip(esc(hex),'dim')])+'<div class="pvc-wheel"><i class="pvc-disc" style="background:'+cg+'"></i><i class="pvc-rev" style="background:'+cg+';--sc:'+sc+'"></i><i class="pvc-core" style="background:'+hex+'"></i><i class="pvc-ring" style="--sc:'+sc+'"></i></div><div class="pvc-note">Only shades inside the ring count. Tight = precise but lighting can break it; wide = tolerant but off-states can sneak in.</div></div>';}
    function _pvBright(K,v,mn,mx){mn=isFinite(mn)?mn:0;mx=isFinite(mx)?mx:255;var pct=Math.max(0,Math.min(100,(v-mn)/(mx-mn)*100));var m=PV_BRIGHT[K]||['darker = ignored','brighter = counts'];return '<div class="pvchart"><div class="pvc-hd">cutoff at <b>'+Math.round(v)+'</b></div><div class="pvc-grad"><i class="pvc-gl" style="left:'+pct.toFixed(1)+'%"></i></div><div class="pvc-chips">'+_pvChip(esc(m[0]))+'<div class="pvc-ch on" style="margin-left:auto">'+esc(m[1])+'</div></div></div>';}
    function _pvModeV(K,el){var m=PV_MODE[K];if(!m)return '';var chain='';for(var i=0;i<m.ch.length;i++){chain+='<span class="pvc-mnode'+(m.act.indexOf(i)>=0?' act':'')+'">'+esc(m.ch[i])+'</span>'+(i<m.ch.length-1?'<span class="pvc-marr">then</span>':'');}return '<div class="pvchart"><div class="pvc-hd">rewires the loop · <b>'+esc(m.tag)+'</b></div><div class="pvc-mode">'+chain+'</div><div class="pvc-chips"><div class="pvc-ch pvc-strike">'+esc(m.rm)+'</div><div class="pvc-ch on">'+esc(m.nt)+'</div></div></div>';}
-   function _pvDM(K){var m=PV_DM[K]||{m:'Macro started',w:''};return '<div class="pvchart"><div class="pvc-hd">your DM</div><div class="pvc-dm"><i class="pvc-dma"></i><div><div class="pvc-dmt">Prospectors Plus</div><div class="pvc-dmb">'+esc(m.m)+'</div></div></div>'+(m.w?_pvChips([_pvChip('fires'),_pvChip(esc(m.w),'on')]):'')+'</div>';}
+   function _pvDM(K){var m=PV_DM[K]||{m:'Macro started',w:''};return '<div class="pvchart"><div class="pvc-hd">your webhook</div><div class="pvc-dm"><i class="pvc-dma"></i><div><div class="pvc-dmt">Prospector Lite</div><div class="pvc-dmb">'+esc(m.m)+'</div></div></div>'+(m.w?_pvChips([_pvChip('fires'),_pvChip(esc(m.w),'on')]):'')+'</div>';}
    function _pvRdo(K){var m=PV_RDO[K];if(!m)return '';return '<div class="pvchart"><div class="pvc-hd">what it reads</div>'+_pvChips([_pvChip(esc(m.r[0]),'on'),_pvChip(esc(m.r[1]),'on')])+_pvChips([_pvChip('feeds'),_pvChip(esc(m.f))])+'<div class="pvc-note">'+esc(m.nt)+'</div></div>';}
    function _pvRarity(el){var order=['common','uncommon','rare','epic','legendary','mythic','exotic'];var cols={common:'#7c8a6e',uncommon:'#6ea86a',rare:'#5aa0bd',epic:'#a97fc4',legendary:'#e0b357',mythic:'#d86a6a',exotic:'#e08adf'};var inp=el&&el.querySelector('[data-key]');var v=inp?String(inp.value||'').toLowerCase():'';var idx=order.indexOf(v);if(idx<0)idx=6;var pills=order.map(function(r,i){return '<span class="pvc-rp'+(i>=idx?' on':'')+'" style="background:'+cols[r]+(i<idx?';opacity:.32':'')+'">'+r+'</span>';}).join('');return '<div class="pvchart"><div class="pvc-hd">valued from <b>'+esc(order[idx])+'</b> up</div><div class="pvc-rar">'+pills+'</div><div class="pvc-note">Below the cutoff auto-sells into the money counter; valuing it here would double-count.</div></div>';}
    function _pvNote(t){return '<div class="pvchart"><div class="pvc-callout">'+esc(t)+'</div></div>';}
@@ -7959,7 +7866,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
        if(b){title=(b.getAttribute('title')||b.textContent||'').replace(/\s+/g,' ').trim().slice(0,60);
          bodyTxt=b.getAttribute('title')||'';}
      }
-     if(!title){var act=document.querySelector('.tab.active');title=act?(tabLabel(act.getAttribute('data-tab'))+' page'):'Prospectors Plus';
+     if(!title){var act=document.querySelector('.tab.active');title=act?(tabLabel(act.getAttribute('data-tab'))+' page'):'Prospector Lite';
        var at=act&&act.getAttribute('data-tab');bodyTxt=at?(chintOf(at)||''):'';}
      var h='<div class="prevhelp"><h3>'+esc(title||'Preview')+'</h3><div class="ph-kind">Control</div>'+
        '<div class="ph-body">'+(esc(bodyTxt)||'Hover a setting, button, tab or stat for a full explanation. Everything in the app has one.')+'</div></div>';
@@ -9105,37 +9012,29 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    dh=document.querySelector('[data-key="DIG_CLICK_MS"]');
    if(ds&&dh)ds.addEventListener('input',()=>{const s=parseFloat(ds.value);
      if(s>0)dh.value=Math.round(55000/s);});})();
- let _updUrl='',_updInstaller='';
- async function checkUpdate(){try{const u=await window.pywebview.api.check_update();
-   if(u&&u.update){_updUrl=u.url;_updInstaller=u.installer||'';
-     $('#updtext').innerHTML='<b>'+(u.critical?'Critical update required':'Update available')+
-       '</b>, v'+u.version+(u.notes?(' · '+u.notes):'')+' (you have v'+u.current+')';
-     if(u.critical){$('#upd').classList.add('crit');const x=$('#updx');if(x)x.style.display='none';}
-     $('#upd').style.display='flex';}}catch(e){}}
- (function(){const dl=$('#upddl'),x=$('#updx');
-   if(dl)dl.onclick=async()=>{dl.disabled=true;dl.textContent='Updating…';
-     let r={};try{r=await window.pywebview.api.do_update(_updInstaller);}catch(e){r={ok:false};}
-     if(r&&r.ok){$('#updtext').innerHTML='<b>Updating…</b> the app will reinstall and reopen automatically.';}
-     else{dl.disabled=false;dl.textContent='Update now';
-       toast(r&&r.manual?'Opened the download page':'Update failed, opening download page');}};
-   if(x)x.onclick=()=>{$('#upd').style.display='none';};})();
  async function init(){const s=await window.pywebview.api.get_state();
    DEF=s.defaults;V1=s.v1;V2=s.v2;GEODE=s.geode||{};window._AB=s.autobuild||{};setVals(s.values);if(window.__undoReset)window.__undoReset();setRunning(s.running);
    setRelics(s.relics||[],s.relics_enabled);loadBuildsPage();setPixels(s.pixels||{});setColors(s.colors||{});setFR(s.fr||{});window.__pvfr=s.fr||{};setRegionPreviews(s.region_previews||{});markRegions(s.pixels||{});setHotkeys(s.hotkeys||{});renderCueCaps();checkCalHealth();if(!window._calhi){window._calhi=setInterval(checkCalHealth,8000);try{window.addEventListener('focus',checkCalHealth);}catch(e){}}
-   checkUpdate();loadHistory();
+   loadHistory();
 }
- (function(){var INV='https://discord.gg/jGGkcQ2qUA';['gateDiscord','joinDiscord'].forEach(function(id){var b=document.getElementById(id);if(b)b.onclick=function(){try{window.pywebview.api.open_external(INV);}catch(e){}};});})();
  (function(){const b=document.getElementById('testnotify');if(!b)return;
    b.onclick=async()=>{const out=document.getElementById('notifyout');
      const en=document.querySelector('[data-key="WEBHOOK_ENABLED"]');
-     if(en&&!en.checked&&out){out.innerHTML='<div class="detrow">Turn on <b>DM me on Discord</b> first.</div>';return;}
+     if(en&&!en.checked&&out){out.innerHTML='<div class="detrow">Turn on <b>Discord notifications</b> first.</div>';return;}
      if(out)out.innerHTML='<div class="detrow">sending…</div>';
      let r;try{r=await window.pywebview.api.test_webhook();}catch(e){if(out)out.innerHTML='<div class="detrow det-no">failed: '+e+'</div>';return;}
-     if(out)out.innerHTML=r&&r.ok?('<div class="detrow det-ok">Sent. Check your Discord DMs'+(r.user?(' ('+r.user+')'):'')+'. If nothing arrives, make sure you share a server with the Prospectors bot and have DMs open.</div>'):('<div class="detrow det-no">'+((r&&r.error)||'failed')+'</div>');};})();
+     if(out)out.innerHTML=r&&r.ok?('<div class="detrow det-ok">Sent to your webhook'+(r.user?(' as '+r.user):'')+'. If nothing arrives, re-copy the webhook URL from Discord and save it again.</div>'):('<div class="detrow det-no">'+((r&&r.error)||'failed')+'</div>');};})();
+ (function(){const i=document.getElementById('whurl'),b=document.getElementById('whurlsave');if(!i||!b)return;
+   const out=document.getElementById('whurlout');
+   (async()=>{try{const r=await window.pywebview.api.webhook_get();if(r&&r.url)i.value=r.url;}catch(e){}})();
+   b.onclick=async()=>{const v=(i.value||'').trim();
+     if(v&&!/^https:\/\//i.test(v)){if(out)out.innerHTML='<div class="detrow det-no">The webhook URL must start with https://</div>';return;}
+     let r={};try{r=await window.pywebview.api.webhook_set(v);}catch(e){r={ok:false,error:String(e)};}
+     if(out)out.innerHTML=(r&&r.ok)?('<div class="detrow det-ok">'+(v?'Webhook saved.':'Webhook removed — notifications are fully off.')+'</div>'):('<div class="detrow det-no">'+((r&&r.error)||'failed')+'</div>');};})();
  window.addEventListener('pywebviewready',boot);
  if(window.pywebview&&window.pywebview.api)boot();
 
- // ---- splash + access gate ----
+ // ---- splash + welcome ----
  function _api(){return window.pywebview&&window.pywebview.api;}
  function genPaths(){const box=document.getElementById('gatePaths');if(!box||box.dataset.done)return;
    let s='<svg viewBox="0 0 696 316" preserveAspectRatio="xMidYMid slice"><g>';
@@ -9146,23 +9045,34 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><link rel="preconnec
    s+='</g></svg>';box.innerHTML=s;box.dataset.done='1';}
  function splashHide(){const s=document.getElementById('splash');if(!s)return;
    s.classList.add('hide');setTimeout(()=>{s.style.display='none';},520);}
- function gateShow(){genPaths();const g=document.getElementById('gate');if(g)g.classList.add('show');
-   setTimeout(()=>{const c=document.getElementById('gateCode');if(c)c.focus();},140);}
- function gateHide(){const g=document.getElementById('gate');if(g)g.classList.remove('show');}
- async function boot(){let a={unlocked:false};try{a=await _api().access_state();}catch(e){}
+ let _welInfo=null;
+ function welcomeShow(){genPaths();const g=document.getElementById('gate');if(g)g.classList.add('show');
+   setTimeout(()=>{const c=document.getElementById('welGo');if(c)c.focus();},140);}
+ function welcomeHide(){const g=document.getElementById('gate');if(g)g.classList.remove('show');}
+ window.openWelcome=function(){try{const a=document.getElementById('welAgain');if(a)a.checked=false;}catch(e){}welcomeShow();};
+ function welcomeFill(info){try{
+   const v=document.getElementById('welVer');if(v)v.textContent='v'+(info.version||'');
+   const s=document.getElementById('welSrc');if(s&&info.project_url)s.style.display='';
+   const b=document.getElementById('welBuild');if(b){b.textContent=(info.name||'Prospector Lite')+' v'+(info.version||'')
+     +(info.commit?(' · build '+info.commit):'')+(info.engine_fp?(' · engine '+String(info.engine_fp).slice(0,8)):'')
+     +' · '+(info.platform||'');}
+   const m=document.getElementById('welMigr');if(m&&info.migrated){m.textContent=info.migrated;m.style.display='';}
+ }catch(e){}}
+ function _startApp(){if(document.body.dataset.welinit==='1')return;document.body.dataset.welinit='1';
+   init();if(window.maybeStartTour)setTimeout(window.maybeStartTour,900);}
+ async function boot(){let w={show:false};try{w=await _api().welcome_state();}catch(e){}
    await new Promise(r=>setTimeout(r,650));splashHide();
-   if(a&&a.unlocked){init();if(window.maybeStartTour)setTimeout(window.maybeStartTour,900);}else{gateShow();
-     const err=document.getElementById('gateErr');
-     if(err&&a&&a.moved){err.textContent='This copy was activated on another computer. Enter your code to use it here.';}
-     else if(err&&a&&a.revoked){err.textContent='This access code has been deactivated by the owner.';}}}
- (function(){const f=document.getElementById('gateForm');if(!f)return;
-   f.addEventListener('submit',async e=>{e.preventDefault();
-     const inp=document.getElementById('gateCode'),btn=document.getElementById('gateGo'),err=document.getElementById('gateErr');
-     const code=(inp.value||'').trim();if(!code){err.textContent='Enter your access code.';return;}
-     btn.disabled=true;btn.textContent='Checking…';err.textContent='';
-     let r={};try{r=await _api().verify_access(code);}catch(e){r={ok:false,error:'Something went wrong. Try again.'};}
-     btn.disabled=false;btn.textContent='Unlock';
-     if(r&&r.ok){gateHide();init();if(window.maybeStartTour)setTimeout(window.maybeStartTour,900);}else{err.textContent=(r&&r.error)||'That code did not work.';inp.select();}});})();
+   _welInfo=(w&&w.info)||{};welcomeFill(_welInfo);
+   if(w&&w.show){welcomeShow();}else{_startApp();}}
+ (function(){const b=document.getElementById('welGo');if(!b)return;
+   b.addEventListener('click',async()=>{const ag=document.getElementById('welAgain');
+     try{await _api().welcome_done(!!(ag&&ag.checked));}catch(e){}
+     welcomeHide();_startApp();});
+   const sc=document.getElementById('welSrc');if(sc)sc.onclick=e=>{e.preventDefault();try{_api().open_external((_welInfo&&_welInfo.project_url)||'');}catch(_){}};
+   const pv=document.getElementById('welPriv');if(pv)pv.onclick=e=>{e.preventDefault();try{_api().open_doc('PRIVACY.md');}catch(_){}};
+   const se=document.getElementById('welSec');if(se)se.onclick=e=>{e.preventDefault();try{_api().open_doc('SECURITY.md');}catch(_){}};
+   document.addEventListener('keydown',e=>{if(e.key==='Escape'){const g=document.getElementById('gate');
+     if(g&&g.classList.contains('show')&&document.body.dataset.welinit==='1')welcomeHide();}});})();
 
  // ---- Coach: offline tuning assistant ----
  (function(){
@@ -10506,12 +10416,12 @@ def main():
         return
     api = Api()
     try:
-        _tutorial_refresh_remote()   # pull any published tutorial updates (bg)
+        _scrub_config_file()   # drop legacy access/tracking keys from disk
     except Exception:
         pass
     print("[boot] building main window…", flush=True)
     _window = webview.create_window(
-        "Prospector Macro" if STUDIO_LAUNCH else "Prospectors Plus",
+        "Prospector Macro" if STUDIO_LAUNCH else APP_NAME,
         html=_themed(build_html()),
                                     js_api=api, width=1340, height=900,
                                     min_size=(600, 560))
@@ -10529,7 +10439,7 @@ def main():
     print("[boot] main ok -> pill", flush=True)
     try:
         _pill = webview.create_window(
-            "Prospectors Plus", html=_themed(PILL_HTML), js_api=api,
+            APP_NAME, html=_themed(PILL_HTML), js_api=api,
             width=272, height=178, frameless=True, on_top=True,
             easy_drag=True, resizable=False, hidden=True)
     except Exception as _e:
@@ -10539,7 +10449,7 @@ def main():
         if os.environ.get("PP_NO_HUD"):
             raise RuntimeError("skipped by PP_NO_HUD")
         _hud = webview.create_window(
-            "HUD, Prospectors Plus", html=_themed(_hud_html()), js_api=api,
+            "HUD, Prospector Lite", html=_themed(_hud_html()), js_api=api,
             width=384, height=470, frameless=True, on_top=True,
             easy_drag=True, resizable=False, hidden=True)
     except Exception as _e:
@@ -10555,7 +10465,7 @@ def main():
     print("[boot] overlay ok -> coach", flush=True)
     try:
         _coach_win = webview.create_window(
-            "Coach, Prospectors Plus", html=_themed(COACH_HTML), js_api=api,
+            "Coach, Prospector Lite", html=_themed(COACH_HTML), js_api=api,
             width=900, height=820, min_size=(560, 560), hidden=True)
         _hide_on_close(_coach_win)
     except Exception as _e:
@@ -10563,7 +10473,7 @@ def main():
     print("[boot] coach ok -> analytics", flush=True)
     try:
         _analytics_win = webview.create_window(
-            "Analytics, Prospectors Plus", html=_themed(ANALYTICS_HTML), js_api=api,
+            "Analytics, Prospector Lite", html=_themed(ANALYTICS_HTML), js_api=api,
             width=980, height=860, min_size=(620, 560), hidden=True)
         _hide_on_close(_analytics_win)
     except Exception as _e:
@@ -10575,7 +10485,7 @@ def main():
         # and the legacy editor window must never exist, let alone appear.
         try:
             _studio_win = webview.create_window(
-                "Studio, Prospectors Plus", html=_themed(_studio_html()),
+                "Studio, Prospector Lite", html=_themed(_studio_html()),
                 js_api=api, width=1200, height=800, min_size=(720, 540),
                 hidden=True)
             _hide_on_close(_studio_win)

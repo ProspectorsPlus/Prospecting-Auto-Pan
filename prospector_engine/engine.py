@@ -40,7 +40,7 @@ SETUP
 SETUP (WINDOWS)
     1.  Run Install.bat (installs Python + the needed packages), or:
           pip install mss numpy pywebview
-    2.  Open the app (Prospectors Plus) or run:  python prospecting_app.py
+    2.  Open the app (Prospector Lite) or run:  python prospecting_app.py
     3.  Calibrate the pixels for YOUR screen in the app's Calibrate tab.
     4.  Tab into Roblox, press Ctrl+K to start/stop, Esc to quit.
 
@@ -76,10 +76,15 @@ if getattr(sys, "frozen", False):
     # A spawner-provided home (Studio's frozen sidecar sets PPENGINE_HOME
     # to the shared data dir) outranks the per-user default: the frozen
     # engine must read the same config/calibration the app manages.
-    _HOME_DIR = (os.environ.get("PPENGINE_HOME")
-                 or os.path.join(os.environ.get("LOCALAPPDATA")
-                                 or os.path.expanduser("~"),
-                                 "Prospectors Plus"))
+    if sys.platform == "darwin":
+        _HOME_DEFAULT = os.path.join(os.path.expanduser("~"), "Library",
+                                     "Application Support", "Prospector Lite")
+    else:
+        _HOME_DEFAULT = os.path.join(os.environ.get("APPDATA")
+                                     or os.environ.get("LOCALAPPDATA")
+                                     or os.path.expanduser("~"),
+                                     "Prospector Lite")
+    _HOME_DIR = os.environ.get("PPENGINE_HOME") or _HOME_DEFAULT
 else:
     _HOME_DIR = (os.environ.get("PPENGINE_HOME")
                  or os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -3017,9 +3022,9 @@ def _webhook_payload(event, message, stats=None):
     if bits:
         fields.append({"name": "Stats", "value": " / ".join(bits)[:200],
                        "inline": True})
-    embed = {"title": "Prospectors Plus", "description": str(message)[:1500],
+    embed = {"title": "Prospector Lite", "description": str(message)[:1500],
              "color": 0xC2924C, "fields": fields}
-    return {"username": "Prospectors Plus", "content": str(message)[:1900],
+    return {"username": "Prospector Lite", "content": str(message)[:1900],
             "embeds": [embed], "event": event, "user": WEBHOOK_USER,
             "stats": st}
 

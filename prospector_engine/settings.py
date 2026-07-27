@@ -22,7 +22,7 @@ SCHEMA_VERSION = 1
 
 # Not configuration: platform keycodes, derived values, module plumbing.
 EXCLUDE = {
-    "CONFIG_FILE", "CONFIG_SCHEMA", "CAP_START_PIXEL", "SYNC_URL",
+    "CONFIG_FILE", "CONFIG_SCHEMA", "CAP_START_PIXEL",
     "KEY_W", "KEY_A", "KEY_S", "KEY_D", "KEY_SHIFT", "KEY_SPACE",
     "SLOT_KEYCODES", "TOGGLE_VK", "TOGGLE_NAME", "SOFTSTOP_VK",
     "EMIT", "RELICS_HELP", "STUDIO_HTML",
