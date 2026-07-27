@@ -2,8 +2,10 @@
 
 ## What was measured (macOS, this machine)
 
-`./build_dmg.command` was run multiple times at the same source commit and
-the resulting `Prospector Lite.app` trees were compared file-by-file
+`./build_dmg.command` was run multiple times at the same source commit
+(measured on the 1.0.0-rc.1 candidate; the rc.2 additions below are
+commit-derived and do not change the analysis) and the resulting
+`Prospector Lite.app` trees were compared file-by-file
 (SHA-256 over all 1,167 files):
 
 - **File lists: identical** across builds.
@@ -27,19 +29,28 @@ bundle content listing above.
 
 - one version source of truth (`VERSION` in `prospecting_app.py`), read by
   the spec and the DMG name;
-- `build_info.json` stamps the exact git commit into the bundle;
+- `build_info.json` stamps the build identity into the bundle — as of
+  rc.2: commit, date, version, dirty flag, package type, project URL, and
+  signing/notarization state. Every field derives deterministically from
+  the commit and the build environment except `date` (today's date, the
+  same run-to-run variance as before);
+- `trust_manifest.json` (new in rc.2): per-capability source references
+  (file, symbol, exact line ranges) emitted at build time from the exact
+  source being packaged (`lite_trust.py --emit`, ast-based; a dead
+  reference fails the build) — fully deterministic for a given commit;
 - `SOURCE_DATE_EPOCH` set to the commit time before PyInstaller runs;
-- dependencies installed into a dedicated build venv (freeze recorded in
-  the release candidate as `dependencies-macos-freeze.txt`);
+- dependencies installed into a dedicated build venv (`build/venv`,
+  created by `build_dmg.command`; the exact closure is reproducible with
+  `pip freeze` from that venv and captured in the per-build CI SBOM);
 - no network access during the build besides `pip install` of declared
   build dependencies; no untracked source inputs (the package-content scan
   fails on personal paths/secrets).
 
-## Toolchain used for the 1.0.0-rc.1 candidate
+## Toolchain used for the 1.0.0-rc.2 candidate
 
 - macOS (Apple Silicon, arm64), Python 3.13.1 (Homebrew)
 - PyInstaller 6.21.0, pywebview 6.2.1, pyobjc 12.2.1, mss 10.2.0,
-  numpy 2.5.1, pillow 12.3.0, pynput 1.8.2
+  numpy 2.5.1, pillow 12.3.0, pynput 1.8.2, certifi (build-time latest)
 - Windows builds: pinned runner recipe in
   `.github/workflows/build-windows.yml` (Python 3.12, PyInstaller latest,
   Inno Setup 6 via choco). Not yet executed — requires the repo push.

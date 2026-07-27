@@ -11,7 +11,7 @@ This document states exactly how the app interacts with the game, what it catego
 | Modify Roblox files, settings, or install anything into the game | The code never opens paths under the Roblox installation; all file I/O targets the app's own data directory |
 | Intercept, read, or modify network traffic | No packet capture, no proxying, no sockets at all in the game-facing code (the IPC layer is stdio; see `prospector_engine/ipc.py`) |
 | Install drivers, kernel extensions, or services | Nothing of the kind exists in the tree or the installers; the app runs as a normal user process |
-| Require admin/root | macOS needs only the user-granted Screen Recording + Accessibility permissions; the Windows app runs unelevated |
+| Require admin/root | macOS needs only the user-granted Screen Recording, Accessibility and Input Monitoring permissions; the Windows app runs unelevated |
 
 ## What it actually does (the complete game-facing surface)
 
@@ -28,7 +28,12 @@ All game interaction lives in two files: `prospector_engine/platform_mac.py` and
 - macOS: Quartz `CGEventPost` at the HID event tap — the same event stream a keyboard/mouse produces.
 - Windows: `SendInput` with hardware scancodes — the standard OS input-synthesis API.
 
-That is the entire boundary: pixels in, synthetic keystrokes/clicks out. The detection logic (`sensing.py`, `vision.py`, `engine.py`) operates purely on the captured pixel arrays.
+**Listening (Safe Stop hotkeys only):**
+
+- macOS: a `pynput` global keyboard listener so Esc / Ctrl+K always stop the macro, even when Roblox has focus — listen-only, which is why macOS asks for Input Monitoring.
+- Windows: `GetAsyncKeyState` polling — no keyboard hook is installed.
+
+That is the entire boundary: pixels in, synthetic keystrokes/clicks out, plus a listen-only stop hotkey. The detection logic (`sensing.py`, `vision.py`, `engine.py`) operates purely on the captured pixel arrays.
 
 ## Verify it yourself
 
@@ -50,5 +55,5 @@ grep -rn 'socket' prospector_engine/
 ## Honest framing
 
 - "External" describes the *mechanism*, not a promise of invisibility. Synthesized input can still look automated to server-side systems.
-- The permissions the app asks for (macOS Screen Recording + Accessibility) are exactly the two capabilities the mechanism needs — see [README.md](../../README.md).
+- The permissions the app asks for (macOS Screen Recording + Accessibility + Input Monitoring) are exactly the three capabilities the mechanism needs: pixels in, synthetic input out, and a listen-only Safe Stop hotkey — see [README.md](../../README.md). Each one is explained in-app before it is requested (first-run wizard step 2 and the Trust Center), detected with the real OS preflight APIs without triggering a prompt, and individually testable in-app (live capture probe, sandboxed keystroke with the release proven, one-shot hotkey listener).
 - Nothing in this document is a safety guarantee for your account, and none of it implies Roblox's approval.

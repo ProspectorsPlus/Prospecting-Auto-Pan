@@ -29,11 +29,14 @@ Default network activity is **zero requests**. The complete inventory of code th
 | `run_logs/` | Per-run engine logs (rotated; the app keeps a bounded number) |
 | `prospecting_calib_log.csv` | Calibration session log written by the engine |
 | `tutorial_content.json` | Your local edits to the built-in help |
+| `onboarding_state.json` | Setup-wizard progress (which step you are on, declined capabilities); written atomically; resetting the wizard deletes only this |
 | `instance_id` | A random UUID used only for the local Prospector Studio companion handshake; never transmitted |
 | `coach_history.json` | Your Coach chat transcript (the text you typed and its replies), kept locally so conversations survive restarts |
 | `prospecting_secrets.json` | Your Coach API key, if you set one. Stored in this data folder by packaged builds (next to the scripts, gitignored, when running from source); never bundled into builds |
 
 **Deleting your data**: quit the app and delete the folder above (or individual files). That is the entire data footprint; nothing exists anywhere else.
+
+**Managing your data in-app**: the Trust Center's **Local Data** section lists these files live with their sizes, and offers: Open folder, Export calibration, Export diagnostics, Delete history, Delete logs, and Delete ALL (double-confirmed). The delete actions are scoped to the known Prospector Lite files only — they never touch anything else. The diagnostics export (`export_diagnostics` in `prospecting_app.py`) is **secret-free by construction**: it contains readiness/identity/capability statuses and no webhook URL, no webhook secret, no API key, and no config dump. `prospecting_secrets.json` is never exported by any action.
 
 ## The two opt-in network features
 
@@ -45,11 +48,13 @@ If you paste your own Discord webhook URL on the Notifications page and enable n
 - a human-readable message,
 - the display name you chose (`WEBHOOK_USER` — free text; leave it blank if you want),
 - run statistics (pans, pans/hour, runtime, recoveries),
-- optionally a downscaled screenshot of your screen, only for events that carry one and only while the "attach screenshot" toggle (`NOTIFY_SCREENSHOT`) is on. Remember that a screenshot shows whatever is on your screen at that moment.
+- optionally a downscaled screenshot of your screen, only for events that carry one and only while the separate "attach screenshot" toggle (`NOTIFY_SCREENSHOT`, **default `false` as of 1.0.0-rc.2**) is on. Remember that a screenshot shows whatever is on your screen at that moment.
 
-If you set the optional `WEBHOOK_SECRET` config value (for self-hosted receivers), it is sent as an `x-macro-secret` HTTP header on those posts. It is never logged. Per-event toggles let you disable individual notification types.
+You can see **exactly** what would be sent before enabling anything: the in-app payload preview is built by the same engine function that sends (`_webhook_payload`), so the preview and the wire payload cannot diverge.
 
-Known limitation: delivery retries once without SSL verification if the first attempt fails for a non-HTTP reason (old-Python certificate setups) — see [SECURITY.md](SECURITY.md).
+If you set the optional `WEBHOOK_SECRET` config value (for self-hosted receivers), it is sent as an `x-macro-secret` HTTP header on those posts. It is never logged and is redacted in the payload preview. Per-event toggles let you disable individual notification types.
+
+Delivery is over verified TLS only: `https://` is enforced at save and at send, certificates are always verified (falling back to the bundled `certifi` trust store if the interpreter ships without CA certificates), and there is no insecure retry — a host with a broken certificate simply does not receive the notification. See [SECURITY.md](SECURITY.md).
 
 ### 2. The Coach's AI mode (default: offline)
 

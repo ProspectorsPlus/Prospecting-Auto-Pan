@@ -17,7 +17,7 @@ These block publication; do not tag a public release until all are done.
 
 ### 1. Prepare
 
-- [ ] Bump `VERSION` in `prospecting_app.py` (and confirm the `windows/` copy matches).
+- [ ] Bump `VERSION` in `prospecting_app.py` (currently `1.0.0-rc.2`; confirm the `windows/` copy matches).
 - [ ] Update [CHANGELOG.md](CHANGELOG.md) — move changes under the new version heading with the date.
 - [ ] Run the full test matrix and require all-pass:
 
@@ -25,8 +25,13 @@ These block publication; do not tag a public release until all are done.
   python3 tour_check.py && python3 finds_sim.py && python3 studio_tests.py \
     && python3 studio_conformance.py && python3 prospecting_selftest.py
   # plus every engine_* suite (see CONTRIBUTING.md)
-  python3 public_release_tests.py   # the release gate
+  python3 public_release_tests.py       # the release gate
+  python3 onboarding_trust_tests.py     # the onboarding/trust suite
   ```
+
+  `studio_conformance.py` self-skips with exit 0 when the private Studio goldens
+  (a private sibling repository) are absent — expected on public clones and CI.
+  A full conformance run happens only on a checkout that has the goldens.
 
 - [ ] Re-run the secret scan on the tree (commands in [SECURITY.md](SECURITY.md)) and confirm no personal config/webhook/key is tracked.
 
@@ -63,5 +68,22 @@ These block publication; do not tag a public release until all are done.
 
 ## Signing status
 
-- **macOS**: unsigned until an Apple Developer certificate exists. When it does, add codesigning + notarization to the DMG build and update README/SECURITY accordingly.
-- **Windows**: unsigned installer; SmartScreen may warn. Checksum verification is the integrity mechanism for both platforms until signing lands.
+- **macOS**: builds are **ad-hoc signed** by default. Two build env vars change that:
+
+  - `CODESIGN_ID` — a "Developer ID Application" identity; when set, `build_dmg.command` signs with the hardened runtime and the minimal `packaging/entitlements.plist`, then verifies with `codesign` and `spctl --assess`.
+  - `PP_PROJECT_URL` — stamps the public repository URL into `build/build_info.json` so in-app "View code" links resolve to the exact commit.
+
+  Notarization + stapling are separate **manual, owner-only** steps — they require the owner's Apple credentials (`APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`, an app-specific password). These credentials belong to the owner alone; never commit them or hand them to CI:
+
+  ```sh
+  # Owner-only: requires APPLE_ID / APPLE_TEAM_ID / APPLE_APP_PASSWORD in the environment
+  xcrun notarytool submit "dist/Prospector Lite.dmg" \
+    --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+    --password "$APPLE_APP_PASSWORD" --wait
+  xcrun stapler staple "dist/Prospector Lite.app"
+  spctl --assess --type execute "dist/Prospector Lite.app"
+  ```
+
+  Unsigned/unnotarized builds are labeled honestly in-app via the build identity (`signed: false`, `notarized: false`); until signing lands, checksum verification is the integrity mechanism and README/SECURITY say so.
+
+- **Windows**: Authenticode signing runs in CI only when the `WINDOWS_CERT_PFX_B64` and `WINDOWS_CERT_PASSWORD` repository secrets are configured (`signtool sign` with a timestamp server, then `signtool verify` — see `.github/workflows/build-windows.yml`). No certificate exists in the repository. Without those secrets, unsigned builds are produced and SmartScreen may warn; checksum verification is the integrity mechanism.

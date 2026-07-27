@@ -1,7 +1,8 @@
 PROSPECTOR LITE  —  Windows
 ===========================
 
-A free, open-source auto-pan macro for the Roblox game "Prospecting".
+A free auto-pan macro for the Roblox game "Prospecting". Its full source
+is available for inspection (no open-source license has been chosen yet).
 It works from the OUTSIDE only: it reads pixels on your screen and presses
 ordinary keys and mouse buttons. It never injects into Roblox, never touches
 game files or memory, and makes no network requests unless you set up
@@ -39,11 +40,14 @@ not code-signed yet. This is expected:
 ------------------------------------------------------------
 QUICK START
 ------------------------------------------------------------
-1. Open Prospector Lite. The welcome screen explains what the app does and
-   what it stores; press Continue.
-2. Open Roblox Prospecting with the game HUD visible, then use the app's
-   Calibrate tab -> "Guided calibration" (it proposes each spot on your
-   screen; you confirm). Redo it after resolution/window changes.
+1. Open Prospector Lite. On first run a short setup wizard walks you
+   through what the app does and stores, the capabilities it uses (no
+   special Windows permissions are needed), guided calibration, and a
+   readiness check. You can re-run it any time from the Tutorial menu
+   ("Re-run setup wizard").
+2. Open Roblox Prospecting with the game HUD visible for the wizard's
+   calibration step (or the Calibrate tab -> "Guided calibration" later).
+   Redo calibration after resolution/window changes.
 3. Pick a build/preset, press Start, and click into Roblox so the game has
    focus.
 

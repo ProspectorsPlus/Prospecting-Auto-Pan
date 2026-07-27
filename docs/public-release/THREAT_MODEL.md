@@ -1,6 +1,6 @@
 # Prospector Lite — Threat model
 
-Scope: the desktop app (`prospecting_app.py`), the engine subprocess (`prospector_engine/`), the packaging pipeline, and the repository itself. Written against the actual 1.0.0-rc.1 code; every mechanism named below exists in the tree and can be checked with the commands in [ROBLOX_SAFETY_BOUNDARY.md](ROBLOX_SAFETY_BOUNDARY.md) and [NETWORK_BEHAVIOR.md](NETWORK_BEHAVIOR.md).
+Scope: the desktop app (`prospecting_app.py`), the engine subprocess (`prospector_engine/`), the packaging pipeline, and the repository itself. Written against the actual 1.0.0-rc.2 code; every mechanism named below exists in the tree and can be checked with the commands in [ROBLOX_SAFETY_BOUNDARY.md](ROBLOX_SAFETY_BOUNDARY.md) and [NETWORK_BEHAVIOR.md](NETWORK_BEHAVIOR.md).
 
 ## Assets
 
@@ -16,7 +16,7 @@ Scope: the desktop app (`prospecting_app.py`), the engine subprocess (`prospecto
 | Boundary | Mechanism |
 |---|---|
 | GUI ↔ engine | Subprocess with a local stdio protocol (`prospector_engine/ipc.py`); no sockets, no ports |
-| App ↔ OS | Screen capture + input synthesis gated by macOS Screen Recording/Accessibility permissions; normal user process on Windows |
+| App ↔ OS | Screen capture, input synthesis and the stop-hotkey listener gated by macOS Screen Recording/Accessibility/Input Monitoring permissions; normal user process on Windows |
 | App ↔ user-imported files | `.ppscript`/`.ppbuild`/calibration JSON are untrusted input |
 | App ↔ network | Two opt-in, user-configured egress paths only (webhook, Coach AI) |
 | App ↔ legacy install | One-time read-only copy from the old "Prospectors Plus" data dir |
@@ -38,8 +38,8 @@ A shared `.ppscript`/`.ppbuild` crafted to execute code or abuse the machine.
 **Residual:** if the user enables screenshot notifications, screen content leaves the machine to *their* webhook — by design, documented in [PRIVACY.md](../../PRIVACY.md).
 
 ### T4 — Webhook secret/URL exposure
-**Mitigations:** the webhook URL/secret live only in the local config; the secret is sent only as the `x-macro-secret` header to the user's URL and is never logged; the tracked sample config ships empty values; docs tell users not to paste these when asking for help.
-**Residual:** R2 (SSL fallback, below); local files are unencrypted (R3).
+**Mitigations:** the webhook URL/secret live only in the local config; the secret is sent only as the `x-macro-secret` header to the user's URL and is never logged (it is redacted in the in-app payload preview); TLS certificate verification is mandatory on every send — the former unverified-SSL fallback is removed (R2, resolved); the tracked sample config ships empty values; docs tell users not to paste these when asking for help.
+**Residual:** local files are unencrypted (R3).
 
 ### T5 — Compromised or tampered release artifact
 **Mitigations:** builds come from public source (Windows: GitHub Actions on a hosted runner); releases ship `SHA256SUMS.txt`; a CycloneDX SBOM accompanies artifacts; [RELEASING.md](../../RELEASING.md) requires re-verifying checksums post-publish.
@@ -58,6 +58,32 @@ A shared `.ppscript`/`.ppbuild` crafted to execute code or abuse the machine.
 **Mitigations:** it is local-only content the user themselves edits; no remote party can write it.
 **Residual:** a local attacker who can write the user's files already controls the account (general R3).
 
+### T9 — Fake trust status (the trust surface lies)
+A permission/capability UI that displayed hard-coded "granted" states or fake test
+results would train users to ignore real OS prompts and to start runs that cannot be
+stopped.
+**Mitigations:** every permission state shown in the wizard and Trust Center comes from a
+real OS preflight API (`CGPreflightScreenCaptureAccess`, `AXIsProcessTrusted`,
+`CGPreflightListenEventAccess` — `lite_trust.py`), read without triggering a prompt; the OS
+prompt fires only from a user-clicked Request button. Every capability test is real: the
+screen test performs a live `mss` grab (frame shown once, then discarded); the input test
+proves a posted keystroke's key-down **and** key-up in a sandboxed field plus a verified
+2 px pointer wiggle; the Safe Stop test arms a one-shot listener for the actual hotkeys.
+`launch()` blocks Start (only Start) when a required permission is definitively not
+granted.
+**Residual:** preflight APIs can return stale results immediately after a grant until the
+process restarts — the UI says so rather than guessing.
+
+### T10 — Stale or dead "View code" references
+Trust-surface links that pointed at moved or deleted code would falsify the very story
+they exist to prove.
+**Mitigations:** `trust_manifest.json` (per-capability file/symbol/line references) is
+generated at build time from the exact source being packaged (`lite_trust.py --emit`,
+ast-based); a dead reference fails the build. Links open exact-commit URLs only when a
+public repository URL is configured; otherwise the app shows an honest local
+file+symbol+commit fallback — never a moving branch.
+**Residual:** none identified beyond the repo URL being unset until the owner publishes.
+
 ## What was removed before going public
 
 - Access-code gate, machine-locked codes, and machine identity/salting.
@@ -66,8 +92,8 @@ A shared `.ppscript`/`.ppbuild` crafted to execute code or abuse the machine.
 
 ## Residual risks (accepted and documented)
 
-- **R1 — Unsigned macOS build.** No signature/notarization until a certificate exists. Users must rely on checksums or build from source. ([SECURITY.md](../../SECURITY.md))
-- **R2 — SSL-unverified fallback.** Webhook delivery (engine + app test path) and the Coach API call retry once without certificate verification after a failed verified attempt, to accommodate old bundled-Python certificate setups. On a hostile network that retry could be intercepted. Opt-in features only.
+- **R1 — Unsigned macOS build.** Ad-hoc signed only (hardened runtime + entitlements when `CODESIGN_ID` is set); no notarization until Apple credentials exist. Users must rely on checksums or build from source; unsigned builds are labelled in-app via the build identity (`signed: false`). ([SECURITY.md](../../SECURITY.md))
+- **R2 — resolved in rc.2 (formerly: SSL-unverified fallback).** The retry-without-certificate-verification fallback that existed at rc.1 in the webhook, webhook-test and Coach API paths is removed at every site. TLS verification is now mandatory; when a bundled Python ships an empty trust store the packaged `certifi` CA bundle is loaded (verified, never unverified), and a failed handshake drops the request with an explicit error. Verify: `grep -rn _create_unverified_context .` → no matches.
 - **R3 — Plaintext local storage.** Webhook URL/secret and Coach API key are plain JSON in the user profile; OS file permissions are the only protection.
 - **R4 — User-imported files.** Validation is strict, but a script that is *valid* can still play the game badly or spam the user's own webhook; budgets and watchdogs bound the damage.
 - **R5 — Account risk is inherent.** The tool synthesizes input; no design choice removes the possibility of Roblox moderation action. The project never claims otherwise.

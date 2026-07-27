@@ -1,8 +1,9 @@
 # Prospector Lite — Security audit (public-release pass)
 
-Performed as part of the 1.0.0-rc.1 public-release engineering pass, on the
-actual tree at that state. Every claim below was produced by a command run in
-that session; re-run commands are included so a reviewer can reproduce them.
+Performed as part of the 1.0.0-rc.1 public-release engineering pass and
+updated for the 1.0.0-rc.2 trust-and-onboarding pass, on the actual tree at
+each state. Every claim below was produced by a command run in one of those
+sessions; re-run commands are included so a reviewer can reproduce them.
 
 Status legend: **fixed** (changed in this pass), **accepted** (known,
 documented residual risk), **blocked** (needs a user-owned action),
@@ -21,7 +22,9 @@ documented residual risk), **blocked** (needs a user-owned action),
 | Google Fonts loaded by the analytics window | Removed (system fonts) | fixed |
 | CI secret injection into shipped configs | Pipeline rewritten; no secrets step exists | fixed |
 | Engine webhook accepts `http://` from a hand-edited config | https-only guard added in `post_webhook` | fixed |
-| SSL-unverified fallback retry (webhook/coach, after verified attempt fails) | Kept for old bundled-Python cert setups; disclosed | accepted |
+| SSL-unverified fallback retry (webhook/coach, after verified attempt fails) | **Removed at every site in rc.2** (engine webhook, app webhook test, Coach API, plus the `windows/` mirrors): TLS verification is mandatory via a verifying context that falls back to the bundled `certifi` CA store when the interpreter ships an empty trust store — verified, never unverified; an `ssl.SSLError` drops the request with an explicit error, no unverified retry. `grep -rn _create_unverified_context .` → 0 hits | fixed (rc.2) |
+| Webhook screenshot attachment defaulted on (`NOTIFY_SCREENSHOT=True`), so enabling the webhook implicitly opted into screen captures leaving the machine | Default flipped to `False` in rc.2 (`prospector_engine/engine.py`); screenshots are a separate, explicit opt-in | fixed (rc.2) |
+| Macro could start without required macOS permissions (TCC prompt fired mid-run, attributed to whichever process touched the API first) | `launch()` now blocks Start — and only Start — when a required permission (screen, input, stop hotkeys) is definitively not granted, returning `perm:<ids>`; the wizard/Trust Center explain and request. Detection uses real preflight APIs and never prompts by itself | fixed (rc.2) |
 | `finds_sim.py` uses `exec` on a slice of the app's own tracked source | Dev-only test harness; input is the tracked file itself | accepted |
 | Browser-fallback UI writes a launcher with mode 0755 | Executable launcher; expected | accepted |
 | Secrets in git history (webhook URL `6842a47`, bot secret `e0f3d4f`) | Revoke + fresh-history publish required | blocked (user) |
@@ -37,7 +40,8 @@ documented residual risk), **blocked** (needs a user-owned action),
   (27,153 LOC): **0 high**, 9 medium. All 9 mediums triaged above (B310
   urlopen-scheme audits on the three user-configured egress paths — https
   enforced at save time and now engine-side; B323 unverified-context
-  fallbacks — accepted + disclosed; B103 launcher chmod 0755 — expected).
+  fallbacks — accepted at rc.1, **removed in rc.2** so these findings no
+  longer occur; B103 launcher chmod 0755 — expected).
   Re-run: `bandit -ll -r prospecting_app.py prospecting_ui.py prospecting_assistant.py prospecting_old.py prospector_engine/`
 - **pip-audit** over the frozen macOS build closure (pywebview 6.2.1,
   pyobjc 12.2.1, mss 10.2.0, numpy 2.5.1, pillow 12.3.0, pynput 1.8.2,

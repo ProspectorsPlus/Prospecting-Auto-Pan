@@ -1,9 +1,10 @@
 # Prospector Lite — Privacy verification (empirical)
 
-What was actually executed and observed during the 1.0.0-rc.1 release pass,
-distinct from what the code promises. Platform: macOS (Apple Silicon), the
-only locally executable platform in that session; the same checks run on
-Windows in CI (`.github/workflows/ci.yml`).
+What was actually executed and observed during the 1.0.0-rc.1 release pass
+and the 1.0.0-rc.2 trust-and-onboarding pass, distinct from what the code
+promises. Platform: macOS (Apple Silicon), the only locally executable
+platform in those sessions; the same checks run on Windows in CI
+(`.github/workflows/ci.yml`).
 
 ## Network-denied runtime tests (source)
 
@@ -24,12 +25,20 @@ Windows in CI (`.github/workflows/ci.yml`).
    keys are dropped from loads, removed from disk once, and never copied
    by the data-dir migration (tested including a non-ASCII target path and
    idempotent re-run; the old directory's listing is byte-identical after).
+5. **Trust and onboarding surfaces offline (new in rc.2)** — the first-run
+   wizard state machine (`lite_onboarding.py`), the Trust Center capability
+   statuses and data manifest, and the readiness check are exercised under
+   the same network-denied child-process regime by the onboarding/trust
+   suite: permission detection, wizard progress persistence
+   (`onboarding_state.json`), calibration hand-off and readiness all
+   operate on local state only, with zero network attempts.
 
 Result in-session: **ALL PASS** (`python3 public_release_tests.py`).
 
 ## Packaged app, observed (mounted DMG)
 
-The built DMG was mounted read-only and the packaged app launched with
+Observed on the rc.1 candidate build; the rc.2 package is produced by the
+same pipeline. The built DMG was mounted read-only and the packaged app launched with
 `env -i` (restricted `PATH=/usr/bin:/bin`), `PYTHONNOUSERSITE=1` and an
 isolated data dir:
 

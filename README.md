@@ -1,6 +1,6 @@
 # Prospector Lite
 
-**Version 1.0.0-rc.1** (release candidate) — an open-source desktop macro for the Roblox game *Prospecting*, for macOS and Windows.
+**Version 1.0.0-rc.2** (release candidate) — a free desktop macro for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
 
 Prospector Lite automates the pan/dig/shake loop by **reading pixels from your screen and sending ordinary keyboard/mouse input through the operating system**. It is an *external* tool: it never touches the Roblox process, its memory, its files, or its network traffic.
 
@@ -15,7 +15,9 @@ Prospector Lite automates the pan/dig/shake loop by **reading pixels from your s
 - **Discord notifications (opt-in)** — paste *your own* Discord webhook URL to get start/stop/stats/safety alerts, optionally with a screenshot. Off by default; nothing is built in.
 - **The Coach** — an in-app helper. The default "offline brain" is a local rule engine with no network access. An optional AI mode uses *your own* API key (Anthropic, OpenAI, Gemini, DeepSeek, or a custom/local endpoint).
 - **Prospector Studio** — a built-in visual block editor for custom farming scripts (`.ppscript` files). Scripts are validated JSON walked as data — they are never executed as program code.
-- **Interactive tutorial** and a welcome screen that explains privacy and shows the exact version/build you are running.
+- **Five-step setup wizard** on first run — Welcome → Trust & Permissions → Guided Calibration → Readiness Check → the app. Progress is saved locally and the wizard can be re-run any time from the Tutorial menu ("Re-run setup wizard") or the Trust Center.
+- **Trust Center** — a permanent tab showing every capability the app uses (with live permission status and one-click in-app tests), the exact build identity (commit, version, signing state), network behavior, and your local data files with management actions (open folder, export, delete).
+- **Interactive tutorial** that explains every page, plus a welcome screen showing the exact version/build you are running.
 
 ## How it works (the safety boundary)
 
@@ -32,16 +34,23 @@ Prospector Lite makes **zero network requests by default**: no update checks, no
 
 | Platform | Notes |
 |---|---|
-| macOS | Packaged `.app`/DMG, or run from source. Needs Screen Recording + Accessibility permissions (below). The current build is **unsigned** — see Install. |
+| macOS | Packaged `.app`/DMG, or run from source. Needs Screen Recording + Accessibility + Input Monitoring permissions (below). The current build is **unsigned** — see Install. |
 | Windows | Installer or portable ZIP, or run from source. No administrator rights, drivers, or services required to run. |
 
 Running from source requires **Python 3.11+** (3.13 tested).
 
 ## Permissions (and why)
 
-- **macOS — Screen Recording**: required to read game pixels (detection is entirely screen-based). Grant in System Settings → Privacy & Security → Screen Recording.
-- **macOS — Accessibility**: required to send keyboard/mouse events. Grant in System Settings → Privacy & Security → Accessibility.
-- Without these permissions the app cannot see or control anything; it fails safely rather than misbehaving.
+The setup wizard's **Trust & Permissions** step (and the permanent **Trust Center** tab) shows each permission with live status, a Request button, and an in-app test. Status detection uses the OS preflight APIs and never triggers a prompt by itself; the OS permission dialog appears only when you click Request. Full reference: [PERMISSIONS.md](PERMISSIONS.md).
+
+macOS needs exactly three permissions:
+
+- **Screen Recording**: required to read game pixels (detection is entirely screen-based). Recent macOS labels this "Screen & System Audio Recording" — the app captures pixels only and contains zero audio code. System Settings → Privacy & Security → Screen Recording.
+- **Accessibility**: required to send keyboard/mouse events (Quartz `CGEventPost`). System Settings → Privacy & Security → Accessibility.
+- **Input Monitoring**: required for the **Safe Stop / toggle hotkeys** — a `pynput` global listener that hears Esc / Ctrl+K even while Roblox has focus — and for the opt-in Studio recorder. Without it the app cannot hear your emergency stop key. System Settings → Privacy & Security → Input Monitoring.
+
+If a required permission is definitively not granted, only the **Start** button is blocked — the app, its settings, and the docs stay fully usable. The app never touches the OS permission databases and never asks you to disable OS security.
+
 - **Windows**: no special permissions. The app runs as a normal user process; the installer offers a per-user install, and the portable ZIP needs no installation at all.
 
 ## Install from a release
@@ -49,7 +58,7 @@ Running from source requires **Python 3.11+** (3.13 tested).
 > `<repository URL — to be filled in when published>` — releases are not published yet; this section describes the process once they are.
 
 1. Download the artifact for your platform from the release page (macOS DMG; Windows installer `.exe` or portable `.zip`).
-2. **Verify the checksum** against the `SHA256SUMS.txt` published with the release:
+2. **Verify the checksum** against the `SHA256SUMS.txt` published with the release — step-by-step instructions in [VERIFY_DOWNLOAD.md](VERIFY_DOWNLOAD.md):
 
    ```sh
    # macOS
@@ -58,8 +67,8 @@ Running from source requires **Python 3.11+** (3.13 tested).
    Get-FileHash .\<file> -Algorithm SHA256
    ```
 
-3. **macOS**: the app is currently **unsigned** (no Apple Developer certificate yet), so the first launch requires right-click → Open → Open, or approval under System Settings → Privacy & Security. This is stated plainly so you know what to expect; if you prefer, build from source instead.
-4. **Windows**: run the installer, or unzip the portable build anywhere and run the app.
+3. **macOS**: the app is currently **unsigned** (no Apple Developer certificate yet), so the first launch requires right-click → Open → Open, or approval under System Settings → Privacy & Security. This is stated plainly so you know what to expect; if you prefer, build from source instead. Full walkthrough: [INSTALL_MACOS.md](INSTALL_MACOS.md).
+4. **Windows**: run the installer, or unzip the portable build anywhere and run the app. Full walkthrough: [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
 
 To build it yourself, see [BUILDING.md](BUILDING.md).
 
@@ -73,7 +82,7 @@ All data lives in local JSON files — there is no server side.
 | `~/Library/Application Support/Prospector Lite` | Packaged macOS app |
 | `%APPDATA%\Prospector Lite` | Packaged Windows app |
 
-Key files: `prospecting_config.json` (settings + calibration), `prospecting_builds.json`, `prospecting_scripts.json` (Studio scripts), `run_history.json`, `run_logs/` (per-run logs), `tutorial_content.json` (local help edits), `instance_id` (random local UUID for the Studio-companion handshake — never transmitted), `prospecting_calib_log.csv` (calibration log), and gitignored `prospecting_secrets.json` (your Coach API key, if you set one). Deleting the folder (or individual files) deletes your data; nothing exists anywhere else.
+Key files: `prospecting_config.json` (settings + calibration), `prospecting_builds.json`, `prospecting_scripts.json` (Studio scripts), `run_history.json`, `run_logs/` (per-run logs), `tutorial_content.json` (local help edits), `onboarding_state.json` (setup-wizard progress), `instance_id` (random local UUID for the Studio-companion handshake — never transmitted), `prospecting_calib_log.csv` (calibration log), and gitignored `prospecting_secrets.json` (your Coach API key, if you set one). The Trust Center's **Local Data** section lists these live with sizes and offers open-folder, export, and delete actions. Deleting the folder (or individual files) deletes your data; nothing exists anywhere else.
 
 If a legacy "Prospectors Plus" data folder exists, a one-time copy-only migration imports your settings and strips the old private keys; the old folder is never modified. See [PRIVACY.md](PRIVACY.md).
 
@@ -84,11 +93,11 @@ If a legacy "Prospectors Plus" data folder exists, a one-time copy-only migratio
 
 ## Troubleshooting basics
 
-- **Nothing is detected / clicks land wrong (macOS)**: re-check Screen Recording and Accessibility permissions, then fully quit and reopen the app (permissions apply on restart).
+- **Nothing is detected / clicks land wrong (macOS)**: check all three permissions (Screen Recording, Accessibility, Input Monitoring) in the Trust Center — it shows live status and can run an in-app test for each — then fully quit and reopen the app (permissions apply on restart).
 - **Detection stopped working after a game update**: re-run the Calibrate tab; pixel positions move when the game UI changes.
 - **Webhook test fails**: the URL must start with `https://`; use the "send test" button on the Notifications page — it reports the exact HTTP error.
 - **macOS says the app is from an unidentified developer**: expected for now (unsigned build); right-click → Open.
-- **Old macOS Python certificate errors**: webhook delivery retries once without SSL verification as a fallback — see the known-limitation note in [SECURITY.md](SECURITY.md).
+- **Webhook fails with a certificate error**: TLS certificate verification is mandatory; there is no insecure fallback (verify: `git grep _create_unverified_context` returns nothing). Delivery to a host with a broken certificate fails safely instead of sending unverified — fix the receiving server's certificate.
 
 More help: [SUPPORT.md](SUPPORT.md).
 
@@ -96,7 +105,6 @@ More help: [SUPPORT.md](SUPPORT.md).
 
 - Detection is pixel-based: unusual resolutions, color filters, or game UI updates can break it until you recalibrate.
 - The macOS build is unsigned (see above).
-- The webhook sender falls back to an SSL-unverified retry on certificate failures (documented limitation for old bundled-Python certificate setups).
 - No macro is "safe" or "undetectable"; nobody can promise your account is risk-free.
 
 ## Security

@@ -46,7 +46,7 @@ python3 -m py_compile prospecting_app.py prospecting_old.py prospecting_ui.py pr
 python3 tour_check.py            # UI tour integrity
 python3 finds_sim.py             # finds-detection scenarios
 python3 studio_tests.py          # Studio editor + validator
-python3 studio_conformance.py    # Studio IR conformance
+python3 studio_conformance.py    # Studio IR conformance (self-skips: see note)
 python3 prospecting_selftest.py  # app self-test
 # Engine suites (all must pass):
 python3 engine_contract_tests.py
@@ -57,9 +57,11 @@ python3 engine_parity_tests.py
 python3 engine_parallel_tests.py
 python3 engine_pacing_tests.py
 python3 engine_trace_tests.py
-# Release gate (being added; run it once it lands):
-python3 public_release_tests.py
+python3 public_release_tests.py     # the release gate
+python3 onboarding_trust_tests.py   # the onboarding/trust suite
 ```
+
+Note: `studio_conformance.py` resolves its goldens from a private sibling repository and **skips cleanly (exit 0)** when they are absent — it no longer blocks outside contributors or public CI. The Studio engine paths remain covered by the tracked `engine_*` suites.
 
 Add or extend tests when you change behavior. Engine changes must keep the golden/characterization suites passing or update them with justification in the PR description.
 

@@ -3,6 +3,32 @@
 Calibration tells the macro **where to look** on *your* screen. Do it once.
 You only need to redo it if you change your screen resolution or Roblox UI scale.
 
+## First run: the setup wizard does this for you
+
+On first launch the setup wizard's **Guided Calibration** step walks you
+through the same items below. It drives the **same detection engine and the
+same save path** as the Calibrate tab — there is only one calibration store,
+so anything you calibrate in the wizard shows up on the Calibrate tab and
+vice versa. You can re-run it any time: Tutorial menu → "Re-run setup
+wizard".
+
+The wizard (and the Trust Center) shows an honest status for each item:
+
+- **auto** — no manual calibration yet; the built-in auto-calibration places
+  this item from the standard screen ratios at every run start. Works out of
+  the box for most setups.
+- **ok** — you calibrated it and it matches your current screen.
+- **stale** — it was calibrated for a different window size/position than the
+  current one; re-calibrate before trusting it.
+
+(Other statuses you may see: **default**, **unset** for optional items you
+haven't touched, and **off** for items whose feature is disabled.)
+
+Some wizard steps will show an example screenshot of what to look for
+in-game. Until those images ship, the wizard shows a clearly-labelled
+"example pending" note with a text description instead — it never shows a
+mock-up pretending to be the real game.
+
 ## Easiest: Guided calibration (recommended)
 
 1. Open **Prospecting** in Roblox so you can see the HUD (the capacity bar and the

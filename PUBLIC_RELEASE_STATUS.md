@@ -6,7 +6,7 @@ Factual working state for the public-release pass. Updated as work lands.
 - Branch: `fable/prospector-engine`
 - HEAD at start: `ad7e9eb5dc280b04e77e208e97d8bf064d5a1afc`
 - Tracked tree clean at start (192 files). Remote: `origin`
-  = github.com/ProspectorsPlus/Prospecting-Auto-Pan.git (private).
+  (git remote configured locally; public URL pending owner decision).
 - Baseline test run (this session, before any change): compile checks,
   tour_check, finds_sim, studio_tests, prospecting_selftest and all ten
   engine suites — ALL PASS.
@@ -82,6 +82,41 @@ Factual working state for the public-release pass. Updated as work lands.
 - Revoke the historical Discord webhook + decide fresh-history publish.
 - Apple signing/notarization credentials (unsigned RC otherwise).
 - Push → run Windows CI on a real runner.
+
+## 1.0.0-rc.2 — trust-and-onboarding pass (2026-07)
+
+Version bumped to 1.0.0-rc.2 (all three copies in agreement). Shipped:
+
+- 5-step first-run wizard (welcome → trust & permissions → guided
+  calibration on the real sensing engine and single calibration store →
+  readiness check → app), with atomic resumable state
+  (`onboarding_state.json`), re-runnable from the Tutorial menu and Trust
+  Center; old-welcome users migrate straight to FINISHED.
+- Capability registry (`lite_trust.py`) with real macOS preflights for the
+  honest three-permission story (Screen Recording, Accessibility, Input
+  Monitoring), user-clicked request buttons, settings deep links, and real
+  in-app tests (live capture probe, sandboxed keystroke with release
+  proven, one-shot Safe Stop listener). `launch()` blocks Start (only
+  Start) on a definitively missing required permission.
+- Network hardening: the SSL-unverified fallback is removed at every site;
+  TLS verification is mandatory with a certifi verified fallback;
+  `NOTIFY_SCREENSHOT` now defaults off; exact in-app webhook payload
+  preview built by the engine's own `_webhook_payload`.
+- Build identity (`build_info.json`: commit/date/version/dirty/package/
+  project_url/signed/notarized) + build-time `trust_manifest.json` (ast
+  source refs; dead refs fail the build); exact-commit View-code links
+  when a public URL is configured, honest local fallback otherwise.
+- Trust Center Local Data manager (live file list, open/export/delete,
+  secret-free diagnostics export); `studio_conformance.py` skips cleanly
+  without the private goldens so public clones/CI pass.
+- Docs/audits refreshed to rc.2 across README-level and
+  docs/public-release/.
+
+Still open: onboarding/trust suite finishing in parallel; rc.2 package
+rebuild + checksums/SBOM; independent verifier pass; Windows runtime still
+never executed (CI prepared, unverified); owner actions unchanged —
+license, secret revocation + fresh history, public URL, approved example
+screenshots, signing credentials.
 
 ## If interrupted, resume with
 ```

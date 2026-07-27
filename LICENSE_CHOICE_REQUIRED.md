@@ -21,7 +21,7 @@ Rules of thumb:
 - Same, but with a patent grant and more formal terms → **Apache-2.0**.
 - Care most that improved forks must stay open → **GPL-3.0**.
 
-All three are compatible with this project's dependencies (BSD/MIT-licensed — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)); none of the dependencies force a particular choice.
+All three are compatible with this project's dependencies (mostly BSD/MIT-licensed, plus pynput under LGPL-3.0, Pillow under MIT-CMU, and certifi under MPL-2.0 — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)). pynput is used as an ordinary, unmodified dynamically-imported dependency, which the LGPL permits alongside any of these licenses, and MPL-2.0's file-level copyleft applies only to certifi's own files; none of the dependencies force a particular choice.
 
 ## Exact next steps (owner)
 

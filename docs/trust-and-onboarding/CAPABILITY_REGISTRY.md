@@ -1,0 +1,214 @@
+# Capability Registry — Reviewer Reference
+
+Internal reviewer documentation for `lite_trust.CAPABILITIES` (`lite_trust.py:71-584`), the
+single source of truth behind the Trust & Permissions wizard step, the Trust Center, the
+Readiness Check, the launch gate and the build-time trust manifest. Facts below are stated
+against the current working tree (v1.0.0-rc.2, `prospecting_app.py:45`); line numbers were
+resolved by the same ast resolver that generates the shipped manifest
+(`lite_trust.generate_manifest`, `lite_trust.py:1087`), so they match what a packaged build
+links to.
+
+Prospector Lite is source-available for inspection; **no open-source licence has been chosen
+yet** (`LICENSE_CHOICE_REQUIRED.md`). The registry makes no absolute safety claims — its job
+is to make every claim checkable, not to assert perfection.
+
+## Design rules (enforced, not aspirational)
+
+1. **Every capability is real code.** Each entry carries `source_references`
+   (module, symbol, why) resolved to file + exact line range at build time; a dead reference
+   raises and fails the build (`lite_trust.py:1040-1084,1087-1118`).
+2. **Detection never prompts.** All macOS status reads use the read-only preflight APIs
+   (`_mac_preflights`, `lite_trust.py:608-627`): `CGPreflightScreenCaptureAccess`,
+   `AXIsProcessTrusted`, `CGPreflightListenEventAccess`. These are query-only calls — by API
+   contract they return the current TCC state and cannot cause the OS to show a dialog. The
+   prompting variants (`CGRequest…`, `AXIsProcessTrustedWithOptions(prompt=True)`) live only
+   in `request_permission()` (`lite_trust.py:714-745`), which is wired exclusively to the
+   user-clicked "Request access…" button (`Api.trust_request`, `prospecting_app.py:2711-2719`).
+3. **Status is never faked.** Windows has no TCC equivalent; the UI says "available — use Test
+   to prove it works" instead of inventing "granted" (`capability_statuses`,
+   `lite_trust.py:704-707`).
+4. **The app never touches TCC databases** and never asks users to disable OS security.
+   Revoke paths are the standard System Settings panes, deep-linked with a manual fallback
+   (`_MAC_SETTINGS_LINKS`, `lite_trust.py:591-601`; `open_settings`, `lite_trust.py:748-762`).
+
+## Status vocabulary
+
+`capability_statuses(settings)` (`lite_trust.py:638-711`) emits: `granted` / `not_granted`
+(macOS TCC), `available` (Windows, no permission model), `configured` / `disabled` (network
+opt-ins, from the local config), `not_requested` (NOT_REQUIRED entries), `info`
+(informational), `unknown` (check API unavailable). Only a **definitive** `not_granted` on a
+required capability blocks anything, and it blocks only Start Macro: `launch()` returns
+`"perm:<ids>"` (`prospecting_app.py:4861-4871`) — the app, settings, calibration and docs stay
+fully usable.
+
+---
+
+## REQUIRED_FOR_CORE
+
+### screen_detection — Screen Detection
+
+| Aspect | Fact |
+|---|---|
+| macOS permission | Screen Recording (labelled "Screen & System Audio Recording" on recent macOS) |
+| Windows | No permission prompt exists for desktop capture |
+| Detection | `CGPreflightScreenCaptureAccess` — read-only, cannot prompt (`lite_trust.py:614`) |
+| Request | `CGRequestScreenCaptureAccess`, user-clicked only (`lite_trust.py:722-729`) |
+| Settings pane | `x-apple.systempreferences:…?Privacy_ScreenCapture` (`lite_trust.py:592-594`) |
+| Test | `test_screen_capture` (`lite_trust.py:769-808`): small centre `mss` grab, size + non-blankness reported, one-shot in-app preview, frame discarded, never written to disk |
+| Declined | App fully usable; Start Macro blocked (a blind macro would misclick); calibration reports denied capture honestly (black frames) |
+
+**Code it maps to** (resolved line ranges, commit-exact in the shipped manifest):
+
+- `prospector_engine/sensing.py :: Sensing._grab_full` L135-141 — calibration/full-frame capture
+- `prospector_engine/sensing.py :: Sensing.sample_saved` L219-257 — 6×6 px live sampling around
+  each calibrated point
+- `prospector_engine/engine.py :: Detector` L1272-1447 — the run-time pixel detector
+- `prospector_engine/engine.py :: _grab_screenshot_b64` L2986-3003 — the ONLY screenshot
+  encoder, used solely for the opt-in Discord screenshot (see DISCORD_NOTIFICATIONS.md)
+- `lite_trust.py :: test_screen_capture` L769-808 — the in-app capability test
+
+**Evidence for the decision.** The macro is driven entirely by reading pixels: the pan-fill
+bar, cue prompts and optional OCR regions (`docs/trust-and-onboarding/CURRENT_SYSTEM.md` §4-5).
+`mss` capture requires the Screen Recording grant on macOS; there is no narrower API for this.
+The OS label "Screen & System Audio Recording" covers more than the app uses: **zero
+audio-capture code exists** — `git grep -iE "AVAudio|AVCapture|AudioQueue|CoreAudio|pyaudio|
+sounddevice|getUserMedia|MediaRecorder"` over tracked sources returns nothing (see the
+microphone entry below), and the exhaustive API inventory in CURRENT_SYSTEM.md §5 found no
+audio, mic, camera or location API anywhere.
+
+### input_control — Keyboard & Mouse Control
+
+| Aspect | Fact |
+|---|---|
+| macOS permission | Accessibility (posting events is an assistive-technology API) |
+| Windows | No permission; if Roblox runs elevated, run BOTH normally — never elevate the macro |
+| Detection | `AXIsProcessTrusted` — read-only, cannot prompt (`lite_trust.py:618-619`) |
+| Request | `AXIsProcessTrustedWithOptions({prompt: True})`, user-clicked only (`lite_trust.py:730-735`) |
+| Settings pane | `…?Privacy_Accessibility` (`lite_trust.py:595-597`) |
+| Test | In-app sandbox: `post_test_key` (`lite_trust.py:815-843`) posts ONE harmless key press+release after a focus delay; the wizard's sandbox field observes **both key-down and key-up** (release proven) — JS at `prospecting_app.py:9965-9980`; plus `test_pointer_wiggle` (`lite_trust.py:846-886`): 2 px move, verified by reading the cursor back, then restored |
+| Declined | App usable, Start Macro blocked (it could not press anything) |
+
+**Code it maps to:**
+
+- `prospector_engine/platform_mac.py :: key_down` L176-178 / `key_up` L181-183 — CGEventPost
+  synthesis
+- `prospector_engine/platform_win.py :: key_down` L223-227 — SendInput scancodes
+- `prospector_engine/engine.py :: release_all` L3118-3140 — the release-everything safety
+  floor on every stop path
+- `prospecting_app.py :: _host_release_inputs` L5913-5937 — host-side release backstop if the
+  engine dies mid-press
+- `lite_trust.py :: test_input_control` L889-893 — the composite in-app check
+
+**Evidence.** Output-only: the capability posts synthetic events and reads nothing (observing
+input is the separate Input Monitoring grant below). Every press has a registered release, and
+every stop path funnels through `release_all` — this is also what the network-denied engine
+child asserts (`public_release_tests.py:369-377`, `world.inputs.all_released()`).
+
+### stop_hotkeys — Safe Stop & Global Hotkeys
+
+| Aspect | Fact |
+|---|---|
+| macOS permission | Input Monitoring |
+| Windows | No permission — a 30 ms `GetAsyncKeyState` poll of the specific keys, **no hook** |
+| Detection | `CGPreflightListenEventAccess` — read-only, cannot prompt (`lite_trust.py:624`) |
+| Request | `CGRequestListenEventAccess`, user-clicked only (`lite_trust.py:736-742`) |
+| Settings pane | `…?Privacy_ListenEvent` (`lite_trust.py:598-601`) |
+| Test | `await_stop_hotkey` (`lite_trust.py:896-958`): one-shot listener armed 8 s for **Esc / Ctrl+K only**; result delivered via `window.__hotkeyResult` (`Api.trust_test_hotkey`, `prospecting_app.py:2745-2759`) |
+| Declined | Start Macro blocked — without the listener the Safe Stop panic key cannot work while Roblox has focus, and running without a panic key is treated as unsafe |
+
+**Code it maps to:**
+
+- `prospector_engine/platform_mac.py :: make_listener` L348-416 — the macOS hotkey listener
+- `prospector_engine/platform_win.py :: make_listener` L483-484 — the Windows key poller
+- `prospector_engine/recorder.py :: Recorder` L92-225 — the opt-in Studio input recorder
+  (records only during an explicit user-started recording)
+- `lite_trust.py :: await_stop_hotkey` L896-958 — the in-app Safe Stop test
+
+**Evidence.** Why Input Monitoring is needed at all: the pynput `keyboard.Listener` is
+internally a **listen-only CGEventTap** (CURRENT_SYSTEM.md §5, `platform_mac.py:29-33`), and
+macOS gates any global event observation behind Input Monitoring. The listener matches only
+the configured control chords; no keystroke buffer or log exists (`data_retained` in the
+registry, verifiable in `make_listener`). This was the permission the rc.1 docs failed to
+disclose (CURRENT_SYSTEM.md §8.2) — the registry now states it plainly.
+
+---
+
+## OPTIONAL (off by default — declining changes nothing)
+
+### discord_notifications
+
+Status comes from local settings only: `configured` when a URL is saved, `disabled` (the
+default: `WEBHOOK_ENABLED=False`, empty URL — `prospector_engine/engine.py:660-661`)
+otherwise (`lite_trust.py:667-677`). No OS permission is involved; this is outbound HTTPS to a
+URL the user pastes. Full contract, TLS policy and payload truth: `DISCORD_NOTIFICATIONS.md`.
+References resolve to `post_webhook` L3081-3109, `_webhook_payload` L3006-3031, `_webhook_send`
+L3051-3078, `_webhook_tls_context` L3034-3048 (all `prospector_engine/engine.py`), plus
+`Api.test_webhook` L2516-2569 and `Api.webhook_payload_preview` L2796-2826
+(`prospecting_app.py`). The card's explanation states explicitly that this is a network
+feature with **no relationship to any recording permission** (`lite_trust.py:294-304`).
+
+### coach_ai
+
+Offline brain is the default (`disabled` status unless `COACH_MODE == "api"`,
+`lite_trust.py:679-687`). In API mode the user's own key goes to the provider the user chose —
+never to a developer endpoint. References: `Api._coach_api` L3456-3536 (the only Coach
+egress), `_save_coach_key` L523-534 (separate local secrets file, never the config),
+`Api.coach_settings` L3394-3400 (the UI receives a `has_key` flag, never the key). Revoke:
+switch to Offline + Clear key.
+
+---
+
+## INFORMATIONAL_ONLY
+
+### sound_alerts
+
+Audio **output** only: `afplay` of a built-in system sound on macOS, `MessageBeep` on Windows
+(`prospector_engine/engine.py :: _beep` L3446-3455 — the complete implementation). Needs no
+permission and is unrelated to any recording permission. Status is always `info`
+(`lite_trust.py:664-666`). Declining = silence, nothing else.
+
+---
+
+## NOT_REQUIRED (explicitly never requested)
+
+These entries exist so users can see the app *knows about* the scary categories and does not
+want them. All report `not_requested` with "This app never asks for it"
+(`lite_trust.py:652-662`). They carry empty `source_references` by design — there is no code
+to reference, and the trust suite pins that this remains true.
+
+| id | Rationale + evidence |
+|---|---|
+| `microphone` | Zero audio-capture code. Evidence: `git grep -iE "AVAudio|AVCapture|AudioQueue|CoreAudio|pyaudio|sounddevice|getUserMedia|MediaRecorder"` over tracked files → **0 hits** (re-run any time); the API inventory in CURRENT_SYSTEM.md §5 ("mic / camera / location … none anywhere"). The registry text also defuses the macOS label confusion: "Screen & System Audio Recording" is the OS category name, not what this app captures (pixels only), and tells users a mic prompt naming this app is a tamper red flag (`lite_trust.py:453-487`). |
+| `camera` | No code path touches the camera; same greps, same inventory (`lite_trust.py:488-508`). |
+| `location` | No location API, no IP geolocation. Older *private* builds phoned a location service; that code was removed before public release and `public_release_tests.py:116-121` bans the endpoints (`ip-api.com`, `ipify`, `ipinfo.io`, `geoip`, …) from every tracked file, so it cannot silently return (`lite_trust.py:509-533`). |
+| `admin_privileges` | Per-user install and normal-user run on both platforms. Windows installer: `PrivilegesRequired=lowest` (`windows/installer.iss`, CURRENT_SYSTEM.md §7). The Windows Trust tab additionally shows an informational elevation check (`_win_elevated`, `lite_trust.py:630-635,653-659`) and recommends running normally. If Roblox itself runs elevated, run both normally — elevating the macro is never the fix (`lite_trust.py:534-562`). |
+| `full_disk_access` | macOS-only entry. The app reads/writes only its own data folder plus files the user picks in open/save dialogs (`lite_trust.py:563-583`; data-dir rules `prospecting_app.py:125-152`; the Trust Center Local Data table lists every file, `Api.data_manifest`, `prospecting_app.py:3143-3167`). |
+
+---
+
+## How the wizard and Trust Center consume this registry
+
+`Api.trust_state()` (`prospecting_app.py:2678-2709`) returns the registry + live statuses +
+build identity + onboarding state; the UI renders capability cards grouped Required /
+Optional / "Never requested (so you can see we know)" with macOS/Windows tabs
+(`prospecting_app.py:10003-10017`), and action buttons appear only on the platform actually
+detected (`prospecting_app.py:9916-9927`). No status is invented in the UI layer (comment at
+`prospecting_app.py:9891-9893`). Window focus re-reads statuses so granting in System Settings
+updates the cards without polling (`prospecting_app.py:10133-10137`). "View code" opens
+exact-commit URLs, or an honest local file+symbol+commit fallback when no public repository
+URL is configured — never a moving branch (`Api.trust_view_code`,
+`prospecting_app.py:2768-2794`; see CODE_REFERENCE_SYSTEM.md).
+
+Dev-run caveat, surfaced in the UI itself: running from source attributes macOS grants to the
+terminal/IDE, not to a Prospector Lite bundle (`prospecting_app.py:2705-2708`).
+
+## Test coverage
+
+- `public_release_tests.py` — injection/memory API ban (:166), tracking-endpoint ban (:150),
+  network-denied children proving offline operation (:335-445).
+- The onboarding/trust suite (`onboarding_trust_tests.py`, being written in parallel with this
+  document; wired into `.github/workflows/ci.yml:56-57`) — registry sanity (every entry has
+  the required fields, NOT_REQUIRED entries stay reference-free), manifest resolution, and
+  wording checks.
+- Windows rows of everything above are **prepared, not executed** — the Windows runtime has
+  not been run in this pass (see TEST_MATRIX.md).
