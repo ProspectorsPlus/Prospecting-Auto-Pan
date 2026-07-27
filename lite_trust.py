@@ -138,8 +138,8 @@ CAPABILITIES = [
             ("prospector_engine.engine", "Detector",
              "the run-time pixel detector fed by mss grabs"),
             ("prospector_engine.engine", "_grab_screenshot_b64",
-             "the ONLY screenshot encoder; used solely for the opt-in "
-             "Discord screenshot"),
+             "the only screenshot encoder on the notification path; used "
+             "solely for the opt-in Discord screenshot"),
             ("lite_trust", "test_screen_capture",
              "the in-app capability test"),
         ],
@@ -190,8 +190,9 @@ CAPABILITIES = [
             "A sandbox test inside the app: you click Start Test, the app "
             "sends one harmless keystroke and a 2-pixel pointer wiggle to "
             "itself, and the test panel confirms both the key-down AND the "
-            "key-up arrived (proving clean release). Nothing is sent to "
-            "Roblox or any other app.",
+            "key-up arrived (proving clean release). The app verifies it "
+            "is the focused application before posting, so if you switch "
+            "away mid-test nothing is typed anywhere.",
         "revoke_instructions": {
             "mac": "System Settings > Privacy & Security > Accessibility: "
                    "switch off Prospector Lite.",
@@ -261,8 +262,9 @@ CAPABILITIES = [
             "mac": "CGPreflightListenEventAccess (no prompt)",
             "win": "capability test on demand"},
         "test_strategy":
-            "Press your Safe Stop key while the test is armed; the app "
-            "reports whether it heard it. Nothing else is captured.",
+            "Press Esc or Ctrl+K (the default Safe Stop keys) while the "
+            "test is armed; the app reports whether it heard it. Nothing "
+            "else is captured.",
         "revoke_instructions": {
             "mac": "System Settings > Privacy & Security > Input Monitoring: "
                    "switch off Prospector Lite.",
@@ -702,9 +704,12 @@ def capability_statuses(settings=None):
                             "detail": "The system check API was "
                                       "unavailable."}
         elif plat == "win":
-            out[cid] = {"status": "available",
+            # Windows has no permission model to read, so nothing is
+            # asserted: the row stays "untested" until the user's own Test
+            # proves the capability works.
+            out[cid] = {"status": "untested",
                         "detail": "Windows shows no permission prompt for "
-                                  "this; use Test to prove it works."}
+                                  "this; run Test to prove it works."}
         else:
             out[cid] = {"status": "unknown",
                         "detail": "Unsupported platform."}
@@ -812,13 +817,41 @@ _TEST_KEY_MAC = 17          # 't' on ANSI layouts; harmless in our own field
 _TEST_KEY_WIN_SCAN = 0x14   # 't' scancode
 
 
+def _app_is_frontmost():
+    """True/False when it can be determined whether THIS app currently has
+    focus; None when it cannot. Used to enforce the input test's promise:
+    the test keystroke is posted only while our own window is focused, so
+    it can never land in Roblox or any other application."""
+    try:
+        if platform_key() == "mac":
+            from AppKit import NSApplication
+            return bool(NSApplication.sharedApplication().isActive())
+        if platform_key() == "win":
+            import ctypes
+            u32 = ctypes.windll.user32
+            hwnd = u32.GetForegroundWindow()
+            pid = ctypes.c_ulong()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            return pid.value == os.getpid()
+    except Exception:
+        return None
+    return None
+
+
 def post_test_key(delay=0.35):
     """Post ONE harmless key press+release to the system after `delay`
     seconds (giving the in-app sandbox field time to take focus). The
     wizard's sandbox page observes both the key-down and key-up, proving
-    (a) synthetic input works and (b) releases are clean. Never call this
-    outside the explicit in-app test."""
+    (a) synthetic input works and (b) releases are clean. The post is
+    REFUSED unless this app is the frontmost application at post time, so
+    switching to another app mid-test types nothing anywhere. Never call
+    this outside the explicit in-app test."""
     time.sleep(max(0.0, float(delay)))
+    if _app_is_frontmost() is not True:
+        return {"ok": False, "skipped": True,
+                "error": "Prospector Lite is not the focused app -- "
+                         "nothing was typed. Keep this window focused "
+                         "during the test."}
     plat = platform_key()
     try:
         if plat == "mac":
@@ -987,25 +1020,33 @@ def _git(*args):
 
 def build_identity(version="", project_url=""):
     """Everything that identifies THIS build. Frozen builds read the
-    stamped build_info.json; source runs ask git directly. `version` and
-    `project_url` are passed in by the app (single source of truth there)."""
+    stamped build_info.json; source runs ask git FIRST so a stale stamp
+    left behind by an earlier packaging run can never misreport the
+    checkout's real commit or hide local modifications. `version` and
+    `project_url` are passed in by the app (single source of truth
+    there)."""
     bi = _read_build_info()
-    commit = bi.get("commit") or (_git("rev-parse", "HEAD") if not FROZEN
-                                  else "")
-    dirty = bi.get("dirty")
-    if dirty is None and not FROZEN:
-        dirty = bool(_git("status", "--porcelain", "--untracked-files=no"))
+    if FROZEN:
+        commit = bi.get("commit", "")
+        dirty = bool(bi.get("dirty"))
+    else:
+        live = _git("rev-parse", "HEAD")
+        commit = live or bi.get("commit", "")
+        dirty = (bool(_git("status", "--porcelain",
+                           "--untracked-files=no")) if live
+                 else bool(bi.get("dirty")))
     ident = {
         "version": bi.get("version") or version,
         "commit": commit or "unknown",
         "commit_short": (commit or "unknown")[:12],
         "dirty": bool(dirty),
-        "date": bi.get("date", ""),
+        "date": bi.get("date", "") if FROZEN else "",
         "platform": platform_key(),
         "os": "%s %s" % (_platform.system(), _platform.release()),
         "arch": _platform.machine(),
         "frozen": FROZEN,
-        "package": bi.get("package", "app-bundle" if FROZEN else "source"),
+        "package": (bi.get("package", "app-bundle") if FROZEN
+                    else "source"),
         "project_url": (bi.get("project_url") or project_url or ""),
         "signed": bi.get("signed", False),
         "notarized": bi.get("notarized", False),

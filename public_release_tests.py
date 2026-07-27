@@ -68,7 +68,10 @@ BRAND_FILE_ALLOW = {
     "public_release_tests.py", ".gitignore", "PUBLIC_RELEASE_STATUS.md",
     "CHANGELOG.md",
 }
-BRAND_DIR_ALLOW = ("docs/public-release/",)
+# Reviewer/evidence documentation: these dirs exist to DESCRIBE the bans
+# (naming the removed endpoints, gate tokens and old brand as evidence), so
+# the scanners exempt them wholesale -- they contain no code.
+BRAND_DIR_ALLOW = ("docs/public-release/", "docs/trust-and-onboarding/")
 # The build workflows carry these tokens as their own package-content scan
 # patterns -- they exist to REJECT the strings, not to ship them.
 SCANNER_FILES = {".github/workflows/build-windows.yml",
@@ -198,7 +201,11 @@ def scan_gate(files):
     bad = []
     for f in files:
         if (f in ("public_release_tests.py", "PUBLIC_RELEASE_STATUS.md",
-                  "CHANGELOG.md", ".gitignore")
+                  "CHANGELOG.md", ".gitignore",
+                  # the acceptance probe QUOTES the private filename in its
+                  # own must-not-be-bundled assertion (same class as this
+                  # file quoting the tokens it bans)
+                  "packaging/packaged_acceptance.command")
                 or f.startswith(BRAND_DIR_ALLOW)):
             continue
         t = read(f)

@@ -24,7 +24,7 @@ is to make every claim checkable, not to assert perfection.
    prompting variants (`CGRequest…`, `AXIsProcessTrustedWithOptions(prompt=True)`) live only
    in `request_permission()` (`lite_trust.py:714-745`), which is wired exclusively to the
    user-clicked "Request access…" button (`Api.trust_request`, `prospecting_app.py:2711-2719`).
-3. **Status is never faked.** Windows has no TCC equivalent; the UI says "available — use Test
+3. **Status is never faked.** Windows has no TCC equivalent; the UI asserts nothing: rows stay "untested — run Test
    to prove it works" instead of inventing "granted" (`capability_statuses`,
    `lite_trust.py:704-707`).
 4. **The app never touches TCC databases** and never asks users to disable OS security.
@@ -34,7 +34,7 @@ is to make every claim checkable, not to assert perfection.
 ## Status vocabulary
 
 `capability_statuses(settings)` (`lite_trust.py:638-711`) emits: `granted` / `not_granted`
-(macOS TCC), `available` (Windows, no permission model), `configured` / `disabled` (network
+(macOS TCC), `untested` (Windows, no permission model -- nothing is asserted until the user's own Test passes), `configured` / `disabled` (network
 opt-ins, from the local config), `not_requested` (NOT_REQUIRED entries), `info`
 (informational), `unknown` (check API unavailable). Only a **definitive** `not_granted` on a
 required capability blocks anything, and it blocks only Start Macro: `launch()` returns

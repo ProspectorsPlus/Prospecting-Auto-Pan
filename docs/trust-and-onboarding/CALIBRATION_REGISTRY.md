@@ -44,9 +44,8 @@ CURRENT_SYSTEM.md §8.7.)
 | Status | Meaning | How it is computed |
 |---|---|---|
 | `auto` | Placed from the built-in ratio profile each run start; runnable out of the box | Required item and `AUTO_CALIBRATE` truthy (default True — `prospector_engine/engine.py:728`; placement `apply_auto_calibrate`, `engine.py:855-882`) (`lite_onboarding.py:431-435`) |
-| `ok` | User-calibrated and still valid | Required item, auto off, health not failing (`:441-442`); optional item with a value set (`_pix_set`, `:368-376,414-419`); `roblox_window` when the window is found (`:400-401`) |
+| `ok` | User-calibrated -- the values verifiably exist (`_required_values_present`: every pixel key set, CAP_BAR_WIDTH > 20) and still valid | Required item, auto off, health not failing (`:441-442`); optional item with a value set (`_pix_set`, `:368-376,414-419`); `roblox_window` when the window is found (`:400-401`) |
 | `stale` | User-calibrated but the Roblox window moved/resized since | Required item, auto off, `Sensing.health()` reports not-ok (live rect vs `CALIB_WINDOW_RECT`, ±4 px — `sensing.py:754`; wired in `Api.calibration_registry`, `prospecting_app.py:2860-2865`) (`:436-440`) |
-| `default` | Shipped default coordinates, never confirmed by the user | **Defined in the vocabulary but not currently emitted**: `_pix_set` can distinguish a shipped default (returns `None` when a `default` argument is supplied, `:374-375`) but `calibration_status` never passes one, so today required items resolve to `auto`/`ok`/`stale` only. Documented honestly as a reserved status. |
 | `unset` | No value yet | Optional item whose activating feature is ON but keys are empty (`:420-424`); `roblox_window` when Roblox is not open / not checked (`:402-407`) |
 | `off` | Feature that needs this item is disabled | Optional item, activating flag(s) false (`:425-428`); condition strings are parsed as upper-case flag names split on "or" (`:410-413`) |
 

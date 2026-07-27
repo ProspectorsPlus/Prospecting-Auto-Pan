@@ -275,17 +275,28 @@ def t_cal_registry():
         "AUTO_CALIBRATE=default => required items report 'auto'")
     ready, blockers = lo.calibration_ready(st)
     chk(ready and not blockers, "auto state is runnable (matches engine)")
-    st = lo.calibration_status({"AUTO_CALIBRATE": False},
-                               health={"ok": False})
+    manual = {"AUTO_CALIBRATE": False,
+              "CAP_FULL_PIXEL": [1120, 900], "CAP_LEFT_PIXEL": [680, 900],
+              "CAP_BAR_WIDTH": 440, "PAN_PIX": [847, 981],
+              "DEPOSIT_PIX": [770, 981], "SHAKE_PIX": [830, 981]}
+    st = lo.calibration_status(dict(manual), health={"ok": False})
     chk(all(st[i]["status"] == "stale" for i in req
             if i != "roblox_window"),
-        "manual + moved window => 'stale'")
+        "manual values + moved window => 'stale'")
     ready, blockers = lo.calibration_ready(st)
     chk(not ready and blockers, "stale required calibration blocks a run")
-    st = lo.calibration_status({"AUTO_CALIBRATE": False},
-                               health={"ok": True})
+    st = lo.calibration_status(dict(manual), health={"ok": True})
     ready, _ = lo.calibration_ready(st)
-    chk(ready, "manual + matching window is ready")
+    chk(ready, "manual + real values + matching window is ready")
+    # a hand-edited config with auto OFF but no real values must never
+    # show a false 'User-calibrated' green
+    st = lo.calibration_status({"AUTO_CALIBRATE": False,
+                                "CAP_FULL_PIXEL": [0, 0]})
+    chk(all(st[i]["status"] == "unset" for i in req
+            if i != "roblox_window"),
+        "manual WITHOUT values => 'unset', never a fake 'ok'")
+    ready, _ = lo.calibration_ready(st)
+    chk(not ready, "missing manual values block a run")
     st = lo.calibration_status({"EARN_TRACK": True})
     chk(st["money_region"]["status"] == "unset",
         "enabled feature without its region reports 'unset'")
@@ -331,17 +342,24 @@ def t_ui_markers():
 # runtime children (isolated home, sockets denied)
 # --------------------------------------------------------------------------
 
-DENY = r"""
-import socket as _s
-def _deny(*a, **k):
-    raise AssertionError("network attempt during onboarding/trust test")
-class _DenySock(_s.socket):
-    def connect(self, *a, **k): _deny()
-    def connect_ex(self, *a, **k): _deny()
-_s.socket = _DenySock
-_s.create_connection = _deny
-_s.getaddrinfo = _deny
-"""
+def _deny_network():
+    """Monkeypatch the socket module so any network attempt in a child
+    test raises instead of connecting."""
+    import socket as _s
+
+    def _deny(*a, **k):
+        raise AssertionError("network attempt during onboarding/trust test")
+
+    class _DenySock(_s.socket):
+        def connect(self, *a, **k):
+            _deny()
+
+        def connect_ex(self, *a, **k):
+            _deny()
+
+    _s.socket = _DenySock
+    _s.create_connection = _deny
+    _s.getaddrinfo = _deny
 
 
 def run_child(name):
@@ -361,7 +379,7 @@ def run_child(name):
 
 
 def child_api_flow():
-    exec(DENY)
+    _deny_network()
     sys.path.insert(0, ROOT)
     import prospecting_app as app
     api = app.Api()
@@ -422,7 +440,7 @@ def child_api_flow():
 
 
 def child_launch_gate():
-    exec(DENY)
+    _deny_network()
     sys.path.insert(0, ROOT)
     import prospecting_app as app
     import lite_trust
@@ -449,7 +467,7 @@ def child_launch_gate():
 
 
 def child_migration_bridge():
-    exec(DENY)
+    _deny_network()
     sys.path.insert(0, ROOT)
     home = os.environ["PP_DATA_DIR"]
     with open(os.path.join(home, "prospecting_config.json"), "w") as f:

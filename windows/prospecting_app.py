@@ -512,16 +512,45 @@ def _load_secrets():
     return {}
 
 
+def _coach_base_ok(url):
+    """A Coach base URL may be https://, or plain http:// ONLY to localhost
+    (the documented local-Ollama case). Anything else would put the user's
+    API key on the wire unencrypted."""
+    u = str(url or "").strip().lower()
+    if u.startswith("https://"):
+        return True
+    if u.startswith("http://"):
+        host = u[len("http://"):].split("/", 1)[0].split(":", 1)[0]
+        return host in ("localhost", "127.0.0.1", "[::1]", "::1")
+    return False
+
+
 def _coach_key():
-    """The Coach API key: secrets file first, then legacy config fallback."""
+    """The Coach API key from the restricted secrets file. A key that an
+    old build left in the main config is migrated into the secrets file
+    once (and scrubbed from the config) so the 'key lives only in the
+    restricted file' contract really holds."""
     k = (_load_secrets().get("COACH_API_KEY") or "").strip()
     if k:
         return k
-    return (load_saved().get("COACH_API_KEY") or "").strip()
+    legacy = (load_saved().get("COACH_API_KEY") or "").strip()
+    if legacy:
+        _save_coach_key(legacy)
+        try:
+            cur = load_saved()
+            cur["COACH_API_KEY"] = ""
+            tmp = CONFIG_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(cur, f, indent=2)
+            os.replace(tmp, CONFIG_FILE)
+        except OSError:
+            pass
+    return legacy
 
 
 def _save_coach_key(key):
-    """Write the API key ONLY to the gitignored secrets file (never the config)."""
+    """Write the API key ONLY to the gitignored secrets file (never the
+    config), owner-read/write only (0600)."""
     sec = _load_secrets()
     if key == "__CLEAR__":
         sec.pop("COACH_API_KEY", None)
@@ -530,6 +559,10 @@ def _save_coach_key(key):
     try:
         with open(SECRETS_FILE, "w") as f:
             json.dump(sec, f, indent=2)
+        try:
+            os.chmod(SECRETS_FILE, 0o600)
+        except OSError:
+            pass
     except OSError:
         pass
 
@@ -2912,7 +2945,7 @@ class Api:
         path = os.path.join(base, rel) if rel else ""
         if entry.get("approved") and rel and os.path.isfile(path) \
                 and os.path.realpath(path).startswith(
-                    os.path.realpath(base)):
+                    os.path.realpath(base) + os.sep):
             try:
                 import base64
                 with open(path, "rb") as f:
@@ -3050,24 +3083,21 @@ class Api:
         except OSError as e:
             add("datadir", "Data folder", "fail",
                 "Cannot write to %s (%s)" % (DATA_DIR, e))
-        # Settings save + reload probe (non-destructive round-trip)
+        # Settings save + reload probe: exercises the same atomic
+        # write-then-read machinery on a DEDICATED probe file, so it can
+        # never race a real settings save or leave residue in the config.
         try:
-            cur = load_saved()
+            probe_path = os.path.join(DATA_DIR, ".settings_probe.json")
             marker = int(time.time())
-            cur["_READINESS_PROBE"] = marker
-            tmp = CONFIG_FILE + ".tmp"
+            tmp = probe_path + ".tmp"
             with open(tmp, "w") as f:
-                json.dump(cur, f, indent=2)
-            os.replace(tmp, CONFIG_FILE)
-            back = load_saved().get("_READINESS_PROBE")
-            cur = load_saved()
-            cur.pop("_READINESS_PROBE", None)
-            with open(tmp, "w") as f:
-                json.dump(cur, f, indent=2)
-            os.replace(tmp, CONFIG_FILE)
+                json.dump({"probe": marker}, f)
+            os.replace(tmp, probe_path)
+            back = _read_json(probe_path, {}).get("probe")
+            os.remove(probe_path)
             if back == marker:
                 add("settings", "Settings save & reload", "pass",
-                    "Round-trip verified.")
+                    "Atomic write + read-back verified.")
             else:
                 add("settings", "Settings save & reload", "fail",
                     "The saved value did not read back.")
@@ -3413,7 +3443,14 @@ class Api:
         if model is not None:
             s["COACH_MODEL"] = (model or "").strip() or "claude-haiku-4-5-20251001"
         if base is not None:
-            s["COACH_BASE_URL"] = (base or "").strip()
+            b = (base or "").strip()
+            if b and not _coach_base_ok(b):
+                return {"ok": False,
+                        "error": "The base URL must be https:// (plain "
+                                 "http:// is allowed only for localhost, "
+                                 "e.g. a local Ollama). Your API key must "
+                                 "never travel unencrypted."}
+            s["COACH_BASE_URL"] = b
         s["COACH_API_KEY"] = ""                       # never store the key in config
         if key is not None:
             _save_coach_key(key)                      # secrets file only
@@ -3473,6 +3510,14 @@ class Api:
             or "claude-haiku-4-5-20251001"
         base = (saved.get("COACH_BASE_URL") or "").strip().rstrip("/")
         sysp = _coach.system_prompt(ctx)
+        if base and not _coach_base_ok(base):
+            # defence in depth: a hand-edited config must not put the API
+            # key on an unencrypted wire (save-time validation is primary)
+            return {"reply": "The Coach base URL must be https:// (plain "
+                             "http:// only for localhost). Fix it in Coach "
+                             "settings (⚙).",
+                    "changes": [], "topic": "api", "askStats": False,
+                    "chips": []}
         prior = []
         for m in (convo or []):
             role = m.get("role"); txt = (m.get("text") or m.get("content") or "")
@@ -9907,7 +9952,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        li.classList.toggle('cur',s===PAGE);li.classList.toggle('done',!!done[s]&&s!==PAGE);
        if(s===PAGE)li.setAttribute('aria-current','step');else li.removeAttribute('aria-current');});}
    function stDot(st){ // status -> colour class + label (text carries meaning, never colour alone)
-     const m={granted:['ok','Granted'],available:['ok','Available'],configured:['mid','Configured'],
+     const m={granted:['ok','Granted'],untested:['mid','Not tested yet'],configured:['mid','Configured'],
        not_granted:['no','Not granted'],disabled:['off','Off (default)'],not_requested:['off','Never requested'],
        info:['off','No permission'],unknown:['mid','Unknown']};
      return m[st]||['mid',st||'?'];}
@@ -9969,7 +10014,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
            else{show('&#10007; '+E(r.error||'failed')+' &mdash; '+E(r.note||''));}
            refresh(false);return;}
          if(cap==='input_control'){
-           show('Click into the box below, then press Start test. The app will type one harmless letter into its own box and wiggle the pointer 2&nbsp;px &mdash; nothing is sent to Roblox or any other app.'
+           show('Click into the box below, then press Start test and keep this window focused. The app types one harmless letter into its own box and wiggles the pointer 2&nbsp;px &mdash; it checks it is the focused app first, so if you switch away nothing is typed anywhere.'
              +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><input id="sandkey_'+cap+'" placeholder="test lands here" aria-label="Input test target"> <button type="button" class="btn2" id="sandgo_'+cap+'">Start test</button></div><div id="sandout_'+cap+'" style="margin-top:7px"></div>');
            const go=$id('sandgo_'+cap);if(go)go.onclick=async()=>{
              const f=$id('sandkey_'+cap), o=$id('sandout_'+cap);let down=false,up=false;
@@ -9980,7 +10025,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
              let pr={};try{pr=await _api().trust_test_pointer();}catch(e){}
              try{await _api().trust_test_key();}catch(e){}
              setTimeout(()=>{window.removeEventListener('keydown',h1,true);window.removeEventListener('keyup',h2,true);
-               const kb=down&&up?'&#10003; keystroke arrived AND released cleanly':(down?'&#9888; key-down seen but no key-up':'&#10007; no keystroke arrived (grant Accessibility, then retry)');
+               const kb=down&&up?'&#10003; keystroke arrived AND released cleanly':(down?'&#9888; key-down seen but no key-up':'&#10007; no keystroke arrived (grant Accessibility, keep this window focused, then retry)');
                const mo=pr&&pr.ok?(pr.moved?'&#10003; pointer moved and was restored':'&#10007; pointer did not move'):'&#9888; pointer test unavailable';
                if(o)o.innerHTML=kb+'<br>'+mo;refresh(false);},2400);};
            return;}
@@ -9991,7 +10036,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          return;}
        if(act==='preview'){show('Building the exact payload from the same engine code that sends it&hellip;');
          let r={};try{r=await _api().webhook_payload_preview();}catch(e){r={error:String(e)};}
-         if(r.ok){show('This is EVERYTHING a notification sends (example stats). Screenshot attach is a separate opt-in, currently '+(r.screenshot_optin?'ON':'OFF')+'.<pre class="tc-pre">'+E(JSON.stringify({headers:r.headers,body:r.payload},null,1))+'</pre>');}
+         if(r.ok){show('This is everything a notification sends (example stats). Screenshot attach is a separate opt-in, currently '+(r.screenshot_optin?'ON — when it fires, the body additionally carries a screenshot field (base64 PNG) and screenshot_format':'OFF — no screenshot fields are ever added while it stays off')+'.<pre class="tc-pre">'+E(JSON.stringify({headers:r.headers,body:r.payload},null,1))+'</pre>');}
          else{show('&#10007; '+E(r.error||'failed'));}return;}
        if(act==='notifpage'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="Notifications"],.tab[data-tab="notifications"]');
          const nt=t||document.querySelector('.tab[data-tab="settings"]');if(nt)nt.click();
@@ -10021,7 +10066,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      $id('supBack').textContent='← Welcome';$id('supNext').textContent='Continue to Calibration →';
      $id('supNote').textContent=(DET==='mac')?'You can continue any time - Start Macro stays disabled until the required permissions work.':'Windows has no permission prompts here - run the tests to prove everything works.';
      b.focus();}
-   function calStatus(st){const m={ok:['ok','Calibrated'],auto:['mid','Auto'],'default':['mid','Default'],stale:['no','Stale'],unset:['off','Not set'],off:['off','Off']};return m[st]||['mid',st||'?'];}
+   function calStatus(st){const m={ok:['ok','Calibrated'],auto:['mid','Auto'],stale:['no','Stale'],unset:['off','Not set'],off:['off','Off']};return m[st]||['mid',st||'?'];}
    async function renderCal(){PAGE='cal';railSet();const b=$id('supBody');
      b.innerHTML='<p class="sup-sub">Loading calibration&hellip;</p>';
      try{CAL=await _api().calibration_registry();}catch(e){CAL=null;}

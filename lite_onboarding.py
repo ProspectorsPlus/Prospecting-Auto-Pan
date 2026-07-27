@@ -365,14 +365,30 @@ CALIBRATION_ITEMS = [
 CAL_BY_ID = {c["id"]: c for c in CALIBRATION_ITEMS}
 
 
-def _pix_set(cfg, key, default=None):
+def _pix_set(cfg, key):
     v = cfg.get(key)
     if not isinstance(v, (list, tuple)) or len(v) != 2:
         return False
     if list(v) == [0, 0]:
         return False
-    if default is not None and list(v) == list(default):
-        return None      # present but still the shipped default
+    return True
+
+
+def _required_values_present(cfg, item):
+    """When AUTO_CALIBRATE is off, a required item is only 'calibrated' if
+    its values actually exist: every pixel key set (non-[0,0]) and, for the
+    capacity bar, a plausible derived width. Prevents a hand-edited or
+    partially-imported config from showing a false 'User-calibrated'."""
+    for k in item["keys"]:
+        if k.endswith("_PIXEL") or k.endswith("_PIX"):
+            if not _pix_set(cfg, k):
+                return False
+        elif k == "CAP_BAR_WIDTH":
+            try:
+                if int(cfg.get(k, 0)) <= 20:
+                    return False
+            except (TypeError, ValueError):
+                return False
     return True
 
 
@@ -380,14 +396,16 @@ def calibration_status(cfg, health=None, window_found=None):
     """Evaluate every registry item against the live config. Returns
     {item_id: {"status": ..., "detail": ...}}.
 
-    Statuses: ok / auto / default / stale / unset / off.
-    - 'auto'    -- AUTO_CALIBRATE places this from the ratio profile;
-                   runnable out of the box.
-    - 'ok'      -- user-calibrated and the window still matches.
-    - 'stale'   -- user-calibrated but the window moved/resized since.
-    - 'default' -- shipped default coordinates, never confirmed by the user.
-    - 'unset'   -- optional item with no value yet.
-    - 'off'     -- optional item whose activating feature is disabled.
+    Statuses: ok / auto / stale / unset / off.
+    - 'auto'  -- AUTO_CALIBRATE places this from the ratio profile;
+                 runnable out of the box.
+    - 'ok'    -- user-calibrated: the values really exist AND the window
+                 still matches.
+    - 'stale' -- user-calibrated but the window moved/resized since.
+    - 'unset' -- a needed value is missing (required item with
+                 AUTO_CALIBRATE off, or an enabled optional feature
+                 without its calibration).
+    - 'off'   -- optional item whose activating feature is disabled.
     """
     auto = bool(cfg.get("AUTO_CALIBRATE", True))
     healthy = None
@@ -433,6 +451,11 @@ def calibration_status(cfg, health=None, window_found=None):
                         "detail": "Placed automatically from the built-in "
                                   "profile each run. Calibrating by hand "
                                   "makes it exact for your setup."}
+        elif not _required_values_present(cfg, item):
+            out[iid] = {"status": "unset",
+                        "detail": "Auto-calibration is off but this value "
+                                  "is missing -- calibrate it, or turn "
+                                  "auto-calibration back on."}
         elif healthy is False:
             out[iid] = {"status": "stale",
                         "detail": "Calibrated, but the Roblox window has "

@@ -54,7 +54,12 @@ def main(outdir):
     files = []
     for name in sorted(os.listdir(outdir)):
         p = os.path.join(outdir, name)
-        if not os.path.isfile(p) or name == "release-manifest.json":
+        # Skip itself and the checksum file: the manifest is generated
+        # FIRST, then SHA256SUMS.txt is regenerated over everything
+        # INCLUDING the manifest, so the manifest itself is verifiable
+        # from the checksum file (and no circular hash exists).
+        if not os.path.isfile(p) or name in ("release-manifest.json",
+                                             "SHA256SUMS.txt"):
             continue
         plat, arch, kind = classify(name)
         files.append({"name": name, "bytes": os.path.getsize(p),
