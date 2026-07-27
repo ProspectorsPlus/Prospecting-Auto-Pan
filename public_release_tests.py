@@ -464,6 +464,40 @@ def scan_artifacts():
             "plus-", "zzz"), "artifact name is rebranded: %s" % n)
 
 
+def scan_tls_and_wording(files):
+    """rc.2 gate additions: (a) certificate verification can never be
+    bypassed -- the unverified-context retry must stay dead; (b) the app
+    and top-level docs must not claim 'open source' while no licence
+    exists (LICENSE_CHOICE_REQUIRED.md). Doc lines that talk ABOUT the
+    licence status are allowed."""
+    print("[tls + licence wording]")
+    bad = []
+    for rel in files:
+        if rel in ("public_release_tests.py", "onboarding_trust_tests.py"):
+            continue        # the scanners themselves quote the token
+        if not rel.endswith((".py", ".spec", ".command", ".bat", ".yml")):
+            continue        # docs may NAME the token in verify instructions
+        text = read(rel)
+        for i, line in enumerate(text.splitlines(), 1):
+            if ("_create_unverified_context" in line
+                    or "ssl.CERT_NONE" in line):
+                bad.append("%s:%d" % (rel, i))
+    chk(not bad, "no TLS-verification bypass in any tracked code file %s"
+        % bad)
+    for rel in ("prospecting_app.py", "windows/prospecting_app.py"):
+        hits = [l for l in read(rel).splitlines()
+                if re.search(r"open[- ]source", l, re.I)]
+        chk(not hits, "%s carries no open-source claim" % rel)
+    allow = re.compile(r"licen[cs]e|not |until |no longer|packages|"
+                       r"third.party|open.source project[s]? do", re.I)
+    for rel in ("README.md", "SUPPORT.md", "windows/README.txt"):
+        hits = [l.strip() for l in read(rel).splitlines()
+                if re.search(r"open[- ]source", l, re.I)
+                and not allow.search(l)]
+        chk(not hits, "%s open-source wording only in licence context %s"
+            % (rel, hits[:2]))
+
+
 def main():
     if len(sys.argv) >= 3 and sys.argv[1] == "--child":
         CHILDREN[sys.argv[2]]()
@@ -477,6 +511,7 @@ def main():
     scan_subprocess(files)
     scan_default_config()
     scan_version()
+    scan_tls_and_wording(files)
     print("[runtime, network denied]")
     for name in ("app_offline", "engine_offline",
                  "engine_webhook_default", "scrub_and_migration"):
