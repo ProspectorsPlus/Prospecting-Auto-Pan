@@ -44,7 +44,10 @@ sleep 12
 if ! kill -0 "$PID" 2>/dev/null; then
   echo "FAIL: app exited during first boot"; exit 1
 fi
-SOCKS="$(lsof -p "$PID" -i 2>/dev/null | tail -n +2 | wc -l | tr -d ' ')"
+# -a ANDs the selectors (plain "-p PID -i" would OR them and list every
+# socket on the machine). lsof exits 1 when it matches NOTHING -- which is
+# the expected zero-sockets case -- so guard it from set -o pipefail.
+SOCKS="$( (lsof -a -p "$PID" -i 2>/dev/null || true) | tail -n +2 | wc -l | tr -d ' ')"
 if [ -f "$HOMEDIR/onboarding_state.json" ]; then
   echo "==> [3] first boot OK: JS<->Python bridge live (welcome_state ran,"
   echo "        onboarding_state.json created in the isolated home)"
@@ -55,7 +58,13 @@ else
 fi
 echo "==> [3] open network sockets during boot: $SOCKS (expected 0)"
 [ "$SOCKS" = "0" ] || { echo "FAIL: unexpected sockets"; kill "$PID"; exit 1; }
+# the GUI loop ignores a plain TERM; escalate so the probe never hangs
 kill "$PID" 2>/dev/null || true
+for _i in 1 2 3 4 5; do
+  kill -0 "$PID" 2>/dev/null || break
+  sleep 1
+done
+kill -9 "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
 # nothing may be written into the mounted (read-only) bundle -- guaranteed by
 # the read-only mount; the write probe above proves writes went to $HOMEDIR
