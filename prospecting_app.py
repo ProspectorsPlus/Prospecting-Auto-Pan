@@ -443,13 +443,25 @@ def _scrub_config_file():
         pass
 
 
-# --- Secrets: the personal API key lives in a gitignored, NON-bundled file so it
-#     never lands in git or a shipped build. Config keeps only non-secret settings.
-SECRETS_FILE = os.path.join(HERE, "prospecting_secrets.json")
+# --- Secrets: the personal Coach API key lives in its own file so it never
+#     lands in git, a shipped build, or an exported config. Packaged builds
+#     keep it in the user DATA dir (the install dir may be read-only and is
+#     removed on uninstall, and the privacy contract is "one data folder");
+#     dev keeps it next to the scripts, where it is gitignored.
+SECRETS_FILE = os.path.join(DATA_DIR if FROZEN else HERE,
+                            "prospecting_secrets.json")
+_LEGACY_SECRETS_FILE = os.path.join(HERE, "prospecting_secrets.json")
 
 
 def _load_secrets():
-    return _read_json(SECRETS_FILE, {}) or {}
+    sec = _read_json(SECRETS_FILE, {})
+    if sec:
+        return sec
+    if FROZEN and _LEGACY_SECRETS_FILE != SECRETS_FILE:
+        # read-only fallback: a key an older packaged build saved next to
+        # the executable still works, but new saves go to the data dir
+        return _read_json(_LEGACY_SECRETS_FILE, {}) or {}
+    return {}
 
 
 def _coach_key():

@@ -35,11 +35,16 @@ grep -rn -E 'urllib|urlopen|http\.client|requests\.|socket\b' \
     prospecting_app.py prospecting_ui.py prospecting_assistant.py prospector_engine/
 
 # Expect matches only in: engine.py (webhook), prospecting_app.py (webhook test,
-# coach, webbrowser/open_external), plus import lines.
+# coach, webbrowser/open_external), prospecting_ui.py (see below), plus imports.
+#
+# prospecting_ui.py's matches are a LOCAL fallback, not egress: when you run
+# from source without pywebview installed, it serves the settings UI to your
+# own browser on a socket bound to 127.0.0.1 only. Packaged builds never run
+# this path (pywebview is always bundled), and it accepts no remote traffic.
 
 # No listening ports / sockets in the IPC layer:
 grep -n 'socket' prospector_engine/ipc.py    # no matches
 
 # Watch it live (macOS example): run the app, then
-lsof -p <pid> -i    # shows no network connections until you use an opt-in feature
+lsof -a -p <pid> -i   # shows no network connections until you use an opt-in feature
 ```

@@ -61,6 +61,14 @@ Factual working state for the public-release pass. Updated as work lands.
 - release/public-candidate/ assembled: DMG, source archive, SBOM,
   checksums, manifests, notes.
 - PUBLIC_RELEASE_READINESS.md: READY AFTER USER ACTION.
+- Independent fresh-context verifier ran over the candidate: verdict
+  "credible public-release candidate"; its P1 (frozen builds wrote the
+  Coach key inside the install dir, contradicting PRIVACY.md) and P2
+  (coach_history.json missing from the privacy inventory) are FIXED
+  (SECRETS_FILE now derives from DATA_DIR when frozen, with a read-only
+  legacy fallback; PRIVACY.md table updated; NETWORK_BEHAVIOR.md documents
+  the source-only 127.0.0.1 UI fallback). Final artifacts rebuilt at the
+  closing commit.
 
 ## Platform status
 - macOS: dev runtime verified via test suites (this Mac).

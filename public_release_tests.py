@@ -216,6 +216,10 @@ def scan_gate(files):
         for k in ("ACCESS_OK", "ACCESS_HASH", "ACCESS_MACHINE",
                   "MACHINE_SALT", "SYNC_URL"):
             chk(k in legacy, "%s: legacy key %s is scrubbed" % (rel, k))
+        # privacy contract: packaged builds keep the Coach key in the user
+        # DATA dir (one deletable folder), never inside the install dir
+        chk("SECRETS_FILE = os.path.join(DATA_DIR if FROZEN else HERE," in t,
+            "%s: secrets file lives in the data dir when frozen" % rel)
 
 
 # --------------------------------------------------------------------------

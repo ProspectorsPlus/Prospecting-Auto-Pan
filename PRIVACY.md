@@ -30,7 +30,8 @@ Default network activity is **zero requests**. The complete inventory of code th
 | `prospecting_calib_log.csv` | Calibration session log written by the engine |
 | `tutorial_content.json` | Your local edits to the built-in help |
 | `instance_id` | A random UUID used only for the local Prospector Studio companion handshake; never transmitted |
-| `prospecting_secrets.json` | Your Coach API key, if you set one. Gitignored; never bundled into builds |
+| `coach_history.json` | Your Coach chat transcript (the text you typed and its replies), kept locally so conversations survive restarts |
+| `prospecting_secrets.json` | Your Coach API key, if you set one. Stored in this data folder by packaged builds (next to the scripts, gitignored, when running from source); never bundled into builds |
 
 **Deleting your data**: quit the app and delete the folder above (or individual files). That is the entire data footprint; nothing exists anywhere else.
 
