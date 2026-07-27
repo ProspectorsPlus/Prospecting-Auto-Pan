@@ -13,7 +13,7 @@ VERSION = re.search(r'VERSION\s*=\s*"([^"]+)"',
                     open("prospecting_app.py", encoding="utf-8").read()).group(1)
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("webview", "mss", "numpy", "pynput"):
+for pkg in ("webview", "mss", "numpy", "pynput", "certifi"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -32,15 +32,24 @@ datas += [
     ("prospecting_prices.json", "."),
     ("icon.png", "."),
 ]
-# public documentation shipped inside the bundle (welcome-screen links) and
-# the build identity stamp written by build_dmg.command just before this runs
+# public documentation shipped inside the bundle (welcome-screen + Trust
+# Center links), the build identity stamp and the trust manifest written by
+# build_dmg.command just before this runs
 for extra in ("PRIVACY.md", "SECURITY.md", "README.md",
-              "THIRD_PARTY_NOTICES.md", "build/build_info.json"):
+              "THIRD_PARTY_NOTICES.md", "PERMISSIONS.md", "TRUST_CENTER.md",
+              "VERIFY_DOWNLOAD.md", "CALIBRATION_GUIDE.md",
+              "LICENSE_CHOICE_REQUIRED.md",
+              "build/build_info.json", "build/trust_manifest.json"):
     if os.path.exists(extra):
         datas += [(extra, ".")]
+# guided-calibration example assets (manifest + any approved images)
+if os.path.isdir("assets/onboarding/calibration"):
+    datas += [("assets/onboarding/calibration",
+               "assets/onboarding/calibration")]
 
 hiddenimports += [
     "prospecting_ui", "prospecting_assistant", "mss.darwin",
+    "lite_trust", "lite_onboarding",
     # pyobjc frameworks pywebview + the engine touch at runtime
     "objc", "AppKit", "Foundation", "WebKit", "Quartz", "CoreFoundation",
     # the shared engine package (prospecting_old.py shim imports it via runpy)

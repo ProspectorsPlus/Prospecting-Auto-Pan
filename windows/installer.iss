@@ -3,8 +3,8 @@
 ; Produces:      Output\ProspectorLiteSetup.exe
 
 #define MyAppName "Prospector Lite"
-#define MyAppVersion "1.0.0-rc.1"
-#define MyAppPublisher "Prospector Lite open-source project"
+#define MyAppVersion "1.0.0-rc.2"
+#define MyAppPublisher "Prospector Lite project"
 #define MyAppExeName "Prospector Lite.exe"
 
 [Setup]

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Entitlements for Developer ID signing with the hardened runtime.
+     Only what a PyInstaller-frozen Python app needs to run:
+       - allow-unsigned-executable-memory: CPython's ctypes/ffi JIT pages
+       - disable-library-validation: the bundle carries its own dylibs
+     Deliberately ABSENT: microphone, camera, location, Apple Events,
+     network-server, and every other capability entitlement. Screen
+     Recording / Accessibility / Input Monitoring are TCC permissions the
+     USER grants at runtime -- they are not entitlements and nothing here
+     pre-authorizes them. -->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

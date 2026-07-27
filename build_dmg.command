@@ -38,19 +38,35 @@ else
     python3 -m venv build/venv
   fi
   build/venv/bin/pip -q install --upgrade pip
-  build/venv/bin/pip -q install pyinstaller pywebview pyobjc mss numpy pillow pynput
+  build/venv/bin/pip -q install pyinstaller pywebview pyobjc mss numpy pillow pynput certifi
   PYB=build/venv/bin/python
 fi
 
-# 2) build identity stamp (embedded, shown in the welcome/About surfaces)
+# 2) build identity stamp (embedded; shown in About, the welcome screen and
+#    the Trust Center) + the trust manifest (exact per-capability source
+#    references, generated from THIS checkout so code links can never point
+#    at a different revision). PP_PROJECT_URL optionally stamps the public
+#    repository URL once the owner has published it.
 "$PYB" - <<'PY'
-import json, subprocess, datetime, os
+import json, subprocess, datetime, os, re
 c = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
                    text=True).stdout.strip()
+dirty = bool(subprocess.run(["git", "status", "--porcelain",
+                             "--untracked-files=no"], capture_output=True,
+                            text=True).stdout.strip())
+ver = re.search(r'VERSION\s*=\s*"([^"]+)"',
+                open("prospecting_app.py", encoding="utf-8").read()).group(1)
 os.makedirs("build", exist_ok=True)
-json.dump({"commit": c, "date": datetime.date.today().isoformat()},
+json.dump({"commit": c, "date": datetime.date.today().isoformat(),
+           "version": ver, "dirty": dirty, "package": "dmg",
+           "project_url": os.environ.get("PP_PROJECT_URL", ""),
+           "signed": bool(os.environ.get("CODESIGN_ID")),
+           "notarized": False},
           open("build/build_info.json", "w"))
+if dirty:
+    print("   NOTE: tree is dirty -- this build is marked development")
 PY
+"$PYB" lite_trust.py --emit build/trust_manifest.json
 
 # 3) icon: icon.icns from icon.png
 if [ -f icon.png ] && [ ! -f build/icon.icns ]; then
@@ -69,10 +85,19 @@ export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
 "$PYB" -m PyInstaller --noconfirm prospector_lite_mac.spec
 
 # 5) sign: real identity when provided, ad-hoc otherwise (arm64 requires a
-#    signature to run at all; ad-hoc still means right-click > Open once)
+#    signature to run at all; ad-hoc still means right-click > Open once).
+#    Real signing uses the hardened runtime + the minimal tracked
+#    entitlements (packaging/entitlements.plist -- no permission
+#    entitlements). Notarization + stapling are separate manual steps, see
+#    RELEASING.md; credentials are never read from the repository.
 if [ -n "${CODESIGN_ID:-}" ]; then
-  echo "==> Signing with $CODESIGN_ID"
-  codesign --force --deep --options runtime --sign "$CODESIGN_ID" "dist/$APPNAME.app"
+  echo "==> Signing with $CODESIGN_ID (hardened runtime)"
+  codesign --force --deep --options runtime \
+    --entitlements packaging/entitlements.plist \
+    --sign "$CODESIGN_ID" "dist/$APPNAME.app"
+  codesign --verify --deep --strict "dist/$APPNAME.app"
+  spctl --assess --type execute "dist/$APPNAME.app" \
+    || echo "   (spctl assessment pending notarization -- expected before notarize/staple)"
 else
   codesign --force --deep --sign - "dist/$APPNAME.app" 2>/dev/null || \
     echo "   (ad-hoc codesign skipped)"

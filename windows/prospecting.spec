@@ -14,7 +14,7 @@ import os
 from PyInstaller.utils.hooks import collect_all
 
 datas, binaries, hiddenimports = [], [], []
-for pkg in ("webview", "clr_loader", "pythonnet", "mss", "numpy"):
+for pkg in ("webview", "clr_loader", "pythonnet", "mss", "numpy", "certifi"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -32,14 +32,23 @@ datas += [
     ("prospecting_prices.json", "."),
     ("icon.png", "."),
 ]
-# public documentation shipped inside the bundle (welcome-screen links) and
-# the build identity stamp written by build.bat / CI just before this runs
+# public documentation shipped inside the bundle (welcome-screen + Trust
+# Center links), the build identity stamp and the trust manifest written by
+# build.bat / CI just before this runs
 for extra in ("../PRIVACY.md", "../SECURITY.md", "../README.md",
-              "../THIRD_PARTY_NOTICES.md", "build_info.json"):
+              "../THIRD_PARTY_NOTICES.md", "../PERMISSIONS.md",
+              "../TRUST_CENTER.md", "../VERIFY_DOWNLOAD.md",
+              "../CALIBRATION_GUIDE.md", "../LICENSE_CHOICE_REQUIRED.md",
+              "build_info.json", "trust_manifest.json"):
     if os.path.exists(extra):
         datas += [(extra, ".")]
+# guided-calibration example assets (manifest + any approved images)
+if os.path.isdir("../assets/onboarding/calibration"):
+    datas += [("../assets/onboarding/calibration",
+               "assets/onboarding/calibration")]
 
-hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant", "mss.windows"]
+hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant",
+                  "mss.windows", "lite_trust", "lite_onboarding"]
 # the shared engine package: the app imports prospector_engine.client for ipc
 # mode. In the repo the package sits one level up (pathex below); in the
 # extracted zip it sits next to this spec.

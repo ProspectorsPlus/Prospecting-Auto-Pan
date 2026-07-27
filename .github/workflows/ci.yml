@@ -37,9 +37,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ "$RUNNER_OS" = "macOS" ]; then
-            python -m pip install pywebview pyobjc mss numpy pillow pynput
+            python -m pip install pywebview pyobjc mss numpy pillow pynput certifi
           else
-            python -m pip install pywebview pythonnet mss numpy pillow pynput
+            python -m pip install pywebview pythonnet mss numpy pillow pynput certifi
           fi
 
       - name: Compile checks
@@ -53,6 +53,9 @@ jobs:
 
       - name: Public-release gate (branding / privacy / access / network)
         run: python public_release_tests.py
+
+      - name: Onboarding + trust suite (wizard, registry, TLS, identity)
+        run: python onboarding_trust_tests.py
 
       - name: UI + protocol checks
         run: python tour_check.py

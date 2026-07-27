@@ -30,10 +30,12 @@ jobs:
       - name: Install build deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller pywebview pythonnet mss numpy pillow cyclonedx-bom
+          python -m pip install pyinstaller pywebview pythonnet mss numpy pillow certifi cyclonedx-bom
 
-      - name: Stamp build identity
-        run: python -c "import json,os,datetime;json.dump({'commit':os.environ['GITHUB_SHA'],'date':datetime.date.today().isoformat()},open('build_info.json','w'))"
+      - name: Stamp build identity + trust manifest
+        run: |
+          python -c "import json,os,datetime,re;v=re.search(r'VERSION\s*=\s*\"([^\"]+)\"',open('prospecting_app.py',encoding='utf-8').read()).group(1);json.dump({'commit':os.environ['GITHUB_SHA'],'date':datetime.date.today().isoformat(),'version':v,'dirty':False,'package':'windows','project_url':os.environ.get('PP_PROJECT_URL',''),'signed':False,'notarized':False},open('build_info.json','w'))"
+          python ..\lite_trust.py --emit trust_manifest.json
 
       - name: Make icon.ico
         run: python -c "from PIL import Image;Image.open('icon.png').convert('RGBA').save('icon.ico',sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
@@ -66,11 +68,39 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $out.Length -lt 10) { Write-Error "capabilities probe failed"; exit 1 }
           Write-Output "smoke ok"
 
+      # Authenticode signing readiness: runs ONLY when the repository has the
+      # WINDOWS_CERT_PFX_B64 + WINDOWS_CERT_PASSWORD secrets configured. No
+      # certificate is committed; unsigned builds are produced (and clearly
+      # labelled unsigned in-app) when the secrets are absent.
+      - name: Sign exe (optional, needs WINDOWS_CERT_PFX_B64 secret)
+        if: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          PFX_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx",[Convert]::FromBase64String($env:PFX_B64))
+          & signtool sign /f cert.pfx /p $env:PFX_PASS /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "dist/Prospector Lite/Prospector Lite.exe"
+          & signtool verify /pa "dist/Prospector Lite/Prospector Lite.exe"
+          Remove-Item cert.pfx
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
       - name: Build installer (Inno Setup)
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Sign installer (optional, needs WINDOWS_CERT_PFX_B64 secret)
+        if: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
+          PFX_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("cert.pfx",[Convert]::FromBase64String($env:PFX_B64))
+          & signtool sign /f cert.pfx /p $env:PFX_PASS /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "Output/ProspectorLiteSetup.exe"
+          & signtool verify /pa "Output/ProspectorLiteSetup.exe"
+          Remove-Item cert.pfx
 
       - name: Portable ZIP
         shell: pwsh
