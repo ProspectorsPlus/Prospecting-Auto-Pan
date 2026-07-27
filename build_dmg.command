@@ -62,7 +62,10 @@ if [ -f icon.png ] && [ ! -f build/icon.icns ]; then
   iconutil -c icns build/icon.iconset -o build/icon.icns 2>/dev/null || true
 fi
 
-# 4) the self-contained .app
+# 4) the self-contained .app. SOURCE_DATE_EPOCH pins the commit time into
+#    every archive timestamp PyInstaller writes, so two builds of the same
+#    commit produce byte-identical bundle content (see REPRODUCIBLE_BUILDS).
+export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct 2>/dev/null || echo 0)"
 "$PYB" -m PyInstaller --noconfirm prospector_lite_mac.spec
 
 # 5) sign: real identity when provided, ad-hoc otherwise (arm64 requires a

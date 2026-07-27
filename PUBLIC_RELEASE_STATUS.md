@@ -37,11 +37,16 @@ Factual working state for the public-release pass. Updated as work lands.
    secrets. REMOVE.
 7. User Discord webhook notifications + Coach AI mode (user key) are
    legitimate opt-in features: keep, disclosed, off by default.
-8. Secret IN GIT HISTORY: commit `6842a47` committed a real Discord webhook
-   URL into both configs + the Windows zip (later scrubbed in `7ff6537`,
-   "secret scrub"). Current tracked files clean. Publishing this repo's
-   history would expose it → the webhook must be revoked and/or the public
-   repo must start from fresh history. USER ACTION.
+8. Secrets IN GIT HISTORY (current tracked files clean; verified this
+   session): commit `6842a47` committed the owner's real Discord webhook
+   URL (configs + Windows zip); commit `e0f3d4f` committed the notify-bot
+   `WEBHOOK_SECRET` value and the bot endpoint as baked fallbacks. Both
+   were scrubbed from files in `7ff6537` but remain in history. No API
+   keys were ever committed (history `-S sk-proj/sk-ant` hits are UI
+   placeholder text only). `prospecting_secrets.json` and
+   `ACCESS_CODES_PRIVATE.txt` were never committed. Consequence: revoke
+   the webhook + bot secret, and publish the public repo from FRESH
+   history. USER ACTION.
 9. `prospecting_secrets.json` (untracked, gitignored) holds the owner's coach
    API key + webhooks; never committed. Must never be bundled.
 
@@ -64,7 +69,7 @@ Factual working state for the public-release pass. Updated as work lands.
 
 ## If interrupted, resume with
 ```
-cd "/Users/ibraheemarif/Roblox Macro/Claude"
+cd <repo root>
 git status --short --untracked-files=no && git log -5 --oneline
 python3 tour_check.py && python3 finds_sim.py && python3 studio_tests.py
 python3 public_release_tests.py   # once it exists

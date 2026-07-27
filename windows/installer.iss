@@ -22,7 +22,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-; install per-user so no admin prompt is needed
+; per-user install by default: no administrator rights needed (the dialog
+; still lets someone deliberately pick an all-users install)
+PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesInstallIn64BitMode=x64compatible
 ; close a running copy cleanly before replacing files on upgrade

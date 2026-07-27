@@ -10254,6 +10254,14 @@ def _quit_everything(api):
 
 def main():
     global _window, _pill, _overlay, _coach_win, _analytics_win, _hud, _studio_win
+    # Capability handshake: print the engine's generated capability manifest
+    # and exit. Works identically in dev (python prospecting_app.py
+    # --capabilities) and frozen (the exe with --capabilities); also the
+    # packaging smoke test's offline launch probe.
+    if "--capabilities" in sys.argv:
+        from prospector_engine.engine import script_capabilities
+        print(json.dumps(script_capabilities(), indent=1, sort_keys=True))
+        return
     # Frozen macro mode: the bundled exe re-invokes itself with --run-macro to
     # run the actual macro in-process (there is no separate python.exe).
     # [Phase 04 C6] --run-engine is the same re-exec under the engine's own

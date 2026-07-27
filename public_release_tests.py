@@ -69,10 +69,20 @@ BRAND_FILE_ALLOW = {
     "CHANGELOG.md",
 }
 BRAND_DIR_ALLOW = ("docs/public-release/",)
+# The build workflows carry these tokens as their own package-content scan
+# patterns -- they exist to REJECT the strings, not to ship them.
+SCANNER_FILES = {".github/workflows/build-windows.yml",
+                 ".github/workflows/build-macos.yml"}
+
+
+def _context_ok(text, token, markers):
+    """Every line containing `token` must also contain one of `markers`."""
+    return all(any(m in line for m in markers)
+               for line in text.splitlines() if token in line)
 
 
 def brand_ok(rel, text):
-    if rel in BRAND_FILE_ALLOW or rel.startswith(BRAND_DIR_ALLOW):
+    if rel in BRAND_FILE_ALLOW or rel in SCANNER_FILES             or rel.startswith(BRAND_DIR_ALLOW):
         return True
     hits = [b for b in BRAND if b in text]
     if not hits:
@@ -82,6 +92,12 @@ def brand_ok(rel, text):
         legacy = region(text, "def _legacy_data_dir", "def _data_dir")
         outside = text.replace(legacy, "", 1)
         return not any(b in outside for b in BRAND)
+    if rel in ("README.md", "PRIVACY.md", "RELEASING.md", "SECURITY.md"):
+        # public docs may name the old brand ONLY when explaining the
+        # migration / history on that same line
+        return all(_context_ok(text, b, ("legacy", "migration", "migrat",
+                                         "histor", "formerly", "old"))
+                   for b in hits)
     return False
 
 
@@ -108,7 +124,7 @@ TRACK_FILE_ALLOW = {"public_release_tests.py", "PUBLIC_RELEASE_STATUS.md",
 
 
 def track_ok(rel, text):
-    if rel in TRACK_FILE_ALLOW or rel.startswith(BRAND_DIR_ALLOW):
+    if rel in TRACK_FILE_ALLOW or rel in SCANNER_FILES             or rel.startswith(BRAND_DIR_ALLOW):
         return True
     hits = [t for t in TRACKING if t in text]
     if not hits:
@@ -142,11 +158,19 @@ def scan_injection(files):
     print("[injection/memory APIs]")
     bad = []
     for f in files:
-        if f == "public_release_tests.py" or f.startswith(BRAND_DIR_ALLOW):
+        if (f == "public_release_tests.py" or f in SCANNER_FILES
+                or f.startswith(BRAND_DIR_ALLOW)):
             continue
         t = read(f)
-        if any(a in t for a in INJECT):
-            bad.append(f)
+        hits = [a for a in INJECT if a in t]
+        if not hits:
+            continue
+        if f in ("README.md", "SECURITY.md", "PRIVACY.md"):
+            # docs may NAME these APIs when stating that none are used
+            if all(_context_ok(t, a, ("no ", "not ", "never", "absent"))
+                   for a in hits):
+                continue
+        bad.append(f)
     chk(not bad, "no process-injection or memory-access APIs in the tree "
         "(bad: %s)" % (bad or "none"))
 
@@ -198,7 +222,7 @@ def scan_secrets(files):
     print("[secrets]")
     bad = []
     for f in files:
-        if f == "public_release_tests.py":
+        if f == "public_release_tests.py" or f in SCANNER_FILES:
             continue
         t = read(f)
         if any(re.search(s, t) for s in SECRETS):

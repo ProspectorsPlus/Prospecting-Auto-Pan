@@ -3065,8 +3065,12 @@ def post_webhook(event, message, stats=None, shot=False):
     url = (WEBHOOK_URL or "").strip()
     if not WEBHOOK_ENABLED or not url:
         if WEBHOOK_ENABLED and not url:
-            print("[webhook] no WEBHOOK_URL set -- user notification dropped "
-                  "(owner analytics never uses this path)")
+            print("[webhook] no WEBHOOK_URL set -- user notification dropped")
+        return
+    if not url.lower().startswith("https://"):
+        # the app enforces https at save time; a hand-edited config must not
+        # downgrade the only sanctioned egress to cleartext
+        print("[webhook] WEBHOOK_URL is not https:// -- notification dropped")
         return
     flag = _EVENT_FLAG.get(event)
     if flag and not globals().get(flag, True):

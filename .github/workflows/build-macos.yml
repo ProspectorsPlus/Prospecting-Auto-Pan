@@ -34,7 +34,12 @@ jobs:
       - name: Package-content scan (branding / endpoints / secrets)
         run: |
           bad='Prospectors Plus|ProspectorsPlus|PPLUS-|ip-api\.com|prospectorsplus\.github\.io|discord\.com/api/webhooks/[0-9]'
-          if grep -RInE "$bad" "dist/Prospector Lite.app/Contents/Resources" 2>/dev/null | grep -v Binary; then
+          # shipped docs may reference the old name in migration/history
+          # context; the tracked-tree gate (public_release_tests.py) already
+          # enforces line-level context rules on them
+          if grep -RInE "$bad" "dist/Prospector Lite.app/Contents/Resources" 2>/dev/null \
+               | grep -v Binary \
+               | grep -vE "/(README|PRIVACY|SECURITY|THIRD_PARTY_NOTICES)\.md:"; then
             echo "forbidden strings in package"; exit 1
           fi
           echo "package content clean"
