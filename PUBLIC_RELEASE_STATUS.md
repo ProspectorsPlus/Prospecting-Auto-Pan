@@ -50,9 +50,17 @@ Factual working state for the public-release pass. Updated as work lands.
 9. `prospecting_secrets.json` (untracked, gitignored) holds the owner's coach
    API key + webhooks; never committed. Must never be bundled.
 
-## Completed changes
-- docs/public-release/ARCHITECTURE.md written.
-- (in progress — see git log for the running list)
+## Completed changes (commits 39d66bc, b531240, 1026eac, 9644cc0 + final)
+- Gate/tracking/fingerprint/auto-update removal + welcome onboarding.
+- Full rebrand; repo hygiene (tracked tree 143 files); docs suite + audits.
+- Release gate suite (public_release_tests.py) — ALL PASS incl. artifacts.
+- macOS self-contained .app + DMG built, audited, DMG-mount + offline
+  journey verified, welcome screen visually confirmed via screenshot.
+- Windows packaging + CI rewritten (no secret injection); YAML validated;
+  runtime execution pending push (documented blocker).
+- release/public-candidate/ assembled: DMG, source archive, SBOM,
+  checksums, manifests, notes.
+- PUBLIC_RELEASE_READINESS.md: READY AFTER USER ACTION.
 
 ## Platform status
 - macOS: dev runtime verified via test suites (this Mac).

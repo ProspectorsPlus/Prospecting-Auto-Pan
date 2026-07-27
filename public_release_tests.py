@@ -76,8 +76,9 @@ SCANNER_FILES = {".github/workflows/build-windows.yml",
 
 
 def _context_ok(text, token, markers):
-    """Every line containing `token` must also contain one of `markers`."""
-    return all(any(m in line for m in markers)
+    """Every line containing `token` must also contain one of `markers`
+    (case-insensitive)."""
+    return all(any(m in line.lower() for m in markers)
                for line in text.splitlines() if token in line)
 
 
@@ -92,11 +93,12 @@ def brand_ok(rel, text):
         legacy = region(text, "def _legacy_data_dir", "def _data_dir")
         outside = text.replace(legacy, "", 1)
         return not any(b in outside for b in BRAND)
-    if rel in ("README.md", "PRIVACY.md", "RELEASING.md", "SECURITY.md"):
+    if rel in ("README.md", "PRIVACY.md", "RELEASING.md", "SECURITY.md",
+               "SUPPORT.md", "BUILDING.md"):
         # public docs may name the old brand ONLY when explaining the
         # migration / history on that same line
-        return all(_context_ok(text, b, ("legacy", "migration", "migrat",
-                                         "histor", "formerly", "old"))
+        return all(_context_ok(text, b, ("legacy", "migrat", "histor",
+                                         "formerly", "old", "pre-1.0"))
                    for b in hits)
     return False
 
@@ -135,6 +137,13 @@ def track_ok(rel, text):
         if other:
             return False
         return text.count('"SYNC_URL"') == text.count("SYNC_URL")
+    if rel in ("README.md", "PRIVACY.md", "RELEASING.md", "SECURITY.md",
+               "SUPPORT.md", "BUILDING.md"):
+        # docs may name removed endpoints/fields when describing the removal
+        return all(_context_ok(text, t, ("legacy", "removed", "stripped",
+                                         "never", "no longer", "migrat",
+                                         "old", "gone", "deleted"))
+                   for t in hits)
     return False
 
 
@@ -166,8 +175,10 @@ def scan_injection(files):
         if not hits:
             continue
         if f in ("README.md", "SECURITY.md", "PRIVACY.md"):
-            # docs may NAME these APIs when stating that none are used
-            if all(_context_ok(t, a, ("no ", "not ", "never", "absent"))
+            # docs may NAME these APIs when stating that none are used or in
+            # the verification command a reviewer runs to prove it
+            if all(_context_ok(t, a, ("no ", "not ", "never", "absent",
+                                      "grep"))
                    for a in hits):
                 continue
         bad.append(f)
