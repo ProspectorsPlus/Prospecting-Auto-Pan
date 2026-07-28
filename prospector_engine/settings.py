@@ -17,6 +17,7 @@ materializes the 8 layered targets, re-binding per run start cannot creep.
 """
 import json
 import os
+import shutil
 
 SCHEMA_VERSION = 1
 
@@ -103,12 +104,15 @@ def validate(schema_map, values, opaque=False):
 
 def atomic_write(path, doc):
     """The engine's single write path: tmp + rename, rolling .bak of the
-    previous content (the prospecting_scripts.json discipline)."""
+    previous content (the prospecting_scripts.json discipline). The .bak
+    is made by COPY, not rename -- a rename would leave a window with no
+    live file at all, and any concurrent reader (the host's load_saved,
+    another bridge call) would see the whole config as empty."""
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
     if os.path.exists(path):
         try:
-            os.replace(path, path + ".bak")
+            shutil.copyfile(path, path + ".bak")
         except OSError:
             pass
     tmp = path + ".tmp"

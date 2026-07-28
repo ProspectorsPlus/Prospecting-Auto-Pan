@@ -607,6 +607,19 @@ _MAC_SETTINGS_LINKS = {
 # Live status detection (never prompts)
 # ---------------------------------------------------------------------------
 
+def _ax_module():
+    """The pyobjc module carrying the AXIsProcessTrusted* symbols.
+    ApplicationServices re-exports them from HIServices; packaged builds
+    have both, but importing either works, so try both -- a bundling
+    change can not silently break the Accessibility preflight."""
+    try:
+        import ApplicationServices as m
+        return m
+    except Exception:
+        import HIServices as m
+        return m
+
+
 def _mac_preflights():
     """The three real macOS TCC states for THIS process. Read-only: none of
     these calls can trigger a system prompt."""
@@ -617,8 +630,7 @@ def _mac_preflights():
     except Exception:
         out["screen_detection"] = None
     try:
-        from ApplicationServices import AXIsProcessTrusted
-        out["input_control"] = bool(AXIsProcessTrusted())
+        out["input_control"] = bool(_ax_module().AXIsProcessTrusted())
     except Exception:
         out["input_control"] = None
     try:
@@ -627,6 +639,22 @@ def _mac_preflights():
     except Exception:
         out["stop_hotkeys"] = None
     return out
+
+
+_LAUNCH_PREFLIGHTS = None
+
+
+def launch_preflights():
+    """The preflight states as they were the FIRST time this process asked
+    (cached). macOS applies Screen Recording / Input Monitoring grants to a
+    process at launch: comparing the live preflight against this snapshot is
+    how the app honestly detects 'granted now, but a restart is needed for
+    it to take effect'."""
+    global _LAUNCH_PREFLIGHTS
+    if _LAUNCH_PREFLIGHTS is None:
+        _LAUNCH_PREFLIGHTS = (_mac_preflights()
+                              if platform_key() == "mac" else {})
+    return _LAUNCH_PREFLIGHTS
 
 
 def _win_elevated():
@@ -654,11 +682,15 @@ def capability_statuses(settings=None):
         if cap["required_level"] == NOT_REQUIRED:
             if cid == "admin_privileges" and plat == "win":
                 elev = _win_elevated()
-                out[cid] = {"status": "not_requested",
-                            "detail": ("Currently running elevated -- not "
-                                       "recommended; run it normally."
-                                       if elev else
-                                       "Running as a normal user (correct).")}
+                if elev is True:
+                    _d = ("Currently running elevated -- not "
+                          "recommended; run it normally.")
+                elif elev is False:
+                    _d = "Running as a normal user (correct)."
+                else:
+                    _d = ("Could not read the elevation state (the check "
+                          "API was unavailable).")
+                out[cid] = {"status": "not_requested", "detail": _d}
             else:
                 out[cid] = {"status": "not_requested",
                             "detail": "This app never asks for it."}
@@ -733,10 +765,9 @@ def request_permission(cap_id):
                              "flip the switch there, then use Test. A "
                              "restart of the app may be needed.")}
         if cap_id == "input_control":
-            from ApplicationServices import (AXIsProcessTrustedWithOptions,
-                                             kAXTrustedCheckOptionPrompt)
-            granted = bool(AXIsProcessTrustedWithOptions(
-                {kAXTrustedCheckOptionPrompt: True}))
+            ax = _ax_module()
+            granted = bool(ax.AXIsProcessTrustedWithOptions(
+                {ax.kAXTrustedCheckOptionPrompt: True}))
             return {"ok": True, "granted": granted}
         if cap_id == "stop_hotkeys":
             import Quartz
@@ -830,12 +861,48 @@ def _app_is_frontmost():
             import ctypes
             u32 = ctypes.windll.user32
             hwnd = u32.GetForegroundWindow()
+            if not hwnd:
+                return None
+            # Resolve to the top-level root first: with WebView2, keyboard
+            # focus can sit in a child HWND owned by the out-of-process
+            # msedgewebview2.exe even though the top-level window is ours.
+            GA_ROOT = 2
+            root = u32.GetAncestor(hwnd, GA_ROOT) or hwnd
             pid = ctypes.c_ulong()
-            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            u32.GetWindowThreadProcessId(root, ctypes.byref(pid))
             return pid.value == os.getpid()
     except Exception:
         return None
     return None
+
+
+def _win_send_scancode(scan, up):
+    """One key event via SendInput with a KEYBDINPUT scancode entry -- the
+    same API family the engine's platform_win input path uses (keybd_event
+    does not document the SCANCODE flag and can drop the event)."""
+    import ctypes
+    import ctypes.wintypes as wt
+    KEYEVENTF_SCANCODE, KEYEVENTF_KEYUP = 0x0008, 0x0002
+    ULONG_PTR = ctypes.c_size_t
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = (("wVk", wt.WORD), ("wScan", wt.WORD),
+                    ("dwFlags", wt.DWORD), ("time", wt.DWORD),
+                    ("dwExtraInfo", ULONG_PTR))
+
+    class _INPUTunion(ctypes.Union):
+        _fields_ = (("ki", _KEYBDINPUT),)
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = (("type", wt.DWORD), ("union", _INPUTunion))
+
+    INPUT_KEYBOARD = 1
+    flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
+    inp = _INPUT(INPUT_KEYBOARD, _INPUTunion(
+        ki=_KEYBDINPUT(0, scan, flags, 0, 0)))
+    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(inp),
+                                          ctypes.sizeof(_INPUT))
+    return int(sent) == 1
 
 
 def post_test_key(delay=0.35):
@@ -845,13 +912,18 @@ def post_test_key(delay=0.35):
     (a) synthetic input works and (b) releases are clean. The post is
     REFUSED unless this app is the frontmost application at post time, so
     switching to another app mid-test types nothing anywhere. Never call
-    this outside the explicit in-app test."""
+    this outside the explicit in-app test.
+
+    The result dict is the honest record of what happened -- the caller
+    (Api.trust_test_key) delivers it back to the UI so a refusal or an
+    exception is reported as itself, never mis-blamed on a permission."""
     time.sleep(max(0.0, float(delay)))
     if _app_is_frontmost() is not True:
-        return {"ok": False, "skipped": True,
-                "error": "Prospector Lite is not the focused app -- "
-                         "nothing was typed. Keep this window focused "
-                         "during the test."}
+        return {"ok": False, "posted": False, "skipped": True,
+                "error_code": "NOT_FRONTMOST",
+                "error": "Prospector Lite was not the focused app -- "
+                         "nothing was typed anywhere. Keep this window "
+                         "focused during the test and try again."}
     plat = platform_key()
     try:
         if plat == "mac":
@@ -863,17 +935,19 @@ def post_test_key(delay=0.35):
                 time.sleep(0.04)
             return {"ok": True, "posted": True}
         if plat == "win":
-            import ctypes
-            KEYEVENTF_SCANCODE, KEYEVENTF_KEYUP = 0x0008, 0x0002
-            for flags in (KEYEVENTF_SCANCODE,
-                          KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP):
-                ctypes.windll.user32.keybd_event(
-                    0, _TEST_KEY_WIN_SCAN, flags, 0)
+            for up in (False, True):
+                if not _win_send_scancode(_TEST_KEY_WIN_SCAN, up):
+                    return {"ok": False, "posted": False,
+                            "error_code": "SENDINPUT_BLOCKED",
+                            "error": "Windows blocked the synthetic key "
+                                     "(SendInput sent 0 events)."}
                 time.sleep(0.04)
             return {"ok": True, "posted": True}
-        return {"ok": False, "error": "Unsupported platform."}
+        return {"ok": False, "posted": False, "error_code": "PLATFORM",
+                "error": "Unsupported platform."}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "posted": False, "error_code": "EXCEPTION",
+                "error": str(e)}
 
 
 def test_pointer_wiggle():
@@ -960,7 +1034,25 @@ def await_stop_hotkey(timeout=8.0):
                     ctrl["down"] = False
 
             lis = keyboard.Listener(on_press=on_press, on_release=on_release)
-            lis.start()
+            try:
+                lis.start()
+            except Exception as e:
+                return {"ok": False, "heard": None,
+                        "error_code": "LISTENER_START",
+                        "error": "The key listener could not start (%s). "
+                                 "On macOS this usually means Input "
+                                 "Monitoring is not granted to this app."
+                                 % e}
+            # a listener that dies immediately (macOS refusing the event
+            # tap) must be reported as a start failure, not as a silent
+            # 8-second timeout
+            time.sleep(0.25)
+            if not lis.is_alive() and not hit["key"]:
+                return {"ok": False, "heard": None,
+                        "error_code": "LISTENER_DIED",
+                        "error": "macOS refused the key listener -- grant "
+                                 "Input Monitoring to Prospector Lite, "
+                                 "then restart the app and retest."}
             while time.time() < deadline and lis.is_alive():
                 time.sleep(0.05)
             try:
@@ -970,9 +1062,10 @@ def await_stop_hotkey(timeout=8.0):
             if hit["key"]:
                 return {"ok": True, "heard": hit["key"]}
             return {"ok": True, "heard": None,
-                    "note": "Nothing heard. If you did press it, macOS is "
-                            "blocking the listener -- grant Input "
-                            "Monitoring and restart the app."}
+                    "note": "Nothing heard within the window. If you did "
+                            "press it, macOS is blocking the listener -- "
+                            "grant Input Monitoring to Prospector Lite "
+                            "and restart the app."}
         if plat == "win":
             import ctypes
             VK_ESC, VK_CTRL, VK_K = 0x1B, 0x11, 0x4B

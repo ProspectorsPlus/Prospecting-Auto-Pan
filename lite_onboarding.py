@@ -44,6 +44,7 @@ def _default_state(platform_key):
         "product_version": "",
         "calibration_schema": CALIBRATION_SCHEMA,
         "declined_optional": [],
+        "requested": [],
         "completed_at": 0,
         "last_readiness": None,
     }
@@ -52,13 +53,21 @@ def _default_state(platform_key):
 class Onboarding(object):
     """Load/advance/persist the wizard state. All writes are atomic
     (tmp + os.replace); a torn write can only lose the last transition,
-    never the file."""
+    never the file. The state file is written eagerly on first
+    construction so (a) the packaged first-boot probe has a real
+    bridge-liveness marker to watch and (b) migrate_legacy's
+    "no prior state" guard tests what was on disk BEFORE this process,
+    not a file this same process just created."""
 
     def __init__(self, data_dir, platform_key, version=""):
         self.path = os.path.join(data_dir, _STATE_FILE)
         self.platform = platform_key
         self.version = version
+        self._existed = os.path.isfile(self.path)
+        self.last_save_error = ""
         self.state = self._load()
+        if not self._existed:
+            self._save()
 
     def _load(self):
         try:
@@ -67,6 +76,7 @@ class Onboarding(object):
             if isinstance(d, dict) and d.get("state") in STATES:
                 d.setdefault("schema", SCHEMA_VERSION)
                 d.setdefault("declined_optional", [])
+                d.setdefault("requested", [])
                 d.setdefault("calibration_schema", CALIBRATION_SCHEMA)
                 d.setdefault("last_readiness", None)
                 return d
@@ -78,9 +88,13 @@ class Onboarding(object):
         """One-time bridge from the pre-wizard flag: a user who finished the
         old single welcome screen has a working, calibrated install -- they
         are marked FINISHED rather than being forced back through setup.
-        The full wizard stays available from Help / Trust Center."""
+        The full wizard stays available from Help / Trust Center.
+        Guarded by the AT-CONSTRUCTION file check (self._existed), never a
+        live os.path.exists: a state file this process wrote can not make
+        migration fire, and a WELCOME_SEEN flag written later this session
+        can not either (the state has left NOT_STARTED by then)."""
         if (self.state["state"] == "NOT_STARTED" and welcome_seen
-                and not os.path.exists(self.path)):
+                and not self._existed):
             self.state["state"] = "FINISHED"
             self.state["migrated_from"] = "WELCOME_SEEN"
             self.state["completed_at"] = int(time.time())
@@ -96,8 +110,11 @@ class Onboarding(object):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self.state, f, indent=1)
             os.replace(tmp, self.path)
-        except OSError:
-            pass
+            self.last_save_error = ""
+            return True
+        except OSError as e:
+            self.last_save_error = str(e)
+            return False
 
     def mark(self, state):
         """Advance to `state`. Backward transitions are allowed only via
@@ -125,6 +142,17 @@ class Onboarding(object):
         if not declined and cap_id in lst:
             lst.remove(cap_id)
         self._save()
+        return self.state
+
+    def note_request(self, cap_id):
+        """Record that the user explicitly requested this OS permission at
+        least once. Lets the UI distinguish 'Not requested yet' (macOS was
+        never asked, so no System Settings row exists) from a real
+        'Not granted' after a request."""
+        lst = self.state.setdefault("requested", [])
+        if cap_id and cap_id not in lst:
+            lst.append(cap_id)
+            self._save()
         return self.state
 
     def rerun(self):

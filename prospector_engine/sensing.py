@@ -43,6 +43,13 @@ PIXEL_KEYS = (
 CORE_PIXEL_KEYS = ("CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "DEPOSIT_PIX",
                    "PAN_PIX", "SHAKE_PIX", "DIG_TRIGGER_PIXEL")
 
+# The required-every-cycle subset: only a save touching one of THESE flips
+# the 'your screen is now authoritative' auto-calibrate switch. Saving an
+# optional extra (dig-green pixel, a tracker region) must not disable the
+# auto placement the required points still depend on.
+AUTHORITATIVE_PIXEL_KEYS = ("CAP_FULL_PIXEL", "CAP_LEFT_PIXEL",
+                            "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX")
+
 # Built-in auto-calibration ratio profile (matrix row
 # profiles-calibration-builtin; moved verbatim from the apps, app:235).
 # Seeded from a real calibration: lets brand-new users Auto-calibrate
@@ -907,12 +914,29 @@ class Sensing(object):
                     cur[k2] = int(v)
                 changed.add(k2)
         if derive_from_window:
-            # You have now calibrated for YOUR screen, so the saved pixels
-            # are authoritative -- stop the engine re-deriving them from
-            # the built-in ratio profile at startup.
-            cur["AUTO_CALIBRATE"] = False
-            cur["WINDOW_RELATIVE"] = False
-            changed.update(("AUTO_CALIBRATE", "WINDOW_RELATIVE"))
+            core_saved = any(k in pixels for k in AUTHORITATIVE_PIXEL_KEYS)
+            if core_saved:
+                # You have now calibrated the CORE points for YOUR screen,
+                # so the saved pixels are authoritative -- stop the engine
+                # re-deriving them from the built-in ratio profile at
+                # startup.
+                cur["AUTO_CALIBRATE"] = False
+                cur["WINDOW_RELATIVE"] = False
+                changed.update(("AUTO_CALIBRATE", "WINDOW_RELATIVE"))
+            elif bool(cur.get("AUTO_CALIBRATE", True)):
+                # Optional-only save with auto-calibrate still on: keep the
+                # required points placeable by seeding any MISSING required
+                # ratios from the built-in profile, so a partial stored
+                # PIXEL_RATIOS can never starve the auto placement.
+                rat = cur.get("PIXEL_RATIOS") or {}
+                seeded = False
+                for k in AUTHORITATIVE_PIXEL_KEYS:
+                    if k not in rat and k in PIXEL_RATIOS_DEFAULT:
+                        rat[k] = list(PIXEL_RATIOS_DEFAULT[k])
+                        seeded = True
+                if seeded and rat:
+                    cur["PIXEL_RATIOS"] = rat
+                    changed.add("PIXEL_RATIOS")
         self.store.write(cur, sorted(changed), "cmd")
         return {"saved": sorted(changed)}
 
