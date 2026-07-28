@@ -4,6 +4,23 @@ All notable changes to Prospector Lite are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.3] — 2026-07
+
+The wizard stabilization release candidate: every first-run blocker reported against rc.2 reproduced, root-caused and fixed.
+
+### Fixed
+- Permission cards now update live: every request/settings/test action patches the status in place, a manual **Refresh status** button exists, a bounded post-action re-check runs while the page is visible, and returning from System Settings triggers a refresh via a focus watcher that does not depend on unreliable webview events. Out-of-order refreshes are dropped.
+- Honest permission states: **"Not requested yet"** (macOS was never asked) is no longer shown as "Not granted"; **"Granted — restart to apply"** appears when a grant cannot take effect in the running process, with a one-click **Restart Prospector Lite** button; per-card **"I've enabled it — check again"** explains the stale-System-Settings-row case that unsigned rebuilds cause.
+- Input test: the sandbox key-post worker now reports its real result back to the page (refused-not-frontmost / blocked / posted), so a refusal is never mis-blamed on Accessibility; the pass check matches the physical key (`e.code`) so non-QWERTY layouts pass; runs are debounced; failure text is platform-correct on Windows.
+- Safe Stop test: single-flight (double clicks can no longer cross-write results), visible countdown, listener-start failure reported distinctly from a timeout, stale results dropped by request id.
+- "Show this screen at every launch": defaults **ON**, renders the stored preference every time (launches, Back, menu reopen), persists immediately on toggle via one positive key (`SHOW_WELCOME_EVERY_LAUNCH`, legacy `WELCOME_SEEN` migrated once and removed), and a failed save is shown instead of silently reverting.
+- Calibration: picker buttons surface real errors (previously silent no-ops), Screen-Recording-denied opens an explanation instead of a full-screen black overlay, a missing overlay window is an honest error instead of a fake success, "Roblox window found" is no longer claimed when it was not (truthiness bug), the wizard Test explains an empty sample on fresh auto-calibrated installs, and saving an optional pixel no longer disables auto-calibration for the required points.
+- Start Macro now enforces the calibration gate the Readiness Check reports (missing/stale required calibration blocks with a clear message), matching the long-documented contract.
+- Fresh installs can no longer be silently marked as fully set up by the legacy-welcome migration (ordering bug); the onboarding state file is persisted eagerly so packaged first-boot verification is real.
+- All host config writes are atomic (13 truncate-write sites removed); the engine's config backup is now a copy, closing a window where concurrent readers saw an empty config.
+- Windows honesty: capability rows reflect your own passing test this session, elevation-check failure no longer reports "running as a normal user", the input test uses `SendInput` correctly, and the crash input-release backstop actually works on Windows builds (it was a silent no-op).
+- Wizard diagnostics: an `onboarding.log` (no secrets, no keystrokes) records every wizard operation with error codes, JS errors are forwarded to it, diagnostics export includes it, and the Readiness page gains **Copy diagnostic summary** / **Open wizard log**. `PP_DEBUG=1` opens the webview inspector.
+
 ## [1.0.0-rc.2] — 2026-07
 
 The trust-and-onboarding release candidate: a first-run experience that shows, tests, and explains every capability the app uses, plus network hardening.

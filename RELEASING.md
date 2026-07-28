@@ -17,7 +17,7 @@ These block publication; do not tag a public release until all are done.
 
 ### 1. Prepare
 
-- [ ] Bump `VERSION` in `prospecting_app.py` (currently `1.0.0-rc.2`; confirm the `windows/` copy matches).
+- [ ] Bump `VERSION` in `prospecting_app.py` (currently `1.0.0-rc.3`; confirm the `windows/` copy matches).
 - [ ] Update [CHANGELOG.md](CHANGELOG.md) — move changes under the new version heading with the date.
 - [ ] Run the full test matrix and require all-pass:
 
