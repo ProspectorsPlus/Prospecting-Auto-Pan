@@ -137,9 +137,13 @@ def _data_dir():
         return d
     if "--capabilities" in sys.argv:
         # Pure query mode: print the engine manifest and exit. It must not
-        # create, migrate or seed the real user data directory.
+        # create, migrate or seed the real user data directory -- and the
+        # throwaway home removes itself when the process ends.
+        import atexit
         import tempfile
-        return tempfile.mkdtemp(prefix="pplite_caps_")
+        d = tempfile.mkdtemp(prefix="pplite_caps_")
+        atexit.register(shutil.rmtree, d, ignore_errors=True)
+        return d
     if FROZEN:
         if sys.platform == "darwin":
             d = os.path.join(os.path.expanduser("~"), "Library",
@@ -600,10 +604,7 @@ def _scrub_config_file():
     for k in _PRIVATE_LEGACY_KEYS:
         raw.pop(k, None)
     try:
-        tmp = CONFIG_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(raw, f, indent=2)
-        os.replace(tmp, CONFIG_FILE)
+        _config_write(raw)
     except OSError:
         pass
 
@@ -658,10 +659,7 @@ def _coach_key():
         try:
             cur = load_saved()
             cur["COACH_API_KEY"] = ""
-            tmp = CONFIG_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(cur, f, indent=2)
-            os.replace(tmp, CONFIG_FILE)
+            _config_write(cur)
         except OSError:
             pass
     return legacy
@@ -1405,10 +1403,7 @@ def _config_patch(patch):
     live-run settings still go through the engine ack path."""
     cur = load_saved()
     cur.update(patch)
-    tmp = CONFIG_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cur, f, indent=2)
-    os.replace(tmp, CONFIG_FILE)
+    _config_write(cur)
 
 
 def _studio_normalize(script):
@@ -2252,6 +2247,15 @@ class Api:
         self._trust_seq = 0
         self._trust_lock = threading.Lock()
         self._hotkey_armed = False
+        self._welcome_lock = threading.Lock()
+        # Prime the launch-time preflight snapshot NOW: if it were first
+        # read lazily when a trust surface opens, a grant made before that
+        # moment would be indistinguishable from a launch-time grant and
+        # the restart-required inference would stay silent.
+        try:
+            lite_trust.launch_preflights()
+        except Exception:
+            pass
         if STUDIO_LAUNCH:
             # Live state mirror for the Prospector Studio window. A leftover
             # file from a previous session must never be read as current.
@@ -2831,11 +2835,25 @@ class Api:
         """Persist the 'show this screen at every launch' checkbox the
         moment it is toggled. A failed write comes back as ok=False with
         the reason -- the UI shows it and reverts the checkbox instead of
-        pretending the save happened."""
-        ok, err = _set_welcome_pref(bool(flag))
+        pretending the save happened. Serialized so rapid toggles resolve
+        last-write-wins, and routed through the live ipc engine when one
+        owns the config (C5 single-writer rule) so the engine's next full
+        rewrite can not silently revert the preference."""
+        want = bool(flag)
+        with self._welcome_lock:
+            try:
+                ack = self._engine_settings_set(
+                    {_WELCOME_KEY: want}, opaque=True)
+            except Exception:
+                ack = None
+            if ack is not None:
+                ok, err = bool(ack.get("ok")), ("engine refused the write"
+                                                if not ack.get("ok") else "")
+            else:
+                ok, err = _set_welcome_pref(want)
         _wlog("welcome_set_always_show", status="ok" if ok else "fail",
               code="" if ok else "PP-WEL-SAVE", detail=err)
-        return {"ok": ok, "value": bool(flag),
+        return {"ok": ok, "value": want,
                 "error": err or None,
                 "error_code": None if ok else "PP-WEL-SAVE"}
 
@@ -3047,15 +3065,38 @@ class Api:
 
     def trust_test_pointer(self):
         """2-pixel pointer wiggle, verified by reading the cursor position
-        back. No clicks, nothing sent to any app."""
+        back. No clicks, nothing sent to any app. A FAILURE is recorded
+        immediately (real evidence input is blocked); a success alone is
+        NOT recorded -- 'Keyboard & mouse control' passes only when the
+        keyboard half passes too (trust_record_input)."""
         try:
             res = lite_trust.test_pointer_wiggle()
         except Exception as e:
             res = {"ok": False, "error": str(e)}
-        self._record_test("input_control",
-                          bool(res.get("ok") and res.get("moved")),
-                          res.get("note") or res.get("error") or "")
+        if not (res.get("ok") and res.get("moved")):
+            self._record_test("input_control", False,
+                              res.get("note") or res.get("error")
+                              or "pointer did not move")
         return res
+
+    def trust_record_input(self, request_id, observed):
+        """The sandbox test's composite verdict, reported by the page: the
+        keyboard half (down AND up observed) plus the pointer half. Only a
+        run whose key post actually happened counts -- a frontmost-guard
+        refusal proves nothing either way and records nothing."""
+        o = observed if isinstance(observed, dict) else {}
+        if not o.get("posted"):
+            _wlog("input_test", cap="input_control", status="not_run",
+                  detail="key post refused/skipped; nothing recorded")
+            return {"ok": True, "recorded": False}
+        passed = bool(o.get("down") and o.get("up")
+                      and o.get("pointer_moved"))
+        detail = ("key down+up observed, pointer moved" if passed else
+                  "down=%s up=%s pointer=%s" % (bool(o.get("down")),
+                                                bool(o.get("up")),
+                                                bool(o.get("pointer_moved"))))
+        self._record_test("input_control", passed, detail)
+        return {"ok": True, "recorded": True, "passed": passed}
 
     def trust_test_hotkey(self, timeout=8, request_id=0):
         """Arm the Safe Stop test: listen (only) for Esc / Ctrl+K for a few
@@ -3082,9 +3123,13 @@ class Api:
             finally:
                 with self._trust_lock:
                     self._hotkey_armed = False
-            self._record_test("stop_hotkeys", bool(res.get("heard")),
-                              res.get("heard") or res.get("error")
-                              or res.get("note") or "")
+            # A clean timeout (armed fine, the user simply pressed nothing)
+            # proves nothing and records nothing; only a heard key (pass)
+            # or a listener failure (fail) is real evidence.
+            if res.get("heard"):
+                self._record_test("stop_hotkeys", True, res.get("heard"))
+            elif res.get("error"):
+                self._record_test("stop_hotkeys", False, res.get("error"))
             res["id"] = rid
             try:
                 if _window is not None:
@@ -4792,10 +4837,7 @@ class Api:
         cur["SCRIPT_ACTIVE"] = name if s else ""
         cur["SCRIPT_JSON"] = (json.dumps(_studio_normalize(s),
                                          separators=(",", ":")) if s else "")
-        tmp = CONFIG_FILE + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(cur, f, indent=2)
-        os.replace(tmp, CONFIG_FILE)
+        _config_write(cur)
 
     def studio_set_active(self, name):
         """Make a script the active mode ('' = back to built-in modes). Only
@@ -5343,22 +5385,30 @@ class Api:
         # (readiness_check's docstring has always promised launch() enforces
         # it). With auto-calibrate on this always passes; it blocks only
         # when the user turned auto off and required values are missing or
-        # stale -- exactly the runs that would misclick.
+        # stale -- exactly the runs that would misclick. CLASSIC runs only:
+        # Studio builds/scripts drive their own programs and may use no
+        # pixel calibration at all.
         try:
-            _cfg = load_saved()
-            _s = _sensing()
-            _health = None
-            if _s is not None:
-                try:
-                    _health = _s.health()
-                except Exception:
-                    _health = None
-            _st = lite_onboarding.calibration_status(_cfg, health=_health)
-            _ready, _blockers = lite_onboarding.calibration_ready(_st)
+            _is_classic = _studio_ui_mode(_studio_load()) == "classic"
         except Exception:
-            _ready, _blockers = True, []
-        if not _ready:
-            return "cal:" + ",".join(_blockers)
+            _is_classic = True
+        if _is_classic:
+            try:
+                _cfg = load_saved()
+                _s = _sensing()
+                _health = None
+                if _s is not None:
+                    try:
+                        _health = _s.health()
+                    except Exception:
+                        _health = None
+                _st = lite_onboarding.calibration_status(_cfg,
+                                                         health=_health)
+                _ready, _blockers = lite_onboarding.calibration_ready(_st)
+            except Exception:
+                _ready, _blockers = True, []
+            if not _ready:
+                return "cal:" + ",".join(_blockers)
         if STUDIO_LAUNCH:
             # Top-level CLASSIC | STUDIO BUILD | STUDIO SCRIPT invariant:
             # each Studio mode must have an active entry of its own kind,
@@ -5666,18 +5716,44 @@ class Api:
                                  "first, then come back.",
                         "error_code": "PP-CAL-SCREEN",
                         "needs_permission": "screen_detection"}
+            # granted-mid-session: the grant exists but can not apply to
+            # THIS process until relaunch -- the capture would still be
+            # black. A passing screen test this session proves otherwise.
+            t = self._cap_tests.get("screen_detection")
+            if (pre is True
+                    and lite_trust.launch_preflights().get(
+                        "screen_detection") is False
+                    and not (t and t["status"] == "passed")):
+                _wlog("overlay_open", status="refused",
+                      code="PP-CAL-RESTART")
+                return {"error": "Screen Recording was granted after this "
+                                 "copy of Prospector Lite started, so "
+                                 "capture cannot work yet. Restart "
+                                 "Prospector Lite (button on the Trust & "
+                                 "Permissions step), then calibrate.",
+                        "error_code": "PP-CAL-RESTART",
+                        "needs_permission": "screen_detection"}
         if _sensing() is None:
             return {"error": _SENSING_ERR, "error_code": "PP-CAL-ENGINE"}
         return None
 
     def _overlay_show(self):
         """Show the pre-created overlay, re-fitted to the CURRENT main
-        display (its geometry was frozen at boot; displays change)."""
+        display (its geometry was frozen at boot; displays change).
+        Per-platform lookup so the Windows copy re-fits too instead of
+        silently failing the mac-only import."""
         try:
-            import Quartz as _Q
-            b = _Q.CGDisplayBounds(_Q.CGMainDisplayID())
-            _overlay.move(int(b.origin.x), int(b.origin.y))
-            _overlay.resize(int(b.size.width), int(b.size.height))
+            if sys.platform == "darwin":
+                import Quartz as _Q
+                b = _Q.CGDisplayBounds(_Q.CGMainDisplayID())
+                _overlay.move(int(b.origin.x), int(b.origin.y))
+                _overlay.resize(int(b.size.width), int(b.size.height))
+            elif os.name == "nt":
+                import ctypes as _ct
+                sw = int(_ct.windll.user32.GetSystemMetrics(0))
+                sh = int(_ct.windll.user32.GetSystemMetrics(1))
+                _overlay.move(0, 0)
+                _overlay.resize(sw, sh)
         except Exception:
             pass
         _overlay.evaluate_js("window.__reload && window.__reload()")
@@ -6570,7 +6646,15 @@ PILL_HTML = r'''<!doctype html><html><head><meta charset="utf-8"><style>
    if(rr){const R=s.relics||[];
      rr.innerHTML=R.map(r=>'<span><b>'+r.name.split(' ')[0]+'</b> '+Math.floor(r.left_s/60)+':'+String(r.left_s%60).padStart(2,'0')+'</span>').join('');}
    const b=$("toggle");b.textContent=alive?"Stop":"Start";b.className="go"+(alive?" stop":"");}
- $("toggle").onclick=async()=>{try{if(alive){await api().stop();}else{await api().launch();}}catch(e){}poll();};
+ $("toggle").onclick=async()=>{try{if(alive){await api().stop();}
+   else{const r=await api().launch();
+     // launch() refusals ('perm:...', 'cal:...', mode errors) must not
+     // read as a dead button on this tiny surface: flash the reason and
+     // restore the main window where the full explanation lives.
+     if(typeof r==='string'&&r!=='launched'&&r!=='already running'){
+       const st=$("status");if(st)st.textContent=(r.indexOf('perm:')===0?'needs permission':r.indexOf('cal:')===0?'needs calibration':'blocked');
+       try{api().restore();}catch(_){}}}
+   }catch(e){}poll();};
  $("expand").onclick=()=>{try{api().restore();}catch(e){}};
  $("pausebt").onclick=async()=>{try{await api().pause_toggle();}catch(e){}};
  setInterval(poll,1000);poll();
@@ -9531,13 +9615,23 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    if(w&&w.found){el.className='winstat ok';
      el.textContent='✓ Roblox found · '+w.w+'×'+w.h+' at ('+w.x+', '+w.y+')'+(w.title?(' · '+w.title):'');}
    else{el.className='winstat bad';el.textContent='✕ '+((w&&w.error)||'Roblox window not found');}}
+ // The overlay API reports failure IN-BAND ({error, error_code}) -- it never
+ // rejects -- so every picker entry point must await and surface the result;
+ // a fire-and-forget call turns a Screen-Recording refusal into a silent
+ // no-op ("the button does nothing").
+ async function overlayCall(p){let r=null;
+   try{r=await p;}catch(e){r={error:String(e)};}
+   if(r&&r.error){toast(r.error+(r.error_code?(' ['+r.error_code+']'):''));
+     if(r.needs_permission){const tb=document.querySelector('.tab[data-tab="trust"]');if(tb)tb.click();}}
+   return r;}
+ window.__overlayCall=overlayCall;
  $$('.calbtn').forEach(btn=>btn.onclick=()=>{
    const key=btn.dataset.pkey;
    const lab=((btn.closest('.calrow')||document).querySelector('.calname')||{}).textContent||key;
-   try{window.pywebview.api.start_overlay_calibrate(key,lab);}catch(e){toast('Overlay failed');}});
+   overlayCall(window.pywebview.api.start_overlay_calibrate(key,lab));});
  $$('.regbtn').forEach(btn=>btn.onclick=()=>{
    const base=btn.dataset.regionkey,lab=btn.dataset.reglabel||base;
-   try{window.pywebview.api.start_overlay_region(base,lab);}catch(e){toast('Overlay failed');}});
+   overlayCall(window.pywebview.api.start_overlay_region(base,lab));});
  let regionPreviews={};
  function setRegionPreviews(rp){regionPreviews=rp||{};}
  function markRegions(px){['MONEY','SHARDS','FIND'].forEach(b=>{
@@ -9610,7 +9704,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  $$('.frbtn').forEach(btn=>btn.onclick=()=>{
    const key=FRKEY[btn.dataset.frk];
    const lab=((btn.closest('.calrow')||document).querySelector('.calname')||{}).textContent||key;
-   try{window.pywebview.api.start_overlay_calibrate(key,lab);}catch(e){toast('Overlay failed');}});
+   window.__overlayCall(window.pywebview.api.start_overlay_calibrate(key,lab));});
  function collectFR(){const o={};
    if(fr.text){o.FR_SCAN_X=fr.text.scan_x;o.FR_TEXT_RGB=fr.text.rgb;}
    if(fr.top!=null)o.FR_BOX_TOP=fr.top;
@@ -10579,19 +10673,27 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        const stamp=cardStamp(c);
        if(card.dataset.stamp===stamp)return;
        const keepEl=card.querySelector('.cap-test');
-       const keep=keepEl?keepEl.innerHTML:'', keepShow=keepEl&&keepEl.classList.contains('show');
        const wrap=document.createElement('div');
        wrap.innerHTML=capCard(c,card.dataset.compact==='1');
        const fresh=wrap.firstChild;
        const ct=fresh.querySelector('.cap-test');
-       if(ct&&keep){ct.innerHTML=keep;if(keepShow)ct.classList.add('show');}
+       // MOVE the live test-output node (listeners and all) into the fresh
+       // card -- an innerHTML copy would leave a visually intact sandbox
+       // whose Start-test button is dead.
+       if(ct&&keepEl)ct.replaceWith(keepEl);
        card.replaceWith(fresh);rewire=root;});
      if(rewire)wireCards(rewire);}
    let _reqId=0;
    function wireCards(box){
      box.querySelectorAll('button[data-act]').forEach(b=>{b.onclick=async()=>{
-       const cap=b.dataset.cap, act=b.dataset.act, out=$id('captest_'+cap);
-       const show=h=>{if(out){out.classList.add('show');out.innerHTML=h;}};
+       const cap=b.dataset.cap, act=b.dataset.act;
+       // Resolve the output area through the SURFACE root at every write:
+       // (a) the wizard and the Trust Center both render these cards with
+       // the same element ids, so a global $id() can hit the other
+       // (hidden) surface; (b) a card can be replaced by updateCards while
+       // an action awaits, and a captured node would then be detached.
+       const outEl=()=>box.querySelector('.cap-card[data-capid="'+cap+'"] .cap-test');
+       const show=h=>{const o=outEl();if(o){o.classList.add('show');o.innerHTML=h;}};
        if(act==='request'){show('Asking macOS&hellip; if a prompt appears it is the system asking, with this app named.');
          let r={};try{r=await _api().trust_request(cap);}catch(e){r={ok:false,error:String(e)};}
          if(r.granted){show('Granted. Use Test to prove it works.');}
@@ -10603,6 +10705,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          else{show('System Settings should now be open at the right pane. Flip the switch for <b>Prospector Lite</b>, come back, and this card re-checks automatically (or click “I’ve enabled it — check again”). If the switch already looks ON but this still says Not granted, the row may belong to an older copy: remove it with the &minus; button, then Request access here to re-register.');}
          refresh(false);armPoll();return;}
        if(act==='recheck'){show('Checking with macOS&hellip;');
+         armPoll();
          await refresh(false);
          const c2=((ST&&ST.capabilities)||[]).find(x=>x.id===cap);const lv=(c2&&c2.live)||{};
          if(lv.status==='granted'&&!lv.requires_restart){show('&#10003; macOS reports access granted to this app. Use Test to prove it works.');}
@@ -10620,10 +10723,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
            refresh(false);return;}
          if(cap==='input_control'){
            show('Click into the box below, then press Start test and keep this window focused. The app types one harmless letter into its own box and wiggles the pointer 2&nbsp;px &mdash; it checks it is the focused app first, so if you switch away nothing is typed anywhere.'
-             +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><input id="sandkey_'+cap+'" placeholder="test lands here" aria-label="Input test target"> <button type="button" class="btn2" id="sandgo_'+cap+'">Start test</button></div><div id="sandout_'+cap+'" style="margin-top:7px"></div>');
-           const go=$id('sandgo_'+cap);if(go)go.onclick=async()=>{
+             +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><input data-sand="key" placeholder="test lands here" aria-label="Input test target"> <button type="button" class="btn2" data-sand="go">Start test</button></div><div data-sand="out" style="margin-top:7px"></div>');
+           const sand=n=>{const o=outEl();return o?o.querySelector('[data-sand="'+n+'"]'):null;};
+           const go=sand('go');if(go)go.onclick=async()=>{
              if(_busy[cap])return;_busy[cap]=1;go.disabled=true;
-             const f=$id('sandkey_'+cap), o=$id('sandout_'+cap);
+             const f=sand('key');
              let down=false,up=false,postRes=null;
              const rid=++_reqId;
              window.__keyTestResult=m=>{if(m&&m.id===rid)postRes=m.result||null;};
@@ -10637,7 +10741,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
              let pr={};try{pr=await _api().trust_test_pointer();}catch(e){pr={ok:false,error:String(e)};}
              try{await _api().trust_test_key(rid);}catch(e){}
              setTimeout(()=>{window.removeEventListener('keydown',h1,true);window.removeEventListener('keyup',h2,true);
-               _busy[cap]=0;go.disabled=false;
+               window.__keyTestResult=null;
+               _busy[cap]=0;const g2=sand('go');if(g2)g2.disabled=false;
+               // record the REAL composite outcome: the keyboard half only
+               // counts when the post actually happened, and a pass needs
+               // both halves -- the pill must never claim 'Works' from the
+               // pointer wiggle alone
+               try{_api().trust_record_input(rid,{down:down,up:up,
+                 posted:!(postRes&&postRes.posted===false),
+                 pointer_moved:!!(pr&&pr.ok&&pr.moved)});}catch(e){}
                let kb;
                if(postRes&&postRes.posted===false){kb='&#9888; '+E(postRes.error||'The test key was not posted.')+(postRes.error_code?(' ['+E(postRes.error_code)+']'):'');}
                else if(down&&up){kb='&#10003; keystroke arrived AND released cleanly';}
@@ -10646,19 +10758,19 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
                else{kb='&#10007; no keystroke arrived &mdash; keep this window focused and retry. If Roblox runs as administrator, run both apps at the same normal level.';}
                const mo=(pr&&pr.ok)?(pr.moved?'&#10003; pointer moved and was restored':('&#10007; pointer did not move'+(DET==='mac'?' (macOS is blocking synthetic input — grant Accessibility)':'')))
                  :('&#9888; pointer test unavailable: '+E((pr&&pr.error)||''));
-               if(o)o.innerHTML=kb+'<br>'+mo;refresh(false);},2600);};
+               const o2=sand('out');if(o2)o2.innerHTML=kb+'<br>'+mo;refresh(false);},2600);};
            return;}
          if(cap==='stop_hotkeys'){
            if(_busy[cap])return;_busy[cap]=1;b.disabled=true;
            const rid=++_reqId;let secs=8;
-           show('Armed &mdash; <b id="hkleft_'+cap+'">8</b>s left. Press <b>Esc</b> or <b>Ctrl+K</b> now (click into Roblox or anywhere first if you like: it must work globally).');
-           const tick=setInterval(()=>{secs--;const el=$id('hkleft_'+cap);if(el)el.textContent=Math.max(0,secs);if(secs<=0)clearInterval(tick);},1000);
+           show('Armed &mdash; <b data-hkleft>8</b>s left. Press <b>Esc</b> or <b>Ctrl+K</b> now (click into Roblox or anywhere first if you like: it must work globally).');
+           const tick=setInterval(()=>{secs--;const o=outEl();const el=o&&o.querySelector('[data-hkleft]');if(el)el.textContent=Math.max(0,secs);if(secs<=0)clearInterval(tick);},1000);
            const done=h=>{clearInterval(tick);_busy[cap]=0;b.disabled=false;
-             const o=$id('captest_'+cap);if(o){o.classList.add('show');o.innerHTML=h;}refresh(false);};
+             window.__hotkeyResult=null;show(h);refresh(false);};
            window.__hotkeyResult=r=>{if(r&&r.id!==undefined&&r.id!==rid)return; // stale arm
              if(r&&r.heard)done('&#10003; Heard <b>'+E(r.heard)+'</b> &mdash; Safe Stop works.');
              else if(r&&r.error)done('&#10007; '+E(r.error)+(r.error_code?(' ['+E(r.error_code)+']'):''));
-             else done('&#10007; '+E((r&&r.note)||'Nothing heard.'));};
+             else done('&#9888; '+E((r&&r.note)||'Nothing heard within the window.')+' Run it again and press Esc or Ctrl+K while it is armed.');};
            let a=null;try{a=await _api().trust_test_hotkey(8,rid);}catch(e){}
            if(!a||!a.armed){done('&#10007; '+E((a&&a.error)||'Could not arm the Safe Stop test.')+((a&&a.error_code)?(' ['+E(a.error_code)+']'):''));}
            return;}
@@ -10678,7 +10790,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    function platTabs(){return '<div class="plat-tabs" role="tablist" aria-label="Platform">'
      +'<button role="tab" id="plat_mac" aria-selected="'+(PLAT==='mac')+'">macOS'+(DET==='mac'?' (this computer)':'')+'</button>'
      +'<button role="tab" id="plat_win" aria-selected="'+(PLAT==='win')+'">Windows'+(DET==='win'?' (this computer)':'')+'</button></div>';}
-   function wirePlat(box,rerender){['mac','win'].forEach(p=>{const b=$id('plat_'+p);if(b)b.onclick=()=>{PLAT=p;rerender();};
+   function wirePlat(box,rerender){['mac','win'].forEach(p=>{const b=$id('plat_'+p);if(b)b.onclick=()=>{
+       if(Object.keys(_busy).some(k=>_busy[k])){toast('A test is running — wait for it to finish first.');return;}
+       PLAT=p;rerender();};
      const t=box.querySelector('.plat-tabs');if(t)t.onkeydown=e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){PLAT=(PLAT==='mac'?'win':'mac');rerender();const nb=$id('plat_'+PLAT);if(nb)nb.focus();}};});}
    function renderTrust(){GEN++;PAGE='trust';railSet();const b=$id('supBody');
      if(!ST){b.innerHTML='<p class="sup-sub">Loading&hellip;</p><div class="cap-actions"><button type="button" class="btn2" id="trustRetry">Retry</button></div>';
@@ -10690,6 +10804,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      b.innerHTML='<h2 class="sup-h1">Trust &amp; Permissions<span class="plat-badge">'+(DET==='mac'?'macOS detected':(DET==='win'?'Windows detected':DET))+'</span></h2>'
        +'<p class="sup-sub">Before the operating system shows a single prompt, here is every capability this app has: what it is for, what it can touch, and how to test and revoke it. Nothing is requested until you click a button below. '+(ST.dev_note?E(ST.dev_note):'')+'</p>'
        +platTabs()
+       +(PLAT!==DET?'<p class="sup-sub">You are browsing the '+(PLAT==='mac'?'macOS':'Windows')+' column for reference; live statuses always describe THIS computer ('+(DET==='mac'?'macOS':'Windows')+').</p>':'')
        +'<div class="cap-actions" style="margin:2px 0 8px"><button type="button" class="btn2" id="trustRefresh">&#8635; Refresh status</button><span class="sup-note" id="trustChecked" aria-live="polite"></span></div>'
        +'<div class="sup-group">Required for the macro</div>'+req.map(c=>capCard(c,false)).join('')
        +'<div class="sup-group">Optional &mdash; off by default</div>'+opt.map(c=>capCard(c,false)).join('')

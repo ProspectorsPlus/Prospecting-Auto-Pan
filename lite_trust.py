@@ -879,11 +879,20 @@ def _app_is_frontmost():
 def _win_send_scancode(scan, up):
     """One key event via SendInput with a KEYBDINPUT scancode entry -- the
     same API family the engine's platform_win input path uses (keybd_event
-    does not document the SCANCODE flag and can drop the event)."""
+    does not document the SCANCODE flag and can drop the event).
+
+    The union MUST include MOUSEINPUT: it is the largest INPUT member, so
+    without it sizeof(INPUT) comes out 32 instead of 40 on Win64 and
+    SendInput rejects every call (cbSize mismatch)."""
     import ctypes
     import ctypes.wintypes as wt
     KEYEVENTF_SCANCODE, KEYEVENTF_KEYUP = 0x0008, 0x0002
     ULONG_PTR = ctypes.c_size_t
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = (("dx", wt.LONG), ("dy", wt.LONG),
+                    ("mouseData", wt.DWORD), ("dwFlags", wt.DWORD),
+                    ("time", wt.DWORD), ("dwExtraInfo", ULONG_PTR))
 
     class _KEYBDINPUT(ctypes.Structure):
         _fields_ = (("wVk", wt.WORD), ("wScan", wt.WORD),
@@ -891,7 +900,7 @@ def _win_send_scancode(scan, up):
                     ("dwExtraInfo", ULONG_PTR))
 
     class _INPUTunion(ctypes.Union):
-        _fields_ = (("ki", _KEYBDINPUT),)
+        _fields_ = (("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT))
 
     class _INPUT(ctypes.Structure):
         _fields_ = (("type", wt.DWORD), ("union", _INPUTunion))

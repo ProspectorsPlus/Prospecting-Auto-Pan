@@ -30,12 +30,13 @@ echo "==> Acceptance probes for $DMG"
 MNT="$(mktemp -d /tmp/pplite_mnt.XXXXXX)"
 HOMEDIR="$(mktemp -d /tmp/pplite_home.XXXXXX)"
 CAPSHOME="$(mktemp -d /tmp/pplite_caps.XXXXXX)"
-hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG" >/dev/null
-# cleanup runs on EVERY exit path (FAIL exits used to leak the temp homes
-# and the mountpoint dir)
+# cleanup runs on EVERY exit path -- installed BEFORE the attach so even an
+# attach failure (e.g. a stale diskimages-helper holding the DMG) leaves
+# nothing behind
 trap 'hdiutil detach "$MNT" >/dev/null 2>&1 || true;
       rmdir "$MNT" >/dev/null 2>&1 || true;
       rm -rf "$HOMEDIR" "$CAPSHOME" >/dev/null 2>&1 || true' EXIT
+hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG" >/dev/null
 
 echo "==> [1] mounted read-only at $MNT"
 
@@ -113,4 +114,48 @@ print("==> [4] build identity fields present: v%s @ %s dirty=%s"
 PY
 [ "$ok" = "1" ] || exit 1
 echo "==> [4] bundle contents OK"
+
+# [5] welcome-preference lifecycle across two REAL launches of the packaged
+# app (matrix probes 7-8): first boot defaults the positive key ON with no
+# legacy inverse key and writes the wizard log; an externally flipped OFF
+# preference is honoured and preserved by a second launch.
+python3 - "$HOMEDIR" <<'PY'
+import json, sys
+home = sys.argv[1]
+cfg = json.load(open(home + "/prospecting_config.json"))
+assert cfg.get("SHOW_WELCOME_EVERY_LAUNCH") is True, cfg
+assert "WELCOME_SEEN" not in cfg, cfg
+log = open(home + "/onboarding.log").read()
+assert "welcome_state" in log and "pref=True" in log, log[-500:]
+# simulate: user turned the preference OFF and finished setup
+cfg["SHOW_WELCOME_EVERY_LAUNCH"] = False
+json.dump(cfg, open(home + "/prospecting_config.json", "w"))
+st = json.load(open(home + "/onboarding_state.json"))
+st["state"] = "FINISHED"
+json.dump(st, open(home + "/onboarding_state.json", "w"))
+print("==> [5] first boot: welcome pref defaulted ON, log written")
+PY
+PP_DATA_DIR="$HOMEDIR" PP_NO_HUD=1 "$MNT/$APP/$BIN" &
+PID=$!
+for _i in $(seq 1 30); do
+  grep -q "pref=False" "$HOMEDIR/onboarding.log" 2>/dev/null && break
+  if ! kill -0 "$PID" 2>/dev/null; then
+    echo "FAIL: app exited during second boot"; exit 1
+  fi
+  sleep 1
+done
+kill "$PID" 2>/dev/null || true
+for _i in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
+kill -9 "$PID" 2>/dev/null || true
+wait "$PID" 2>/dev/null || true
+python3 - "$HOMEDIR" <<'PY'
+import json, sys
+home = sys.argv[1]
+log = open(home + "/onboarding.log").read()
+assert "show=False pref=False" in log, log[-500:]
+cfg = json.load(open(home + "/prospecting_config.json"))
+assert cfg.get("SHOW_WELCOME_EVERY_LAUNCH") is False, cfg
+print("==> [5] second boot honoured and preserved the OFF preference")
+PY
+
 echo "==> ACCEPTANCE PROBES: ALL PASS"

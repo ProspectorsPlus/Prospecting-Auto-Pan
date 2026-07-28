@@ -920,11 +920,15 @@ def test_calibration_commands():
         a = cli.request("calibration.cueMask", {"op": "clear", "cue": "PAN"})
         chk(a.get("ok") and a["result"] == {"cleared": True},
             "cmd.calibration-cue-mask: clear")
-        # auto: baked default profile placement + no-write unless apply
+        # auto: baked default profile placement + no-write unless apply.
+        # Pins re-derived at rc.3 when the engine's stale profile copy was
+        # aligned with the canonical app/shipped profile (0.62333/0.78657
+        # capacity-bar row): 848 = 100+0.62333*1200, 679 = 50+0.78657*800,
+        # 296 = (0.62333-0.37667)*1200.
         a = cli.request("calibration.auto", {})
         r = a.get("result") or {}
         chk(a.get("ok") and r.get("placed") is True and r.get("count") == 6
-            and r["pixels"]["CAP_FULL_PIXEL"] == [896, 754]
+            and r["pixels"]["CAP_FULL_PIXEL"] == [848, 679]
             and r["window"] == {"x": 100, "y": 50, "w": 1200, "h": 800},
             "cmd.calibration-auto: default-profile placement math")
         g = cli.request("settings.get", {"keys": ["CAP_BAR_WIDTH"]})
@@ -933,7 +937,7 @@ def test_calibration_commands():
         a = cli.request("calibration.auto", {"apply": True})
         g = cli.request("settings.get",
                         {"keys": ["CAP_BAR_WIDTH", "AUTO_CALIBRATE"]})
-        chk(a.get("ok") and g["result"]["values"]["CAP_BAR_WIDTH"] == 392
+        chk(a.get("ok") and g["result"]["values"]["CAP_BAR_WIDTH"] == 296
             and g["result"]["values"]["AUTO_CALIBRATE"] is True,
             "cmd.calibration-auto: apply persists derivation, does NOT "
             "flip AUTO_CALIBRATE")

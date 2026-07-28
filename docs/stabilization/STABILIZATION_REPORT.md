@@ -95,6 +95,50 @@ log tail and session test results.
 - Windows runtime verification requires a Windows machine/CI run.
 - The guided calibration modal starts at its intro step regardless of which card launched it.
 
+## Independent re-verification round (fresh-context, adversarial)
+
+Six independent verifiers re-derived every claim from the code and their own probes
+(including jsdom DOM-level tests of the wizard IIFE and their own two-launch packaged
+journeys). Verdict: no P0; five P1 findings, all fixed in the follow-up commit and covered
+by the updated suites:
+
+1. **Win64 `INPUT` struct mis-sized** — `_win_send_scancode`'s union lacked `MOUSEINPUT`, so
+   `sizeof(INPUT)` was 32 instead of 40 on Win64 and `SendInput` would reject every call.
+   The union now carries both members (still statically verified only — no Windows runtime).
+2. **In-place card patch killed the in-flight sandbox button** — `updateCards` copied the
+   test area's innerHTML (listeners stripped). It now MOVES the live node.
+3. **"Check again" result could land on a detached node** — output areas are now resolved
+   through the surface root at every write, never captured across an await.
+4. **Wizard-over-Trust-Center id collisions** — the same card ids exist on both surfaces;
+   all lookups are now surface-scoped (and the sandbox uses data attributes).
+5. **The Calibrate tab still swallowed the new in-band overlay errors** — its
+   `.calbtn`/`.regbtn`/`.frbtn` handlers now await and toast the coded refusals (with
+   Trust-tab routing on `needs_permission`), same as the wizard.
+
+Honest-state P2s fixed in the same round: a clean Safe Stop timeout is no longer recorded
+as a failed test (it proves nothing); the input_control session pass now requires BOTH the
+observed keyboard round-trip and the pointer wiggle (reported back via
+`trust_record_input` — a frontmost refusal records nothing); the launch-preflight snapshot
+is primed at Api construction (a pre-first-visit grant is no longer mistaken for a
+launch-time grant); the calibration overlay also refuses in the granted-mid-session state
+(`PP-CAL-RESTART`) instead of opening black; and the engine's stale auto-calibration ratio
+profile was aligned with the canonical app/shipped profile (contract pins re-derived and a
+three-source parity test added — a ratio-less config's capacity bar was ~4%/9% off).
+
+Cherry-picked P3s: the calibration `launch()` gate is now classic-mode-only (a Studio
+script that uses no pixel calibration is not blocked), the pill window surfaces launch
+refusals instead of a dead Start button, welcome-pref writes are serialized and routed
+through a live ipc engine when one owns the config, `__keyTestResult`/`__hotkeyResult`
+handlers are removed after each run, platform-tab switching is blocked during an armed
+test, `--capabilities` cleans up its throwaway home, the acceptance script installs its
+cleanup trap before the attach and now scripts the welcome-lifecycle probes (7–8), the
+overlay re-fit works on Windows too, the four remaining inline config writers were routed
+through the fsync'd helper (static test tightened to pin exactly one writer), and the
+legacy browser UI's truncate write became tmp+replace. Remaining verifier P3s that are
+recorded but deliberately not code-changed: mac-status pills shown while browsing the
+Windows tab on a Mac (annotated as this-computer statuses), and the reviewer docs'
+historical rc.2 line citations (headers now say so explicitly).
+
 ## Verification inventory
 
 - Suites (all ALL-PASS at the build commit): onboarding_trust_tests (extended),

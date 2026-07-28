@@ -5,6 +5,11 @@ it is (`build_info.json`), how every capability card's "View code" button is gua
 point at the exact source it was built from (`trust_manifest.json`), and why a wrong link is
 a build failure rather than a shipped bug.
 
+> Line citations below were resolved against the 1.0.0-rc.2 baseline (commit `eb9bbba`) and
+> are historical — the rc.3 stabilization pass shifted several of them. The mechanism
+> descriptions remain accurate; for exact current line numbers use the shipped
+> `trust_manifest.json`, which is regenerated from source at every build.
+
 ## build_info.json — fields and who stamps them
 
 Schema (all producers write the same eight fields):

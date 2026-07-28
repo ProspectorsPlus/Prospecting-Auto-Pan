@@ -51,16 +51,19 @@ AUTHORITATIVE_PIXEL_KEYS = ("CAP_FULL_PIXEL", "CAP_LEFT_PIXEL",
                             "DEPOSIT_PIX", "PAN_PIX", "SHAKE_PIX")
 
 # Built-in auto-calibration ratio profile (matrix row
-# profiles-calibration-builtin; moved verbatim from the apps, app:235).
-# Seeded from a real calibration: lets brand-new users Auto-calibrate
-# with zero clicking.
+# profiles-calibration-builtin). Seeded from a real calibration: lets
+# brand-new users Auto-calibrate with zero clicking. MUST stay identical
+# to the app's PIXEL_RATIOS_DEFAULT and the shipped default config's
+# PIXEL_RATIOS (windows/prospecting_config.json) -- an earlier stale copy
+# here placed the capacity bar ~4%/9% off for any config without stored
+# ratios; onboarding_trust_tests pins the three sources together now.
 PIXEL_RATIOS_DEFAULT = {
-    "CAP_FULL_PIXEL":    [0.66319, 0.87963],
-    "CAP_LEFT_PIXEL":    [0.33681, 0.87963],
-    "DEPOSIT_PIX":       [0.42569, 0.95463],
-    "PAN_PIX":           [0.47222, 0.95463],
-    "SHAKE_PIX":         [0.46111, 0.95463],
-    "DIG_TRIGGER_PIXEL": [0.74861, 0.53704],
+    "CAP_FULL_PIXEL":    [0.62333, 0.78657],
+    "CAP_LEFT_PIXEL":    [0.37667, 0.78749],
+    "DEPOSIT_PIX":       [0.42667, 0.87121],
+    "PAN_PIX":           [0.46889, 0.86845],
+    "SHAKE_PIX":         [0.46167, 0.87029],
+    "DIG_TRIGGER_PIXEL": [0.60111, 0.4517],
 }
 
 CUE_PIXEL_KEY = {"PAN": "PAN_PIX", "SHAKE": "SHAKE_PIX",

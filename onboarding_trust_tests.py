@@ -352,10 +352,14 @@ def t_ui_markers():
                 ("document.hasFocus()", "focus-transition refresh watcher"),
                 ("log_js_error", "JS error forwarding to the local log")):
             chk(marker in t, "%s has %s" % (rel, why))
-        # every config rewrite must be atomic: the raw truncate-write
-        # pattern is banned from the app copies
+        # every config rewrite must be atomic AND routed through the one
+        # fsync'd writer: the truncate pattern is banned, and the inline
+        # tmp+replace pattern may appear exactly once (the helper itself)
         chk('with open(CONFIG_FILE, "w")' not in t,
             "%s has no non-atomic CONFIG_FILE writes" % rel)
+        chk(t.count('CONFIG_FILE + ".tmp"') == 1,
+            "%s routes every config write through _save_config_atomic"
+            % rel)
 
 
 # --------------------------------------------------------------------------
@@ -394,6 +398,15 @@ def t_engine_cal_writes():
         doc = json.load(open(cfg))
         chk(doc.get("AUTO_CALIBRATE") is False,
             "core save still forces AUTO_CALIBRATE off (contract kept)")
+    # one auto-calibration profile: engine constant == app constant ==
+    # the shipped default config (a stale engine copy once placed the
+    # capacity bar ~4%/9% off for ratio-less configs)
+    import prospecting_app as papp
+    shipped = json.loads(read("windows/prospecting_config.json"))
+    chk(sn.PIXEL_RATIOS_DEFAULT == papp.PIXEL_RATIOS_DEFAULT,
+        "engine ratio profile matches the app profile")
+    chk(sn.PIXEL_RATIOS_DEFAULT == shipped.get("PIXEL_RATIOS"),
+        "engine ratio profile matches the shipped default config")
 
 
 # --------------------------------------------------------------------------
