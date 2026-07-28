@@ -28,7 +28,7 @@ now cleans up its temp homes on FAIL paths and isolates the
 | 2 | Self-contained offline probe (`--capabilities`) from the mounted app, isolated data dir | PASS | manifest answered from the mount |
 | 3 | Clean first boot with an isolated `PP_DATA_DIR`: app stays alive, JS↔Python bridge comes up (boot() → `welcome_state` → eagerly persisted `onboarding_state.json` observed), nothing written into the read-only bundle | PASS | state file observed in the temp home within the 30 s window |
 | 4 | Zero open network sockets during first boot | PASS | `lsof -a -p <pid> -i` = 0 rows |
-| 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.3 @ 44e4458c9944 dirty=False` |
+| 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.3 @ 38d00d151315 dirty=False` |
 | 6 | Bundle contents: `trust_manifest.json`, `PERMISSIONS.md`, `PRIVACY.md`, `SECURITY.md`, `TRUST_CENTER.md` present; no personal files (`prospecting_secrets.json`, `coach_history.json`, `run_history.json`, access-code files) | PASS | find over the mounted bundle |
 | 7 | Packaged welcome-preference lifecycle (now SCRIPTED as the probe script's step [5]): first boot writes the positive key `SHOW_WELCOME_EVERY_LAUNCH: true` (default ON) and no legacy `WELCOME_SEEN`; a second packaged launch against the same home honours and preserves an OFF preference (`onboarding.log`: `show=False pref=False`) | PASS | two real launches of the built app against one isolated home, driven by `packaged_acceptance.command` |
 | 8 | Wizard diagnostics log (`onboarding.log`) written in the isolated home, operation lines with status and no secrets (asserted by the scripted step [5]) | PASS | log inspected after both boots |
