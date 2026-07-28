@@ -42,7 +42,7 @@ except ImportError:      # windows/ dev checkout: the modules live one level up
 # update check, no analytics, no remote content fetch (see PRIVACY.md /
 # NETWORK_BEHAVIOR).
 APP_NAME    = "Prospector Lite"
-VERSION     = "1.0.0-rc.2"
+VERSION     = "1.0.0-rc.3"
 PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
@@ -124,7 +124,10 @@ def _migrate_legacy_data(d):
 def _data_dir():
     """Where read/write files (config, builds) live. Packaged builds use the
     platform-native per-user data directory; running from source keeps them
-    next to the scripts (unchanged dev behaviour)."""
+    next to the scripts (unchanged dev behaviour), EXCEPT the windows/
+    mirror checkout, whose script directory doubles as the home of the
+    tracked sanitized default config -- a source run there must never
+    overwrite the file both installers ship."""
     d = os.environ.get("PP_DATA_DIR")
     if d:
         # Embedded launches (Prospector Studio bundles this app) choose the
@@ -132,6 +135,11 @@ def _data_dir():
         # host decided -- never inside the bundle.
         os.makedirs(d, exist_ok=True)
         return d
+    if "--capabilities" in sys.argv:
+        # Pure query mode: print the engine manifest and exit. It must not
+        # create, migrate or seed the real user data directory.
+        import tempfile
+        return tempfile.mkdtemp(prefix="pplite_caps_")
     if FROZEN:
         if sys.platform == "darwin":
             d = os.path.join(os.path.expanduser("~"), "Library",
@@ -147,6 +155,13 @@ def _data_dir():
         _migrate_legacy_data(d)
         return d
     d = os.path.dirname(os.path.abspath(__file__))
+    if (os.path.basename(d).lower() == "windows"
+            and os.path.isfile(os.path.join(os.path.dirname(d), "packaging",
+                                            "sync_windows_app.py"))):
+        # windows/ mirror inside the repo: live user data goes to a
+        # gitignored subfolder so windows/prospecting_config.json (the
+        # sanitized default every installer bundles) stays pristine.
+        d = os.path.join(d, ".devdata")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -472,6 +487,108 @@ def load_saved():
     return cfg
 
 
+def _save_config_atomic(cfg):
+    """THE host-side config writer: tmp + fsync + os.replace, so a crash
+    mid-write can never truncate the shared settings/calibration file.
+    Returns (ok, error). Every host path that rewrites CONFIG_FILE must go
+    through here (the engine has its own atomic writer)."""
+    try:
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, CONFIG_FILE)
+        return True, ""
+    except OSError as e:
+        return False, str(e)
+
+
+def _config_write(cfg):
+    """Atomic CONFIG_FILE write that raises OSError on failure -- the
+    drop-in replacement for the legacy open('w')+json.dump sites (which
+    could truncate the whole config on a crash mid-write and relied on
+    OSError propagating)."""
+    ok, err = _save_config_atomic(cfg)
+    if not ok:
+        raise OSError(err)
+
+
+# ---- Welcome-screen preference ----------------------------------------------
+# One positive key: SHOW_WELCOME_EVERY_LAUNCH (True = show the welcome screen
+# at every launch). Default for a brand-new user: True. The legacy inverse
+# flag WELCOME_SEEN is migrated once (after the onboarding state machine has
+# had its look at it) and then removed, so exactly one key exists.
+_WELCOME_KEY = "SHOW_WELCOME_EVERY_LAUNCH"
+
+
+def _welcome_pref():
+    """The stored 'show welcome at every launch' preference, migrating the
+    legacy inverse key on first read. Missing/corrupt settings -> True
+    (the professional default: a new user sees the welcome screen)."""
+    cur = load_saved()
+    if _WELCOME_KEY in cur:
+        return bool(cur[_WELCOME_KEY])
+    # Ensure the onboarding legacy bridge (which reads WELCOME_SEEN) runs
+    # against the pre-migration value BEFORE the key is removed.
+    try:
+        _onboarding()
+    except Exception:
+        pass
+    cur = load_saved()
+    val = (not bool(cur["WELCOME_SEEN"])) if "WELCOME_SEEN" in cur else True
+    cur[_WELCOME_KEY] = bool(val)
+    cur.pop("WELCOME_SEEN", None)
+    _save_config_atomic(cur)
+    return bool(val)
+
+
+def _set_welcome_pref(flag):
+    """Persist the checkbox immediately and atomically. Returns (ok, err);
+    a failed write is REPORTED to the UI, never silently reverted."""
+    cur = load_saved()
+    cur[_WELCOME_KEY] = bool(flag)
+    cur.pop("WELCOME_SEEN", None)
+    return _save_config_atomic(cur)
+
+
+# ---- onboarding / wizard diagnostics log ------------------------------------
+# A small append-only log of every wizard-relevant operation so a user report
+# ("the test did nothing") can be matched to what actually ran. Contains NO
+# secrets, NO screenshots, NO keystroke content -- operation names, status
+# strings and error codes only. Rotates at ~256 KB (one .1 kept).
+_WIZLOG_FILE = os.path.join(DATA_DIR, "onboarding.log")
+_WIZLOG_LOCK = threading.Lock()
+
+
+def _wlog(op, cap="", status="", code="", detail=""):
+    try:
+        line = "%s | %s | %s | %s | %s | %s\n" % (
+            time.strftime("%Y-%m-%d %H:%M:%S"), op, cap or "-",
+            status or "-", code or "-",
+            str(detail or "").replace("\n", " ")[:300])
+        with _WIZLOG_LOCK:
+            try:
+                if (os.path.isfile(_WIZLOG_FILE)
+                        and os.path.getsize(_WIZLOG_FILE) > 262144):
+                    os.replace(_WIZLOG_FILE, _WIZLOG_FILE + ".1")
+            except OSError:
+                pass
+            with open(_WIZLOG_FILE, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
+
+def _wizlog_tail(max_bytes=16384):
+    try:
+        with open(_WIZLOG_FILE, encoding="utf-8", errors="replace") as f:
+            data = f.read()
+        return data[-max_bytes:]
+    except OSError:
+        return ""
+
+
 def _scrub_config_file():
     """One-time on-disk cleanup: rewrite the config without the legacy
     access-gate / tracking keys. Atomic, best-effort, run at startup."""
@@ -493,11 +610,13 @@ def _scrub_config_file():
 
 # --- Secrets: the personal Coach API key lives in its own file so it never
 #     lands in git, a shipped build, or an exported config. Packaged builds
-#     keep it in the user DATA dir (the install dir may be read-only and is
-#     removed on uninstall, and the privacy contract is "one data folder");
-#     dev keeps it next to the scripts, where it is gitignored.
-SECRETS_FILE = os.path.join(DATA_DIR if FROZEN else HERE,
-                            "prospecting_secrets.json")
+#     AND explicitly-homed launches (PP_DATA_DIR -- the Studio embedded
+#     contract) keep it in the user DATA dir (the install dir may be
+#     read-only and is removed on uninstall, and the privacy contract is
+#     "one data folder"); plain dev keeps it next to the scripts, where it
+#     is gitignored.
+SECRETS_FILE = os.path.join(DATA_DIR if FROZEN or os.environ.get("PP_DATA_DIR")
+                            else HERE, "prospecting_secrets.json")
 _LEGACY_SECRETS_FILE = os.path.join(HERE, "prospecting_secrets.json")
 
 
@@ -2124,6 +2243,15 @@ class Api:
         self._classic_push_warned = False  # malformed push: log once, not per loop
         self._classic_toast = None   # applied-push toast queued until the UI is up
         self._studio_status_stop = threading.Event()
+        # Trust wizard session state: real capability-test outcomes recorded
+        # this session (never persisted -- an OS change would silently
+        # invalidate them), a monotonic snapshot counter so the UI can drop
+        # out-of-order refresh results, and a single-flight guard for the
+        # Safe Stop listener.
+        self._cap_tests = {}            # cap_id -> {status, detail, when}
+        self._trust_seq = 0
+        self._trust_lock = threading.Lock()
+        self._hotkey_armed = False
         if STUDIO_LAUNCH:
             # Live state mirror for the Prospector Studio window. A leftover
             # file from a previous session must never be read as current.
@@ -2670,37 +2798,71 @@ class Api:
     # welcome screen is onboarding only: it explains what the app does, what
     # it stores locally and which OS permissions it needs, then continues.
     def welcome_state(self):
-        cur = load_saved()
-        show = not bool(cur.get("WELCOME_SEEN"))
+        """Everything the welcome gate needs, including the persisted
+        'show at every launch' preference so the checkbox always renders
+        the stored value (never a template default)."""
         setup_needed = False
         try:
             setup_needed = not _onboarding().finished()
         except Exception:
             pass
+        show_every = True
+        try:
+            show_every = _welcome_pref()
+        except Exception:
+            pass
+        # `show` is the checkbox preference alone. A user mid-setup who
+        # turned the welcome screen off resumes the wizard directly (boot()
+        # routes on setup_needed/resume); a full wizard reset routes back
+        # through the welcome gate via resume == NOT_STARTED.
+        show = bool(show_every)
         if STUDIO_LAUNCH:
             show = False        # the Studio host owns its own onboarding
             setup_needed = False
-        return {"show": show, "setup_needed": setup_needed,
+        _wlog("welcome_state", status="show=%s pref=%s setup=%s"
+              % (show, show_every, setup_needed))
+        return {"show": show, "show_every_launch": bool(show_every),
+                "setup_needed": setup_needed,
                 "resume": (_onboarding().state.get("state")
                            if setup_needed else ""),
                 "info": self.app_info()}
 
-    def welcome_done(self, always_show=False):
-        """Persist that onboarding was seen (Continue). always_show=True
-        keeps the screen appearing at every launch (user preference)."""
-        cur = load_saved()
-        cur["WELCOME_SEEN"] = not bool(always_show)
+    def welcome_set_always_show(self, flag):
+        """Persist the 'show this screen at every launch' checkbox the
+        moment it is toggled. A failed write comes back as ok=False with
+        the reason -- the UI shows it and reverts the checkbox instead of
+        pretending the save happened."""
+        ok, err = _set_welcome_pref(bool(flag))
+        _wlog("welcome_set_always_show", status="ok" if ok else "fail",
+              code="" if ok else "PP-WEL-SAVE", detail=err)
+        return {"ok": ok, "value": bool(flag),
+                "error": err or None,
+                "error_code": None if ok else "PP-WEL-SAVE"}
+
+    def welcome_done(self, always_show=None):
+        """Continue past the welcome screen. `always_show` is optional: the
+        checkbox persists itself on toggle (welcome_set_always_show), so a
+        plain Continue no longer rewrites the preference. The onboarding
+        state machine is touched FIRST so the legacy WELCOME_SEEN bridge can
+        never mis-read a value this same call wrote."""
+        errs = []
         try:
-            tmp = CONFIG_FILE + ".tmp"
-            with open(tmp, "w") as f:
-                json.dump(cur, f, indent=2)
-            os.replace(tmp, CONFIG_FILE)
-        except OSError:
-            pass
-        try:
-            _onboarding().mark("WELCOME_COMPLETE")
-        except Exception:
-            pass
+            ob = _onboarding()
+            ob.mark("WELCOME_COMPLETE")
+            if ob.last_save_error:
+                errs.append("state: %s" % ob.last_save_error)
+        except Exception as e:
+            errs.append("state: %s" % e)
+        if always_show is not None:
+            ok, err = _set_welcome_pref(bool(always_show))
+            if not ok:
+                errs.append("preference: %s" % err)
+        _wlog("welcome_done", status="ok" if not errs else "fail",
+              code="" if not errs else "PP-WEL-DONE",
+              detail="; ".join(errs))
+        if errs:
+            return {"ok": False, "error": "; ".join(errs),
+                    "error_code": "PP-WEL-DONE"}
         return {"ok": True}
 
     # ---- trust & permissions (registry-driven; see lite_trust.py) --------
@@ -2708,33 +2870,92 @@ class Api:
     # capability; nothing here can trigger an OS prompt except the explicit
     # trust_request() the user clicks.
 
+    def _record_test(self, cap_id, passed, detail=""):
+        """Record a REAL capability-test outcome for this session. Session-
+        scoped on purpose: an OS permission change would silently invalidate
+        a persisted result, and 'status is never faked' includes never
+        showing yesterday's pass as today's truth."""
+        self._cap_tests[cap_id] = {
+            "status": "passed" if passed else "failed",
+            "detail": str(detail or "")[:300],
+            "when": int(time.time()),
+        }
+        _wlog("capability_test", cap=cap_id,
+              status="passed" if passed else "failed", detail=detail)
+
+    def _restart_needed(self, cid, pre, at_launch):
+        """Honest restart inference for one macOS capability. True only
+        when evidence says the grant exists but can not work in THIS
+        process: (a) the preflight flipped false->true after launch
+        (Screen Recording / Input Monitoring apply at process start), or
+        (b) the preflight says granted but the real capability test failed
+        this session. A later PASSING test clears it."""
+        t = self._cap_tests.get(cid)
+        if t and t["status"] == "passed":
+            return False
+        if pre is True and at_launch is False and cid in (
+                "screen_detection", "stop_hotkeys"):
+            return True
+        if pre is True and t and t["status"] == "failed":
+            return True
+        return False
+
     def trust_state(self):
         """Everything the Trust & Permissions screen and the Trust Center
         render: capability definitions + live statuses, platform, build
-        identity, onboarding state and the data directory."""
+        identity, onboarding state and the data directory.
+
+        Each OS capability additionally carries the authoritative state
+        model: `requested` (the user explicitly asked at least once),
+        `requires_restart` (grant exists but can not apply to this
+        process), `test` (the real test outcome this session), and the
+        snapshot carries `seq`/`checked_at` so the UI can drop stale
+        refresh results."""
         try:
             saved = load_saved()
         except Exception:
             saved = {}
         caps = []
         statuses = lite_trust.capability_statuses(saved)
+        at_launch = lite_trust.launch_preflights()
+        try:
+            requested = list(_onboarding().state.get("requested") or [])
+        except Exception:
+            requested = []
+        plat = lite_trust.platform_key()
         for cap in lite_trust.CAPABILITIES:
+            cid = cap["id"]
             c = dict(cap)
             c.pop("source_references", None)
             c["refs"] = [{"module": m, "symbol": s or "(module)", "why": w}
                          for (m, s, w) in cap["source_references"]]
-            c["live"] = statuses.get(cap["id"],
-                                     {"status": "unknown", "detail": ""})
+            live = dict(statuses.get(cid,
+                                     {"status": "unknown", "detail": ""}))
+            if cid in ("screen_detection", "input_control", "stop_hotkeys"):
+                live["requested"] = cid in requested
+                live["test"] = self._cap_tests.get(cid)
+                if plat == "mac":
+                    pre = (live.get("status") == "granted")
+                    live["requires_restart"] = self._restart_needed(
+                        cid, pre, at_launch.get(cid))
+                else:
+                    live["requires_restart"] = False
+            c["live"] = live
             caps.append(c)
         ob = _onboarding()
+        with self._trust_lock:
+            self._trust_seq += 1
+            seq = self._trust_seq
         return {
-            "platform": lite_trust.platform_key(),
+            "platform": plat,
             "capabilities": caps,
             "identity": lite_trust.build_identity(version=VERSION,
                                                   project_url=PROJECT_URL),
             "onboarding": ob.state,
             "data_dir": DATA_DIR,
             "frozen": FROZEN,
+            "seq": seq,
+            "checked_at": int(time.time()),
             "dev_note": ("" if FROZEN else
                          "Running from source: macOS attributes these "
                          "permissions to your terminal/IDE, not to a "
@@ -2744,42 +2965,127 @@ class Api:
     def trust_request(self, cap_id):
         """Trigger the real OS permission request -- called only from the
         clearly-labelled button on the capability card."""
-        res = lite_trust.request_permission(str(cap_id or ""))
+        cap_id = str(cap_id or "")
+        _wlog("trust_request", cap=cap_id, status="start")
         try:
-            _onboarding().mark("TRUST_STARTED")
+            res = lite_trust.request_permission(cap_id)
+        except Exception as e:
+            res = {"ok": False, "error": str(e),
+                   "error_code": "PP-TRUST-REQ"}
+        try:
+            ob = _onboarding()
+            ob.note_request(cap_id)
+            ob.mark("TRUST_STARTED")
         except Exception:
             pass
+        _wlog("trust_request", cap=cap_id,
+              status=("granted" if res.get("granted") else
+                      ("ok" if res.get("ok") else "error")),
+              detail=res.get("error", ""))
         return res
 
     def trust_open_settings(self, cap_id):
-        """Open the exact System Settings pane for the capability."""
-        return lite_trust.open_settings(str(cap_id or ""))
+        """Open the exact System Settings pane for the capability. Also
+        records the capability as 'requested': from the user's point of
+        view they are now actively granting it, so a later false preflight
+        must read as 'Not granted', never 'Not requested yet'."""
+        cap_id = str(cap_id or "")
+        try:
+            _onboarding().note_request(cap_id)
+        except Exception:
+            pass
+        res = lite_trust.open_settings(cap_id)
+        _wlog("trust_open_settings", cap=cap_id,
+              status="ok" if res.get("ok") else "error",
+              detail=res.get("error", ""))
+        return res
 
     def trust_test_screen(self):
         """The real screen-detection test: one small centre grab, size +
         non-blankness reported, preview shown once in-app, frame discarded.
         On macOS the first call also registers the app in the Screen
-        Recording pane."""
-        return lite_trust.test_screen_capture(with_preview=True)
+        Recording pane. The outcome is recorded as this session's test
+        result and feeds the restart-required inference."""
+        try:
+            res = lite_trust.test_screen_capture(with_preview=True)
+        except Exception as e:
+            res = {"ok": False, "error": str(e)}
+        passed = bool(res.get("ok") and res.get("nonblank"))
+        self._record_test(
+            "screen_detection", passed,
+            res.get("note") or res.get("error") or "")
+        return res
 
-    def trust_test_key(self):
+    def trust_test_key(self, request_id=0):
         """Arm the sandbox keyboard test: after a short delay one harmless
         key press+release is posted so the focused in-app field can observe
-        both edges (down AND up = clean release proven)."""
-        threading.Thread(target=lite_trust.post_test_key,
-                         daemon=True).start()
-        return {"ok": True, "armed": True}
+        both edges (down AND up = clean release proven). The worker's REAL
+        result -- posted / refused-not-frontmost / error -- is delivered to
+        the page via window.__keyTestResult, so a refusal is reported as
+        itself instead of being mis-blamed on Accessibility."""
+        rid = int(request_id or 0)
+
+        def _run():
+            try:
+                res = lite_trust.post_test_key()
+            except Exception as e:
+                res = {"ok": False, "posted": False,
+                       "error_code": "EXCEPTION", "error": str(e)}
+            _wlog("input_key_post", cap="input_control",
+                  status="posted" if res.get("posted") else "refused",
+                  code=res.get("error_code", ""),
+                  detail=res.get("error", ""))
+            try:
+                if _window is not None:
+                    _window.evaluate_js(
+                        "window.__keyTestResult && __keyTestResult(%s)"
+                        % json.dumps({"id": rid, "result": res}))
+            except Exception:
+                pass
+        threading.Thread(target=_run, daemon=True).start()
+        return {"ok": True, "armed": True, "id": rid}
 
     def trust_test_pointer(self):
         """2-pixel pointer wiggle, verified by reading the cursor position
         back. No clicks, nothing sent to any app."""
-        return lite_trust.test_pointer_wiggle()
+        try:
+            res = lite_trust.test_pointer_wiggle()
+        except Exception as e:
+            res = {"ok": False, "error": str(e)}
+        self._record_test("input_control",
+                          bool(res.get("ok") and res.get("moved")),
+                          res.get("note") or res.get("error") or "")
+        return res
 
-    def trust_test_hotkey(self, timeout=8):
+    def trust_test_hotkey(self, timeout=8, request_id=0):
         """Arm the Safe Stop test: listen (only) for Esc / Ctrl+K for a few
-        seconds and report back through window.__hotkeyResult."""
+        seconds and report back through window.__hotkeyResult. Single-
+        flight: while one listener is armed, another request is refused
+        instead of spawning a second listener whose stale result would
+        overwrite the first."""
+        rid = int(request_id or 0)
+        with self._trust_lock:
+            if self._hotkey_armed:
+                return {"ok": False, "armed": False, "busy": True,
+                        "error": "A Safe Stop test is already running -- "
+                                 "wait for it to finish.",
+                        "error_code": "PP-HOTKEY-BUSY"}
+            self._hotkey_armed = True
+
         def _run():
-            res = lite_trust.await_stop_hotkey(timeout=float(timeout or 8))
+            try:
+                res = lite_trust.await_stop_hotkey(
+                    timeout=float(timeout or 8))
+            except Exception as e:
+                res = {"ok": False, "heard": None, "error": str(e),
+                       "error_code": "EXCEPTION"}
+            finally:
+                with self._trust_lock:
+                    self._hotkey_armed = False
+            self._record_test("stop_hotkeys", bool(res.get("heard")),
+                              res.get("heard") or res.get("error")
+                              or res.get("note") or "")
+            res["id"] = rid
             try:
                 if _window is not None:
                     _window.evaluate_js(
@@ -2788,8 +3094,35 @@ class Api:
             except Exception:
                 pass
         threading.Thread(target=_run, daemon=True).start()
-        return {"ok": True, "armed": True,
+        return {"ok": True, "armed": True, "id": rid,
                 "keys": "Esc or Ctrl+K"}
+
+    def trust_relaunch(self):
+        """Quit and reopen Prospector Lite -- the honest remedy when a
+        permission was granted after this process started (macOS applies
+        Screen Recording / Input Monitoring at launch). Spawns the fresh
+        copy first, then runs the normal clean quit."""
+        _wlog("trust_relaunch", status="start")
+        try:
+            if FROZEN and sys.platform == "darwin":
+                # .../Prospector Lite.app/Contents/MacOS/exe -> the .app
+                bundle = os.path.dirname(os.path.dirname(
+                    os.path.dirname(sys.executable)))
+                if bundle.endswith(".app"):
+                    subprocess.Popen(["open", "-n", bundle])
+                else:
+                    subprocess.Popen([sys.executable])
+            elif FROZEN:
+                subprocess.Popen([sys.executable])
+            else:
+                subprocess.Popen([sys.executable]
+                                 + [os.path.abspath(sys.argv[0])]
+                                 + sys.argv[1:])
+        except Exception as e:
+            _wlog("trust_relaunch", status="error", detail=str(e))
+            return {"ok": False, "error": str(e),
+                    "error_code": "PP-RELAUNCH"}
+        return self.quit_app()
 
     def trust_manifest(self):
         """The build's trust manifest: per-capability source references at
@@ -2897,7 +3230,11 @@ class Api:
             except Exception:
                 health = None
             try:
-                found = bool(s.detect_window())
+                d = s.detect_window()
+                # find_roblox_window returns {found: False, error: ...} on
+                # failure -- a NON-empty dict, so bool(d) would be a
+                # permanent false "found". Read the actual key.
+                found = bool(d.get("found")) if isinstance(d, dict) else None
             except Exception:
                 found = None
         statuses = lite_onboarding.calibration_status(
@@ -3042,15 +3379,26 @@ class Api:
                         "Could not read the permission state.",
                         fix="trust")
             else:
-                add(cid, title, "info",
-                    "No OS permission needed; use the Trust tab tests to "
-                    "prove it works.", fix="trust")
+                t = self._cap_tests.get(cid)
+                if t and t["status"] == "passed":
+                    add(cid, title, "pass",
+                        "Verified by your own test this session.")
+                elif t and t["status"] == "failed":
+                    add(cid, title, "warn",
+                        "Your test failed this session: %s"
+                        % (t["detail"] or "see the Trust tab."),
+                        fix="trust")
+                else:
+                    add(cid, title, "info",
+                        "No OS permission needed; use the Trust tab tests "
+                        "to prove it works.", fix="trust")
         # Roblox window (informational -- Roblox may simply not be open)
         s = _sensing()
         found = None
         if s is not None:
             try:
-                found = bool(s.detect_window())
+                d = s.detect_window()
+                found = bool(d.get("found")) if isinstance(d, dict) else None
             except Exception:
                 found = None
         if found is True:
@@ -3264,9 +3612,74 @@ class Api:
             return {"ok": False, "error": "unknown kind"}
         return {"ok": True, "removed": len(removed)}
 
+    _JS_ERRS = 0
+
+    def log_js_error(self, message, source="", line=0):
+        """window.onerror / unhandledrejection forwarder: JavaScript-side
+        failures land in the onboarding log instead of dying invisibly
+        inside the webview. Rate-limited; content is the error text only
+        (no page content, no secrets)."""
+        if Api._JS_ERRS > 200:
+            return {"ok": False}
+        Api._JS_ERRS += 1
+        _wlog("js_error", status="error",
+              detail="%s (%s:%s)" % (str(message)[:200],
+                                     str(source)[-80:], line))
+        return {"ok": True}
+
+    def diag_summary(self):
+        """A short copyable text summary for support requests: identity,
+        capability statuses, session test results, last readiness verdict.
+        NO secrets, NO paths beyond the data dir, NO config dump."""
+        try:
+            ident = lite_trust.build_identity(version=VERSION,
+                                              project_url=PROJECT_URL)
+            caps = lite_trust.capability_statuses(load_saved())
+            lines = ["%s v%s (%s, %s, %s)" % (
+                APP_NAME, ident.get("version"), ident.get("commit_short"),
+                ident.get("os"), "packaged" if FROZEN else "source")]
+            for cid in ("screen_detection", "input_control", "stop_hotkeys",
+                        "discord_notifications", "coach_ai"):
+                st = caps.get(cid, {})
+                t = self._cap_tests.get(cid)
+                lines.append("%s: %s%s" % (
+                    cid, st.get("status", "?"),
+                    (" | test %s (%s)" % (t["status"],
+                                          time.strftime("%H:%M:%S",
+                                          time.localtime(t["when"])))
+                     if t else "")))
+            try:
+                lr = _onboarding().state.get("last_readiness")
+                if lr:
+                    lines.append("last readiness: ok=%s fails=%s"
+                                 % (lr.get("ok"), lr.get("fails")))
+            except Exception:
+                pass
+            return {"ok": True, "text": "\n".join(lines)}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def open_wizard_log(self):
+        """Open the onboarding log in the OS default viewer."""
+        try:
+            if not os.path.isfile(_WIZLOG_FILE):
+                _wlog("log_opened")
+            if sys.platform == "darwin":
+                subprocess.run(["open", _WIZLOG_FILE], check=False,
+                               timeout=10)
+            elif os.name == "nt":
+                os.startfile(_WIZLOG_FILE)  # noqa
+            else:
+                subprocess.run(["xdg-open", _WIZLOG_FILE], check=False,
+                               timeout=10)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def export_diagnostics(self):
-        """Save a diagnostics summary (readiness + identity + statuses).
-        Contains NO secrets: no webhook URL, no API key, no config dump."""
+        """Save a diagnostics summary (readiness + identity + statuses +
+        the onboarding log tail). Contains NO secrets: no webhook URL, no
+        API key, no config dump, no screenshots, no keystroke content."""
         try:
             ident = lite_trust.build_identity(version=VERSION,
                                               project_url=PROJECT_URL)
@@ -3274,6 +3687,7 @@ class Api:
                 "app": APP_NAME, "identity": ident,
                 "capabilities": lite_trust.capability_statuses(
                     load_saved()),
+                "session_tests": self._cap_tests,
                 "readiness": self.readiness_check(),
                 "calibration": {
                     k: v["live"]["status"] if isinstance(v, dict) else v
@@ -3281,6 +3695,7 @@ class Api:
                     ((i["id"], i) for i in
                      self.calibration_registry()["items"])},
                 "data_dir": DATA_DIR,
+                "onboarding_log_tail": _wizlog_tail(),
             }
             try:
                 import webview
@@ -3454,8 +3869,7 @@ class Api:
         s["COACH_API_KEY"] = ""                       # never store the key in config
         if key is not None:
             _save_coach_key(key)                      # secrets file only
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(s, f, indent=2)
+        _config_write(s)
         return self.coach_settings()
 
     def coach_history(self):
@@ -3598,8 +4012,7 @@ class Api:
             try:
                 cur = load_saved()
                 cur["COACH_STATS"] = {k: stats[k] for k in stats}
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
+                _config_write(cur)
             except Exception:
                 pass
         ctx = self._coach_context(stats)
@@ -3690,6 +4103,21 @@ class Api:
             res["cap_full"] = r["capFull"]
         for k, v in (r.get("whites") or {}).items():
             res[k + "_white"] = v
+        if not res["pixels"]:
+            # Nothing saved to sample. On a fresh install with
+            # auto-calibration on that is EXPECTED (pixels are placed at
+            # run start from the profile) -- say so instead of dumping an
+            # empty JSON blob that reads as a failure.
+            auto = bool(load_saved().get("AUTO_CALIBRATE", True))
+            res["empty"] = True
+            res["note"] = (
+                "No saved calibration points to sample yet. Auto-"
+                "calibration is ON: the required points are placed "
+                "automatically each time a run starts, so this is normal "
+                "for a fresh install. Calibrate by hand to pin exact "
+                "pixels you can sample here." if auto else
+                "No saved calibration points to sample. Auto-calibration "
+                "is OFF, so calibrate the required points first.")
         return res
 
     def test_find_read(self):
@@ -3740,8 +4168,7 @@ class Api:
                 return {"ok": bool(ack.get("ok"))}
             cur = load_saved()
             cur["WEBHOOK_URL"] = val
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cur, f, indent=2)
+            _config_write(cur)
             return {"ok": True}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -3834,8 +4261,7 @@ class Api:
         ack = self._engine_settings_set(vals) if vals else None
         if ack is None or not ack.get("ok"):
             try:
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
+                _config_write(cur)
             except OSError as e:
                 return {"ok": False, "error": str(e)}
         else:
@@ -3846,8 +4272,7 @@ class Api:
                 base = load_saved()
                 base.update(rest)
                 try:
-                    with open(CONFIG_FILE, "w") as f:
-                        json.dump(base, f, indent=2)
+                    _config_write(base)
                 except OSError as e:
                     return {"ok": False, "error": str(e)}
         return {"ok": True, "reset": sorted(hit)}
@@ -3860,8 +4285,7 @@ class Api:
             return len(vals)
         cur = load_saved()
         cur.update(vals)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
+        _config_write(cur)
         return len(vals)
 
     def save_relics(self, relics, enabled):
@@ -3881,8 +4305,7 @@ class Api:
             return len(clean)
         cur["RELICS"] = clean
         cur["RELICS_ENABLED"] = bool(enabled)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
+        _config_write(cur)
         return len(clean)
 
     def set_window_compact(self, on):
@@ -3907,8 +4330,7 @@ class Api:
             try:
                 cur = load_saved()
                 cur["HUD_POS"] = [int(_hud.x), int(_hud.y)]
-                with open(CONFIG_FILE, "w") as f:
-                    json.dump(cur, f, indent=2)
+                _config_write(cur)
             except Exception:
                 pass
             _hud.hide()
@@ -3972,8 +4394,7 @@ class Api:
         # doesn't carry (calibrated pixels, webhook URL/secret, window settings).
         cur = load_saved()
         cur.update(clean)
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
+        _config_write(cur)
         m = entry.setdefault("_meta", {})
         m["used"] = int(m.get("used", 0) or 0) + 1
         m["last_used"] = int(time.time())
@@ -4036,8 +4457,7 @@ class Api:
         cur = load_saved()
         cur["ADVANCED_CUES"] = bool(on)
         try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cur, f, indent=2)
+            _config_write(cur)
         except OSError as e:
             return {"ok": False, "error": str(e)}
         return {"ok": True}
@@ -4046,8 +4466,7 @@ class Api:
         cur = load_saved()
         cur["CUE_MASKS_ONLY"] = bool(on)
         try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cur, f, indent=2)
+            _config_write(cur)
         except OSError as e:
             return {"ok": False, "error": str(e)}
         return {"ok": True}
@@ -4920,6 +5339,26 @@ class Api:
                 _missing = []
             if _missing:
                 return "perm:" + ",".join(_missing)
+        # Calibration gate: the same condition the Readiness Check reports
+        # (readiness_check's docstring has always promised launch() enforces
+        # it). With auto-calibrate on this always passes; it blocks only
+        # when the user turned auto off and required values are missing or
+        # stale -- exactly the runs that would misclick.
+        try:
+            _cfg = load_saved()
+            _s = _sensing()
+            _health = None
+            if _s is not None:
+                try:
+                    _health = _s.health()
+                except Exception:
+                    _health = None
+            _st = lite_onboarding.calibration_status(_cfg, health=_health)
+            _ready, _blockers = lite_onboarding.calibration_ready(_st)
+        except Exception:
+            _ready, _blockers = True, []
+        if not _ready:
+            return "cal:" + ",".join(_blockers)
         if STUDIO_LAUNCH:
             # Top-level CLASSIC | STUDIO BUILD | STUDIO SCRIPT invariant:
             # each Studio mode must have an active entry of its own kind,
@@ -5198,9 +5637,51 @@ class Api:
                           "alt": bool(hk[k].get("alt")),
                           "shift": bool(hk[k].get("shift")),
                           "code": str(hk[k].get("code", ""))}
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(cur, f, indent=2)
+        _config_write(cur)
         return "saved"
+
+    def _overlay_preconditions(self):
+        """Shared guard for every path that opens the calibration overlay.
+        Returns an error dict, or None when it is safe to proceed. Checks
+        (in order): the overlay window exists, screen capture is permitted
+        (macOS -- otherwise the user gets a full-screen BLACK trap), and
+        the sensing engine is available."""
+        if _overlay is None:
+            _wlog("overlay_open", status="error", code="PP-CAL-OVERLAY")
+            return {"error": "The calibration overlay window is not "
+                             "available in this session. Restart "
+                             "Prospector Lite and try again.",
+                    "error_code": "PP-CAL-OVERLAY"}
+        if lite_trust.platform_key() == "mac":
+            try:
+                pre = lite_trust._mac_preflights().get("screen_detection")
+            except Exception:
+                pre = None
+            if pre is False:
+                _wlog("overlay_open", status="refused",
+                      code="PP-CAL-SCREEN")
+                return {"error": "Screen Recording is not granted, so the "
+                                 "overlay would only show a black screen. "
+                                 "Grant it on the Trust & Permissions step "
+                                 "first, then come back.",
+                        "error_code": "PP-CAL-SCREEN",
+                        "needs_permission": "screen_detection"}
+        if _sensing() is None:
+            return {"error": _SENSING_ERR, "error_code": "PP-CAL-ENGINE"}
+        return None
+
+    def _overlay_show(self):
+        """Show the pre-created overlay, re-fitted to the CURRENT main
+        display (its geometry was frozen at boot; displays change)."""
+        try:
+            import Quartz as _Q
+            b = _Q.CGDisplayBounds(_Q.CGMainDisplayID())
+            _overlay.move(int(b.origin.x), int(b.origin.y))
+            _overlay.resize(int(b.size.width), int(b.size.height))
+        except Exception:
+            pass
+        _overlay.evaluate_js("window.__reload && window.__reload()")
+        _overlay.show()
 
     def start_overlay_calibrate(self, key, label=""):
         """Open a full-screen overlay (a snapshot of your screen). Click the
@@ -5209,13 +5690,17 @@ class Api:
         (4.15 capture); this host keeps only overlay-window state and the
         stride-downsampled preview the engine hands back."""
         global _overlay
+        err = self._overlay_preconditions()
+        if err:
+            return err
         s = _sensing()
-        if s is None:
-            return {"error": _SENSING_ERR}
         try:
             cap = s.capture()
         except Exception as e:
-            return {"error": str(e)}
+            _wlog("overlay_open", cap=str(key), status="error",
+                  code="PP-CAL-CAPTURE", detail=str(e))
+            return {"error": "Screen capture failed: %s" % e,
+                    "error_code": "PP-CAL-CAPTURE"}
         self._shot_w, self._shot_h = cap["fullW"], cap["fullH"]
         self._shot_b64 = cap["image"]
         self._overlay_key = key
@@ -5224,11 +5709,10 @@ class Api:
         self._overlay_proposed = None
         self._overlay_region = None
         try:
-            if _overlay is not None:
-                _overlay.evaluate_js("window.__reload && window.__reload()")
-                _overlay.show()
+            self._overlay_show()
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "error_code": "PP-CAL-OVERLAY"}
+        _wlog("overlay_open", cap=str(key), status="ok")
         return {"ok": True}
 
     def start_overlay_region(self, base, label=""):
@@ -5336,8 +5820,7 @@ class Api:
             rp = cur.get("REGION_PREVIEWS") or {}
             rp[base] = {"preview": r["image"], "w": r["w"], "h": r["h"]}
             cur["REGION_PREVIEWS"] = rp
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(cur, f, indent=2)
+            _config_write(cur)
         except Exception:
             pass
 
@@ -5420,13 +5903,15 @@ class Api:
         global _overlay
         if cue not in ("PAN", "SHAKE", "DEPOSIT"):
             return {"ok": False, "error": "Unknown cue."}
+        err = self._overlay_preconditions()
+        if err:
+            return dict(err, ok=False)
         s = _sensing()
-        if s is None:
-            return {"ok": False, "error": _SENSING_ERR}
         try:
             cap = s.capture()
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e),
+                    "error_code": "PP-CAL-CAPTURE"}
         self._cm_cue = cue
         self._cm_thresh = int(thresh) if thresh else 160
         self._cm_mode = "locate"
@@ -5436,11 +5921,10 @@ class Api:
         names = {"PAN": "Pan", "SHAKE": "Shake", "DEPOSIT": "Collect Deposit"}
         self._overlay_label = "Click on the \u201c%s\u201d cue word" % names[cue]
         try:
-            if _overlay is not None:
-                _overlay.evaluate_js("window.__reload && window.__reload()")
-                _overlay.show()
+            self._overlay_show()
         except Exception as e:
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": str(e),
+                    "error_code": "PP-CAL-OVERLAY"}
         return {"ok": True}
 
     def cue_toggle(self, fx, fy):
@@ -5498,9 +5982,10 @@ class Api:
         [Phase 04 C8] detection + the frame run engine-side (4.15 detect:
         the fresh grab becomes the capture session)."""
         global _overlay
+        err = self._overlay_preconditions()
+        if err:
+            return err
         s = _sensing()
-        if s is None:
-            return {"error": _SENSING_ERR}
         if kind in ("CAP", "CAP_RIGHT", "CAP_LEFT"):
             target, cue = "capacityBar", None
         elif kind in ("PAN_PIX", "SHAKE_PIX", "DEPOSIT_PIX"):
@@ -5515,7 +6000,7 @@ class Api:
                 det = {"detected": False, "message": "unknown target"}
                 cap = s.capture()
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "error_code": "PP-CAL-CAPTURE"}
         self._shot_w, self._shot_h = cap["fullW"], cap["fullH"]
         self._shot_b64 = cap["image"]
         self._overlay_key = kind
@@ -5544,11 +6029,9 @@ class Api:
                                      "g": gg, "b": bb, "hex": hexv}
             self._overlay_proposed = dict(self._overlay_pending)
         try:
-            if _overlay is not None:
-                _overlay.evaluate_js("window.__reload && window.__reload()")
-                _overlay.show()
+            self._overlay_show()
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "error_code": "PP-CAL-OVERLAY"}
         return {"ok": True, "detected": bool(self._overlay_proposed),
                 "msg": det.get("message")}
 
@@ -5964,7 +6447,12 @@ class Api:
 def _host_release_inputs(vocab):
     """Protocol section 10.1 backstop: after a force-kill the dead engine
     cannot lift its held inputs, so the host itself issues OS-level
-    up-events for the whole injectable vocabulary (idempotent)."""
+    up-events for the whole injectable vocabulary (idempotent).
+
+    Windows builds do not ship pynput, so the release is issued through
+    the same ctypes SendInput/mouse_event family the engine's own input
+    path uses -- previously the except-ImportError made this backstop a
+    silent no-op on every Windows build."""
     try:
         from pynput.keyboard import Controller as _KC, Key as _K
         from pynput.mouse import Controller as _MC, Button as _MB
@@ -5982,6 +6470,30 @@ def _host_release_inputs(vocab):
         for _b in (vocab or {}).get("buttons", []):
             try:
                 ms.release(_MB.left)
+            except Exception:
+                pass
+        return
+    except Exception:
+        pass
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        u32 = ctypes.windll.user32
+        KEYEVENTF_KEYUP = 0x0002
+        _VK = {"W": 0x57, "A": 0x41, "S": 0x53, "D": 0x44,
+               "Space": 0x20, "Shift": 0x10, "E": 0x45, "Q": 0x51}
+        for name in (vocab or {}).get("keys", []):
+            vk = _VK.get(name) or _VK.get(str(name).upper())
+            if vk:
+                try:
+                    u32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+                except Exception:
+                    pass
+        if (vocab or {}).get("buttons"):
+            MOUSEEVENTF_LEFTUP = 0x0004
+            try:
+                u32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
             except Exception:
                 pass
     except Exception:
@@ -7991,7 +8503,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          <li><b>Safe Stop.</b> Esc or Ctrl+K stops the macro instantly and releases every key and mouse button.</li>
        </ul>
        <button type="button" id="welGo" class="btn">Continue</button>
-       <label class="wel-again"><input type="checkbox" id="welAgain"> Show this screen at every launch</label>
+       <label class="wel-again"><input type="checkbox" id="welAgain" checked> Show this screen at every launch</label>
+       <div class="wel-again" id="welAgainErr" style="display:none;color:#e07a6a" role="alert"></div>
        <div class="wel-links">
          <a href="#" id="welSrc" style="display:none">View source</a>
          <a href="#" id="welPriv">Privacy &amp; data</a>
@@ -9246,6 +9759,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    if(typeof r==='string'&&r.indexOf('perm:')===0){
      toast('Start is disabled until macOS grants: '+r.slice(5).replace(/_/g,' ')+' — opening the Trust Center.');
      const tb=document.querySelector('.tab[data-tab="trust"]');if(tb)tb.click();return;}
+   if(typeof r==='string'&&r.indexOf('cal:')===0){
+     toast('Start is disabled: required calibration needs attention ('+r.slice(4).replace(/_/g,' ')+') — opening the Calibrate tab.');
+     const cb=document.querySelector('.tab[data-tab="cal"]');if(cb)cb.click();return;}
    if(r!=='launched'&&r!=='already running'){toast(r||'Could not start.');return;}
    setRunning(true);toast('Launched, Ctrl+K to start');};
  $('#stopbtn').onclick=async()=>{await window.pywebview.api.stop();setRunning(false);};
@@ -9909,7 +10425,20 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  function welcomeShow(){genPaths();const g=document.getElementById('gate');if(g)g.classList.add('show');
    setTimeout(()=>{const c=document.getElementById('welGo');if(c)c.focus();},140);}
  function welcomeHide(){const g=document.getElementById('gate');if(g)g.classList.remove('show');}
- window.openWelcome=function(){try{const a=document.getElementById('welAgain');if(a)a.checked=false;}catch(e){}welcomeShow();};
+ // The checkbox ALWAYS renders the stored preference -- never a template
+ // default, never a forced value. Toggling persists immediately; a failed
+ // save is shown and the box reverts (it never silently lies).
+ function welSetChecked(v){const a=document.getElementById('welAgain');if(a)a.checked=!!v;}
+ function welErr(msg){const e=document.getElementById('welAgainErr');
+   if(e){e.textContent=msg||'';e.style.display=msg?'':'none';}}
+ (function(){const a=document.getElementById('welAgain');if(!a)return;
+   a.addEventListener('change',async()=>{const want=!!a.checked;welErr('');
+     let r=null;try{r=await _api().welcome_set_always_show(want);}catch(e){r={ok:false,error:String(e)};}
+     if(!r||!r.ok){a.checked=!want;
+       welErr('Could not save this preference ('+((r&&r.error)||'bridge unavailable')+'). ['+((r&&r.error_code)||'PP-WEL-SAVE')+']');}});})();
+ window.openWelcome=async function(){
+   try{const w=await _api().welcome_state();welSetChecked(w&&w.show_every_launch);}catch(e){}
+   welcomeShow();};
  function welcomeFill(info){try{
    const v=document.getElementById('welVer');if(v)v.textContent='v'+(info.version||'');
    const s=document.getElementById('welSrc');if(s&&info.project_url)s.style.display='';
@@ -9920,16 +10449,27 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  }catch(e){}}
  function _startApp(){if(document.body.dataset.welinit==='1')return;document.body.dataset.welinit='1';
    init();if(window.maybeStartTour)setTimeout(window.maybeStartTour,900);}
- let _setupNeeded=false;
- async function boot(){let w={show:false};try{w=await _api().welcome_state();}catch(e){}
-   await new Promise(r=>setTimeout(r,650));splashHide();
+ let _setupNeeded=false, _booted=false;
+ function bootFail(err){splashHide();
+   const g=document.getElementById('gate');if(g)g.classList.add('show');genPaths();
+   const t=document.getElementById('welTitle');if(t)t.textContent='Startup problem';
+   welErr('The app bridge did not answer ('+err+'). [PP-BOOT-BRIDGE] Close and reopen Prospector Lite; if it persists, use Export diagnostics from the Trust Center.');}
+ async function boot(){if(_booted)return;_booted=true;
+   let w=null,err='';try{w=await _api().welcome_state();}catch(e){err=String(e);}
+   await new Promise(r=>setTimeout(r,650));
+   if(!w){bootFail(err||'no response');return;}
+   splashHide();
    _welInfo=(w&&w.info)||{};welcomeFill(_welInfo);_setupNeeded=!!(w&&w.setup_needed);
+   welSetChecked(w&&w.show_every_launch);
+   const resume=(w&&w.resume)||'';
    if(w&&w.show){welcomeShow();}
-   else if(_setupNeeded&&window.SETUP){SETUP.resume((w&&w.resume)||'');}
+   else if(_setupNeeded&&resume==='NOT_STARTED'){welcomeShow();} // full wizard reset re-enters at the welcome step
+   else if(_setupNeeded&&window.SETUP){SETUP.resume(resume);}
    else{_startApp();}}
  (function(){const b=document.getElementById('welGo');if(!b)return;
-   b.addEventListener('click',async()=>{const ag=document.getElementById('welAgain');
-     try{await _api().welcome_done(!!(ag&&ag.checked));}catch(e){}
+   b.addEventListener('click',async()=>{
+     let r=null;try{r=await _api().welcome_done();}catch(e){r={ok:false,error:String(e)};}
+     if(r&&r.ok===false){welErr('Could not save setup progress ('+(r.error||'')+'). ['+(r.error_code||'PP-WEL-DONE')+']');}
      welcomeHide();
      if(_setupNeeded&&window.SETUP){SETUP.open('trust');}else{_startApp();}});
    const sc=document.getElementById('welSrc');if(sc)sc.onclick=e=>{e.preventDefault();try{_api().open_external((_welInfo&&_welInfo.project_url)||'');}catch(_){}};
@@ -9937,6 +10477,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    const se=document.getElementById('welSec');if(se)se.onclick=e=>{e.preventDefault();try{_api().open_doc('SECURITY.md');}catch(_){}};
    document.addEventListener('keydown',e=>{if(e.key==='Escape'){const g=document.getElementById('gate');
      if(g&&g.classList.contains('show')&&document.body.dataset.welinit==='1')welcomeHide();}});})();
+ // JS-side failures are logged Python-side (no secrets, error text only)
+ window.addEventListener('error',e=>{try{_api()&&_api().log_js_error(String(e.message||e),String(e.filename||''),e.lineno||0);}catch(_){}});
+ window.addEventListener('unhandledrejection',e=>{try{_api()&&_api().log_js_error('unhandledrejection: '+String((e.reason&&e.reason.message)||e.reason),'',0);}catch(_){}});
 
  // ---- setup wizard (steps 2-4) + Trust Center ------------------------------
  // Registry-driven: everything rendered here comes from Api.trust_state /
@@ -9956,21 +10499,49 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        not_granted:['no','Not granted'],disabled:['off','Off (default)'],not_requested:['off','Never requested'],
        info:['off','No permission'],unknown:['mid','Unknown']};
      return m[st]||['mid',st||'?'];}
+   const OS_CAPS=['screen_detection','input_control','stop_hotkeys'];
+   function capPill(c){ // the authoritative pill for the three OS capabilities:
+     // OS preflight + requested-once + restart inference + this session's real
+     // test compose the label, so "Not granted" is never shown for
+     // never-asked, restart-pending, or merely-untested states.
+     const live=c.live||{};
+     if(OS_CAPS.indexOf(c.id)<0)return stDot(live.status);
+     const t=live.test;
+     if(live.status==='granted'&&live.requires_restart)return ['mid','Granted — restart to apply'];
+     if(live.status==='not_granted'&&!live.requested)return ['mid','Not requested yet'];
+     if(live.status==='untested'&&t&&t.status==='passed')return ['ok','Works (tested this session)'];
+     if(live.status==='untested'&&t&&t.status==='failed')return ['no','Test failed'];
+     return stDot(live.status);}
+   function capDetail(c){const live=c.live||{};let d=live.detail||'';
+     if(OS_CAPS.indexOf(c.id)>=0){
+       if(live.status==='not_granted'&&!live.requested)
+         d='macOS has not been asked yet — nothing is wrong. Use Request access… to register the app, then flip its switch.';
+       if(live.requires_restart)
+         d+=' The change applies after Prospector Lite restarts.';
+       if(live.test)d+=' Last test this session: '+live.test.status+'.';}
+     return d;}
+   function cardStamp(c){const l=c.live||{};
+     return [l.status,l.requires_restart?1:0,l.requested?1:0,
+             (l.test&&l.test.status)||''].join('|');}
    function reqBadge(l){if(l==='REQUIRED_FOR_CORE')return '<span class="cap-badge req">Required</span>';
      if(l==='REQUIRED_FOR_SPECIFIC_FEATURE')return '<span class="cap-badge req">Required for a feature</span>';
      if(l==='OPTIONAL')return '<span class="cap-badge opt">Optional</span>';
      if(l==='NOT_REQUIRED')return '<span class="cap-badge">Never requested</span>';
      return '<span class="cap-badge">Info</span>';}
    function capCard(c,compact){
-     const live=c.live||{},[cls,lab]=stDot(live.status);
+     const live=c.live||{},[cls,lab]=capPill(c);
      const osl=(c.operating_system_label||{})[PLAT]||'';
      const real=(PLAT===DET); // action buttons only on the platform we are actually on
      let acts='';
-     if(c.id==='screen_detection'||c.id==='input_control'||c.id==='stop_hotkeys'){
+     if(OS_CAPS.indexOf(c.id)>=0){
        if(real&&DET==='mac'&&live.status!=='granted')
          acts+='<button type="button" class="btn2" data-act="request" data-cap="'+c.id+'">Request access&hellip;</button>';
        if(real&&DET==='mac')
          acts+='<button type="button" class="btn2" data-act="settings" data-cap="'+c.id+'">Open System Settings</button>';
+       if(real&&DET==='mac'&&(live.status!=='granted'||live.requires_restart))
+         acts+='<button type="button" class="btn2" data-act="recheck" data-cap="'+c.id+'">I&rsquo;ve enabled it &mdash; check again</button>';
+       if(real&&DET==='mac'&&live.requires_restart)
+         acts+='<button type="button" class="btn2" data-act="relaunch" data-cap="'+c.id+'">Restart Prospector Lite</button>';
        if(real)acts+='<button type="button" class="btn2" data-act="test" data-cap="'+c.id+'">Test '+E(c.title.split(' ')[0].toLowerCase()==='safe'?'Safe Stop':c.title)+'</button>';
      }
      if(c.id==='discord_notifications'&&real){
@@ -9988,14 +10559,35 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<div class="cap-desc"><b>To revoke:</b> '+E((c.revoke_instructions||{})[PLAT]||'')+'</div>'
        +(c.privacy_notes?('<div class="cap-desc"><b>Privacy note:</b> '+E(c.privacy_notes)+'</div>'):'')
        +'</details>';
-     return '<div class="cap-card" data-capid="'+c.id+'"><div class="cap-head">'
+     return '<div class="cap-card" data-capid="'+c.id+'" data-compact="'+(compact?1:0)+'" data-stamp="'+E(cardStamp(c))+'"><div class="cap-head">'
        +'<span class="cap-title">'+E(c.title)+'</span>'+reqBadge(c.required_level)
        +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></div>'
-       +'<div class="cap-desc">'+E(c.short_description)+' '+E(live.detail||'')+'</div>'
+       +'<div class="cap-desc">'+E(c.short_description)+' '+E(capDetail(c))+'</div>'
        +(compact?'':facts)
        +'<div class="cap-actions">'+acts+'</div>'
        +'<div class="cap-test" id="captest_'+c.id+'" aria-live="polite"></div>'
        +(compact?'':more)+'</div>';}
+   // In-place card refresh: patches only cards whose composed state actually
+   // changed, preserves the test-output area, and never touches a card whose
+   // test is currently armed -- so a background refresh can not wipe an
+   // in-flight test (the old full re-render did exactly that).
+   const _busy={};
+   function updateCards(root){if(!ST||!root)return;let rewire=null;
+     ST.capabilities.forEach(c=>{
+       const card=root.querySelector('.cap-card[data-capid="'+c.id+'"]');
+       if(!card||_busy[c.id])return;
+       const stamp=cardStamp(c);
+       if(card.dataset.stamp===stamp)return;
+       const keepEl=card.querySelector('.cap-test');
+       const keep=keepEl?keepEl.innerHTML:'', keepShow=keepEl&&keepEl.classList.contains('show');
+       const wrap=document.createElement('div');
+       wrap.innerHTML=capCard(c,card.dataset.compact==='1');
+       const fresh=wrap.firstChild;
+       const ct=fresh.querySelector('.cap-test');
+       if(ct&&keep){ct.innerHTML=keep;if(keepShow)ct.classList.add('show');}
+       card.replaceWith(fresh);rewire=root;});
+     if(rewire)wireCards(rewire);}
+   let _reqId=0;
    function wireCards(box){
      box.querySelectorAll('button[data-act]').forEach(b=>{b.onclick=async()=>{
        const cap=b.dataset.cap, act=b.dataset.act, out=$id('captest_'+cap);
@@ -10003,10 +10595,23 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        if(act==='request'){show('Asking macOS&hellip; if a prompt appears it is the system asking, with this app named.');
          let r={};try{r=await _api().trust_request(cap);}catch(e){r={ok:false,error:String(e)};}
          if(r.granted){show('Granted. Use Test to prove it works.');}
-         else{show(E(r.note||r.error||'macOS listed the app in System Settings; flip the switch there, then Test. A restart of the app may be needed.'));}
-         refresh(false);return;}
-       if(act==='settings'){try{await _api().trust_open_settings(cap);}catch(e){}
-         show('System Settings should now be open at the right pane. Flip the switch for Prospector Lite, come back, and Test. If the pane did not open: System Settings &rarr; Privacy &amp; Security &rarr; '+E(((ST&&ST.capabilities.find(x=>x.id===cap)||{}).permission_category||{}).mac||'')+'.');return;}
+         else if(r.ok===false){show('&#10007; '+E(r.error||'The request could not run.')+(r.error_code?(' ['+E(r.error_code)+']'):''));}
+         else{show(E(r.note||'macOS listed the app in System Settings; flip the switch there, then use “I’ve enabled it — check again”. A restart of the app may be needed.'));}
+         refresh(false);armPoll();return;}
+       if(act==='settings'){let r={};try{r=await _api().trust_open_settings(cap);}catch(e){r={ok:false,error:String(e)};}
+         if(r&&r.ok===false){show('&#10007; Could not open System Settings ('+E(r.error||'')+'). Open it manually: System Settings &rarr; Privacy &amp; Security &rarr; '+E(((ST&&ST.capabilities.find(x=>x.id===cap)||{}).permission_category||{}).mac||'')+'.');}
+         else{show('System Settings should now be open at the right pane. Flip the switch for <b>Prospector Lite</b>, come back, and this card re-checks automatically (or click “I’ve enabled it — check again”). If the switch already looks ON but this still says Not granted, the row may belong to an older copy: remove it with the &minus; button, then Request access here to re-register.');}
+         refresh(false);armPoll();return;}
+       if(act==='recheck'){show('Checking with macOS&hellip;');
+         await refresh(false);
+         const c2=((ST&&ST.capabilities)||[]).find(x=>x.id===cap);const lv=(c2&&c2.live)||{};
+         if(lv.status==='granted'&&!lv.requires_restart){show('&#10003; macOS reports access granted to this app. Use Test to prove it works.');}
+         else if(lv.status==='granted'&&lv.requires_restart){show('&#9888; Granted, but this running copy started before the change &mdash; restart Prospector Lite to apply it (button above).');}
+         else if(lv.status==='unknown'){show('&#9888; The system check API was unavailable, so the state cannot be read. Run the Test instead &mdash; it exercises the real capability. [PP-TRUST-UNKNOWN]');}
+         else{show('&#10007; macOS still reports no access for this exact copy. If the switch in System Settings already looks ON, that row may belong to an older copy of the app: remove it there (&minus; button), click Request access&hellip; here to re-register, flip the new row ON, then restart the app. [PP-TRUST-STALE]');}
+         return;}
+       if(act==='relaunch'){show('Restarting Prospector Lite&hellip; it will reopen by itself.');
+         try{await _api().trust_relaunch();}catch(e){}return;}
        if(act==='test'){
          if(cap==='screen_detection'){show('Capturing a small centre patch&hellip;');
            let r={};try{r=await _api().trust_test_screen();}catch(e){r={error:String(e)};}
@@ -10017,22 +10622,46 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
            show('Click into the box below, then press Start test and keep this window focused. The app types one harmless letter into its own box and wiggles the pointer 2&nbsp;px &mdash; it checks it is the focused app first, so if you switch away nothing is typed anywhere.'
              +'<div style="margin-top:8px;display:flex;gap:8px;align-items:center"><input id="sandkey_'+cap+'" placeholder="test lands here" aria-label="Input test target"> <button type="button" class="btn2" id="sandgo_'+cap+'">Start test</button></div><div id="sandout_'+cap+'" style="margin-top:7px"></div>');
            const go=$id('sandgo_'+cap);if(go)go.onclick=async()=>{
-             const f=$id('sandkey_'+cap), o=$id('sandout_'+cap);let down=false,up=false;
+             if(_busy[cap])return;_busy[cap]=1;go.disabled=true;
+             const f=$id('sandkey_'+cap), o=$id('sandout_'+cap);
+             let down=false,up=false,postRes=null;
+             const rid=++_reqId;
+             window.__keyTestResult=m=>{if(m&&m.id===rid)postRes=m.result||null;};
              if(f){f.value='';f.focus();}
-             const h1=e=>{if((e.key||'').toLowerCase()==='t'){down=true;}};
-             const h2=e=>{if((e.key||'').toLowerCase()==='t'){up=true;}};
+             // match the PHYSICAL key (e.code) -- the injected event is a
+             // keycode/scancode, so on non-QWERTY layouts e.key is not 't'
+             const isT=e=>((e.code||'')==='KeyT')||((e.key||'').toLowerCase()==='t');
+             const h1=e=>{if(isT(e))down=true;};
+             const h2=e=>{if(isT(e))up=true;};
              window.addEventListener('keydown',h1,true);window.addEventListener('keyup',h2,true);
-             let pr={};try{pr=await _api().trust_test_pointer();}catch(e){}
-             try{await _api().trust_test_key();}catch(e){}
+             let pr={};try{pr=await _api().trust_test_pointer();}catch(e){pr={ok:false,error:String(e)};}
+             try{await _api().trust_test_key(rid);}catch(e){}
              setTimeout(()=>{window.removeEventListener('keydown',h1,true);window.removeEventListener('keyup',h2,true);
-               const kb=down&&up?'&#10003; keystroke arrived AND released cleanly':(down?'&#9888; key-down seen but no key-up':'&#10007; no keystroke arrived (grant Accessibility, keep this window focused, then retry)');
-               const mo=pr&&pr.ok?(pr.moved?'&#10003; pointer moved and was restored':'&#10007; pointer did not move'):'&#9888; pointer test unavailable';
-               if(o)o.innerHTML=kb+'<br>'+mo;refresh(false);},2400);};
+               _busy[cap]=0;go.disabled=false;
+               let kb;
+               if(postRes&&postRes.posted===false){kb='&#9888; '+E(postRes.error||'The test key was not posted.')+(postRes.error_code?(' ['+E(postRes.error_code)+']'):'');}
+               else if(down&&up){kb='&#10003; keystroke arrived AND released cleanly';}
+               else if(down){kb='&#9888; key-down seen but no key-up';}
+               else if(DET==='mac'){kb='&#10007; no keystroke arrived &mdash; grant Accessibility to Prospector Lite, keep this window focused, then retry. If you granted it while the app was running, restart the app first.';}
+               else{kb='&#10007; no keystroke arrived &mdash; keep this window focused and retry. If Roblox runs as administrator, run both apps at the same normal level.';}
+               const mo=(pr&&pr.ok)?(pr.moved?'&#10003; pointer moved and was restored':('&#10007; pointer did not move'+(DET==='mac'?' (macOS is blocking synthetic input — grant Accessibility)':'')))
+                 :('&#9888; pointer test unavailable: '+E((pr&&pr.error)||''));
+               if(o)o.innerHTML=kb+'<br>'+mo;refresh(false);},2600);};
            return;}
-         if(cap==='stop_hotkeys'){show('Armed for 8 seconds &mdash; press <b>Esc</b> or <b>Ctrl+K</b> now (click into Roblox or anywhere first if you like: it must work globally).');
-           window.__hotkeyResult=r=>{const o=$id('captest_'+cap);if(!o)return;
-             o.innerHTML=r&&r.heard?('&#10003; Heard <b>'+E(r.heard)+'</b> &mdash; Safe Stop works.'):('&#10007; '+E((r&&r.note)||'Nothing heard.'));refresh(false);};
-           try{await _api().trust_test_hotkey(8);}catch(e){}return;}
+         if(cap==='stop_hotkeys'){
+           if(_busy[cap])return;_busy[cap]=1;b.disabled=true;
+           const rid=++_reqId;let secs=8;
+           show('Armed &mdash; <b id="hkleft_'+cap+'">8</b>s left. Press <b>Esc</b> or <b>Ctrl+K</b> now (click into Roblox or anywhere first if you like: it must work globally).');
+           const tick=setInterval(()=>{secs--;const el=$id('hkleft_'+cap);if(el)el.textContent=Math.max(0,secs);if(secs<=0)clearInterval(tick);},1000);
+           const done=h=>{clearInterval(tick);_busy[cap]=0;b.disabled=false;
+             const o=$id('captest_'+cap);if(o){o.classList.add('show');o.innerHTML=h;}refresh(false);};
+           window.__hotkeyResult=r=>{if(r&&r.id!==undefined&&r.id!==rid)return; // stale arm
+             if(r&&r.heard)done('&#10003; Heard <b>'+E(r.heard)+'</b> &mdash; Safe Stop works.');
+             else if(r&&r.error)done('&#10007; '+E(r.error)+(r.error_code?(' ['+E(r.error_code)+']'):''));
+             else done('&#10007; '+E((r&&r.note)||'Nothing heard.'));};
+           let a=null;try{a=await _api().trust_test_hotkey(8,rid);}catch(e){}
+           if(!a||!a.armed){done('&#10007; '+E((a&&a.error)||'Could not arm the Safe Stop test.')+((a&&a.error_code)?(' ['+E(a.error_code)+']'):''));}
+           return;}
          return;}
        if(act==='preview'){show('Building the exact payload from the same engine code that sends it&hellip;');
          let r={};try{r=await _api().webhook_payload_preview();}catch(e){r={error:String(e)};}
@@ -10051,7 +10680,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      +'<button role="tab" id="plat_win" aria-selected="'+(PLAT==='win')+'">Windows'+(DET==='win'?' (this computer)':'')+'</button></div>';}
    function wirePlat(box,rerender){['mac','win'].forEach(p=>{const b=$id('plat_'+p);if(b)b.onclick=()=>{PLAT=p;rerender();};
      const t=box.querySelector('.plat-tabs');if(t)t.onkeydown=e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){PLAT=(PLAT==='mac'?'win':'mac');rerender();const nb=$id('plat_'+PLAT);if(nb)nb.focus();}};});}
-   function renderTrust(){PAGE='trust';railSet();const b=$id('supBody');if(!ST){b.innerHTML='<p class="sup-sub">Loading&hellip;</p>';return;}
+   function renderTrust(){GEN++;PAGE='trust';railSet();const b=$id('supBody');
+     if(!ST){b.innerHTML='<p class="sup-sub">Loading&hellip;</p><div class="cap-actions"><button type="button" class="btn2" id="trustRetry">Retry</button></div>';
+       const rt=$id('trustRetry');if(rt)rt.onclick=async()=>{await refresh(false);renderTrust();};return;}
      const caps=ST.capabilities.filter(c=>(c.platforms||[]).indexOf(PLAT)>=0);
      const req=caps.filter(c=>c.required_level.indexOf('REQUIRED')===0);
      const opt=caps.filter(c=>c.required_level==='OPTIONAL');
@@ -10059,18 +10690,27 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      b.innerHTML='<h2 class="sup-h1">Trust &amp; Permissions<span class="plat-badge">'+(DET==='mac'?'macOS detected':(DET==='win'?'Windows detected':DET))+'</span></h2>'
        +'<p class="sup-sub">Before the operating system shows a single prompt, here is every capability this app has: what it is for, what it can touch, and how to test and revoke it. Nothing is requested until you click a button below. '+(ST.dev_note?E(ST.dev_note):'')+'</p>'
        +platTabs()
+       +'<div class="cap-actions" style="margin:2px 0 8px"><button type="button" class="btn2" id="trustRefresh">&#8635; Refresh status</button><span class="sup-note" id="trustChecked" aria-live="polite"></span></div>'
        +'<div class="sup-group">Required for the macro</div>'+req.map(c=>capCard(c,false)).join('')
        +'<div class="sup-group">Optional &mdash; off by default</div>'+opt.map(c=>capCard(c,false)).join('')
        +'<div class="sup-group">Never requested (so you can see we know)</div>'+none.map(c=>capCard(c,true)).join('');
      wirePlat(b,renderTrust);wireCards(b);
+     const rf=$id('trustRefresh');if(rf)rf.onclick=async()=>{rf.disabled=true;await refresh(false);rf.disabled=false;stampChecked();};
+     stampChecked();
      $id('supBack').textContent='← Welcome';$id('supNext').textContent='Continue to Calibration →';
      $id('supNote').textContent=(DET==='mac')?'You can continue any time - Start Macro stays disabled until the required permissions work.':'Windows has no permission prompts here - run the tests to prove everything works.';
-     b.focus();}
+     b.focus();
+     refresh(false); // repaint from a fresh snapshot (entry may have used a stale one)
+   }
+   function stampChecked(){const el=$id('trustChecked');
+     if(el&&ST&&ST.checked_at)el.textContent='Status checked '+new Date(ST.checked_at*1000).toLocaleTimeString();}
    function calStatus(st){const m={ok:['ok','Calibrated'],auto:['mid','Auto'],stale:['no','Stale'],unset:['off','Not set'],off:['off','Off']};return m[st]||['mid',st||'?'];}
-   async function renderCal(){PAGE='cal';railSet();const b=$id('supBody');
+   async function renderCal(){const g=++GEN;PAGE='cal';railSet();const b=$id('supBody');
      b.innerHTML='<p class="sup-sub">Loading calibration&hellip;</p>';
      try{CAL=await _api().calibration_registry();}catch(e){CAL=null;}
-     if(!CAL){b.innerHTML='<p class="sup-sub">Calibration engine unavailable.</p>';return;}
+     if(g!==GEN)return; // the user navigated away while this loaded
+     if(!CAL){b.innerHTML='<p class="sup-sub">Calibration engine unavailable.</p><div class="cap-actions"><button type="button" class="btn2" id="calRetry">Retry</button></div>';
+       const cr=$id('calRetry');if(cr)cr.onclick=renderCal;return;}
      const req=CAL.items.filter(i=>i.required), opt=CAL.items.filter(i=>!i.required);
      const card=i=>{const live=i.live||{},[cls,lab]=calStatus(live.status);
        let acts='';
@@ -10096,21 +10736,34 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      b.querySelectorAll('button[data-cal]').forEach(btn=>{btn.onclick=async()=>{
        const item=btn.dataset.item, act=btn.dataset.cal, out=$id('caltest_'+item);
        const show=h=>{if(out){out.classList.add('show');out.innerHTML=h;}};
+       // one shared renderer for calibration bridge errors: shows the real
+       // message + code, and routes to the Trust step when the cause is a
+       // missing permission -- a capture failure must READ as what it is,
+       // never crash the page or silently no-op.
+       const calErr=r=>{let h='&#10007; '+E((r&&r.error)||'failed')+((r&&r.error_code)?(' ['+E(r.error_code)+']'):'');
+         if(r&&r.needs_permission)h+=' <button type="button" class="btn2" data-goperm="1">Open Trust &amp; Permissions</button>';
+         show(h);
+         if(out){const gp=out.querySelector('button[data-goperm]');if(gp)gp.onclick=()=>renderTrust();}};
        if(act==='detect'){show('Looking for the Roblox window&hellip;');
-         let r={};try{r=await _api().detect_roblox();}catch(e){}
-         show(r&&r.found?('&#10003; Found at '+E(JSON.stringify(r.rect||''))):'&#10007; Not found &mdash; open Roblox on your primary display, then retry.');
+         let r={};try{r=await _api().detect_roblox();}catch(e){r={found:false,error:String(e)};}
+         show(r&&r.found?('&#10003; Found: '+E(r.w+'×'+r.h)+' at ('+E(r.x+', '+r.y)+')')
+           :('&#10007; Not found &mdash; '+E((r&&r.error)||'open Roblox on your primary display, then retry.')));
          renderCalSoon();return;}
        if(act==='wizard'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="cal"]');if(t)t.click();
          const w=$id('wizbtn');if(w)w.click();return;}
        if(act==='pixel'){show('The full-screen picker opens on top &mdash; click the exact pixel, then Confirm.');
-         try{await _api().start_overlay_calibrate(btn.dataset.key);}catch(e){show('&#10007; '+E(String(e)));}return;}
+         let r=null;try{r=await _api().start_overlay_calibrate(btn.dataset.key);}catch(e){r={error:String(e)};}
+         if(r&&r.error)calErr(r);return;}
        if(act==='region'){show('The full-screen picker opens on top &mdash; drag a box, then Confirm.');
-         try{await _api().start_overlay_region(btn.dataset.key);}catch(e){show('&#10007; '+E(String(e)));}return;}
+         let r=null;try{r=await _api().start_overlay_region(btn.dataset.key);}catch(e){r={error:String(e)};}
+         if(r&&r.error)calErr(r);return;}
        if(act==='tab'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="cal"]');if(t)t.click();return;}
        if(act==='test'){show('Sampling the saved points live&hellip;');
          let r={};try{r=await _api().sample_pixels();}catch(e){r={error:String(e)};}
-         if(r&&!r.error){show('<pre class="tc-pre">'+E(JSON.stringify(r,null,1))+'</pre>');}
-         else{show('&#10007; '+E((r&&r.error)||'failed'));}return;}
+         if(r&&r.error){calErr(r);}
+         else if(r&&r.empty){show('&#9432; '+E(r.note||'Nothing saved to sample yet.'));}
+         else if(r){show('<pre class="tc-pre">'+E(JSON.stringify(r,null,1))+'</pre>');}
+         else{show('&#10007; failed');}return;}
        if(act==='code'){const it=(CAL.items||[]).find(x=>x.id===item)||{};const ref=(it.refs||[])[0];
          show(ref?('Implemented in <b>'+E(ref.module.replace(/\./g,'/'))+'.py</b> &mdash; '+E(ref.symbol)+' ('+E(ref.why)+'). Exact line-anchored links live in the Trust Center.'):'No reference.');return;}
      };});
@@ -10137,10 +10790,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    let _calTimer=null;function renderCalSoon(){if(PAGE!=='cal')return;clearTimeout(_calTimer);_calTimer=setTimeout(()=>{if(PAGE==='cal')renderCal();},600);}
    const _prevCalRefresh=window.__calRefresh;
    window.__calRefresh=function(){if(_prevCalRefresh)try{_prevCalRefresh();}catch(e){}renderCalSoon();};
-   async function renderReady(){PAGE='ready';railSet();const b=$id('supBody');
+   async function renderReady(){const g=++GEN;PAGE='ready';railSet();const b=$id('supBody');
      b.innerHTML='<p class="sup-sub">Running the readiness checks&hellip;</p>';
      let rc=null;try{rc=await _api().readiness_check();}catch(e){}
-     if(!rc){b.innerHTML='<p class="sup-sub">Readiness check unavailable.</p>';return;}
+     if(g!==GEN)return; // the user navigated away while the checks ran
+     if(!rc){b.innerHTML='<p class="sup-sub">Readiness check unavailable.</p><div class="cap-actions"><button type="button" class="btn2" id="rdyRetry">Retry</button></div>';
+       const rr=$id('rdyRetry');if(rr)rr.onclick=renderReady;return;}
      const row=i=>{const m={pass:'PASS',fail:'FAIL',warn:'WARN',info:'INFO'};
        const fix=i.fix?('<button type="button" class="btn2" data-fix="'+E(i.fix)+'">Fix now</button>'):'';
        return '<div class="rdy-item '+E(i.status)+'"><span class="mark">'+(m[i.status]||'?')+'</span>'
@@ -10150,17 +10805,63 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +rc.items.map(row).join('')
        +'<div class="cap-actions" style="margin-top:14px">'
        +'<button type="button" class="btn2" id="rdyRetest">Retest</button>'
-       +'<button type="button" class="btn2" id="rdyDiag">Export diagnostic summary</button>'
+       +'<button type="button" class="btn2" id="rdyDiag">Export diagnostics</button>'
+       +'<button type="button" class="btn2" id="rdyCopy">Copy diagnostic summary</button>'
+       +'<button type="button" class="btn2" id="rdyLog">Open wizard log</button>'
        +'<button type="button" class="btn2" id="rdyFolder">Open data folder</button>'
        +'<button type="button" class="btn2" id="rdyQuit">Exit app</button></div>';
      b.querySelectorAll('button[data-fix]').forEach(f=>{f.onclick=()=>{if(f.dataset.fix==='trust')renderTrust();else if(f.dataset.fix==='calibration')renderCal();};});
      const rt=$id('rdyRetest');if(rt)rt.onclick=renderReady;
-     const dg=$id('rdyDiag');if(dg)dg.onclick=async()=>{try{const r=await _api().export_diagnostics();if(r&&r.ok)toast('Saved '+r.path);}catch(e){}};
+     const dg=$id('rdyDiag');if(dg)dg.onclick=async()=>{try{const r=await _api().export_diagnostics();if(r&&r.ok)toast('Saved '+r.path);else if(r&&r.error)toast('Export failed: '+r.error);}catch(e){}};
+     const cp=$id('rdyCopy');if(cp)cp.onclick=async()=>{try{const r=await _api().diag_summary();
+       if(r&&r.ok){try{await navigator.clipboard.writeText(r.text);toast('Summary copied');}
+         catch(e){toast('Clipboard unavailable — use Export diagnostics');}}
+       else toast('Summary failed: '+((r&&r.error)||''));}catch(e){}};
+     const lg=$id('rdyLog');if(lg)lg.onclick=()=>{try{_api().open_wizard_log();}catch(e){}};
      const fo=$id('rdyFolder');if(fo)fo.onclick=()=>{try{_api().open_data_folder();}catch(e){}};
      const qb=$id('rdyQuit');if(qb)qb.onclick=()=>{mconfirm('Quit Prospector Lite? Setup progress is saved and resumes next launch.',()=>{try{_api().quit_app();}catch(e){}});};
      $id('supBack').textContent='← Calibration';$id('supNext').textContent=rc.ok?'Finish setup →':'Enter the app anyway →';
      $id('supNote').textContent='';b.focus();}
-   async function refresh(render){try{ST=await _api().trust_state();DET=ST.platform||'mac';if(render!==false&&PAGE==='trust')renderTrust();}catch(e){}}
+   // refresh(): fetch a fresh trust snapshot and PATCH the visible cards in
+   // place (wizard trust step + Trust Center). Never a destructive full
+   // re-render -- page entries call renderTrust() themselves. A sequence
+   // counter drops out-of-order results so a slow older fetch can not
+   // overwrite a newer one.
+   let _seq=0, GEN=0;
+   async function refresh(render){const my=++_seq;let st=null;
+     try{st=await _api().trust_state();}catch(e){st=null;}
+     if(!st||my!==_seq)return false;
+     if(st.seq&&ST&&ST.seq&&st.seq<ST.seq)return false; // server-side ordering too
+     ST=st;DET=ST.platform||'mac';
+     const s=$id('setup');
+     if(s&&s.classList.contains('show')&&PAGE==='trust')updateCards($id('supBody'));
+     const tc=$id('tccaps');if(tc)updateCards(tc);
+     stampChecked();
+     return true;}
+   // Bounded post-action poll: armed by Request access / Open System
+   // Settings / check-again, runs every 2.5 s for at most 90 s and ONLY
+   // while a trust surface is actually visible. Complements (never
+   // replaces) the manual Refresh button and the focus watcher below.
+   let _pollT=null,_pollUntil=0;
+   function trustVisible(){const s=$id('setup');
+     return (s&&s.classList.contains('show')&&PAGE==='trust')||!!document.querySelector('#ptrust.active');}
+   function armPoll(){_pollUntil=Date.now()+90000;
+     if(_pollT)return;
+     _pollT=setInterval(()=>{
+       if(Date.now()>_pollUntil||!trustVisible()){clearInterval(_pollT);_pollT=null;return;}
+       refresh(false);},2500);}
+   // Focus watcher: pywebview exposes no app-activation event Python-side
+   // and the JS window 'focus' event is not guaranteed across returns from
+   // System Settings, so a cheap document.hasFocus() transition check is
+   // the reliable trigger. It only acts when a trust surface is visible.
+   let _hadFocus=document.hasFocus();
+   setInterval(()=>{const f=document.hasFocus();
+     if(f&&!_hadFocus){
+       if(trustVisible())refresh(false);
+       const s=$id('setup');
+       if(s&&s.classList.contains('show')&&PAGE==='ready')renderReady();
+     }
+     _hadFocus=f;},800);
    window.SETUP={
      open:async function(page){await refresh(false);PLAT=DET==='win'?'win':'mac';
        const s=$id('setup');if(s)s.classList.add('show');$id('supReturn').classList.remove('show');
@@ -10181,11 +10882,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      else{try{await _api().onboarding_mark('READINESS_COMPLETE');await _api().onboarding_mark('FINISHED');}catch(e){}
        const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.remove('show');_startApp();}};
    window.__setupRerun=async function(){try{await _api().onboarding_rerun();}catch(e){}SETUP.open('trust');};
-   // window focus refreshes permission statuses (granting in System Settings
-   // and coming back updates the cards without any polling loop)
-   window.addEventListener('focus',()=>{const s=$id('setup');
-     if((s&&s.classList.contains('show')&&PAGE==='trust')||document.querySelector('#ptrust.active'))refresh(true);
-     if(document.querySelector('#ptrust.active')&&window.__tcRender)__tcRender();});
+   // Window-focus fast path: NON-destructive card patch (a full re-render
+   // here used to wipe an in-flight test the instructions told the user to
+   // run while switching apps). The hasFocus() watcher above is the
+   // fallback when this event does not fire.
+   window.addEventListener('focus',()=>{if(trustVisible())refresh(false);});
    // ---- Trust Center tab ----
    window.__tcRender=async function(){const box=$id('tcbody');if(!box)return;
      box.innerHTML='<p class="chint">Loading&hellip;</p>';
@@ -11674,7 +12375,9 @@ def main():
     except Exception:
         pass
     print("[boot] all windows created -> starting GUI loop", flush=True)
-    webview.start()
+    # PP_DEBUG=1 opens the webview inspector so bridge/JS failures are
+    # visible instead of dying silently inside the packaged WKWebView.
+    webview.start(debug=bool(os.environ.get("PP_DEBUG")))
     _quit_everything(api)        # normal close path -> kill engine + hard exit
 
 

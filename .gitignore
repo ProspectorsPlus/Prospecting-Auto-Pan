@@ -100,3 +100,11 @@ windows/Install.bat
 # dev-run onboarding state (packaged builds keep it in the user data dir)
 onboarding_state.json
 .write_probe
+
+# wizard diagnostics log (dev runs write it next to the scripts)
+onboarding.log
+onboarding.log.1
+
+# live user data of a source run from the windows/ mirror (keeps the
+# tracked sanitized default config pristine)
+windows/.devdata/
