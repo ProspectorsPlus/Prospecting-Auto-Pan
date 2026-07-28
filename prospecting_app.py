@@ -10747,8 +10747,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
                // counts when the post actually happened, and a pass needs
                // both halves -- the pill must never claim 'Works' from the
                // pointer wiggle alone
+               // posted requires an actually-received worker callback: a
+               // lost delivery must record NOTHING, not a keyboard fail
                try{_api().trust_record_input(rid,{down:down,up:up,
-                 posted:!(postRes&&postRes.posted===false),
+                 posted:!!(postRes&&postRes.posted!==false),
                  pointer_moved:!!(pr&&pr.ok&&pr.moved)});}catch(e){}
                let kb;
                if(postRes&&postRes.posted===false){kb='&#9888; '+E(postRes.error||'The test key was not posted.')+(postRes.error_code?(' ['+E(postRes.error_code)+']'):'');}
@@ -10793,7 +10795,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    function wirePlat(box,rerender){['mac','win'].forEach(p=>{const b=$id('plat_'+p);if(b)b.onclick=()=>{
        if(Object.keys(_busy).some(k=>_busy[k])){toast('A test is running — wait for it to finish first.');return;}
        PLAT=p;rerender();};
-     const t=box.querySelector('.plat-tabs');if(t)t.onkeydown=e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){PLAT=(PLAT==='mac'?'win':'mac');rerender();const nb=$id('plat_'+PLAT);if(nb)nb.focus();}};});}
+     const t=box.querySelector('.plat-tabs');if(t)t.onkeydown=e=>{if(e.key==='ArrowRight'||e.key==='ArrowLeft'){
+       if(Object.keys(_busy).some(k=>_busy[k])){toast('A test is running — wait for it to finish first.');return;}
+       PLAT=(PLAT==='mac'?'win':'mac');rerender();const nb=$id('plat_'+PLAT);if(nb)nb.focus();}};});}
    function renderTrust(){GEN++;PAGE='trust';railSet();const b=$id('supBody');
      if(!ST){b.innerHTML='<p class="sup-sub">Loading&hellip;</p><div class="cap-actions"><button type="button" class="btn2" id="trustRetry">Retry</button></div>';
        const rt=$id('trustRetry');if(rt)rt.onclick=async()=>{await refresh(false);renderTrust();};return;}

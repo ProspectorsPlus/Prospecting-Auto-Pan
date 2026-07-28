@@ -46,6 +46,16 @@ bundle content listing above.
   build dependencies; no untracked source inputs (the package-content scan
   fails on personal paths/secrets).
 
+## Toolchain used for the 1.0.0-rc.3 candidate
+
+- macOS 26.4.1 (Apple Silicon, arm64), Python 3.13.1 (Homebrew)
+- PyInstaller 6.21.0, pywebview 6.2.1, pyobjc 12.2.1, mss 10.2.0,
+  numpy 2.5.1, pillow 12.3.0, pynput 1.8.2, certifi (build-time latest) —
+  the exact frozen set ships as `dependencies-macos-freeze.txt` next to
+  the artifacts, with a CycloneDX SBOM (`sbom-macos.cdx.json`)
+- built via `./build_dmg.command` from the clean tracked tree at the
+  commit stamped in the bundle's `build_info.json` (`dirty: false`)
+
 ## Toolchain used for the 1.0.0-rc.2 candidate
 
 - macOS (Apple Silicon, arm64), Python 3.13.1 (Homebrew)

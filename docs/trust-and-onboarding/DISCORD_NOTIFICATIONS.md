@@ -1,8 +1,11 @@
 # Discord Notifications — The Complete Truth
 
 Internal reviewer documentation for the webhook feature: the app's only network feature that
-can run during a macro. Everything below is stated against the current working tree
-(v1.0.0-rc.2) with repo-relative citations. The one-line summary that must stay true:
+can run during a macro. Everything below was stated against the **1.0.0-rc.2 baseline
+(commit `eb9bbba`)** with repo-relative citations — a pinned snapshot, not a moving tree;
+the rc.3 stabilization pass changed no webhook behaviour, but treat exact line numbers as
+historical (the shipped `trust_manifest.json` carries build-exact ones). The one-line
+summary that must stay true:
 **off by default, user's own URL only, https-only, verified TLS always, one attempt, 8 s,
 screenshots are a second separate opt-in that now defaults off.**
 
