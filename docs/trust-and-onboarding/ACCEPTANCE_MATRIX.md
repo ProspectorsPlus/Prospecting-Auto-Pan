@@ -5,8 +5,10 @@ what remains a human step. Automated probes live in
 `packaging/packaged_acceptance.command`; run them against any DMG.
 
 Build under test: `ProspectorLite-1.0.0-rc.3-macos-arm64.dmg`, built from
-commit `44e4458` (clean tree, `dirty: false`; the wizard-stabilization
-pass), ad-hoc signed (unsigned release), macOS arm64, 2026-07-28.
+commit `38d00d1` (clean tree, `dirty: false`; the wizard-stabilization
+pass plus the independent re-verification fixes), ad-hoc signed
+(unsigned release), macOS arm64, 2026-07-28. An earlier rc.3 build from
+`44e4458` passed the same probes before the verifier fixes landed.
 
 Correction recorded from the rc.2 matrix: rc.2's probe 3 was **not
 actually passable on a true first boot** — nothing wrote
@@ -28,8 +30,8 @@ now cleans up its temp homes on FAIL paths and isolates the
 | 4 | Zero open network sockets during first boot | PASS | `lsof -a -p <pid> -i` = 0 rows |
 | 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.3 @ 44e4458c9944 dirty=False` |
 | 6 | Bundle contents: `trust_manifest.json`, `PERMISSIONS.md`, `PRIVACY.md`, `SECURITY.md`, `TRUST_CENTER.md` present; no personal files (`prospecting_secrets.json`, `coach_history.json`, `run_history.json`, access-code files) | PASS | find over the mounted bundle |
-| 7 | Packaged welcome-preference lifecycle: first boot writes the positive key `SHOW_WELCOME_EVERY_LAUNCH: true` (default ON) and no legacy `WELCOME_SEEN`; a second packaged launch against the same home honours and preserves an OFF preference (`onboarding.log`: `show=False pref=False`) | PASS | two real launches of the built app against one isolated home |
-| 8 | Wizard diagnostics log (`onboarding.log`) written in the isolated home, operation lines with status and no secrets | PASS | log inspected after both boots |
+| 7 | Packaged welcome-preference lifecycle (now SCRIPTED as the probe script's step [5]): first boot writes the positive key `SHOW_WELCOME_EVERY_LAUNCH: true` (default ON) and no legacy `WELCOME_SEEN`; a second packaged launch against the same home honours and preserves an OFF preference (`onboarding.log`: `show=False pref=False`) | PASS | two real launches of the built app against one isolated home, driven by `packaged_acceptance.command` |
+| 8 | Wizard diagnostics log (`onboarding.log`) written in the isolated home, operation lines with status and no secrets (asserted by the scripted step [5]) | PASS | log inspected after both boots |
 
 Additionally executed on the source tree at the same commit: the full
 release gate (`public_release_tests.py` — ALL PASS with the rc.3 pins:
