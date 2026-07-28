@@ -5,10 +5,11 @@ what remains a human step. Automated probes live in
 `packaging/packaged_acceptance.command`; run them against any DMG.
 
 Build under test: `ProspectorLite-1.0.0-rc.3-macos-arm64.dmg`, built from
-commit `38d00d1` (clean tree, `dirty: false`; the wizard-stabilization
-pass plus the independent re-verification fixes), ad-hoc signed
-(unsigned release), macOS arm64, 2026-07-28. An earlier rc.3 build from
-`44e4458` passed the same probes before the verifier fixes landed.
+commit `9f9dcdc` (clean tree, `dirty: false`; the wizard-stabilization
+pass, the independent re-verification fixes and the final re-verifier
+P3 cleanups), ad-hoc signed (unsigned release), macOS arm64,
+2026-07-28. Earlier rc.3 builds from `44e4458` and `38d00d1` passed
+the same probes at their respective states.
 
 Correction recorded from the rc.2 matrix: rc.2's probe 3 was **not
 actually passable on a true first boot** — nothing wrote
@@ -28,7 +29,7 @@ now cleans up its temp homes on FAIL paths and isolates the
 | 2 | Self-contained offline probe (`--capabilities`) from the mounted app, isolated data dir | PASS | manifest answered from the mount |
 | 3 | Clean first boot with an isolated `PP_DATA_DIR`: app stays alive, JS↔Python bridge comes up (boot() → `welcome_state` → eagerly persisted `onboarding_state.json` observed), nothing written into the read-only bundle | PASS | state file observed in the temp home within the 30 s window |
 | 4 | Zero open network sockets during first boot | PASS | `lsof -a -p <pid> -i` = 0 rows |
-| 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.3 @ 38d00d151315 dirty=False` |
+| 5 | Bundle identity: `build_info.json` carries commit/date/version/dirty/package | PASS | `v1.0.0-rc.3 @ 9f9dcdcd66df dirty=False` |
 | 6 | Bundle contents: `trust_manifest.json`, `PERMISSIONS.md`, `PRIVACY.md`, `SECURITY.md`, `TRUST_CENTER.md` present; no personal files (`prospecting_secrets.json`, `coach_history.json`, `run_history.json`, access-code files) | PASS | find over the mounted bundle |
 | 7 | Packaged welcome-preference lifecycle (now SCRIPTED as the probe script's step [5]): first boot writes the positive key `SHOW_WELCOME_EVERY_LAUNCH: true` (default ON) and no legacy `WELCOME_SEEN`; a second packaged launch against the same home honours and preserves an OFF preference (`onboarding.log`: `show=False pref=False`) | PASS | two real launches of the built app against one isolated home, driven by `packaged_acceptance.command` |
 | 8 | Wizard diagnostics log (`onboarding.log`) written in the isolated home, operation lines with status and no secrets (asserted by the scripted step [5]) | PASS | log inspected after both boots |
