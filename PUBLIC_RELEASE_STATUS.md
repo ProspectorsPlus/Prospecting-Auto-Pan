@@ -83,6 +83,25 @@ Factual working state for the public-release pass. Updated as work lands.
 - Apple signing/notarization credentials (unsigned RC otherwise).
 - Push → run Windows CI on a real runner.
 
+## 1.0.0-rc.3 — wizard stabilization pass (2026-07-28)
+
+Release-blocker fix pass over the rc.2 wizard, driven by the owner's
+manual test report (stale "Not granted" statuses, non-working input and
+Safe Stop tests, calibration failures, the "show every time" checkbox
+defaulting off and losing its state). Every blocker was reproduced or
+deterministically root-caused (docs/stabilization/REPRODUCTION_REPORT.md,
+docs/stabilization/CALIBRATION_CRASH_REPORT.md), fixed, regression-tested
+(extended onboarding_trust_tests.py) and re-verified against a freshly
+built DMG (docs/trust-and-onboarding/ACCEPTANCE_MATRIX.md — including a
+correction to rc.2's packaged first-boot claim, whose probe criterion
+could never pass on a true first boot). Details:
+docs/stabilization/STABILIZATION_REPORT.md and the CHANGELOG 1.0.0-rc.3
+entry. Owner actions carried forward unchanged (license, repo URL, webhook
+revocation, signing, Windows CI on a real runner) — signing gained urgency:
+ad-hoc rebuilds are the confirmed root cause of the "enabled in System
+Settings but Not granted in the app" trap, which rc.3 now explains in-app
+but only a Developer ID identity can remove.
+
 ## 1.0.0-rc.2 — trust-and-onboarding pass (2026-07)
 
 Version bumped to 1.0.0-rc.2 (all three copies in agreement). Shipped:
