@@ -242,11 +242,16 @@ def t_state_machine():
             "corrupt state file recovers safely")
     with tempfile.TemporaryDirectory() as d:
         ob = lo.Onboarding(d, "mac", version="t")
+        chk(os.path.isfile(os.path.join(d, "onboarding_state.json")),
+            "state file is persisted eagerly on first construction "
+            "(bridge-liveness marker + honest migrate guard)")
         chk(ob.migrate_legacy(True) and ob.finished(),
             "legacy WELCOME_SEEN migrates straight to FINISHED")
         ob4 = lo.Onboarding(d, "mac", version="t")
         chk(not ob4.migrate_legacy(True),
             "migration is one-time (idempotent)")
+        chk(not lo.Onboarding(d, "mac", version="t").migrate_legacy(True),
+            "a state file on disk at construction always blocks migration")
 
 
 # --------------------------------------------------------------------------
@@ -331,11 +336,64 @@ def t_ui_markers():
                 ('id="ptrust"', "Trust Center panel"),
                 ('id="tmtrust"', "Trust Center menu item"),
                 ("perm:", "launch permission-gate result handling"),
+                ("cal:", "launch calibration-gate result handling"),
                 ('role="tablist" aria-label="Platform"', "platform tabs"),
                 ("__hotkeyResult", "safe-stop test callback"),
+                ("__keyTestResult", "input-test worker-result callback"),
                 ("webhook_payload_preview", "payload preview"),
-                ("trust_view_code", "view-code plumbing")):
+                ("trust_view_code", "view-code plumbing"),
+                ('id="welAgain" checked', "welcome checkbox defaults ON"),
+                ("welcome_set_always_show", "immediate checkbox persistence"),
+                ('id="trustRefresh"', "manual refresh button"),
+                ('data-act="recheck"', "check-again affordance"),
+                ('data-act="relaunch"', "restart-to-apply affordance"),
+                ("requires_restart", "restart-required state plumbing"),
+                ("updateCards", "non-destructive status refresh"),
+                ("document.hasFocus()", "focus-transition refresh watcher"),
+                ("log_js_error", "JS error forwarding to the local log")):
             chk(marker in t, "%s has %s" % (rel, why))
+        # every config rewrite must be atomic: the raw truncate-write
+        # pattern is banned from the app copies
+        chk('with open(CONFIG_FILE, "w")' not in t,
+            "%s has no non-atomic CONFIG_FILE writes" % rel)
+
+
+# --------------------------------------------------------------------------
+# 8. Engine calibration write semantics (stabilization pass)
+# --------------------------------------------------------------------------
+
+def t_engine_cal_writes():
+    print("[engine calibration writes]")
+    import importlib
+    sys.path.insert(0, ROOT)
+    from prospector_engine import sensing as sn
+    from prospector_engine import settings as st
+    from prospector_engine import engine as eng
+    with tempfile.TemporaryDirectory() as d:
+        cfg = os.path.join(d, "cfg.json")
+        # atomic_write keeps a live file at ALL times: .bak is a COPY of
+        # the previous content, never a rename-away of the live config
+        st.atomic_write(cfg, {"A": 1})
+        st.atomic_write(cfg, {"A": 2})
+        chk(json.load(open(cfg))["A"] == 2, "atomic_write lands new doc")
+        chk(json.load(open(cfg + ".bak"))["A"] == 1,
+            "rolling .bak holds the previous content")
+        # optional-only interactive save must NOT flip AUTO_CALIBRATE...
+        s = sn.Sensing(eng, sn.FileStore(cfg))
+        st.atomic_write(cfg, {"AUTO_CALIBRATE": True})
+        s.save_pixels({"DIG_TRIGGER_PIXEL": [500, 400]})
+        doc = json.load(open(cfg))
+        chk(doc.get("AUTO_CALIBRATE") is True,
+            "optional-only save keeps AUTO_CALIBRATE on")
+        chk(all(k in (doc.get("PIXEL_RATIOS") or {})
+                for k in sn.AUTHORITATIVE_PIXEL_KEYS),
+            "optional-only save seeds required ratios (no starved auto)")
+        # ...while a core save still flips it (the pinned contract)
+        s.save_pixels({"CAP_FULL_PIXEL": [900, 760],
+                       "CAP_LEFT_PIXEL": [500, 760]})
+        doc = json.load(open(cfg))
+        chk(doc.get("AUTO_CALIBRATE") is False,
+            "core save still forces AUTO_CALIBRATE off (contract kept)")
 
 
 # --------------------------------------------------------------------------
@@ -480,12 +538,216 @@ def child_migration_bridge():
     st = api.onboarding_state()
     assert st["state"] == "FINISHED" and \
         st.get("migrated_from") == "WELCOME_SEEN"
+    # legacy inverse key migrated to the one positive key and removed
+    assert w["show_every_launch"] is False, w
+    cfg = json.load(open(os.path.join(home, "prospecting_config.json")))
+    assert cfg.get("SHOW_WELCOME_EVERY_LAUNCH") is False, cfg
+    assert "WELCOME_SEEN" not in cfg, cfg
     print("child_migration_bridge ok")
+
+
+def child_welcome_pref():
+    """The 'show at every launch' preference: default ON, immediate
+    persistence, restart survival, corrupt-config recovery, and the
+    welcome_done-first ordering that used to mark fresh installs
+    FINISHED (the migrate_legacy self-trip)."""
+    _deny_network()
+    sys.path.insert(0, ROOT)
+    home = os.environ["PP_DATA_DIR"]
+    import prospecting_app as app
+    api = app.Api()
+    # ordering: welcome_done on a FRESH install, before any welcome_state
+    r = api.welcome_done()
+    assert r["ok"], r
+    st = api.onboarding_state()
+    assert st["state"] == "WELCOME_COMPLETE", \
+        "self-trip: fresh install must never migrate to FINISHED (%s)" % st
+    # default ON
+    w = api.welcome_state()
+    assert w["show"] is True and w["show_every_launch"] is True, w
+    # toggle OFF persists immediately and atomically
+    r = api.welcome_set_always_show(False)
+    assert r["ok"] and r["value"] is False, r
+    cfg = json.load(open(app.CONFIG_FILE))
+    assert cfg["SHOW_WELCOME_EVERY_LAUNCH"] is False
+    # simulated restart: a NEW Api against the same home reads it back
+    w2 = app.Api().welcome_state()
+    assert w2["show"] is False and w2["show_every_launch"] is False, w2
+    # toggle back ON persists too
+    assert api.welcome_set_always_show(True)["ok"]
+    assert app.Api().welcome_state()["show_every_launch"] is True
+    # rapid toggling ends on the last value
+    for v in (False, True, False, True, False):
+        api.welcome_set_always_show(v)
+    assert app.Api().welcome_state()["show_every_launch"] is False
+    # corrupt config -> defaults ON again (never crashes)
+    with open(app.CONFIG_FILE, "w") as f:
+        f.write("{corrupt json")
+    w3 = app.Api().welcome_state()
+    assert w3["show_every_launch"] is True, w3
+    # wizard reset routes back through the welcome gate (resume state)
+    api.welcome_set_always_show(False)
+    api.onboarding_reset()
+    w4 = api.welcome_state()
+    assert w4["setup_needed"] is True and w4["resume"] == "NOT_STARTED", w4
+    print("child_welcome_pref ok")
+
+
+def child_trust_model():
+    """The authoritative capability state model: serializable snapshots,
+    monotonic seq, requested tracking, restart inference from the launch
+    preflight snapshot + session tests, and hotkey single-flight."""
+    _deny_network()
+    sys.path.insert(0, ROOT)
+    import prospecting_app as app
+    import lite_trust
+    api = app.Api()
+    ts = api.trust_state()
+    json.dumps(ts)                       # fully serializable
+    assert ts["seq"] >= 1 and ts["checked_at"] > 0
+    caps = {c["id"]: c for c in ts["capabilities"]}
+    for cid in ("screen_detection", "input_control", "stop_hotkeys"):
+        live = caps[cid]["live"]
+        assert "requested" in live and "test" in live, live
+        if ts["platform"] == "mac":
+            assert "requires_restart" in live, live
+    ts2 = api.trust_state()
+    assert ts2["seq"] > ts["seq"], "seq is monotonic"
+    # requested: recorded from open_settings without any OS request
+    real_open = lite_trust.open_settings
+    lite_trust.open_settings = lambda cid: {"ok": True}
+    try:
+        api.trust_open_settings("screen_detection")
+    finally:
+        lite_trust.open_settings = real_open
+    live = {c["id"]: c for c in api.trust_state()["capabilities"]}[
+        "screen_detection"]["live"]
+    assert live["requested"] is True, live
+    # restart inference: launch snapshot False + live True -> restart
+    # required until a real test passes (mac semantics, injected states)
+    if lite_trust.platform_key() == "mac":
+        real_pre = lite_trust._mac_preflights
+        real_launch = lite_trust._LAUNCH_PREFLIGHTS
+        lite_trust._LAUNCH_PREFLIGHTS = {"screen_detection": False,
+                                         "input_control": True,
+                                         "stop_hotkeys": True}
+        lite_trust._mac_preflights = lambda: {"screen_detection": True,
+                                              "input_control": True,
+                                              "stop_hotkeys": True}
+        try:
+            live = {c["id"]: c
+                    for c in api.trust_state()["capabilities"]}[
+                        "screen_detection"]["live"]
+            assert live["status"] == "granted" and \
+                live["requires_restart"] is True, live
+            # a PASSING real test clears the restart flag
+            api._record_test("screen_detection", True, "capture ok")
+            live = {c["id"]: c
+                    for c in api.trust_state()["capabilities"]}[
+                        "screen_detection"]["live"]
+            assert live["requires_restart"] is False, live
+            # granted + FAILED test -> restart required again
+            api._record_test("screen_detection", False, "blank frame")
+            live = {c["id"]: c
+                    for c in api.trust_state()["capabilities"]}[
+                        "screen_detection"]["live"]
+            assert live["requires_restart"] is True, live
+        finally:
+            lite_trust._mac_preflights = real_pre
+            lite_trust._LAUNCH_PREFLIGHTS = real_launch
+    # hotkey single-flight: second arm while armed is refused, and the
+    # armed flag always clears afterwards
+    real_await = lite_trust.await_stop_hotkey
+    import time as _t
+    lite_trust.await_stop_hotkey = (
+        lambda timeout=8: (_t.sleep(0.4), {"ok": True, "heard": None})[1])
+    try:
+        r1 = api.trust_test_hotkey(1, 1)
+        r2 = api.trust_test_hotkey(1, 2)
+        assert r1["armed"] is True, r1
+        assert r2.get("busy") is True and r2["error_code"], r2
+        _t.sleep(0.8)
+        assert api._hotkey_armed is False, "armed flag must clear"
+    finally:
+        lite_trust.await_stop_hotkey = real_await
+    # welcome_state/trust bridge results carry no raw exception ever:
+    # every trust_* entry point returns a dict even when the layer throws
+    real_req = lite_trust.request_permission
+    lite_trust.request_permission = lambda cid: (_ for _ in ()).throw(
+        RuntimeError("boom"))
+    try:
+        r = api.trust_request("screen_detection")
+        assert r["ok"] is False and "boom" in r["error"], r
+    finally:
+        lite_trust.request_permission = real_req
+    print("child_trust_model ok")
+
+
+def child_cal_guards():
+    """Calibration no-crash guards: overlay-missing is an honest error,
+    a not-found Roblox window is never reported found, the launch
+    calibration gate fires, and the empty sample explains itself."""
+    _deny_network()
+    sys.path.insert(0, ROOT)
+    import prospecting_app as app
+    import lite_trust
+    api = app.Api()
+    # overlay window absent (module global is None outside main())
+    r = api.start_overlay_calibrate("PAN_PIX")
+    assert r.get("error") and r.get("error_code") == "PP-CAL-OVERLAY", r
+    r = api.start_overlay_region("MONEY")
+    assert r.get("error"), r
+    r = api.wizard_propose("CAP")
+    assert r.get("error") and r.get("error_code") == "PP-CAL-OVERLAY", r
+    r = api.start_cue_mask_capture("PAN")
+    assert r.get("ok") is False and r.get("error"), r
+    # detect_window returning {found: False, error: ...} must NOT read as
+    # found (bool of a non-empty dict) anywhere
+    s = app._sensing()
+    if s is not None:
+        real_dw = s.detect_window
+        s.detect_window = lambda: {"found": False, "error": "not open"}
+        try:
+            reg = api.calibration_registry()
+            rb = {i["id"]: i for i in reg["items"]}["roblox_window"]
+            assert rb["live"]["status"] == "unset", rb["live"]
+            rc = api.readiness_check()
+            rob = {i["id"]: i for i in rc["items"]}["roblox"]
+            assert rob["status"] == "info", rob
+        finally:
+            s.detect_window = real_dw
+    # launch calibration gate: auto off + no values -> cal: refusal
+    # (permission gate mocked all-granted so we reach the cal gate)
+    real_caps = lite_trust.capability_statuses
+    lite_trust.capability_statuses = lambda *a, **k: {
+        "screen_detection": {"status": "granted", "detail": ""},
+        "input_control": {"status": "granted", "detail": ""},
+        "stop_hotkeys": {"status": "granted", "detail": ""}}
+    try:
+        with open(app.CONFIG_FILE, "w") as f:
+            json.dump({"AUTO_CALIBRATE": False}, f)
+        r = api.launch(None)
+        assert isinstance(r, str) and r.startswith("cal:"), r
+        assert "cap_bar" in r, r
+    finally:
+        lite_trust.capability_statuses = real_caps
+    # welcome/save-failure honesty: a read-only data dir reports the
+    # failed write instead of pretending it saved
+    os.chmod(app.DATA_DIR, 0o500)
+    try:
+        r = api.welcome_set_always_show(False)
+        assert r["ok"] is False and r["error"], r
+    finally:
+        os.chmod(app.DATA_DIR, 0o700)
+    print("child_cal_guards ok")
 
 
 CHILDREN = {"api_flow": child_api_flow,
             "launch_gate": child_launch_gate,
-            "migration_bridge": child_migration_bridge}
+            "migration_bridge": child_migration_bridge,
+            "welcome_pref": child_welcome_pref,
+            "trust_model": child_trust_model,
+            "cal_guards": child_cal_guards}
 
 
 def main():
@@ -499,6 +761,7 @@ def main():
     t_state_machine()
     t_cal_registry()
     t_ui_markers()
+    t_engine_cal_writes()
     print("[runtime, network denied]")
     for name in CHILDREN:
         run_child(name)

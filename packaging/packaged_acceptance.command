@@ -29,19 +29,28 @@ echo "==> Acceptance probes for $DMG"
 
 MNT="$(mktemp -d /tmp/pplite_mnt.XXXXXX)"
 HOMEDIR="$(mktemp -d /tmp/pplite_home.XXXXXX)"
+CAPSHOME="$(mktemp -d /tmp/pplite_caps.XXXXXX)"
 hdiutil attach -readonly -nobrowse -mountpoint "$MNT" "$DMG" >/dev/null
-trap 'hdiutil detach "$MNT" >/dev/null 2>&1 || true' EXIT
+# cleanup runs on EVERY exit path (FAIL exits used to leak the temp homes
+# and the mountpoint dir)
+trap 'hdiutil detach "$MNT" >/dev/null 2>&1 || true;
+      rmdir "$MNT" >/dev/null 2>&1 || true;
+      rm -rf "$HOMEDIR" "$CAPSHOME" >/dev/null 2>&1 || true' EXIT
 
 echo "==> [1] mounted read-only at $MNT"
 
-OUT="$("$MNT/$APP/$BIN" --capabilities)"
+# PP_DATA_DIR keeps even this pure query probe out of the real user data
+# dir (the app also self-isolates --capabilities runs; belt and braces)
+OUT="$(PP_DATA_DIR="$CAPSHOME" "$MNT/$APP/$BIN" --capabilities)"
 [ "${#OUT}" -gt 10 ] || { echo "FAIL: --capabilities probe"; exit 1; }
 echo "==> [2] --capabilities answered (${#OUT} bytes) from the mounted app"
 
 PP_DATA_DIR="$HOMEDIR" PP_NO_HUD=1 "$MNT/$APP/$BIN" &
 PID=$!
 # poll up to 30 s: the first launch of a freshly-signed binary from a
-# read-only image can take a while (XProtect scan + WebKit first paint)
+# read-only image can take a while (XProtect scan + WebKit first paint).
+# The marker is real bridge liveness: boot() -> welcome_state() -> the
+# onboarding state machine persists its state file eagerly on first use.
 for _i in $(seq 1 30); do
   [ -f "$HOMEDIR/onboarding_state.json" ] && break
   if ! kill -0 "$PID" 2>/dev/null; then
@@ -104,5 +113,4 @@ print("==> [4] build identity fields present: v%s @ %s dirty=%s"
 PY
 [ "$ok" = "1" ] || exit 1
 echo "==> [4] bundle contents OK"
-rm -rf "$HOMEDIR"
 echo "==> ACCEPTANCE PROBES: ALL PASS"

@@ -225,8 +225,10 @@ def scan_gate(files):
             chk(k in legacy, "%s: legacy key %s is scrubbed" % (rel, k))
         # privacy contract: packaged builds keep the Coach key in the user
         # DATA dir (one deletable folder), never inside the install dir
-        chk("SECRETS_FILE = os.path.join(DATA_DIR if FROZEN else HERE," in t,
-            "%s: secrets file lives in the data dir when frozen" % rel)
+        chk("SECRETS_FILE = os.path.join(DATA_DIR if FROZEN or "
+            "os.environ.get(\"PP_DATA_DIR\")" in t,
+            "%s: secrets file lives in the data dir when frozen or "
+            "explicitly homed" % rel)
 
 
 # --------------------------------------------------------------------------
@@ -286,7 +288,8 @@ def scan_default_config():
     chk(not cfg.get("WEBHOOK_URL"), "no webhook URL shipped")
     chk(not cfg.get("WEBHOOK_SECRET"), "no webhook secret shipped")
     for k in ("SYNC_URL", "ACCESS_OK", "ACCESS_HASH", "ACCESS_MACHINE",
-              "MACHINE_SALT", "COACH_API_KEY", "WELCOME_SEEN"):
+              "MACHINE_SALT", "COACH_API_KEY", "WELCOME_SEEN",
+              "SHOW_WELCOME_EVERY_LAUNCH"):
         chk(k not in cfg, "default config has no %s" % k)
 
 
@@ -349,11 +352,13 @@ def child_app_offline():
     api = app.Api()
     st = api.welcome_state()
     assert st["show"] is True, st
+    assert st["show_every_launch"] is True, st   # default ON for a new user
     info = api.app_info()
     assert info["name"] == "Prospector Lite" and info["version"], info
     api.welcome_done(False)
     st2 = api.welcome_state()
     assert st2["show"] is False, st2
+    assert st2["show_every_launch"] is False, st2
     # webhook: refused without URL, http:// rejected, https:// accepted
     r = api.test_webhook()
     assert not r.get("ok"), r
@@ -367,9 +372,10 @@ def child_app_offline():
     # doc opener is whitelisted
     assert api.open_doc("../etc/passwd") is False
     assert api.open_external("") is False        # no PROJECT_URL -> no-op
-    # nothing was written outside the temp home
+    # nothing was written outside the temp home; one positive welcome key
     cfg = json.load(open(os.path.join(home, "prospecting_config.json")))
-    assert cfg.get("WELCOME_SEEN") is True
+    assert cfg.get("SHOW_WELCOME_EVERY_LAUNCH") is False, cfg
+    assert "WELCOME_SEEN" not in cfg, "legacy inverse key must not persist"
     print("CHILD-OK")
 
 

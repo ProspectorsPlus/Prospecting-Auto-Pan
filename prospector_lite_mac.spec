@@ -50,8 +50,13 @@ if os.path.isdir("assets/onboarding/calibration"):
 hiddenimports += [
     "prospecting_ui", "prospecting_assistant", "mss.darwin",
     "lite_trust", "lite_onboarding",
-    # pyobjc frameworks pywebview + the engine touch at runtime
+    # pyobjc frameworks pywebview + the engine touch at runtime.
+    # ApplicationServices/HIServices carry AXIsProcessTrusted* (the
+    # Accessibility preflight); they were previously bundled only via
+    # modulegraph's scan of lite_trust's function-level imports -- listed
+    # explicitly so a refactor to dynamic import can not drop them.
     "objc", "AppKit", "Foundation", "WebKit", "Quartz", "CoreFoundation",
+    "ApplicationServices", "HIServices",
     # the shared engine package (prospecting_old.py shim imports it via runpy)
     "prospector_engine", "prospector_engine.client",
     "prospector_engine.protocol", "prospector_engine.sensing",
