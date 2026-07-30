@@ -1,22 +1,25 @@
 # Final visible-onboarding pass — acceptance matrix (1.0.0-rc.4)
 
-Build under test (final, after the independent-verification fix round):
+Build under test (final, after the independent-verification fix round and
+its re-verification):
 `dist/ProspectorLite-1.0.0-rc.4-macos-arm64.dmg`
-(sha256 `a641abc4f64611d7746a7012f24008075d3258d2680bedbd9773298ccc7bb9a9`),
+(sha256 `e7831ffa114c6b3c1c46aeda94b28a6aea9680beea90d75176a5b5af52e635f7`),
 built by `./build_dmg.command` from commit
-`e0501341114c2ffddfc438f53b2913217aece8a2` with `dirty: false`
+`88cab248b3a630572d5907eb1f0970b6a37cc713` with `dirty: false`
 (`build/build_info.json` and the bundled copy agree). The same DMG (byte
 copy) is in `release/public-candidate/` with manifest + checksums.
 
 The PACKAGED-VISUAL journey below was walked against the FIRST rc.4 build
-(commit 906a58b, sha256 d84c1d2d…); the fix round (906a58b → e050134)
-changed the deferred-refresh guard, tutorial flag plumbing, permission
-button disabling, readiness cue-row derivation and copy/doc wording — each
-covered by the SCRIPTED suites re-run green against e050134, and the
-packaged probes (bridge, offline, identity, welcome lifecycle) were re-run
-against the final DMG (`ACCEPTANCE PROBES: ALL PASS`,
-`v1.0.0-rc.4 @ e0501341114c dirty=False`). The independent verification
-round and its outcomes are recorded in IMPLEMENTATION_REPORT.md.
+(commit 906a58b, sha256 d84c1d2d…); the verification fix round
+(906a58b → e050134, re-verified independently with no unresolved P0/P1)
+and the final cosmetic P3 commit (→ 88cab24) changed the deferred-refresh
+guard, tutorial flag plumbing, permission button disabling, readiness
+cue-row derivation and copy/doc wording — each covered by the SCRIPTED
+suites re-run green at every step, and the packaged probes (bridge,
+offline, identity, welcome lifecycle) were re-run against the final DMG
+(`ACCEPTANCE PROBES: ALL PASS`, `v1.0.0-rc.4 @ 88cab248b3a6
+dirty=False`). The independent verification round, its re-verification
+and their outcomes are recorded in IMPLEMENTATION_REPORT.md.
 
 Legend: **SCRIPTED** = asserted by a committed, re-runnable suite;
 **PACKAGED-PROBE** = asserted against the mounted DMG by
