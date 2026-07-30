@@ -68,6 +68,15 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $out.Length -lt 10) { Write-Error "capabilities probe failed"; exit 1 }
           Write-Output "smoke ok"
 
+      # First automated end-to-end acceptance of the frozen build (version
+      # identity, isolated --capabilities, bounded first boot, AppData
+      # convention, bundle-content scan, static DPI check). The script
+      # refuses elevated shells and prints the manual DPI checklist; it has
+      # never run on real Windows before this workflow does it.
+      - name: Acceptance probes (windows_acceptance.ps1)
+        shell: pwsh
+        run: pwsh -File ../packaging/windows_acceptance.ps1 "dist\Prospector Lite"
+
       # Authenticode signing readiness: runs ONLY when the repository has the
       # WINDOWS_CERT_PFX_B64 + WINDOWS_CERT_PASSWORD secrets configured. No
       # certificate is committed; unsigned builds are produced (and clearly

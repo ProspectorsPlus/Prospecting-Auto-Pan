@@ -4,7 +4,7 @@ Three ways to run it: from source, as a packaged macOS app, or as a packaged Win
 
 ## Prerequisites
 
-- **Python 3.11 or newer** (3.13 is what development is tested on; the Windows CI build uses 3.11).
+- **Python 3.11 or newer** (3.13 is what development is tested on; the Windows CI build uses 3.12).
 - Runtime dependencies (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for versions/licenses):
   - All platforms: `pywebview`, `mss`, `numpy`, `pillow`, `pynput` (Safe Stop/toggle hotkey listener + opt-in Studio recorder), `certifi` (TLS trust-store fallback so certificate verification never has to be disabled)
   - macOS: `pyobjc` (Quartz/Cocoa bindings)
@@ -46,7 +46,7 @@ python -m PyInstaller --noconfirm prospecting.spec
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 ```
 
-CI build: `.github/workflows/build-windows.yml` runs the same steps on a real GitHub Actions Windows runner (Python 3.11, Chocolatey-installed Inno Setup) on version tags, so no local Windows PC is required. The pipeline scans the packaged output for forbidden endpoint/brand strings and produces checksums and a CycloneDX SBOM — see [RELEASING.md](RELEASING.md). Honest caveat: the Windows runtime has not been executed by hand in this release pass; the CI workflows are prepared but unverified on real hardware.
+CI build: `.github/workflows/build-windows.yml` runs the same steps on a real GitHub Actions Windows runner (Python 3.12, Chocolatey-installed Inno Setup) on version tags, so no local Windows PC is required. The pipeline scans the packaged output for forbidden endpoint/brand strings and produces checksums and a CycloneDX SBOM — see [RELEASING.md](RELEASING.md). Honest caveat: the Windows runtime has not been executed by hand in this release pass; the CI workflows are prepared but unverified on real hardware.
 
 ## macOS package
 

@@ -5,7 +5,9 @@ Run from the repo root. Checks (per tutorial_handoff/02_TOUR_SYSTEM.md §7):
   2. node --check every <script> from all six HTML surfaces (both copies)
   3. exactly 144 unique data-key settings
   4. every tour step's sel/tab/open resolves in the rendered HTML
-  5. lockstep: the edited shared blocks are byte-identical mac <-> windows
+  5. lockstep: the edited shared blocks are byte-identical mac <-> windows,
+     and the verbatim twins (ui/assistant/old/prices) are byte-identical
+     whole files (synced by packaging/sync_windows_app.py)
   6. finds_sim.py -> ALL SCENARIOS PASS   (run separately)
 """
 import os, re, sys, subprocess, tempfile, importlib.util
@@ -184,19 +186,31 @@ for name, a, b in REGIONS:
         for d in list(difflib.unified_diff(sm.splitlines(), sw.splitlines(), lineterm=''))[:12]:
             print('   ', d[:160])
 
-EXTRA = [
-    ('prospecting_ui.py', 'windows/prospecting_ui.py',
-     [('studio-schema', '# PROSPECTOR STUDIO -- the block schema', '\ndef render(')]),
-]
-for mpath, wpath, regs in EXTRA:
-    sm_src = open(mpath, encoding='utf-8').read()
-    sw_src = open(wpath, encoding='utf-8').read()
-    for name, a, b in regs:
-        sm = slice_between(sm_src, a, b, name)
-        sw = slice_between(sw_src, a, b, name)
-        if sm is None or sw is None: continue
-        if sm == sw: ok(f'{name}: identical ({len(sm)} bytes)')
-        else: fail(f'{name}: DIFFERS (mac {len(sm)} vs win {len(sw)} bytes)')
+# [5a] full-file byte parity for the verbatim twins. These files have NO
+# platform differences: packaging/sync_windows_app.py copies them byte-for-
+# byte, so ANY divergence is drift (windows/prospecting_ui.py once silently
+# missed the atomic config-write fix while only its studio-schema region was
+# checked). This supersedes the old studio-schema-region-only ui check.
+print('[5a] verbatim twins byte-identical (root <-> windows)')
+TWINS = ['prospecting_ui.py', 'prospecting_assistant.py',
+         'prospecting_old.py', 'prospecting_prices.json']
+for name in TWINS:
+    sm_b = open(name, 'rb').read()
+    sw_b = open('windows/' + name, 'rb').read()
+    if sm_b == sw_b:
+        ok(f'{name}: byte-identical ({len(sm_b)} bytes)')
+    else:
+        fail(f'{name}: DIFFERS from windows copy (root {len(sm_b)} vs '
+             f'win {len(sw_b)} bytes) -- run '
+             f'python3 packaging/sync_windows_app.py')
+        import difflib
+        try:
+            dm = sm_b.decode('utf-8', 'replace').splitlines()
+            dw = sw_b.decode('utf-8', 'replace').splitlines()
+            for d in list(difflib.unified_diff(dm, dw, lineterm=''))[:12]:
+                print('   ', d[:160])
+        except Exception:
+            pass
 
 # [Phase 04 C7] the engine is single-source: the studio-engine block lives only
 # in prospector_engine/engine.py. The old mac<->win engine-mirror lockstep is

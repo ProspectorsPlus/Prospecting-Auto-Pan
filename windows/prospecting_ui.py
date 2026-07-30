@@ -2424,8 +2424,10 @@ class Handler(BaseHTTPRequestHandler):
             w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
             if w > 20:
                 cur["CAP_BAR_WIDTH"] = w
-        with open(CONFIG_FILE, "w") as f:
+        tmp = CONFIG_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(cur, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
         data = cur
         msg = f"Saved {len(data)} settings ✓"
         if self.path == "/launch":
