@@ -143,3 +143,20 @@ SETTING_REGISTRY.md, PAN_RIGHT_ENDPOINT_REPORT.md, WINDOWS_PARITY.md.
   public repo URL, historical webhook/secret revocation +
   fresh-history decision, signing/notarization credentials, first
   green Windows CI run.
+
+
+## Verification round (appended after the independent verifier)
+
+One fresh-context adversarial verifier executed all six suites, reran
+the rc.5 capacity reproduction against HEAD, wrote four probes of its
+own (engine, host Api, capacity/sensing, jsdom over the real page) and
+byte-flip tested the mirror guard. It reported one P1 (incomplete data
+manifest vs PRIVACY claims), one P2 (deep-link hijack by the
+first-visit tab tour), two P3s (no-op Apply at a pinned bound; stale
+Settings checkboxes) and no P0. All four were fixed in c86ab3c with
+regression tests; the final DMG was rebuilt from that commit and passed
+packaged acceptance end to end. Final artifacts: DMG sha256
+782d428a68da0de5e12310464854fac9110835399e7eb17a3a7bdc513ff8e030,
+source archive sha256
+020f5bd2eb02b338c5c4074eda88ee98576ffccd900da36cd57309fe4c888c06,
+release-manifest at commit c86ab3c.

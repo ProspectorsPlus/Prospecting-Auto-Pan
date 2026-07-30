@@ -220,12 +220,50 @@ never yet executed — no PowerShell on this Mac). New suites in CI:
 capacity_tests.py (51 checks), diagnostics_tests.py (185 checks).
 Version bumped to 1.0.0-rc.6 on all three surfaces; new user docs
 (WELCOME_AND_SETUP, TUTORIAL, DIAGNOSTICS, RECOMMENDATIONS, FAQ) and
-five engineering reports under docs/final-prepublish/. Known honest
-gaps recorded (diagnostics_state.json/tutorial_state.json missing from
-the data manifest; import_calibration drops the save_pixels rejection).
+five engineering reports under docs/final-prepublish/. Gaps found by
+the doc-grounding pass were fixed in the same pass
+(diagnostics_state.json/tutorial_state.json added to the data
+manifest; import_calibration propagates the save_pixels rejection;
+one cap_endpoints error code).
 Owner actions carried forward unchanged (license, repo URL, webhook +
 bot-secret revocation + fresh-history publish, signing/notarization
 credentials, first green Windows CI run).
+
+### Verification round + final rc.6 build (2026-07-30)
+
+An independent fresh-context verifier executed every suite, reran the
+rc.5 capacity reproduction against HEAD (rejected atomically, config
+byte-intact), ran four adversarial probes of its own, and byte-flip
+tested the mirror guard. Findings, all fixed in c86ab3c: P1 — the
+data manifest / Delete-ALL missed onboarding.log(.1),
+coach_history.json and prospecting_calib_log.csv (PRIVACY.md claims
+now true); P2 — a diagnostics deep link to a never-visited section
+tab was yanked away by the first-visit tab tour (deep links now
+suppress it; jsdom regression added); P3 — bound-pinned suggestions
+offered a no-op Apply (now open-only); P3 — Settings-page preference
+checkboxes went stale across surfaces (re-sync on tab open). No P0.
+One more real fix from the integration battery (7ebdcc0): source-run
+identity no longer trusts a stale build_info.json version stamp.
+
+Final build (commit c86ab3c, dirty=false, ad-hoc signed, not
+notarized):
+
+- `ProspectorLite-1.0.0-rc.6-macos-arm64.dmg`
+  sha256 `782d428a68da0de5e12310464854fac9110835399e7eb17a3a7bdc513ff8e030`
+- `prospector-lite-1.0.0-rc.6-source.tar.gz`
+  sha256 `020f5bd2eb02b338c5c4074eda88ee98576ffccd900da36cd57309fe4c888c06`
+
+Packaged acceptance: ALL PASS on this exact DMG (first-boot probe
+window widened to cover cold Gatekeeper verification of a brand-new
+unsigned bundle — measured >45 s cold, 3-5 s warm). Scripted packaged
+journey against the mounted read-only image with isolated data:
+fresh boot routes to welcome; auto-skip on an unfinished install
+routes to main with setup_needed honest; finished + pref-off routes
+to main; finished + pref-on routes to welcome; bundle identity
+1.0.0-rc.6/c86ab3c/dirty=false. Full engine battery green except the
+one pre-existing environment-dependent engine_lite_drive failure
+(headless overlay real-grab; unchanged since rc.3, green in CI).
+No live Roblox session and no Windows runtime execution in this pass.
 
 ## If interrupted, resume with
 ```
