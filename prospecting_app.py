@@ -32,6 +32,10 @@ except ImportError:      # windows/ dev checkout: the modules live one level up
         os.path.dirname(os.path.abspath(__file__)), os.pardir))
     import lite_trust
     import lite_onboarding
+try:
+    import lite_diagnostics
+except Exception:        # diagnostics degrade to "no events", never a crash
+    lite_diagnostics = None
 
 # ---- identity ---------------------------------------------------------------
 # One version source of truth for the app, the packages and the About panel.
@@ -180,6 +184,7 @@ DATA_DIR = _data_dir()
 CONFIG_FILE = os.path.join(DATA_DIR, "prospecting_config.json")
 BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
 TUTORIAL_FILE = os.path.join(DATA_DIR, "tutorial_content.json")        # owner edits
+DIAG_FILE = os.path.join(DATA_DIR, "diagnostics_state.json")  # warnings store
 SCRIPTS_FILE = os.path.join(DATA_DIR, "prospecting_scripts.json")   # Studio scripts
 # Studio-launch cross-window state (both ignored outside PP_STUDIO_LAUNCH):
 #   STATUS_FILE  -- written by THIS app (atomic, seq-numbered): mode, active
@@ -462,6 +467,145 @@ def _read_json(path, fallback):
             return json.load(f)
     except (FileNotFoundError, ValueError, OSError):
         return fallback
+
+
+# ---- diagnostics host store (chunk D2) --------------------------------------
+# DIAG_FILE holds {suppressions, history (last 50 dismiss/suppress records),
+# applied (last 20 apply records for undo)}. The pure rule engine lives in
+# lite_diagnostics; this is only the host-side persistence + badge routing.
+
+def _diag_store_load():
+    d = _read_json(DIAG_FILE, {})
+    if not isinstance(d, dict):
+        d = {}
+    if not isinstance(d.get("suppressions"), dict):
+        d["suppressions"] = {}
+    if not isinstance(d.get("history"), list):
+        d["history"] = []
+    if not isinstance(d.get("applied"), list):
+        d["applied"] = []
+    return d
+
+
+def _diag_store_save(d):
+    """Atomic write (tmp + fsync + os.replace), bounded lists. Never
+    raises."""
+    try:
+        d["history"] = list(d.get("history") or [])[-50:]
+        d["applied"] = list(d.get("applied") or [])[-20:]
+        tmp = DIAG_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, DIAG_FILE)
+        return True
+    except Exception:
+        return False
+
+
+def _diag_badge_tab(ev):
+    """Which sidebar tab owns this event's badge. Permission events own the
+    trust tab; engine-tuning events (cycle-page setting targets, or plain
+    stats/telemetry findings) own the cycle tab; calibration events own the
+    cal tab; launch conflicts point at their own tab. Mirrors the shipped
+    targets (cal red, cycle yellow) and adds the trust badge the old system
+    never had."""
+    if not isinstance(ev, dict):
+        return ""
+    links = [l for l in (ev.get("deep_links") or []) if isinstance(l, dict)]
+    kinds = set(l.get("kind") for l in links)
+    if ev.get("source") == "permissions" or "permission" in kinds:
+        return "trust"
+    for l in links:
+        if l.get("kind") == "setting" and l.get("control") == "cycle":
+            return "cycle"
+    if "calibration" in kinds or ev.get("source") == "calibration":
+        return "cal"
+    if "setting" in kinds or ev.get("source") in ("stats", "events"):
+        return "cycle"
+    for l in links:
+        if l.get("kind") == "tab" and l.get("tab_target"):
+            return l.get("tab_target")
+    return ""
+
+
+def _diag_summarize(events):
+    """{red, yellow, top_red_title, top_yellow_title, tabs:{tab:{red,
+    yellow, top_red_title, top_yellow_title, top_red_id, top_yellow_id}}}.
+    Also annotates each event with its badge_tab. Events arrive sorted by
+    severity desc, so the first hit per bucket is the top one."""
+    red_all, yellow_all, tabs = [], [], {}
+    for ev in events or []:
+        if not isinstance(ev, dict):
+            continue
+        tab = _diag_badge_tab(ev)
+        ev["badge_tab"] = tab
+        sev = ev.get("severity")
+        if sev in ("ERROR", "CRITICAL"):
+            red_all.append(ev)
+        elif sev in ("WARNING", "NOTICE"):
+            yellow_all.append(ev)
+        else:
+            continue
+        if not tab:
+            continue
+        b = tabs.setdefault(tab, {"red": 0, "yellow": 0,
+                                  "top_red_title": "", "top_yellow_title": "",
+                                  "top_red_id": "", "top_yellow_id": ""})
+        if sev in ("ERROR", "CRITICAL"):
+            b["red"] += 1
+            if not b["top_red_id"]:
+                b["top_red_id"] = ev.get("id", "")
+                b["top_red_title"] = ev.get("title", "")
+        else:
+            b["yellow"] += 1
+            if not b["top_yellow_id"]:
+                b["top_yellow_id"] = ev.get("id", "")
+                b["top_yellow_title"] = ev.get("title", "")
+    return {"red": len(red_all), "yellow": len(yellow_all),
+            "top_red_title": red_all[0].get("title", "") if red_all else "",
+            "top_yellow_title": (yellow_all[0].get("title", "")
+                                 if yellow_all else ""),
+            "tabs": tabs}
+
+
+def _diag_blocker_event(cal_status):
+    """Host-synthesized PP-D-CAL-REQUIRED: required calibration items block
+    Start (the same condition launch() enforces). This is what makes the
+    cal badge honest right after 'Mark wizard complete' with missing
+    requirements -- no run telemetry exists yet, so no D1 rule can fire."""
+    if lite_diagnostics is None:
+        return None
+    try:
+        ready, blockers = lite_onboarding.calibration_ready(cal_status or {})
+    except Exception:
+        return None
+    if ready or not blockers:
+        return None
+    names = ", ".join(blockers)
+    rec = lite_diagnostics.make_recommendation(
+        "cal-required-finish",
+        "Finish the required calibration",
+        "Start stays disabled until every required calibration item is "
+        "set; guided calibration walks each one in order.",
+        calibration_targets=list(blockers),
+        expected_effect="Start unblocks once the required items pass.",
+        tradeoff="",
+        verify="The Calibrate tab (or the wizard Readiness Check) reports "
+               "the required items as set.",
+        priority=1)
+    return lite_diagnostics.make_event(
+        "PP-D-CAL-REQUIRED", "ERROR", "calibration",
+        "Required calibration is incomplete",
+        "Start is blocked: required calibration item(s) need attention: "
+        "%s." % names,
+        "calibration_ready reports blocker(s): %s." % names,
+        ["blockers: %s" % names],
+        "high", [rec],
+        ["A brand-new install simply has not calibrated yet -- run the "
+         "guided calibration once."],
+        "faq-advanced-cues", source="calibration")
 
 
 def _tls_context():
@@ -857,6 +1001,19 @@ TOUR_DEFAULTS = {
            "misses</b> means the pan is not emptying, so look at Shake and "
            "drain. <b>Recoveries</b> climbing means it keeps getting wedged, "
            "so check calibration first."},
+  {"id": "main.warnings", "sel": ".side",
+   "title": "The warning system watches for you",
+   "body": "When something looks off, a badge appears on the owning sidebar "
+           "tab: <b>yellow</b> means tuning may be off, <b>red</b> means "
+           "something needs fixing before or during a run (calibration, a "
+           "permission, capacity). The number is how many warnings that tab "
+           "has. <b>Click a badge or a banner</b> to open the warning "
+           "details: what was observed, the most likely cause, and the "
+           "exact settings to review with one-click deep links. <b>Apply "
+           "suggested value</b> makes the recommended change for you and "
+           "<b>Undo</b> reverts it. Every warning also links into the "
+           "<b>FAQ and troubleshooting</b> browser, which you can open any "
+           "time from the ❓ Tutorial menu."},
   {"id": "main.presets", "tab": "run", "sel": "#pv1",
    "title": "Quick presets",
    "body": "One click loads a tuned starting point. <b>v1</b> is a fast "
@@ -2352,6 +2509,17 @@ class Api:
         self._cap_tests = {}            # cap_id -> {status, detail, when}
         self._trust_seq = 0
         self._trust_lock = threading.Lock()
+        # Diagnostics host state (chunk D2): rolling telemetry ctx, the
+        # merged event store (recurrence), session dismissals, the 2 s
+        # debounce cache and the cached window/health probe (populated by
+        # the surfaces that already probe -- never a fresh grab here).
+        self._diag_ctx_events = []      # rolling last-100 safety.event recs
+        self._diag_event_counts = {}    # per-run safety.event type counts
+        self._diag_launch_refusal = None
+        self._diag_prior = []           # merged events (session store)
+        self._diag_dismissed = {}       # code -> True (session dismissals)
+        self._diag_cache = None         # (when, result)
+        self._diag_health_cache = None  # {ok, reason, found, when}
         self._hotkey_armed = False
         self._welcome_lock = threading.Lock()
         # Prime the launch-time preflight snapshot NOW: if it were first
@@ -3593,6 +3761,13 @@ class Api:
                 found = bool(d.get("found")) if isinstance(d, dict) else None
             except Exception:
                 found = None
+            try:
+                self._diag_health_cache = {
+                    "ok": bool((health or {}).get("ok", True)),
+                    "reason": str((health or {}).get("reason", "")),
+                    "found": found, "when": time.time()}
+            except Exception:
+                pass
         try:
             setup_finished = _onboarding().finished()
         except Exception:
@@ -4094,6 +4269,288 @@ class Api:
             return {"ok": False, "error": "unavailable"}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ---- diagnostics center (chunk D2): warnings, apply/undo, FAQ --------
+
+    def _diag_ctx(self):
+        """Assemble the lite_diagnostics evaluate() ctx from state that
+        already exists in the host: last stats frame, per-run event
+        counts, the rolling telemetry window, calibration status with
+        live health (exactly as readiness computes it), capability
+        statuses, merged config values, mode/build, the cached
+        window-found probe (NEVER a fresh grab here) and the last typed
+        launch refusal."""
+        cfg = load_saved()
+        settings = dict(DEFAULTS)
+        settings.update({k: v for k, v in cfg.items() if k in DEFAULTS})
+        # live health exactly as readiness does (window-rect compare, no
+        # screen grab); window_found only from the cached probe
+        health = {"ok": True, "reason": ""}
+        s = _sensing()
+        if s is not None:
+            try:
+                h = s.health()
+                if isinstance(h, dict):
+                    health = {"ok": bool(h.get("ok", True)),
+                              "reason": str(h.get("reason", ""))}
+            except Exception:
+                pass
+        hc = getattr(self, "_diag_health_cache", None) or {}
+        found = hc.get("found") if isinstance(hc, dict) else None
+        try:
+            setup_finished = _onboarding().finished()
+        except Exception:
+            setup_finished = False
+        try:
+            cal_status = lite_onboarding.calibration_status(
+                cfg, health=health, window_found=found,
+                setup_finished=setup_finished)
+        except Exception:
+            cal_status = {}
+        caps = {}
+        try:
+            for cid, st in (lite_trust.capability_statuses(cfg)
+                            or {}).items():
+                caps[cid] = str((st or {}).get("status", ""))
+        except Exception:
+            pass
+        # a failed session hotkey test is definitive user-visible evidence
+        # (rule N reads 'test_failed'); a definitive not_granted wins
+        t = (self._cap_tests or {}).get("stop_hotkeys")
+        if (t and t.get("status") == "failed"
+                and caps.get("stop_hotkeys") != "not_granted"):
+            caps["stop_hotkeys"] = "test_failed"
+        try:
+            sd = _studio_load()
+            mode = _studio_ui_mode(sd)
+            build_active = bool(sd.get("active"))
+        except Exception:
+            mode, build_active = "classic", False
+        return {
+            "platform": lite_trust.platform_key(),
+            "stats": dict(self._last_stats) if self._last_stats else None,
+            "event_counts": dict(getattr(self, "_diag_event_counts", {})
+                                 or {}),
+            "recent_events": list(getattr(self, "_diag_ctx_events", [])
+                                  or []),
+            "cal_status": cal_status,
+            "cal_health": health,
+            "capabilities": caps,
+            "settings": settings,
+            "mode": mode,
+            "build_active": build_active,
+            "window_found": found,
+            "launch_refusal": getattr(self, "_diag_launch_refusal", None),
+            "run_active": bool(getattr(self, "_run_active", False)),
+        }
+
+    def diagnostics_state(self, force=False):
+        """The warning surface: evaluate the rules over the live ctx,
+        merge with the session store (recurrence/escalation), apply
+        stored suppressions and session dismissals, and summarize for
+        the badges. Debounced: recomputed at most every 2 s."""
+        now = time.time()
+        cached = getattr(self, "_diag_cache", None)
+        if not force and cached and now - cached[0] < 2.0:
+            return cached[1]
+        if lite_diagnostics is None:
+            return {"events": [], "summary": _diag_summarize([]),
+                    "when": int(now)}
+        ctx = self._diag_ctx()
+        try:
+            fresh = lite_diagnostics.evaluate(ctx)
+        except Exception:
+            fresh = []
+        if ctx.get("mode") == "classic":
+            blocker = _diag_blocker_event(ctx.get("cal_status"))
+            if blocker is not None and not any(
+                    e.get("code") == blocker["code"] for e in fresh):
+                fresh.append(blocker)
+        try:
+            merged = lite_diagnostics.merge_events(
+                getattr(self, "_diag_prior", []), fresh, int(now))
+        except Exception:
+            merged = fresh
+        self._diag_prior = merged
+        store = _diag_store_load()
+        try:
+            visible = lite_diagnostics.apply_suppressions(
+                merged, store.get("suppressions"), now)
+        except Exception:
+            visible = list(merged)
+        # session dismissals hide a code while it persists; once the code
+        # clears, the dismissal is forgotten so a recurrence shows again
+        dis = getattr(self, "_diag_dismissed", None)
+        if dis is None:
+            dis = self._diag_dismissed = {}
+        live_codes = set(e.get("code") for e in merged)
+        for code in list(dis):
+            if code not in live_codes:
+                del dis[code]
+        visible = [e for e in visible
+                   if not (e.get("code") in dis
+                           and e.get("dismissible", True))]
+        result = {"events": visible, "summary": _diag_summarize(visible),
+                  "when": int(now)}
+        self._diag_cache = (now, result)
+        return result
+
+    def setting_locator(self):
+        """{key: {control:'cycle'|'tab', tab, section}} from the
+        lite_diagnostics registry -- the JS deep-link layer resolves
+        placement from this, never from text matching."""
+        out = {}
+        if lite_diagnostics is not None:
+            for k, e in (lite_diagnostics.SETTING_REGISTRY or {}).items():
+                out[k] = {"control": e.get("control", "tab"),
+                          "tab": e.get("tab", ""),
+                          "section": e.get("section", "")}
+        return out
+
+    def diag_apply(self, payload):
+        """Apply ONE recommended setting value. Server-side re-validation
+        against the lite_diagnostics registry: non-registry keys and
+        auto_apply-unsafe keys are rejected (PP-DIAG-APPLY); the value is
+        clamped into RANGES. Writes through the SAME single-writer path
+        as save_config, snapshots {key, prev, next} for undo, and
+        refreshes the UI fields. One apply = exactly one key."""
+        key = str((payload or {}).get("key") or "")
+        entry = (lite_diagnostics.SETTING_REGISTRY.get(key)
+                 if lite_diagnostics is not None else None)
+        if not entry or not entry.get("safe_auto_apply") or key not in TYPES:
+            _wlog("diag_apply", cap=key, status="rejected",
+                  code="PP-DIAG-APPLY",
+                  detail="not a registry auto-apply key")
+            return {"ok": False, "error_code": "PP-DIAG-APPLY",
+                    "error": "This setting cannot be applied "
+                             "automatically -- open it instead."}
+        suggested = (payload or {}).get("suggested")
+        if not isinstance(suggested, (int, float)) \
+                or isinstance(suggested, bool):
+            _wlog("diag_apply", cap=key, status="rejected",
+                  code="PP-DIAG-APPLY", detail="non-numeric suggestion")
+            return {"ok": False, "error_code": "PP-DIAG-APPLY",
+                    "error": "The suggested value is not numeric."}
+        clamped = lite_diagnostics.clamp_suggestion(key, suggested)
+        cur = load_saved()
+        prev = cur.get(key, DEFAULTS.get(key))
+        try:
+            n = self.save_config({key: clamped})
+        except OSError as e:
+            _wlog("diag_apply", cap=key, status="error",
+                  code="PP-DIAG-APPLY", detail=str(e))
+            return {"ok": False, "error_code": "PP-DIAG-APPLY",
+                    "error": "Could not save: %s" % e}
+        if not n:
+            return {"ok": False, "error_code": "PP-DIAG-APPLY",
+                    "error": "Nothing was written."}
+        apply_id = "apply-%d" % int(time.time() * 1000)
+        store = _diag_store_load()
+        store["applied"].append({"id": apply_id, "key": key, "prev": prev,
+                                 "next": clamped,
+                                 "when": int(time.time())})
+        _diag_store_save(store)
+        _wlog("diag_apply", cap=key, status="ok",
+              detail="%s -> %s" % (prev, clamped))
+        self._diag_cache = None
+        try:
+            if _window is not None:
+                _window.evaluate_js(
+                    "window.refreshValues && window.refreshValues()")
+        except Exception:
+            pass
+        return {"ok": True, "id": apply_id, "key": key,
+                "prev": prev, "next": clamped}
+
+    def diag_undo(self, apply_id):
+        """Restore the pre-apply value of ONE apply record via the same
+        single-writer path, then drop the record (one level per
+        record)."""
+        store = _diag_store_load()
+        rec = next((r for r in store["applied"]
+                    if isinstance(r, dict) and r.get("id") == apply_id),
+                   None)
+        if rec is None:
+            return {"ok": False, "error": "Unknown apply id."}
+        key = rec.get("key")
+        if key not in TYPES:
+            return {"ok": False, "error": "Unknown setting."}
+        try:
+            self.save_config({key: rec.get("prev")})
+        except OSError as e:
+            _wlog("diag_undo", cap=key, status="error",
+                  code="PP-DIAG-APPLY", detail=str(e))
+            return {"ok": False, "error": "Could not save: %s" % e}
+        store["applied"] = [r for r in store["applied"]
+                            if not (isinstance(r, dict)
+                                    and r.get("id") == apply_id)]
+        _diag_store_save(store)
+        _wlog("diag_undo", cap=key, status="ok",
+              detail="restored %s" % (rec.get("prev"),))
+        self._diag_cache = None
+        try:
+            if _window is not None:
+                _window.evaluate_js(
+                    "window.refreshValues && window.refreshValues()")
+        except Exception:
+            pass
+        return {"ok": True, "key": key, "restored": rec.get("prev")}
+
+    def diag_dismiss(self, event_id):
+        """Hide one event for this session (while its code persists).
+        Recorded in the store history; CRITICAL/dismissible=False events
+        refuse."""
+        ev = next((e for e in getattr(self, "_diag_prior", [])
+                   if e.get("id") == event_id or e.get("code") == event_id),
+                  None)
+        if ev is None:
+            return {"ok": False, "error": "Unknown event."}
+        if not ev.get("dismissible", True):
+            return {"ok": False, "error": "This event cannot be dismissed."}
+        self._diag_dismissed[ev.get("code")] = True
+        store = _diag_store_load()
+        store["history"].append({"code": ev.get("code"),
+                                 "when": int(time.time()),
+                                 "action": "dismissed"})
+        _diag_store_save(store)
+        self._diag_cache = None
+        return {"ok": True}
+
+    def diag_suppress(self, code):
+        """Never show this code again (persisted). CRITICAL events are
+        never suppressible (apply_suppressions enforces it too)."""
+        code = str(code or "")
+        ev = next((e for e in getattr(self, "_diag_prior", [])
+                   if e.get("code") == code), None)
+        if ev is not None and (not ev.get("suppressible", True)
+                               or ev.get("severity") == "CRITICAL"):
+            return {"ok": False,
+                    "error": "This warning cannot be turned off."}
+        store = _diag_store_load()
+        store["suppressions"][code] = {"forever": True, "until": None}
+        store["history"].append({"code": code, "when": int(time.time()),
+                                 "action": "suppressed"})
+        _diag_store_save(store)
+        self._diag_cache = None
+        return {"ok": True}
+
+    def diag_unsuppress_all(self):
+        store = _diag_store_load()
+        store["suppressions"] = {}
+        _diag_store_save(store)
+        self._diag_cache = None
+        return {"ok": True}
+
+    def faq_list(self):
+        return {"entries": (lite_diagnostics.FAQ_ENTRIES
+                            if lite_diagnostics is not None else [])}
+
+    def faq_entry(self, faq_id):
+        for e in (lite_diagnostics.FAQ_ENTRIES
+                  if lite_diagnostics is not None else []):
+            if e.get("id") == faq_id:
+                return e
+        return None
 
     def save_pixels(self, pixels, colors=None, fr=None):
         """Save calibrated pixel coordinates. [Phase 04 C8] The semantic
@@ -4862,11 +5319,26 @@ class Api:
     def calibration_health(self):
         """Compare the LIVE Roblox window to the size it was calibrated at.
         [Phase 04 C8] the check + exact message composition run
-        engine-side (4.15 health)."""
+        engine-side (4.15 health). The result (plus a window lookup --
+        cheap, never a screen grab) feeds the diagnostics ctx cache, so
+        the UI's existing 8 s tick keeps diagnostics_state honest without
+        any probe of its own."""
         s = _sensing()
         if s is None:
             return {"ok": True, "reason": ""}
-        return s.health()
+        h = s.health()
+        try:
+            found = None
+            d = s.detect_window()
+            if isinstance(d, dict):
+                found = bool(d.get("found"))
+            self._diag_health_cache = {
+                "ok": bool((h or {}).get("ok", True)),
+                "reason": str((h or {}).get("reason", "")),
+                "found": found, "when": time.time()}
+        except Exception:
+            pass
+        return h
 
     def set_advanced_cues(self, on):
         cur = load_saved()
@@ -5745,6 +6217,20 @@ class Api:
 
     # ---- run control ----
     def launch(self, data=None, relics=None, enabled=None):
+        """Start gate. Captures the last typed refusal for the diagnostics
+        layer (rule O consumes it), then delegates to _launch_inner --
+        behavior is otherwise byte-identical."""
+        r = self._launch_inner(data, relics, enabled)
+        try:
+            rs = r if isinstance(r, str) else ""
+            self._diag_launch_refusal = (
+                None if rs in ("launched", "already running") else (rs or None))
+            self._diag_cache = None
+        except Exception:
+            pass
+        return r
+
+    def _launch_inner(self, data=None, relics=None, enabled=None):
         if data is not None:
             self.save_config(data)
         if relics is not None:
@@ -6820,6 +7306,8 @@ class Api:
             self._last_stats = None
             self._run_log = []
             self._events = []
+            self._diag_event_counts = {}  # per-run diagnostics counters
+            self._diag_cache = None
             self._phase_samples = {}
             self._phase_last = None
             self._run_active = True
@@ -6865,6 +7353,21 @@ class Api:
             self._events.append(rec)
             if len(self._events) > 2000:
                 self._events = self._events[-2000:]
+            # diagnostics ctx: reuse the record that already flows -- a
+            # rolling window plus per-run type counts (no new traffic)
+            try:
+                ce = getattr(self, "_diag_ctx_events", None)
+                if ce is None:
+                    ce = self._diag_ctx_events = []
+                ce.append(rec)
+                if len(ce) > 100:
+                    del ce[:len(ce) - 100]
+                cc = getattr(self, "_diag_event_counts", None)
+                if cc is None:
+                    cc = self._diag_event_counts = {}
+                cc[rec["type"]] = cc.get(rec["type"], 0) + 1
+            except Exception:
+                pass
         elif ev == "run.phase":
             name = d.get("phase", "?")
             _hud_eval("window.hudPhase&&hudPhase(%s)" % json.dumps(name))
@@ -7687,6 +8190,7 @@ def build_html():
         '  <button type="button" id="dettest" class="btn2">Test detection (live)</button>'
         '  <button type="button" id="earntest" class="btn2">Test money/shards read</button>'
         '  <button type="button" id="findtest" class="btn2">Test find pop-up read</button>'
+        '  <button type="button" class="btn2" data-faq-open="">FAQ &amp; troubleshooting</button>'
         '  <div class="detout" id="detout"></div>'
         '  <div class="detout" id="earnout"></div>'
         '  <div class="detout" id="findout"></div>'
@@ -8142,6 +8646,9 @@ def build_html():
         '</div>'
         '<p class="chint" style="margin-top:16px">Press Ctrl+Z to undo a setting '
         'change and Ctrl+Y to redo. Undo covers slider, box and preset changes.</p>'
+        '<p class="chint" style="margin-top:6px">Something behaving oddly? '
+        '<button type="button" class="btn2" data-faq-open="">FAQ &amp; '
+        'troubleshooting</button></p>'
         '<div class="ownercard" id="ownercard">'
         '<h3>Settings ownership</h3>'
         '<p class="chint">Every setting has one owner, so the two macro modes '
@@ -8726,6 +9233,54 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  .mrow{display:flex;gap:9px;justify-content:flex-end}
  .skipopt{margin:0 0 13px}
  .skipopt p{margin:6px 0 0;color:var(--mut);font-size:12px;line-height:1.5}
+ /* ---- diagnostics: warning drawer, rec chip, FAQ browser ---- */
+ #diagdrawer{position:fixed;top:0;right:0;bottom:0;width:min(500px,94vw);z-index:1100;background:var(--bg2);border-left:1px solid var(--line2);box-shadow:-26px 0 70px -18px rgba(0,0,0,.75);display:none;flex-direction:column}
+ #diagdrawer.show{display:flex}
+ .ddhead{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+ .ddhead h3{margin:0;font-size:15px;flex:1}
+ #ddclose{background:none;border:none;color:var(--mut);font-size:16px;cursor:pointer;padding:4px 8px;border-radius:8px}
+ #ddclose:hover{background:var(--panel);color:var(--txt)}
+ #ddlist{border-bottom:1px solid var(--line);max-height:170px;overflow-y:auto;flex-shrink:0}
+ .ddev{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:none;border:none;border-bottom:1px solid var(--line);padding:8px 16px;color:var(--txt);font:inherit;font-size:12.5px;cursor:pointer}
+ .ddev:hover{background:var(--panel)}
+ .ddev.sel{background:var(--panel);box-shadow:inset 3px 0 0 var(--accent)}
+ .ddev .ddevt{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ .ddev .ddevn{color:var(--dim);font-size:11px;flex-shrink:0}
+ #ddbody{flex:1;overflow-y:auto;padding:14px 16px 22px}
+ .ddsec{margin:0 0 14px}
+ .ddsec h4{margin:0 0 5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim)}
+ .ddsec p{margin:0;font-size:12.5px;line-height:1.55;color:var(--txt)}
+ .ddsec ul{margin:4px 0 0;padding-left:18px;font-size:12.5px;line-height:1.55;color:var(--mut)}
+ .ddchip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:800;letter-spacing:.05em}
+ .ddchip.red{background:#e05c5c;color:#fff}
+ .ddchip.yellow{background:#e0b34a;color:#1a1005}
+ .ddchip.info{background:var(--panel);color:var(--mut);border:1px solid var(--line2)}
+ .ddconf{display:inline-flex;align-items:center;border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;background:var(--panel);border:1px solid var(--line2);color:var(--txt)}
+ .ddfirst{background:var(--panel);border:1px solid var(--line2);border-radius:11px;padding:10px 12px}
+ .ddfirst b{display:block;margin-bottom:3px;font-size:13px}
+ .ddrow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 11px;margin:0 0 7px}
+ .ddrow .ddlab{flex:1 1 150px;font-size:12.5px}
+ .ddrow .ddval{font-size:12px;color:var(--mut);white-space:nowrap}
+ .ddrow .ddwhy{flex-basis:100%;font-size:11.5px;color:var(--dim);line-height:1.45}
+ .ddbtns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+ .ddcode{color:var(--dim);font-size:11px;margin-left:auto}
+ #diagrec{position:fixed;z-index:1105;display:none;background:var(--bg2);border:1px solid var(--line2);border-radius:12px;padding:11px 13px;max-width:330px;box-shadow:0 18px 50px -12px rgba(0,0,0,.8);font-size:12.5px;line-height:1.5}
+ #diagrec .drhead{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-weight:700}
+ #diagrec .drx{margin-left:auto;background:none;border:none;color:var(--mut);cursor:pointer;font-size:13px;padding:2px 6px}
+ #diagrec .drbtns{display:flex;gap:8px;margin-top:8px}
+ #faqmodal{position:fixed;inset:0;z-index:1210;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
+ #faqmodal.show{display:flex}
+ .faqbox{background:var(--bg2);border:1px solid var(--line2);border-radius:14px;padding:18px 20px;width:min(640px,92vw);max-height:84vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(0,0,0,.5)}
+ .faqbox h3{margin:0 0 10px;font-size:15px}
+ #faqsearch{width:100%;background:var(--panel);border:1px solid var(--line2);border-radius:9px;color:var(--txt);font:inherit;font-size:13px;padding:8px 11px;margin-bottom:10px}
+ #faqlist,#faqentry{flex:1;overflow-y:auto;min-height:120px}
+ .faqq{display:block;width:100%;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin:0 0 7px;color:var(--txt);font:inherit;font-size:13px;cursor:pointer}
+ .faqq:hover{border-color:var(--line2);background:var(--bg2)}
+ .faqq .fqs{display:block;margin-top:3px;color:var(--dim);font-size:11.5px}
+ #faqentry h4{margin:12px 0 5px;font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim)}
+ #faqentry p,#faqentry li{font-size:12.5px;line-height:1.55;color:var(--txt)}
+ #faqentry ul,#faqentry ol{margin:4px 0 0;padding-left:18px}
+ .faqlinks{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
  /* ---- settings ownership card ---- */
  .ownercard{margin-top:22px;padding:16px 18px;border:1px solid var(--line2);border-radius:12px;background:var(--bg2)}
  .ownercard h3{margin:0 0 6px;font-size:13.5px}
@@ -9455,6 +10010,20 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
     <button type="button" class="tourbtn go" id="tournext">Next</button></div>
    <label class="tournoauto" id="tourNoAutoRow" style="display:none"><input type="checkbox" id="tourNoAuto"> Do not open automatically in future</label></div></div>
  <div id="lightbox" style="display:none"><img id="lightboximg" alt=""></div>
+ <div id="diagdrawer" role="dialog" aria-label="Warning details">
+  <div class="ddhead"><h3 id="ddtitle">Warnings</h3>
+   <button type="button" id="ddclose" aria-label="Close warning details">&#10005;</button></div>
+  <div id="ddlist"></div>
+  <div id="ddbody"></div></div>
+ <div id="diagrec" role="dialog" aria-label="Recommended value"></div>
+ <div id="faqmodal" role="dialog" aria-modal="true" aria-labelledby="faqtitle">
+  <div class="faqbox"><h3 id="faqtitle">FAQ and troubleshooting</h3>
+   <input id="faqsearch" type="text" placeholder="Search questions and symptoms&hellip;" spellcheck="false">
+   <div id="faqlist"></div>
+   <div id="faqentry" style="display:none"></div>
+   <div class="mrow" style="margin-top:12px">
+    <button type="button" class="btn2" id="faqback" style="display:none">&#8592; All questions</button>
+    <button type="button" class="btn2" id="faqclose">Close</button></div></div></div>
 <script>
  let DEF={},V1={},V2={},GEODE={};
  const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
@@ -9672,6 +10241,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      menuEl.innerHTML='<div class="tmhd">Tutorials</div>'+TOUR_LIST.map(function(t){
        return '<button type="button" data-tour="'+t[0]+'">'+t[1]+(seen(t[0])?' <span class="tmdone">seen</span>':'')+'</button>';}).join('')
        +'<div class="tmhd" style="margin-top:4px">App</div>'
+       +'<button type="button" id="tmfaq">FAQ &amp; troubleshooting</button>'
        +'<button type="button" id="tmwelcome">Welcome, privacy &amp; version</button>'
        +'<button type="button" id="tmtrust">Trust Center</button>'
        +'<button type="button" id="tmsetup">Re-run setup wizard</button>';
@@ -9680,6 +10250,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      menuEl.style.right=Math.max(10,window.innerWidth-r.right)+'px';
      menuEl.querySelectorAll('button[data-tour]').forEach(function(b){
        b.onclick=function(){window.startTour(b.getAttribute('data-tour'));};});
+     var fqb=menuEl.querySelector('#tmfaq');
+     if(fqb)fqb.onclick=function(){closeMenu();if(window.openFaq)window.openFaq();};
      var wb=menuEl.querySelector('#tmwelcome');
      if(wb)wb.onclick=function(){if(window.openWelcome)window.openWelcome();};
      var tcb=menuEl.querySelector('#tmtrust');
@@ -10269,39 +10841,358 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    const r=$('#rstate');if(r&&p)r.textContent='paused';
    if(window.scrState&&p)scrState('paused');};
  (function(){try{var ib=document.getElementById('introbox');if(!ib)return;if(localStorage.getItem('pp_intro_hide')==='1')ib.style.display='none';var x=document.getElementById('introx');if(x)x.onclick=()=>{try{localStorage.setItem('pp_intro_hide','1');}catch(e){}ib.style.display='none';};}catch(e){}})();
- function setNavBadge(tabid,level,tip){
-   const el=document.querySelector('.navbadge[data-badge="'+tabid+'"]');if(!el)return;
-   el.className='navbadge'+(level?(' show '+level):'');el.textContent=level?'!':'';el.title=tip||'';}
  function setStageBadge(stage,on){const el=document.getElementById('sb_'+stage);if(!el)return;
    el.className='stagebadge'+(on?' show':'');el.textContent=on?'!':'';
    el.title=on?'Tuning may be off in this stage; see the Cycle warning above.':'';}
  let HEALTH_CAL={ok:true,reason:''};
+ // Banners keep rendering from their probes (and are clickable: they open the
+ // warning drawer). The nav badges are owned EXCLUSIVELY by renderDiagBadges
+ // -- the probes feed the diagnostics ctx Python-side instead of writing
+ // badges here (the old dual-writer race is gone).
  function applyCalBadge(){const bs=document.querySelectorAll('.calbanner');
    const msgs=[];
    if(!HEALTH_CAL.ok)msgs.push('<b>Re-calibration needed.</b> '+HEALTH_CAL.reason);
    if(window.CAP_REVIEW)msgs.push('<b>Capacity calibration needs review.</b> '+(window.__esc?window.__esc(window.CAP_REVIEW):window.CAP_REVIEW));
-   if(msgs.length){setNavBadge('cal','red',(!HEALTH_CAL.ok?HEALTH_CAL.reason:window.CAP_REVIEW));
-     bs.forEach(b=>{b.innerHTML=msgs.join('<br>');b.classList.add('show');});}
+   if(msgs.length){bs.forEach(b=>{b.innerHTML=msgs.join('<br>');b.classList.add('show');});}
    else{bs.forEach(b=>b.classList.remove('show'));}}
  async function checkCalHealth(){try{HEALTH_CAL=await window.pywebview.api.calibration_health()||{ok:true};}catch(_){HEALTH_CAL={ok:true};}
    try{window.CAP_REVIEW=((await window.pywebview.api.cap_bar_review())||{}).detail||'';}catch(_){window.CAP_REVIEW='';}
-   applyCalBadge();}
+   applyCalBadge();
+   if(window.refreshDiagnostics)refreshDiagnostics();}
  function applyHealth(s){
-   const hard=(s&&s.hard_stops>0);
-   if(!HEALTH_CAL.ok){setNavBadge('cal','red',HEALTH_CAL.reason);}
-   else if(hard){setNavBadge('cal','red','Hard stops happened: the Capacity bar RIGHT end pixel is probably mis-set. Re-run Calibrate.');}
-   else{setNavBadge('cal','');}
    const pans=Math.max(1,(s&&s.cycles)||0);
    const cb=document.getElementById('cycbanner');
    const STG=['dig','swalk','glide','shake','land','safety'];
-   if(!s||pans<5){setNavBadge('cycle','');if(cb)cb.classList.remove('show');STG.forEach(st=>setStageBadge(st,false));return;}
+   if(!s||pans<5){if(cb)cb.classList.remove('show');STG.forEach(st=>setStageBadge(st,false));return;}
    const rate=(v)=>(v||0)/pans;var issues=[];var bad={};
    if(rate(s.nudges)>=0.6){issues.push('lots of nudges ('+(s.nudges||0)+'): struggling to reach land, so raise Land settle in the Land stage');bad.land=1;}
    if(rate(s.shake_misses)>=0.4){issues.push('frequent missed shakes ('+(s.shake_misses||0)+'): raise the shake start delay in the Glide stage');bad.glide=1;}
    if(rate(s.recoveries)>=0.5){issues.push('frequent recoveries ('+(s.recoveries||0)+', getting stuck): re-check calibration and ease the Safety nets limits');bad.safety=1;}
-   setNavBadge('cycle', issues.length?'yellow':'', issues.length?('Tuning may be off: '+issues.join('; ')+'. The flagged stages below are marked.'):'');
    STG.forEach(st=>setStageBadge(st,!!bad[st]));
    if(cb){if(issues.length){cb.innerHTML='<b>Tuning may be off.</b> Over your last run: '+issues.join('; ')+'. The flagged stages below are marked yellow.';cb.classList.add('show');}else{cb.classList.remove('show');}}}
+ // ===== diagnostics layer: badges + warning drawer + deep links + FAQ =====
+ (function(){
+   const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+   const api=()=>window.pywebview&&window.pywebview.api;
+   let DIAG={events:[],summary:null};
+   let DD={open:false,sel:null,applied:{}};   // applied: key -> {id,prev}
+   let LOC=null,FAQ=null,_busy=false;
+   const SEVR={INFO:0,NOTICE:1,WARNING:2,ERROR:3,CRITICAL:4};
+   const CONFR={possible:0,medium:1,high:2};
+   const RED=e=>e.severity==='ERROR'||e.severity==='CRITICAL';
+   const CONF_LABEL={high:'High confidence',medium:'Medium confidence',possible:'Possible cause'};
+   window.refreshDiagnostics=async function(force){
+     if(_busy)return;_busy=true;
+     try{const a=api();if(!a||!a.diagnostics_state)return;
+       let r=null;try{r=await a.diagnostics_state(!!force);}catch(e){r=null;}
+       if(!r||!Array.isArray(r.events))return;
+       DIAG=r;renderDiagBadges(r.summary||{});
+       if(DD.open)drawerRender();
+     }finally{_busy=false;}};
+   function renderDiagBadges(summary){
+     document.querySelectorAll('.navbadge').forEach(el=>{el.className='navbadge';el.textContent='';el.title='';el.dataset.top='';});
+     const tabs=(summary&&summary.tabs)||{};
+     Object.keys(tabs).forEach(tab=>{
+       const el=document.querySelector('.navbadge[data-badge="'+tab+'"]');if(!el)return;
+       const b=tabs[tab]||{};
+       if(b.red>0){el.className='navbadge show red';el.textContent=b.red>1?String(b.red):'!';el.title=b.top_red_title||'';el.dataset.top=b.top_red_id||'';}
+       else if(b.yellow>0){el.className='navbadge show yellow';el.textContent=b.yellow>1?String(b.yellow):'!';el.title=b.top_yellow_title||'';el.dataset.top=b.top_yellow_id||'';}});}
+   window.renderDiagBadges=renderDiagBadges;
+   // badge clicks open the drawer at that tab's top event; the tab must NOT switch
+   document.querySelectorAll('.navbadge').forEach(el=>{
+     el.style.cursor='pointer';
+     el.addEventListener('click',ev=>{
+       if(!el.classList.contains('show'))return;
+       ev.stopPropagation();ev.preventDefault();
+       openDiagDrawer(el.dataset.top||null);});});
+   // banners become clickable: open the drawer at their tab's top event
+   function bannerTop(tab){const t=((DIAG.summary||{}).tabs||{})[tab]||{};return t.top_red_id||t.top_yellow_id||null;}
+   ['calbanner','calbanner2'].forEach(id=>{const b=document.getElementById(id);if(!b)return;
+     b.style.cursor='pointer';b.setAttribute('role','button');
+     b.addEventListener('click',()=>openDiagDrawer(bannerTop('cal')));});
+   (function(){const b=document.getElementById('cycbanner');if(!b)return;
+     b.style.cursor='pointer';b.setAttribute('role','button');
+     b.addEventListener('click',e=>{e.stopPropagation();openDiagDrawer(bannerTop('cycle'));});})();
+   // ---- drawer ----
+   window.openDiagDrawer=async function(eventId){
+     await window.refreshDiagnostics(true);
+     const d=document.getElementById('diagdrawer');if(!d)return;
+     DD.open=true;d.classList.add('show');
+     const evs=DIAG.events||[];
+     DD.sel=(eventId&&evs.some(e=>e.id===eventId))?eventId:(evs[0]?evs[0].id:null);
+     drawerRender();};
+   function closeDrawer(){DD.open=false;const d=document.getElementById('diagdrawer');if(d)d.classList.remove('show');recHide();}
+   const dc=document.getElementById('ddclose');if(dc)dc.onclick=closeDrawer;
+   document.addEventListener('keydown',e=>{
+     if(e.key!=='Escape')return;
+     const fm=document.getElementById('faqmodal');
+     if(fm&&fm.classList.contains('show')){fm.classList.remove('show');return;}
+     const dr=document.getElementById('diagrec');
+     if(dr&&dr.style.display==='block'){recHide();return;}
+     if(DD.open)closeDrawer();});
+   function sortForList(evs){return evs.slice().sort((a,b)=>
+     (SEVR[b.severity]||0)-(SEVR[a.severity]||0)
+     ||(b.recurrence_count||0)-(a.recurrence_count||0)
+     ||(CONFR[b.confidence]||0)-(CONFR[a.confidence]||0));}
+   function drawerRender(){
+     const list=document.getElementById('ddlist'),body=document.getElementById('ddbody');
+     if(!list||!body)return;
+     const evs=sortForList(DIAG.events||[]);
+     if(!evs.length){list.innerHTML='';body.innerHTML='<div class="ddsec"><p>No active warnings. Everything the diagnostics layer watches looks fine right now.</p></div>';return;}
+     if(!DD.sel||!evs.some(e=>e.id===DD.sel))DD.sel=evs[0].id;
+     list.innerHTML=evs.length>1?evs.map(e=>
+       '<button type="button" class="ddev'+(e.id===DD.sel?' sel':'')+'" data-ev="'+esc(e.id)+'">'
+       +'<span class="ddchip '+(RED(e)?'red':(e.severity==='WARNING'||e.severity==='NOTICE')?'yellow':'info')+'">'+esc(e.severity)+'</span>'
+       +'<span class="ddevt">'+esc(e.title)+'</span>'
+       +((e.recurrence_count||1)>1?'<span class="ddevn">&times;'+e.recurrence_count+'</span>':'')
+       +'</button>').join(''):'';
+     list.querySelectorAll('button[data-ev]').forEach(b=>b.onclick=()=>{DD.sel=b.dataset.ev;drawerRender();});
+     const ev=evs.find(e=>e.id===DD.sel);if(!ev){body.innerHTML='';return;}
+     body.innerHTML=eventHtml(ev);wireEvent(body,ev);}
+   function recsSorted(ev){return (ev.recommendations||[]).slice().sort((a,b)=>(a.priority||99)-(b.priority||99));}
+   function eventHtml(ev){
+     const recs=recsSorted(ev),first=recs[0]||null;
+     const sevCls=RED(ev)?'red':(ev.severity==='WARNING'||ev.severity==='NOTICE')?'yellow':'info';
+     let h='<div class="ddsec" style="display:flex;align-items:center;gap:8px">'
+       +'<span class="ddchip '+sevCls+'">'+esc(ev.severity)+'</span>'
+       +((ev.recurrence_count||1)>1?'<span class="ddconf">seen &times;'+ev.recurrence_count+'</span>':'')
+       +'<span class="ddcode">'+esc(ev.code||'')+'</span></div>';
+     h+='<div class="ddsec"><h4>What happened</h4><p><b>'+esc(ev.title)+'</b></p><p>'+esc(ev.summary)+'</p></div>';
+     h+='<div class="ddsec"><h4>What Prospector Lite observed</h4><p>'+esc(ev.observed)+'</p>'
+       +((ev.evidence||[]).length?'<ul>'+(ev.evidence||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'')+'</div>';
+     if(first)h+='<div class="ddsec"><h4>Most likely cause</h4>'
+       +'<p><span class="ddconf">'+esc(CONF_LABEL[ev.confidence]||'Possible cause')+'</span></p>'
+       +'<p style="margin-top:6px">'+esc(first.explanation)+'</p></div>';
+     if(first)h+='<div class="ddsec"><h4>Recommended first action</h4>'
+       +'<div class="ddfirst"><b>'+esc(first.title)+'</b><span style="font-size:12px;color:var(--mut)">'+esc(first.expected_effect||'')+'</span></div></div>';
+     const stRows=[];const seen={};
+     recs.forEach(r=>(r.setting_targets||[]).forEach(t=>{if(seen[t.key])return;seen[t.key]=1;stRows.push({t:t,r:r});}));
+     if(stRows.length){h+='<div class="ddsec"><h4>Exact settings to review</h4>'
+       +stRows.map((x,i)=>{const t=x.t,r=x.r;
+         const ap=DD.applied[t.key];
+         const val=(t.current==null?'?':t.current)+(t.suggested!=null?(' &#8594; '+t.suggested):'')+(t.units?(' '+esc(t.units)):'');
+         return '<div class="ddrow" data-si="'+i+'">'
+           +'<span class="ddlab"><b>'+esc(t.label||t.key)+'</b></span>'
+           +'<span class="ddval">'+val+'</span>'
+           +(t.reason?'<span class="ddwhy">'+esc(t.reason)+'</span>':'')
+           +'<span style="flex-basis:100%;display:flex;gap:7px;flex-wrap:wrap">'
+           +'<button type="button" class="btn2" data-open-setting="'+esc(t.key)+'" data-si="'+i+'">Open setting</button>'
+           +(r.auto_apply&&t.suggested!=null&&!ap?'<button type="button" class="btn2" data-apply="'+esc(t.key)+'" data-si="'+i+'">Apply suggested value</button>':'')
+           +(ap?'<button type="button" class="btn2" data-undo="'+esc(t.key)+'">Undo</button>':'')
+           +'</span></div>';}).join('')+'</div>';}
+     const calT=[];recs.forEach(r=>(r.calibration_targets||[]).forEach(c=>{if(calT.indexOf(c)<0)calT.push(c);}));
+     if(calT.length)h+='<div class="ddsec"><h4>Exact calibrations to review</h4>'
+       +calT.map(c=>'<div class="ddrow"><span class="ddlab">'+esc(c)+'</span>'
+       +'<button type="button" class="btn2" data-open-cal="'+esc(c)+'">Open calibration</button></div>').join('')+'</div>';
+     const permT=[];recs.forEach(r=>(r.permission_targets||[]).forEach(p=>{if(permT.indexOf(p)<0)permT.push(p);}));
+     if(permT.length)h+='<div class="ddsec"><h4>Permissions</h4>'
+       +permT.map(p=>'<div class="ddrow"><span class="ddlab">'+esc(p)+'</span>'
+       +'<button type="button" class="btn2" data-open-perm="'+esc(p)+'">Open permission</button></div>').join('')+'</div>';
+     if((ev.other_causes||[]).length)h+='<div class="ddsec"><h4>Other possible causes</h4><ul>'
+       +(ev.other_causes||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul></div>';
+     if(first&&first.expected_effect)h+='<div class="ddsec"><h4>Expected effect</h4><p>'+esc(first.expected_effect)+'</p></div>';
+     if(first&&first.tradeoff)h+='<div class="ddsec"><h4>Tradeoff</h4><p>'+esc(first.tradeoff)+'</p></div>';
+     if(first&&first.verify)h+='<div class="ddsec"><h4>How to verify</h4><p>'+esc(first.verify)+'</p></div>';
+     if(ev.faq_id)h+='<div class="ddsec"><h4>Related FAQ</h4>'
+       +'<button type="button" class="btn2" id="ddfaq" data-faqid="'+esc(ev.faq_id)+'">Open the FAQ entry</button></div>';
+     h+='<div class="ddbtns"><button type="button" class="btn2" id="ddcopy">Copy diagnostic details</button>'
+       +((ev.dismissible!==false)?'<button type="button" class="btn2" id="dddismiss">Dismiss</button>':'')
+       +((ev.suppressible!==false&&ev.severity!=='CRITICAL')?'<button type="button" class="btn2" id="ddsuppress">Don’t show again for this code</button>':'')
+       +'</div>';
+     return h;}
+   function wireEvent(body,ev){
+     const recs=recsSorted(ev);
+     body.querySelectorAll('button[data-open-setting]').forEach(b=>b.onclick=()=>{
+       const key=b.dataset.openSetting;
+       let target=null,rec=null;
+       recs.forEach(r=>(r.setting_targets||[]).forEach(t=>{if(t.key===key&&!target){target=t;rec=r;}}));
+       navigateToSetting(key,target?{target:target,allowApply:!!(rec&&rec.auto_apply),verify:rec?rec.verify:''}:null);});
+     body.querySelectorAll('button[data-apply]').forEach(b=>b.onclick=async()=>{
+       const key=b.dataset.apply;let target=null;
+       recs.forEach(r=>(r.setting_targets||[]).forEach(t=>{if(t.key===key&&!target)target=t;}));
+       if(!target||target.suggested==null)return;
+       b.disabled=true;let r=null;
+       try{r=await api().diag_apply({key:key,suggested:target.suggested});}catch(e){r=null;}
+       if(r&&r.ok){DD.applied[key]={id:r.id,prev:r.prev};toast('Applied: '+key+' = '+r.next);}
+       else{toast('Could not apply'+((r&&r.error_code)?' ['+r.error_code+']':''));b.disabled=false;}
+       drawerRender();});
+     body.querySelectorAll('button[data-undo]').forEach(b=>b.onclick=async()=>{
+       const key=b.dataset.undo,a=DD.applied[key];if(!a)return;
+       let r=null;try{r=await api().diag_undo(a.id);}catch(e){r=null;}
+       if(r&&r.ok){delete DD.applied[key];toast('Restored '+key);}
+       else toast('Could not undo');
+       drawerRender();});
+     body.querySelectorAll('button[data-open-cal]').forEach(b=>b.onclick=()=>navigateToCalibration(b.dataset.openCal));
+     body.querySelectorAll('button[data-open-perm]').forEach(b=>b.onclick=()=>navigateToPermission(b.dataset.openPerm));
+     const fq=body.querySelector('#ddfaq');if(fq)fq.onclick=()=>openFaq(fq.dataset.faqid);
+     const cp=body.querySelector('#ddcopy');if(cp)cp.onclick=async()=>{
+       try{await navigator.clipboard.writeText(JSON.stringify(ev,null,1));toast('Diagnostic details copied');}
+       catch(e){toast('Clipboard unavailable');}};
+     const dm=body.querySelector('#dddismiss');if(dm)dm.onclick=async()=>{
+       try{await api().diag_dismiss(ev.id);}catch(e){}
+       DIAG.events=(DIAG.events||[]).filter(x=>x.id!==ev.id);DD.sel=null;
+       if(!(DIAG.events||[]).length)closeDrawer();else drawerRender();
+       window.refreshDiagnostics(true);};
+     const sp=body.querySelector('#ddsuppress');if(sp)sp.onclick=async()=>{
+       try{await api().diag_suppress(ev.code);}catch(e){}
+       DIAG.events=(DIAG.events||[]).filter(x=>x.code!==ev.code);DD.sel=null;
+       if(!(DIAG.events||[]).length)closeDrawer();else drawerRender();
+       window.refreshDiagnostics(true);};}
+   // ---- floating recommendation chip near a deep-linked setting row ----
+   function recHide(){const el=document.getElementById('diagrec');if(el)el.style.display='none';}
+   function recShow(key,info){const el=document.getElementById('diagrec');if(!el||!info||!info.target)return;
+     const inp=document.querySelector('[data-key="'+key+'"]');if(!inp)return;
+     const t=info.target;
+     el.innerHTML='<div class="drhead">'+esc(t.label||key)
+       +'<button type="button" class="drx" aria-label="Close">&#10005;</button></div>'
+       +'<div>'+(t.current==null?'?':t.current)+' &#8594; <b>'+(t.suggested==null?'?':t.suggested)+'</b>'+(t.units?(' '+esc(t.units)):'')+'</div>'
+       +(t.reason?'<div style="color:var(--mut);margin-top:3px">Why: '+esc(t.reason)+'</div>':'')
+       +'<div class="drbtns">'
+       +(info.allowApply&&t.suggested!=null?'<button type="button" class="btn2" data-recapply="1">Apply</button>':'')
+       +(info.verify?'<button type="button" class="btn2" data-rechow="1" title="'+esc(info.verify)+'">How to test</button>':'')
+       +'</div>';
+     const r=(inp.closest('.row,.crow,label.row')||inp).getBoundingClientRect();
+     el.style.display='block';
+     el.style.top=Math.min(window.innerHeight-140,r.bottom+8)+'px';
+     el.style.left=Math.max(10,Math.min(r.left,window.innerWidth-350))+'px';
+     el.querySelector('.drx').onclick=recHide;
+     const ab=el.querySelector('[data-recapply]');
+     if(ab)ab.onclick=async()=>{ab.disabled=true;let res=null;
+       try{res=await api().diag_apply({key:key,suggested:t.suggested});}catch(e){res=null;}
+       if(res&&res.ok){DD.applied[key]={id:res.id,prev:res.prev};toast('Applied: '+key+' = '+res.next);recHide();}
+       else{toast('Could not apply'+((res&&res.error_code)?' ['+res.error_code+']':''));ab.disabled=false;}};
+     setTimeout(()=>{const away=e2=>{if(!el.contains(e2.target)){recHide();
+         document.removeEventListener('mousedown',away,true);
+         document.removeEventListener('click',away,true);}};
+       document.addEventListener('mousedown',away,true);
+       document.addEventListener('click',away,true);},50);}
+   // ---- exact deep links (stable ids, no text matching) ----
+   async function locator(){if(LOC)return LOC;
+     try{LOC=await api().setting_locator()||{};}catch(e){LOC={};}
+     if(!LOC||typeof LOC!=='object')LOC={};
+     return LOC;}
+   window.navigateToSetting=async function(key,info){
+     const loc=(await locator())[key]||null;
+     if(loc&&loc.control==='cycle'){
+       const ct=document.querySelector('.tab[data-tab="cycle"]');
+       if(ct&&!ct.classList.contains('active'))ct.click();
+       setTimeout(()=>{try{cygJump(key);}catch(e){}
+         if(info)recShow(key,info);},420);
+       return;}
+     // section-tab keys: _pvGoto's approach -- derive the tab from the
+     // OWNING panel id (handles the pinned 'p'+id vs 'p_'+title split and
+     // hidden tabs), uncollapse its navgroup, click it, then flash the row
+     const el=document.querySelector('[data-key="'+key+'"]');
+     if(el){
+       const panel=el.closest('.panel');
+       if(panel){const pid=panel.id;
+         const tabid=(pid.indexOf('p_')===0)?pid.slice(2):pid.slice(1);
+         const tb=document.querySelector('.tab[data-tab="'+tabid+'"]');
+         if(tb){const g=tb.closest('.navgroup');if(g)g.classList.remove('collapsed');
+           if(!tb.classList.contains('active'))tb.click();}}
+       setTimeout(()=>{flashEl(el.closest('label.row,.row,.crow')||el);
+         if(info)recShow(key,info);},420);
+       return;}
+     if(loc&&loc.tab){const tb=document.querySelector('.tab[data-tab="'+loc.tab+'"]');if(tb)tb.click();}};
+   const CAL_ANCHORS={
+     cap_bar:'.calrow[data-pkey="CAP_FULL_PIXEL"]',
+     pan_prompt:'.calrow[data-pkey="PAN_PIX"]',
+     deposit_prompt:'.calrow[data-pkey="DEPOSIT_PIX"]',
+     shake_prompt:'.calrow[data-pkey="SHAKE_PIX"]',
+     dig_green:'.calrow[data-pkey="DIG_TRIGGER_PIXEL"]',
+     money_region:'.calrow[data-regionkey="MONEY"]',
+     shards_region:'.calrow[data-regionkey="SHARDS"]',
+     find_region:'.calrow[data-regionkey="FIND"]',
+     cue_masks:'.advcal',
+     roblox_window:'#winstat',
+     autopan_button:'.frbtn[data-frk="apon"]',
+     fortune_river:'.frbtn[data-frk="text"]'};
+   function flashEl(el){if(!el)return;
+     try{el.scrollIntoView({block:'center'});}catch(e){}
+     el.classList.add('hlrow');setTimeout(()=>el.classList.remove('hlrow'),1900);}
+   window.navigateToCalibration=function(itemId){
+     const s=document.getElementById('setup');
+     if(s&&s.classList.contains('show')&&window.__wizCalDetail){__wizCalDetail(itemId);return;}
+     const tb=document.querySelector('.tab[data-tab="cal"]');
+     if(tb&&!tb.classList.contains('active'))tb.click();
+     setTimeout(()=>{
+       const sel=CAL_ANCHORS[itemId]||'';let el=sel?document.querySelector(sel):null;
+       if(el&&el.classList&&el.classList.contains('frbtn'))el=el.closest('.calrow')||el;
+       if(itemId==='cap_bar'){
+         flashEl(document.querySelector('.calrow[data-pkey="CAP_LEFT_PIXEL"]'));
+         flashEl(document.getElementById('capTestRow'));
+         const ctb=document.getElementById('capTest');
+         if(ctb){ctb.classList.add('hlrow');setTimeout(()=>ctb.classList.remove('hlrow'),1900);}}
+       flashEl(el);},420);};
+   window.navigateToPermission=function(capId){
+     const tb=document.querySelector('.tab[data-tab="trust"]');
+     if(tb&&!tb.classList.contains('active'))tb.click();
+     let tries=0;
+     const t=setInterval(()=>{tries++;
+       const card=document.querySelector('#ptrust .cap-card[data-capid="'+capId+'"]');
+       if(card){clearInterval(t);flashEl(card);
+         const test=card.querySelector('button[data-act="test"]');
+         if(test){test.classList.add('hlrow');setTimeout(()=>test.classList.remove('hlrow'),1900);}}
+       else if(tries>25)clearInterval(t);},200);};
+   // ---- FAQ browser ----
+   async function faqEntries(){if(FAQ)return FAQ;
+     let r=null;try{r=await api().faq_list();}catch(e){r=null;}
+     FAQ=(r&&Array.isArray(r.entries))?r.entries:[];return FAQ;}
+   window.openFaq=async function(entryId){
+     const m=document.getElementById('faqmodal');if(!m)return;
+     await faqEntries();m.classList.add('show');
+     const s=document.getElementById('faqsearch');if(s)s.value='';
+     if(entryId&&FAQ.some(e=>e.id===entryId))faqEntry(entryId);else faqList('');};
+   function faqClose(){const m=document.getElementById('faqmodal');if(m)m.classList.remove('show');}
+   function faqList(q){
+     const list=document.getElementById('faqlist'),entry=document.getElementById('faqentry');
+     const back=document.getElementById('faqback'),srch=document.getElementById('faqsearch');
+     if(!list)return;
+     list.style.display='';if(entry)entry.style.display='none';
+     if(back)back.style.display='none';if(srch)srch.style.display='';
+     q=String(q||'').toLowerCase().trim();
+     const hits=(FAQ||[]).filter(e=>!q
+       ||String(e.question||'').toLowerCase().indexOf(q)>=0
+       ||(e.symptoms||[]).some(s=>String(s).toLowerCase().indexOf(q)>=0));
+     list.innerHTML=hits.length?hits.map(e=>
+       '<button type="button" class="faqq" data-faq="'+esc(e.id)+'">'+esc(e.question)
+       +((e.symptoms||[]).length?'<span class="fqs">'+esc((e.symptoms||[])[0])+'</span>':'')
+       +'</button>').join('')
+       :'<p class="chint">No FAQ entry matches that search.</p>';
+     list.querySelectorAll('button[data-faq]').forEach(b=>b.onclick=()=>faqEntry(b.dataset.faq));}
+   function faqEntry(id){
+     const list=document.getElementById('faqlist'),entry=document.getElementById('faqentry');
+     const back=document.getElementById('faqback'),srch=document.getElementById('faqsearch');
+     const e=(FAQ||[]).find(x=>x.id===id);if(!e||!entry)return;
+     if(list)list.style.display='none';entry.style.display='';
+     if(back)back.style.display='';if(srch)srch.style.display='none';
+     let h='<p><b>'+esc(e.question)+'</b></p>';
+     if((e.symptoms||[]).length)h+='<h4>Symptoms</h4><ul>'+(e.symptoms||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>';
+     if((e.likely_causes||[]).length)h+='<h4>Likely causes</h4><ul>'+(e.likely_causes||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>';
+     if(e.first_action)h+='<h4>First thing to try</h4><p>'+esc(e.first_action)+'</p>';
+     if((e.steps||[]).length)h+='<h4>Steps</h4><ol>'+(e.steps||[]).map(x=>'<li>'+esc(x)+'</li>').join('')+'</ol>';
+     if(e.verify)h+='<h4>How to verify</h4><p>'+esc(e.verify)+'</p>';
+     if((e.platforms||[]).length)h+='<h4>Applies to</h4><p>'+esc((e.platforms||[]).join(', '))+'</p>';
+     const links=[];
+     (e.related_settings||[]).forEach(k=>links.push('<button type="button" class="btn2" data-fs="'+esc(k)+'">Open setting: '+esc(k)+'</button>'));
+     (e.related_calibrations||[]).forEach(c=>links.push('<button type="button" class="btn2" data-fc="'+esc(c)+'">Open calibration: '+esc(c)+'</button>'));
+     (e.related_permissions||[]).forEach(p=>links.push('<button type="button" class="btn2" data-fp="'+esc(p)+'">Open permission: '+esc(p)+'</button>'));
+     if(links.length)h+='<h4>Open the exact surface</h4><div class="faqlinks">'+links.join('')+'</div>';
+     entry.innerHTML=h;
+     entry.querySelectorAll('button[data-fs]').forEach(b=>b.onclick=()=>{faqClose();closeDrawer();navigateToSetting(b.dataset.fs,null);});
+     entry.querySelectorAll('button[data-fc]').forEach(b=>b.onclick=()=>{faqClose();closeDrawer();navigateToCalibration(b.dataset.fc);});
+     entry.querySelectorAll('button[data-fp]').forEach(b=>b.onclick=()=>{faqClose();closeDrawer();navigateToPermission(b.dataset.fp);});}
+   (function(){const s=document.getElementById('faqsearch');if(s)s.addEventListener('input',()=>faqList(s.value));
+     const c=document.getElementById('faqclose');if(c)c.onclick=faqClose;
+     const b=document.getElementById('faqback');if(b)b.onclick=()=>faqList((document.getElementById('faqsearch')||{}).value||'');
+     const m=document.getElementById('faqmodal');if(m)m.addEventListener('click',e=>{if(e.target===m)faqClose();});})();
+   // every [data-faq-open] anywhere (Settings page, Calibrate tab, Trust
+   // Center, wizard readiness page) opens the browser
+   document.addEventListener('click',e=>{
+     const b=e.target&&e.target.closest?e.target.closest('[data-faq-open]'):null;
+     if(!b)return;e.preventDefault();
+     openFaq(b.getAttribute('data-faq-open')||null);});
+ })();
  window.geodeTimer=function(ms,label){const el=document.getElementById('geodebar');if(!el)return;
    if(window._ggInt){clearInterval(window._ggInt);window._ggInt=null;}
    if(!ms||ms<=0){el.style.display='none';return;}
@@ -10312,7 +11203,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<span class="gtbar"><i style="width:'+(100*left/tot).toFixed(1)+'%"></i></span>';
      if(left<=0){clearInterval(window._ggInt);window._ggInt=null;}};
    el.style.display='flex';upd();window._ggInt=setInterval(upd,100);};
- window.setStats=s=>{if(!s)return;try{applyHealth(s);}catch(e){}var _rs=Math.max(0,Math.round(s.runtime_s||0)),_rh=Math.floor(_rs/3600),_rm=Math.floor((_rs%3600)/60),_rss=String(_rs%60).padStart(2,'0');
+ window.setStats=s=>{if(!s)return;try{applyHealth(s);}catch(e){}
+   try{if(window.refreshDiagnostics)refreshDiagnostics();}catch(e){}
+   var _rs=Math.max(0,Math.round(s.runtime_s||0)),_rh=Math.floor(_rs/3600),_rm=Math.floor((_rs%3600)/60),_rss=String(_rs%60).padStart(2,'0');
    $('#st_run').textContent=_rh>0?(_rh+':'+String(_rm).padStart(2,'0')+':'+_rss):(_rm+':'+_rss); $('#st_cyc').textContent=s.cycles||0;
    $('#st_rate').textContent=s.pans_per_hr||0; $('#st_rec').textContent=s.recoveries||0;
    const _ce=$('#st_clean'); if(_ce)_ce.textContent=(s.cycles&&s.clean_pct!=null)?(s.clean_pct+'%'):'\u2014';
@@ -10423,7 +11316,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    const _g=b.closest('.navgroup');if(_g)_g.classList.remove('collapsed');
    if(id==='hist')loadHistory();
    if(id==='builds')loadBuildsPage();
-   if(id==='trust'&&window.__tcRender)__tcRender();});
+   if(id==='trust'&&window.__tcRender)__tcRender();
+   if(window.refreshDiagnostics)refreshDiagnostics();});
  document.querySelectorAll('.grouphdr').forEach(h=>h.onclick=()=>h.closest('.navgroup').classList.toggle('collapsed'));
  (function(){const ns=document.getElementById('navsearch');if(!ns)return;
    ns.addEventListener('input',()=>{const q=ns.value.trim().toLowerCase();
@@ -12200,13 +13094,26 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    async function renderReady(){const g=++GEN;PAGE='ready';railSet();const b=$id('supBody');
      b.innerHTML='<p class="sup-sub">Running the readiness checks&hellip;</p>';
      let rc=null;try{rc=await _api().readiness_check();}catch(e){}
+     let dgv=[];try{const dg=await _api().diagnostics_state();
+       if(dg&&Array.isArray(dg.events))dgv=dg.events;}catch(e){}
      if(g!==GEN)return; // the user navigated away while the checks ran
      if(!rc){b.innerHTML='<p class="sup-sub">Readiness check unavailable.</p><div class="cap-actions"><button type="button" class="btn2" id="rdyRetry">Retry</button></div>';
        const rr=$id('rdyRetry');if(rr)rr.onclick=renderReady;return;}
+     // failed rows get a Details button when a diagnostic event matches
+     // (permission / calibration codes) -- it opens the warning drawer
+     const dmatch=i=>{const cal=c=>/^PP-D-(CAP-|CAL-|CUE-)/.test(c);
+       for(const e of dgv){const c=e.code||'';
+         if(i.id==='screen_detection'&&c==='PP-D-PERM-SCREEN_DETECTION')return e;
+         if(i.id==='input_control'&&c==='PP-D-PERM-INPUT_CONTROL')return e;
+         if(i.id==='stop_hotkeys'&&c==='PP-D-SAFESTOP')return e;
+         if((i.id==='calibration'||i.id==='cue_masks')&&cal(c))return e;}
+       return null;};
      const row=i=>{const m={pass:'PASS',fail:'FAIL',warn:'WARN',info:'INFO'};
        const fix=i.fix?('<button type="button" class="btn2" data-fix="'+E(i.fix)+'" data-fixitem="'+E(i.id)+'">Fix now</button>'):'';
+       const dev=(i.status==='fail')?dmatch(i):null;
+       const det=dev?('<button type="button" class="btn2" data-diag="'+E(dev.id)+'">Details</button>'):'';
        return '<div class="rdy-item '+E(i.status)+'"><span class="mark">'+(m[i.status]||'?')+'</span>'
-         +'<div><div class="t">'+E(i.title)+'</div><div class="d">'+E(i.detail)+'</div></div>'+fix+'</div>';};
+         +'<div><div class="t">'+E(i.title)+'</div><div class="d">'+E(i.detail)+'</div></div>'+fix+det+'</div>';};
      b.innerHTML='<h2 class="sup-h1">Readiness Check</h2>'
        +'<p class="sup-sub">'+(rc.ok?'Everything required passed. You are ready to prospect.':'Some required items need attention. You can still enter the app &mdash; only Start Macro stays disabled until they pass, and the Run tab will say exactly why.')+'</p>'
        +rc.items.map(row).join('')
@@ -12216,6 +13123,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<button type="button" class="btn2" id="rdyCopy">Copy diagnostic summary</button>'
        +'<button type="button" class="btn2" id="rdyLog">Open wizard log</button>'
        +'<button type="button" class="btn2" id="rdyFolder">Open data folder</button>'
+       +'<button type="button" class="btn2" data-faq-open="">FAQ &amp; troubleshooting</button>'
        +'<button type="button" class="btn2" id="rdyQuit">Exit app</button></div>';
      // Fix Now opens the EXACT wizard step: a calibration failure whose id
      // is a registry item deep-links to its guided detail page; everything
@@ -12226,6 +13134,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          const iid=f.dataset.fixitem;
          if(iid&&iid!=='calibration')renderCalDetail(iid); // unknown ids fall back to the checklist inside renderCalDetail
          else renderCal();}};});
+     b.querySelectorAll('button[data-diag]').forEach(f=>{f.onclick=()=>{
+       if(window.openDiagDrawer)openDiagDrawer(f.dataset.diag);};});
      const rt=$id('rdyRetest');if(rt)rt.onclick=renderReady;
      const dg=$id('rdyDiag');if(dg)dg.onclick=async()=>{try{const r=await _api().export_diagnostics();if(r&&r.ok)toast('Saved '+r.path);else if(r&&r.error)toast('Export failed: '+r.error);}catch(e){}};
      const cp=$id('rdyCopy');if(cp)cp.onclick=async()=>{try{const r=await _api().diag_summary();
@@ -12306,6 +13216,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        // TUT_ENTRY_SHOWN makes it once per entry).
        setTimeout(()=>{if(window.maybeStartTour)maybeStartTour();},1000);}};
    window.__setupRerun=async function(){try{await _api().onboarding_rerun();}catch(e){}SETUP.open('trust');};
+   // the warning drawer's navigateToCalibration routes here while the
+   // wizard is open (the readiness Fix-now precedent): the guided detail
+   // page for a registry item, checklist fallback for unknown ids
+   window.__wizCalDetail=function(id){try{
+     if(id&&id!=='calibration')renderCalDetail(id);else renderCal();
+   }catch(e){}};
    // Window-focus fast path: NON-destructive card patch (a full re-render
    // here used to wipe an in-flight test the instructions told the user to
    // run while switching apps). The hasFocus() watcher above is the
@@ -12356,6 +13272,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<label class="row" style="margin-top:6px"><span class="lbl">Open tutorial whenever Prospector Lite opens</span>'
        +'<span class="switch"><input type="checkbox" id="tcTutAuto"'+((tut&&tut.auto_open===false)?'':' checked')+'>'
        +'<span class="track"><span class="knob"></span></span></span></label></div>';
+     h+='<div class="tc-sec"><h3>Help &amp; troubleshooting</h3><div class="cap-desc">Common problems (permissions, calibration, detection, tuning) with exact fixes and deep links to the right surface. Warnings hidden with &ldquo;Don&rsquo;t show again&rdquo; can be restored here.</div>'
+       +'<div class="cap-actions"><button type="button" class="btn2" data-faq-open="">FAQ &amp; troubleshooting</button>'
+       +'<button type="button" class="btn2" id="tcUnsup">Show suppressed warnings again</button></div></div>';
      h+='<div class="tc-sec"><h3>Security reporting</h3><div class="cap-desc">Found a vulnerability? SECURITY.md explains how to report it privately.</div>'
        +'<div class="cap-actions"><button type="button" class="btn2" id="tcSec">Open SECURITY.md</button>'
        +'<button type="button" class="btn2" id="tcPriv">Open PRIVACY.md</button>'
@@ -12368,6 +13287,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      w('tcDelHist',()=>{mconfirm('Delete run history and all run logs?',async()=>{try{await _api().delete_local_data('history');toast('History deleted');__tcRender();}catch(e){}});});
      w('tcDelLogs',()=>{mconfirm('Delete all run logs?',async()=>{try{await _api().delete_local_data('logs');toast('Logs deleted');__tcRender();}catch(e){}});});
      w('tcDelAll',()=>{mconfirm('Delete ALL Prospector Lite data on this computer - settings, calibration, builds, scripts, history, secrets? This cannot be undone.',()=>{mconfirm('Really delete everything? The app returns to a fresh first run.',async()=>{try{await _api().delete_local_data('all');toast('All local data deleted');__tcRender();}catch(e){}});});});
+     w('tcUnsup',async()=>{try{await _api().diag_unsuppress_all();toast('Suppressed warnings restored');}catch(e){}
+       if(window.refreshDiagnostics)refreshDiagnostics(true);});
      w('tcRerun',()=>{if(window.__setupRerun)__setupRerun();});
      w('tcResetOb',()=>{mconfirm('Reset the setup wizard to a fresh first run? Builds, calibration and settings are NOT touched.',async()=>{try{await _api().onboarding_reset();toast('Wizard reset - it will open on next launch');}catch(e){}});});
      const tsk=$id('tcSkipAuto');if(tsk)tsk.onchange=async()=>{const want=!!tsk.checked;

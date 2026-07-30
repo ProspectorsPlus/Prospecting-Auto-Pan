@@ -162,6 +162,73 @@ function makeApi(S) {
           return Promise.resolve({ pixels: {}, colors: {}, fr: {},
             region_previews: {}, defaults: {}, v1: {}, v2: {}, geode: {},
             autobuild: {}, values: {}, running: false });
+        case 'diagnostics_state':
+          return Promise.resolve(S.diag
+            ? JSON.parse(JSON.stringify(S.diag))
+            : { events: [], summary: { red: 0, yellow: 0,
+                top_red_title: '', top_yellow_title: '', tabs: {} },
+                when: 1 });
+        case 'setting_locator':
+          // placement facts mirror the shipped registry (map_settings):
+          // engine-tuning sections live on the Cycle page
+          return Promise.resolve({
+            WATER_EXTRA_BACK_MS: { control: 'cycle', tab: 'cycle',
+              section: 'Walk back into water' },
+            SHAKE_START_DELAY_MS: { control: 'cycle', tab: 'cycle',
+              section: 'Shake' },
+            SHAKE_BAIL_MS: { control: 'cycle', tab: 'cycle',
+              section: 'Shake' },
+            LAND_SETTLE_MS: { control: 'cycle', tab: 'cycle',
+              section: 'Return to land (dig-probe)' },
+            FINDS_MIN_CONF: { control: 'tab', tab: 'Earnings',
+              section: 'Earnings' } });
+        case 'faq_list':
+          return Promise.resolve({ entries: [
+            { id: 'faq-mac-screen-recording',
+              question: 'Screen Recording is granted but detection fails',
+              symptoms: ['black frames', 'Start blocked with perm:'],
+              likely_causes: ['pending app restart'],
+              first_action: 'Quit and reopen the app.',
+              steps: ['Quit fully', 'Reopen', 'Run the Test'],
+              related_settings: [], related_calibrations: [],
+              related_permissions: ['screen_detection'],
+              verify: 'The capability Test passes.', platforms: ['mac'] },
+            { id: 'faq-movement-nudges',
+              question: 'The character overshoots the stop point',
+              symptoms: ['nudge counter climbing'],
+              likely_causes: ['extra walk back too long'],
+              first_action: 'Reduce Extra walk back one step.',
+              steps: ['Open the Cycle page'],
+              related_settings: ['WATER_EXTRA_BACK_MS'],
+              related_calibrations: [], related_permissions: [],
+              verify: 'Nudge rate falls below 0.6 per cycle.',
+              platforms: ['mac', 'win'] },
+            { id: 'faq-shake-timing',
+              question: 'Shakes start too early or get missed',
+              symptoms: ['shake misses climbing'],
+              likely_causes: ['start delay mistimed'],
+              first_action: 'Adjust the shake start delay.',
+              steps: ['Open the Cycle page'],
+              related_settings: ['SHAKE_BAIL_MS'],
+              related_calibrations: ['cue_masks'],
+              related_permissions: [],
+              verify: 'Miss rate falls below 0.4 per cycle.',
+              platforms: ['mac', 'win'] } ] });
+        case 'diag_apply':
+          S._applies = (S._applies || 0) + 1;
+          return Promise.resolve({ ok: true, id: 'apply-' + S._applies,
+            key: args[0] && args[0].key, prev: 400,
+            next: args[0] && args[0].suggested });
+        case 'diag_undo':
+          return Promise.resolve({ ok: true });
+        case 'diag_dismiss':
+          if (S.diag) S.diag.events = S.diag.events.filter(
+            e => e.id !== args[0] && e.code !== args[0]);
+          return Promise.resolve({ ok: true });
+        case 'diag_suppress':
+          if (S.diag) S.diag.events = S.diag.events.filter(
+            e => e.code !== args[0]);
+          return Promise.resolve({ ok: true });
         default:
           return Promise.resolve({ ok: true, list: [], items: [], files: [],
             tours: {}, help: {}, cues: {}, scripts: {}, meta: {},
@@ -701,6 +768,153 @@ async function scenarioAutoOpenOff() {
   dom.window.close();
 }
 
+async function scenarioDiagnostics() {
+  console.log('[H] diagnostics: count badges, drawer, deep links, apply/undo, dismiss, FAQ');
+  const S = makeState();
+  S.setupFinished = true;
+  S.onbState = 'FINISHED';
+  S.showEvery = false;        // boot straight into the main app
+  S.tutAutoOpen = false;      // keep the tour out of the way
+  S.registry = REG_REVIEW;
+  S.diag = JSON.parse(fs.readFileSync(path.join(WORK, 'diag.json'), 'utf8'));
+  const dom = boot(S);
+  const doc = dom.window.document;
+  await bridge(dom, S);
+  chk(doc.body.dataset.welinit === '1', 'booted straight into the main app');
+  await sleep(700); // init -> checkCalHealth -> refreshDiagnostics
+
+  // ---- badges: counts + tooltips, written only by renderDiagBadges ----
+  const cyc = doc.querySelector('.navbadge[data-badge="cycle"]');
+  chk(!!cyc && cyc.classList.contains('show') && cyc.classList.contains('yellow')
+    && cyc.textContent === '2',
+    'cycle badge shows the yellow COUNT (2 tuning warnings)');
+  chk(!!cyc && (cyc.title || '').length > 0, 'the badge tooltip carries the top event title');
+  const tru = doc.querySelector('.navbadge[data-badge="trust"]');
+  chk(!!tru && tru.classList.contains('show') && tru.classList.contains('red')
+    && tru.textContent === '!',
+    'trust badge shows red for the permission event (single event -> "!")');
+
+  // ---- badge click opens the drawer; the tab must NOT switch ----
+  const tabBefore = doc.querySelector('.tab.active').dataset.tab;
+  cyc.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+  await sleep(350);
+  const drawer = doc.getElementById('diagdrawer');
+  chk(drawer.classList.contains('show'), 'badge click opens the warning drawer');
+  chk(doc.querySelector('.tab.active').dataset.tab === tabBefore,
+    'the badge click did NOT switch the tab');
+
+  // ---- drawer content for the canned PP-D-NUDGE-FAR ----
+  const body = doc.getElementById('ddbody');
+  chk(/PP-D-NUDGE-FAR/.test(body.textContent), 'the cycle badge opened its top event (PP-D-NUDGE-FAR)');
+  chk(/corrective nudges/.test(body.textContent), 'What-observed section renders the observed sentence');
+  chk(/nudges: 9 in 12 cycles/.test(body.textContent), 'the numeric evidence line renders');
+  chk(/Medium confidence/.test(body.textContent), 'the confidence chip carries a TEXT label');
+  chk(/Recommended first action/.test(body.textContent) && /Reduce Extra walk back/.test(body.textContent),
+    'the priority-1 recommendation renders prominently');
+  chk(/Exact settings to review/.test(body.textContent), 'the settings section renders');
+  const row = body.querySelector('button[data-open-setting="WATER_EXTRA_BACK_MS"]');
+  chk(!!row, 'WATER_EXTRA_BACK_MS has an Open-setting deep link');
+  chk(/400/.test(body.textContent) && /320/.test(body.textContent),
+    'the row shows current (400) and clamped suggested (320)');
+
+  // ---- Open setting: cycle page + flashed row + recommendation chip ----
+  row.click();
+  await sleep(900);
+  chk(doc.querySelector('.tab.active').dataset.tab === 'cycle',
+    'Open setting activates the Cycle page');
+  const flashed = doc.querySelector('#pcycle .hlrow');
+  chk(!!flashed && !!flashed.querySelector('[data-key="WATER_EXTRA_BACK_MS"]'),
+    'the WATER_EXTRA_BACK_MS row is scrolled to and flashed');
+  chk(doc.getElementById('diagrec').style.display === 'block',
+    'the floating recommendation chip appears near the row');
+
+  // ---- Apply suggested value / Undo ----
+  const ap = body.querySelector('button[data-apply="WATER_EXTRA_BACK_MS"]');
+  chk(!!ap, 'Apply suggested value offered (auto_apply recommendation)');
+  let n0 = S.calls.length;
+  ap.click();
+  await sleep(300);
+  chk(S.calls.slice(n0).some(c => c === 'diag_apply({"key":"WATER_EXTRA_BACK_MS","suggested":320})'),
+    'Apply calls diag_apply with the clamped value');
+  const un = body.querySelector('button[data-undo="WATER_EXTRA_BACK_MS"]');
+  chk(!!un, 'an applied row offers Undo');
+  n0 = S.calls.length;
+  un.click();
+  await sleep(300);
+  chk(S.calls.slice(n0).some(c => c === 'diag_undo("apply-1")'),
+    'Undo calls diag_undo with the apply id');
+  chk(!!body.querySelector('button[data-apply="WATER_EXTRA_BACK_MS"]'),
+    'after Undo the Apply button is offered again');
+
+  // ---- the permission event: CRITICAL, no dismiss/suppress, deep link ----
+  const permBtn = [...doc.querySelectorAll('#ddlist .ddev')]
+    .find(b => /not granted/.test(b.textContent));
+  chk(!!permBtn, 'the compact event list shows the permission event');
+  permBtn.click();
+  await sleep(150);
+  chk(/CRITICAL/.test(body.textContent), 'the permission event renders CRITICAL (text, not colour alone)');
+  chk(!body.querySelector('#dddismiss'), 'a non-dismissible event offers no Dismiss');
+  chk(!body.querySelector('#ddsuppress'), 'a CRITICAL event offers no don’t-show-again');
+  const op = body.querySelector('button[data-open-perm="screen_detection"]');
+  chk(!!op, 'the permission row has an Open-permission deep link');
+  op.click();
+  await sleep(900);
+  chk(doc.querySelector('.tab.active').dataset.tab === 'trust',
+    'Open permission lands on the Trust tab');
+  const card = doc.querySelector('#ptrust .cap-card[data-capid="screen_detection"]');
+  chk(!!card && card.classList.contains('hlrow'), 'the capability card is flashed');
+
+  // ---- FAQ browser opens from the drawer at the related entry ----
+  const fq = body.querySelector('#ddfaq');
+  chk(!!fq, 'the Related-FAQ link renders');
+  fq.click();
+  await sleep(300);
+  chk(doc.getElementById('faqmodal').classList.contains('show'),
+    'the FAQ browser opens from the drawer');
+  chk(/Screen Recording/.test(doc.getElementById('faqentry').textContent),
+    'the browser opens AT the related entry');
+  doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(150);
+  chk(!doc.getElementById('faqmodal').classList.contains('show'),
+    'Esc closes the FAQ browser (drawer stays)');
+  chk(drawer.classList.contains('show'), 'the drawer is still open behind it');
+
+  // ---- dismiss removes the event; suppress removes the code ----
+  const nfBtn = [...doc.querySelectorAll('#ddlist .ddev')]
+    .find(b => /overshoots/.test(b.textContent));
+  chk(!!nfBtn, 'the nudge event is still listed');
+  nfBtn.click();
+  await sleep(150);
+  body.querySelector('#dddismiss').click();
+  await sleep(450);
+  chk(S.calls.some(c => c.startsWith('diag_dismiss("PP-D-NUDGE-FAR')),
+    'Dismiss calls diag_dismiss with the event id');
+  chk(![...doc.querySelectorAll('#ddlist .ddev')].some(b => /overshoots/.test(b.textContent)),
+    'the dismissed event left the list');
+  const slBtn = [...doc.querySelectorAll('#ddlist .ddev')]
+    .find(b => /Shake/i.test(b.textContent) && !/not granted/.test(b.textContent));
+  chk(!!slBtn, 'the shake-late event is still listed');
+  slBtn.click();
+  await sleep(150);
+  const sup = body.querySelector('#ddsuppress');
+  chk(!!sup, 'a suppressible event offers don’t-show-again');
+  sup.click();
+  await sleep(450);
+  chk(S.calls.some(c => c === 'diag_suppress("PP-D-SHAKE-LATE")'),
+    'don’t-show-again calls diag_suppress with the code');
+  chk(doc.querySelectorAll('#ddlist .ddev').length === 0
+    && /not granted/.test(body.textContent),
+    'only the (unsuppressible) permission event remains');
+
+  // ---- Esc closes the drawer ----
+  doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  await sleep(150);
+  chk(!drawer.classList.contains('show'), 'Esc closes the drawer');
+  chk(dom.errors.length === 0, 'no jsdom errors in the diagnostics journey' +
+    (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
+  dom.window.close();
+}
+
 async function scenarioOverlay() {
   console.log('[D] calibration overlay: stale-banner + dead-click regressions');
   const ohtml = fs.readFileSync(path.join(WORK, 'overlay.html'), 'utf8');
@@ -833,6 +1047,7 @@ async function scenarioOverlay() {
   await scenarioExplicitWelcome();
   await scenarioAutoSkipBoot();
   await scenarioAutoOpenOff();
+  await scenarioDiagnostics();
   await scenarioOverlay();
   if (failures) { console.log('WIZARD-UI: %d FAILURE(S)', failures); process.exit(1); }
   console.log('WIZARD-UI: ALL PASS');

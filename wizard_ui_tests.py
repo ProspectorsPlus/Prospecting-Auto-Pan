@@ -393,6 +393,28 @@ def t_dom_layer():
                        env=env, cwd=ROOT, capture_output=True, text=True,
                        timeout=300)
     chk(r.returncode == 0, "tutorial content renders")
+    # canned diagnostics payload for scenario [H], composed by the REAL
+    # rule engine (lite_diagnostics.evaluate) + the REAL host summarizer
+    # (prospecting_app._diag_summarize): the shipped nudge example (9 in 12
+    # cycles), a shake-late finding, and a CRITICAL permission event.
+    r = subprocess.run([sys.executable, "-c",
+                        "import json, lite_diagnostics as ld;"
+                        "import prospecting_app as a;"
+                        "ctx={'platform':'mac',"
+                        " 'stats':{'cycles':12,'nudges':9,'shake_misses':6},"
+                        " 'settings':{'WATER_EXTRA_BACK_MS':400},"
+                        " 'capabilities':{'screen_detection':'not_granted'},"
+                        " 'run_active':False};"
+                        "evs=ld.merge_events([], ld.evaluate(ctx), 1000);"
+                        "json.dump({'events':evs,"
+                        " 'summary':a._diag_summarize(evs),'when':1000},"
+                        " open(%r, 'w'))"
+                        % os.path.join(work, "diag.json")],
+                       env=env, cwd=ROOT, capture_output=True, text=True,
+                       timeout=300)
+    chk(r.returncode == 0, "canned diagnostics payload composed by the "
+                           "real engine (%s)" % (r.stderr[-200:]
+                                                 if r.returncode else "ok"))
     r = subprocess.run(["node", os.path.join(ROOT, "wizard_ui_tests.js"),
                         work], cwd=ROOT, capture_output=True, text=True,
                        timeout=600)
