@@ -49,7 +49,7 @@ if os.path.isdir("assets/onboarding/calibration"):
 
 hiddenimports += [
     "prospecting_ui", "prospecting_assistant", "mss.darwin",
-    "lite_trust", "lite_onboarding",
+    "lite_trust", "lite_onboarding", "lite_diagnostics",
     # pyobjc frameworks pywebview + the engine touch at runtime.
     # ApplicationServices/HIServices carry AXIsProcessTrusted* (the
     # Accessibility preflight); they were previously bundled only via

@@ -48,7 +48,8 @@ if os.path.isdir("../assets/onboarding/calibration"):
                "assets/onboarding/calibration")]
 
 hiddenimports += ["clr", "prospecting_ui", "prospecting_assistant",
-                  "mss.windows", "lite_trust", "lite_onboarding"]
+                  "mss.windows", "lite_trust", "lite_onboarding",
+                  "lite_diagnostics"]
 # the shared engine package: the app imports prospector_engine.client for ipc
 # mode. In the repo the package sits one level up (pathex below); in the
 # extracted zip it sits next to this spec.

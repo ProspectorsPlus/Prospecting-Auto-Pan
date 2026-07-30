@@ -60,6 +60,9 @@ jobs:
       - name: Capacity calibration suite (sim-safe)
         run: python capacity_tests.py
 
+      - name: Diagnostics engine suite (pure Python)
+        run: python diagnostics_tests.py
+
       - name: UI + protocol checks
         run: python tour_check.py
 
