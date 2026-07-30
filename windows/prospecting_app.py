@@ -2630,13 +2630,21 @@ class Api:
 
     def tutorial_mark(self, state, legacy=False):
         """Persist a lifecycle transition (ACTIVE / COMPLETED / DISMISSED).
+        NOT_STARTED is never accepted from the bridge -- only a schema
+        bump (in _tutorial_lifecycle) can re-arm the once-only auto-start.
         `legacy=True` records a migration from the pre-schema localStorage
-        flag: a user who already saw or dismissed the old tour is not
-        forced through the new one. Atomic; failures are reported."""
+        flag (honoured only from NOT_STARTED, so a live tour can never be
+        overwritten by a fabricated migration): a user who already saw or
+        dismissed the old tour is not forced through the new one. Atomic;
+        failures are reported."""
         state = str(state or "")
-        if state not in _TUT_STATES:
+        if state not in _TUT_STATES or state == "NOT_STARTED":
             return {"ok": False, "error": "Unknown tutorial state."}
         d = _tutorial_lifecycle()
+        if legacy and d.get("main") != "NOT_STARTED":
+            return {"ok": False,
+                    "error": "Legacy migration only applies before the "
+                             "tutorial ever ran."}
         d["main"] = state
         d["updated"] = int(time.time())
         if legacy:
@@ -3564,23 +3572,27 @@ class Api:
                 % ", ".join(reg["blockers"]), fix="calibration")
         # Advanced cue matching -- the required primary prompt detector.
         # Its own row so the requirement is visible even inside the
-        # aggregate: single-pixel-only data never reads as ready.
-        captured, missing = lite_onboarding.cue_masks_state(saved)
-        if not bool(saved.get("ADVANCED_CUES", True)):
-            add("cue_masks", "Advanced cue matching", "fail",
-                "Switched off. It is the required primary detector -- "
-                "turn it back on from the Calibrate tab.",
-                fix="calibration")
-        elif not missing:
+        # aggregate. Derived from the SAME registry status the aggregate
+        # row uses, so the two rows can never contradict (a stale window,
+        # for example, fails both with the same re-capture guidance).
+        cm_live = next((i["live"] for i in reg["items"]
+                        if i["id"] == "cue_masks"), {})
+        cm_st = cm_live.get("status")
+        if cm_st == "ok":
             add("cue_masks", "Advanced cue matching", "pass",
-                "All three prompt masks are captured (%s)."
-                % ", ".join(captured), fix="calibration")
-        else:
+                cm_live.get("detail", "All three prompt masks are "
+                                      "captured."), fix="calibration")
+        elif cm_st == "needs_review":
             add("cue_masks", "Advanced cue matching", "fail",
-                "Required: capture the %s prompt mask%s from the guided "
-                "calibration step. Existing single-pixel values are kept "
-                "as a fallback but do not count as ready."
-                % (", ".join(missing), "s" if len(missing) > 1 else ""),
+                cm_live.get("detail", "Masks need review."),
+                fix="calibration")
+        else:
+            missing_note = cm_live.get(
+                "detail", "Capture the three prompt masks from the "
+                          "guided calibration step.")
+            add("cue_masks", "Advanced cue matching", "fail",
+                "Required: %s Existing single-pixel values are kept as "
+                "a fallback but do not count as ready." % missing_note,
                 fix="calibration")
         # Data directory write probe
         try:
@@ -5515,11 +5527,12 @@ class Api:
                 return "perm:" + ",".join(_missing)
         # Calibration gate: the same condition the Readiness Check reports
         # (readiness_check's docstring has always promised launch() enforces
-        # it). With auto-calibrate on this always passes; it blocks only
-        # when the user turned auto off and required values are missing or
-        # stale -- exactly the runs that would misclick. CLASSIC runs only:
-        # Studio builds/scripts drive their own programs and may use no
-        # pixel calibration at all.
+        # it). Auto-calibrate covers the PIXEL items, but Advanced cue
+        # matching (cue_masks) is required and can only come from a real
+        # capture -- a mask-less install blocks with "cal:cue_masks", and
+        # missing/stale manual values block exactly as before. CLASSIC runs
+        # only: Studio builds/scripts drive their own programs and may use
+        # no pixel calibration at all.
         try:
             _is_classic = _studio_ui_mode(_studio_load()) == "classic"
         except Exception:
@@ -8986,7 +8999,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    var TOURS={},HELPMAP={},OWNER=false,LOADED=false,builtExplain=false;
    var TOUR=[],ti=0,curName='main',running=false;
    try{document.body.appendChild(T('tour'));}catch(e){}
-   function flagKey(n){return n==='main'?'pp_tour_done':'pp_tour_'+n;}
+   // The MAIN tour's chip key is schema-scoped and DISTINCT from the
+   // legacy pre-schema key ('pp_tour_done'): the new tour must never
+   // write the key the legacy-migration branch reads, or a first run
+   // fabricates a 'migrated' record and a future schema bump can never
+   // re-offer the tutorial.
+   function flagKey(n){return n==='main'?'pp_tour_main_v2':'pp_tour_'+n;}
    function seen(n){try{return localStorage.getItem(flagKey(n))==='1';}catch(e){return true;}}
    function mark(n){try{localStorage.setItem(flagKey(n),'1');}catch(e){}}
    // MAIN-tutorial lifecycle lives Python-side (tutorial_state.json, atomic,
@@ -9140,17 +9158,26 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    // completion or dismissal recorded for the current schema. A legacy
    // localStorage pp_tour_done flag migrates as COMPLETED (a user who
    // already saw or dismissed the old tour is not forced through again).
-   window.maybeStartTour=async function(){try{
+   var _tutChecking=false;
+   window.maybeStartTour=async function(){if(_tutChecking)return;_tutChecking=true;try{
      var g=document.getElementById('gate');if(g&&g.classList.contains('show'))return;
      if(setupOverlayVisible()||running)return;
      var a=tutApi();if(!a)return;
      var st=null;try{st=await a.tutorial_state();}catch(e){st=null;}
+     // re-check the live gates AFTER the await: a tour may have started
+     // (or the wizard reopened) while the bridge call was in flight --
+     // acting on stale gates here is how a duplicate check once recorded
+     // a fabricated legacy migration mid-tour.
+     if(running||setupOverlayVisible())return;
+     var g2=document.getElementById('gate');if(g2&&g2.classList.contains('show'))return;
      if(!st||!st.setup_finished)return;
      if(st.main!=='NOT_STARTED')return;
      var legacyDone=false;try{legacyDone=localStorage.getItem('pp_tour_done')==='1';}catch(e){legacyDone=false;}
-     if(legacyDone){tutMark('COMPLETED',true);return;}
+     if(legacyDone){tutMark('COMPLETED',true);
+       try{localStorage.removeItem('pp_tour_done');}catch(e){}
+       return;}
      window.startTour('main');
-   }catch(e){}};
+   }catch(e){}finally{_tutChecking=false;}};
    loadTutorials();
    window.addEventListener('pywebviewready',function(){if(!LOADED)loadTutorials(true);});
    setTimeout(function(){if(!LOADED)loadTutorials(true);},700);
@@ -10882,10 +10909,14 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      return !!(l.test&&l.test.status==='passed');}
    function trustProg(reqCaps){const steps=reqCaps.map(c=>({id:c.id,required:true,
        complete:capComplete(c),title:c.title}));
-     // same rules as the Python engine (lite_onboarding.progression):
+     // same state/ordering rules as the Python engine
+     // (lite_onboarding.progression); today's registry has exactly the
+     // three OS capabilities as REQUIRED -- if a future required cap is
+     // added outside OS_CAPS, capComplete must gain a completion rule for
+     // it or this list would deadlock on a never-completable ACTIVE step.
      const out={};let seq=0,done=0,active=null,gate='';
      steps.forEach(s=>{seq++;
-       if(s.complete){done++;out[s.id]={state:'COMPLETE',seq,reason:'Complete - reopen any time.'};return;}
+       if(s.complete){done++;out[s.id]={state:'COMPLETE',seq,reason:'Complete - open it any time to review or redo it.'};return;}
        if(active===null){active=s.id;gate=s.title;
          out[s.id]={state:'ACTIVE',seq,reason:'Do this next.'};return;}
        out[s.id]={state:'UPCOMING',seq,reason:'Complete '+gate+' first.'};});
@@ -10942,6 +10973,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      const num=(prog&&prog.seq)?('<span class="step-num" aria-hidden="true">'+prog.seq+'</span>'):'';
      const reason=(prog&&(prog.state==='UPCOMING'||prog.state==='NEEDS_REVIEW'||prog.state==='BLOCKED'))
        ?('<div class="cap-desc"><b>'+(prog.state==='UPCOMING'?'Upcoming:':'Review:')+'</b> '+E(prog.reason)+'</div>'):'';
+     // UPCOMING must be REALLY disabled (attribute-level, like the
+     // calibration checklist) -- CSS pointer-events alone lets keyboard
+     // users activate a disabled-looking button. View code stays usable.
+     if(prog&&prog.state==='UPCOMING')
+       acts=acts.replace(/<button type="button" class="btn2" data-act="(?!code)/g,
+         '<button type="button" class="btn2" disabled aria-disabled="true" title="'+E(prog.reason)+'" data-act="');
      const aria=prog?(' aria-label="Step '+prog.seq+': '+E(c.title)+' - '
        +E(prog.state==='COMPLETE'?'complete':(prog.state==='ACTIVE'?'do this next':prog.state.toLowerCase().replace('_',' ')))+'"'):'';
      return '<div class="cap-card'+stepClass(prog)+'" data-capid="'+c.id+'" data-compact="'+(compact?1:0)+'" data-stamp="'+E(cardStamp(c,prog))+'"'+aria+'><div class="cap-head">'
@@ -10959,11 +10996,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    const _busy={};
    function updateCards(root){if(!ST||!root)return;let rewire=null;
      // recompute progression when this surface is the wizard trust step
-     // (the Trust Center has no progression: prog stays undefined there)
+     // (the Trust Center has no progression: prog stays undefined there).
+     // Must mirror renderTrust EXACTLY -- including the OPTIONAL stamp for
+     // optional caps -- or the stamp mismatch strips their chips on the
+     // first background refresh.
      let prog=null;
      if(root.id==='supBody'&&PAGE==='trust'){
        const caps=ST.capabilities.filter(c=>(c.platforms||[]).indexOf(PLAT)>=0);
-       prog=trustProg(caps.filter(c=>c.required_level.indexOf('REQUIRED')===0));}
+       prog=trustProg(caps.filter(c=>c.required_level.indexOf('REQUIRED')===0));
+       caps.filter(c=>c.required_level==='OPTIONAL').forEach(c=>{
+         prog[c.id]={state:'OPTIONAL',seq:0,reason:''};});}
      ST.capabilities.forEach(c=>{
        const card=root.querySelector('.cap-card[data-capid="'+c.id+'"]');
        if(!card||_busy[c.id])return;
@@ -11168,9 +11210,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    async function onGdDone(r){
      if(r.ctx!=='guided_setup')return;
      if(CALV.view!=='detail'||!CALV.awaiting)return;
-     const aw=CALV.awaiting,gen=CALV.gen;CALV.awaiting=null;
+     const aw=CALV.awaiting,gen=CALV.gen;
+     // the bridge carries the overlay key precisely so a stale completion
+     // from a DIFFERENT capture can never be credited to this stage
+     const expect=aw.plan[aw.next-1];
+     const ek=expect?(expect.kind==='cue'?('CUEMASK:'+expect.key):(expect.kind==='region'?('REGION:'+expect.key):expect.key)):'';
+     if(r.key&&ek&&r.key!==ek)return;
+     CALV.awaiting=null;
      if(r.cancelled){gdOut('<span class="no">Cancelled - nothing was saved.</span> You are still on this step; press Start to try again.');gdButtons(false);return;}
-     if(!r.ok){gdOut('<span class="no">That capture did not save.</span> Press Retry to run it again.');gdButtons(false);return;}
+     if(!r.ok){gdOut('<span class="no">That capture did not save.</span> Press Start calibration to run it again.');gdButtons(false);return;}
      if(aw.next<aw.plan.length){ // more captures in this item's plan
        if(gen!==CALV.gen)return;
        gdRunStage(aw.item,aw.plan,aw.next);return;}
@@ -11185,7 +11233,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        const g2=CALV.gen;
        setTimeout(()=>{if(g2===CALV.gen&&CALV.view==='detail')renderCal();},1400);
      }else{
-       gdOut('<span class="no">Saved, but validation reports: '+E((it&&it.live&&it.live.detail)||st||'unknown')+'</span> Press Retry to redo this step; the checklist keeps it active until it passes.');
+       gdOut('<span class="no">Saved, but validation reports: '+E((it&&it.live&&it.live.detail)||st||'unknown')+'</span> Press Start calibration to redo this step; the checklist keeps it active until it passes.');
        gdButtons(false);}
    }
    function gdOut(h){const o=$id('gdout');if(o)o.innerHTML=h;}
@@ -11385,7 +11433,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      $id('supBack').textContent='← Trust & Permissions';$id('supNext').textContent='Continue to Readiness →';
      $id('supNote').textContent=CAL.ready?'Required calibration is covered - you can continue.':'Do this next: '+((calItem(sum.active)||{}).title||CAL.blockers.join(', '));
      b.focus();}
-   let _calTimer=null;function renderCalSoon(){if(PAGE!=='cal')return;clearTimeout(_calTimer);_calTimer=setTimeout(()=>{if(PAGE==='cal')renderCal();},600);}
+   // NEVER while a guided DETAIL page owns the surface: the bridge fires
+   // __calRefresh BEFORE __calDone on every confirm, and a deferred
+   // checklist re-render here would yank the detail page mid-plan (multi
+   // stage captures) or wipe a failure state the spec requires to stay.
+   // The detail flow refreshes itself through onGdDone/renderCalDetail.
+   let _calTimer=null;function renderCalSoon(){if(PAGE!=='cal'||CALV.view==='detail')return;clearTimeout(_calTimer);_calTimer=setTimeout(()=>{if(PAGE==='cal'&&CALV.view!=='detail')renderCal();},600);}
    const _prevCalRefresh=window.__calRefresh;
    window.__calRefresh=function(){if(_prevCalRefresh)try{_prevCalRefresh();}catch(e){}renderCalSoon();};
    async function renderReady(){const g=++GEN;PAGE='ready';railSet();const b=$id('supBody');

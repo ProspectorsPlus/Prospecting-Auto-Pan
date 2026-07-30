@@ -875,14 +875,24 @@ REQUIRED_CUES = ("PAN", "DEPOSIT", "SHAKE")
 
 def cue_masks_state(cfg):
     """(captured, missing) for the three required advanced-cue masks. A mask
-    counts only when it carries real placement data (ratio + bits), never a
-    bare truthy entry."""
+    counts only when it carries everything place_cue_masks needs to actually
+    place it at run time (bits + a 4-element ratio + positive w/h) -- a
+    hand-edited entry the runtime would silently skip must not read as
+    captured."""
     masks = cfg.get("CUE_MASKS")
     masks = masks if isinstance(masks, dict) else {}
     captured, missing = [], []
     for cue in REQUIRED_CUES:
         m = masks.get(cue)
-        if isinstance(m, dict) and m.get("bits") and m.get("ratio"):
+        ok = False
+        if isinstance(m, dict) and m.get("bits"):
+            ratio = m.get("ratio")
+            try:
+                ok = (isinstance(ratio, (list, tuple)) and len(ratio) == 4
+                      and int(m.get("w", 0)) > 0 and int(m.get("h", 0)) > 0)
+            except (TypeError, ValueError):
+                ok = False
+        if ok:
             captured.append(cue)
         else:
             missing.append(cue)

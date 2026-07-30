@@ -520,8 +520,9 @@ def scan_icons(files):
     icon are banned)."""
     print("[icons]")
     import hashlib
-    OLD_SHA = ("26e3b946"  # first 8 hex chars are enough to identify it
-               )
+    # first 8 hex chars identify each legacy artefact: the cowboy PNG and
+    # the cowboy multi-size ICO compiled from it
+    OLD_SHAS = ("26e3b946", "879652cb")
     for rel in ("icon.png", "windows/icon.png", "windows/icon.ico",
                 "assets/icon/prospector-lite-icon.svg"):
         chk(rel in files, "%s is tracked" % rel)
@@ -529,7 +530,7 @@ def scan_icons(files):
         chk(os.path.isfile(p), "%s exists" % rel)
         if os.path.isfile(p):
             sha = hashlib.sha256(open(p, "rb").read()).hexdigest()
-            chk(not sha.startswith(OLD_SHA),
+            chk(not any(sha.startswith(s) for s in OLD_SHAS),
                 "%s is not the old pre-rebrand artwork" % rel)
     for size in (1024, 512, 256, 128, 64, 48, 32, 24, 16):
         rel = "assets/icon/png/icon-%d.png" % size

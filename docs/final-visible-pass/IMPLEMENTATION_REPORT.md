@@ -77,6 +77,49 @@ both surfaces run identical calibration semantics on identical values.
   entries; `release/public-candidate/` rebuilt for rc.4 (rc.3 archived to
   `release/archive/1.0.0-rc.3/`).
 
+## Deliberate deviations from the specification's suggested layout
+
+- The guided detail page's **Reset** control is delivered only for
+  Advanced cue matching ("Clear captured masks", the one place a clean
+  clear semantics exists via `clear_cue_mask`). Pixel/region items have no
+  destructive reset: re-running Start replaces the saved value atomically,
+  and zeroing a pixel via the shared save path would flip
+  `AUTO_CALIBRATE` off as a side effect — a reset that can leave a user
+  worse off than a redo. Recalibrate-to-replace is the supported path.
+- The DMG **volume** keeps the standard disk icon; the diamond is the app
+  bundle's icon (Dock, Finder, window). Release wording says so exactly.
+
+## Independent verification round (post-implementation)
+
+A six-lens adversarial fresh-context verification ran against the first
+rc.4 build (906a58b). It confirmed containment, the cue requirement, the
+migration, icon/packaging integrity and documentation honesty — and found
+one P0 and two P1s, all fixed and re-verified in the follow-up build:
+
+- **P0**: the bridge fires `__calRefresh` before `__calDone`, and the
+  deferred checklist re-render could replace a guided detail page 600 ms
+  after a capture (aborting multi-stage plans and wiping failure states).
+  Fixed by making the deferred refresh yield while a detail page owns the
+  surface; the DOM suite now replicates the real event order + latency and
+  asserts detail-page persistence through the refresh window.
+- **P1**: the new main tour wrote the legacy `pp_tour_done` flag that the
+  migration branch reads, so a first-run race could record a fabricated
+  "legacy migration" and a future schema bump could never re-offer the
+  tutorial. Fixed: schema-scoped flag key, legacy key consumed on
+  migration, post-await gate re-checks, single-flight, and
+  `tutorial_mark` now refuses NOT_STARTED and out-of-order legacy writes.
+- **P1**: UPCOMING permission cards were only CSS-disabled
+  (`pointer-events:none`), so keyboard users could activate them. Fixed
+  with attribute-level `disabled aria-disabled` (matching the calibration
+  checklist), plus the optional-card chip-stripping refresh mismatch.
+- P2/P3 sweep: readiness cue row now derives from the same status as the
+  aggregate (no contradictions on stale windows), `cue_masks_state`
+  requires placeable masks (bits + 4-part ratio + positive w/h), stale
+  guided results are also key-matched, the legacy Windows ICO hash is
+  gate-banned alongside the PNG, `studio_conformance.py`'s stale
+  "not shipped" docstring was corrected, failure copy names the real
+  button, and the launch-gate comment reflects the mask requirement.
+
 ## Honest limits
 
 - `engine_lite_drive.py` has one environment-dependent failure on this

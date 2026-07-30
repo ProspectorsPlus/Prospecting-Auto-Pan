@@ -99,7 +99,9 @@ function makeApi(S) {
         case 'detect_roblox':
           return Promise.resolve({ found: true, w: 1800, h: 1087, x: 0, y: 39 });
         case 'wizard_propose':
-          return Promise.resolve({ ok: true, detected: true, msg: 'found' });
+          // a real call does a full-screen grab + detection -- keep latency
+          return new Promise(r => setTimeout(() =>
+            r({ ok: true, detected: true, msg: 'found' }), 250));
         case 'onboarding_mark':
           S.onbState = args[0];
           if (args[0] === 'FINISHED') S.setupFinished = true;
@@ -151,6 +153,15 @@ async function bridge(dom, S) {
   dom.window.pywebview = { api: makeApi(S) };
   dom.window.dispatchEvent(new dom.window.Event('pywebviewready'));
   await sleep(1100); // boot() waits 650ms before deciding what to show
+}
+// Replicate the REAL bridge completion order: overlay_confirm /
+// overlay_cancel always fire __calRefresh BEFORE __calDone
+// (prospecting_app.py overlay_confirm -> _cal_done_notify). A suite that
+// fires __calDone alone cannot see refresh-driven re-renders yanking the
+// guided detail page -- exactly the rc.4 P0 the verifier found.
+function calDone(dom, payload) {
+  if (dom.window.__calRefresh) dom.window.__calRefresh();
+  dom.window.__calDone(payload);
 }
 function view(doc) {
   const t = doc.querySelector('.tab.active');
@@ -256,12 +267,15 @@ async function scenarioMainJourney() {
   chk(S.calls.some(c => c.startsWith('wizard_propose("CAP_RIGHT"') && c.indexOf('guided_setup') >= 0),
     'Start runs the shared service (wizard_propose CAP_RIGHT, guided_setup context)');
   insideWizard(doc, 'capture 1 armed');
-  dom.window.__calDone({ ctx: 'guided_setup', key: 'CAP_RIGHT', ok: true });
+  calDone(dom, { ctx: 'guided_setup', key: 'CAP_RIGHT', ok: true });
+  await sleep(900); // survive the 600ms __calRefresh window mid-plan
+  chk(!!doc.getElementById('gdstart') || S.calls.some(c => c.startsWith('wizard_propose("CAP_LEFT"')),
+    'detail flow survives the deferred checklist refresh after capture 1');
   await sleep(300);
   chk(S.calls.some(c => c.startsWith('wizard_propose("CAP_LEFT"')),
     'first confirm advances to the LEFT-tip capture');
   S.registry = REG_CAP_DONE; // the save happened; live status now user-calibrated
-  dom.window.__calDone({ ctx: 'guided_setup', key: 'CAP_LEFT', ok: true });
+  calDone(dom, { ctx: 'guided_setup', key: 'CAP_LEFT', ok: true });
   await sleep(500);
   chk(/Saved and validated/.test(body.textContent), 'success state shows after validation');
   insideWizard(doc, 'validated');
@@ -279,7 +293,7 @@ async function scenarioMainJourney() {
   await sleep(300);
   doc.getElementById('gdstart').click();
   await sleep(250);
-  dom.window.__calDone({ ctx: 'guided_setup', key: 'PAN_PIX', ok: false, cancelled: true });
+  calDone(dom, { ctx: 'guided_setup', key: 'PAN_PIX', ok: false, cancelled: true });
   await sleep(250);
   chk(/Cancelled - nothing was saved/.test(body.textContent), 'cancel shows inside the detail page');
   chk(!!doc.getElementById('gdback'), 'cancel stays on the guided detail page');
@@ -288,21 +302,24 @@ async function scenarioMainJourney() {
   // ---- failure stays on the detail page ----
   doc.getElementById('gdstart').click();
   await sleep(250);
-  dom.window.__calDone({ ctx: 'guided_setup', key: 'PAN_PIX', ok: false });
+  calDone(dom, { ctx: 'guided_setup', key: 'PAN_PIX', ok: false });
   await sleep(250);
   chk(/did not save/.test(body.textContent), 'failure shows inside the detail page');
   chk(!!doc.getElementById('gdback'), 'failure stays on the guided detail page');
+  await sleep(800); // the failure state must SURVIVE the deferred refresh
+  chk(/did not save/.test(body.textContent) && !!doc.getElementById('gdback'),
+    'failure state survives the 600ms __calRefresh window (stays on the page)');
 
   // ---- stale/foreign results cannot navigate ----
   doc.getElementById('gdstart').click();
   await sleep(250);
-  dom.window.__calDone({ ctx: 'normal_calibration', key: 'PAN_PIX', ok: true });
+  dom.window.__calDone({ ctx: 'normal_calibration', key: 'PAN_PIX', ok: true }); // foreign ctx: deliberately no refresh pairing
   await sleep(250);
   chk(!!doc.getElementById('gdback'), 'a normal-tab result does not touch the guided page');
   doc.getElementById('gdback').click();
   await sleep(300);
   const beforeStray = body.innerHTML;
-  dom.window.__calDone({ ctx: 'guided_setup', key: 'PAN_PIX', ok: true });
+  calDone(dom, { ctx: 'guided_setup', key: 'PAN_PIX', ok: true });
   await sleep(400);
   chk(/Guided Calibration/.test(body.innerHTML) && body.innerHTML === beforeStray,
     'a stale result after leaving the page cannot navigate');
