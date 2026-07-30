@@ -8,7 +8,8 @@ Two layers:
      wizard_ui_tests.js with canned bridge payloads composed by the REAL
      lite_onboarding.compose_registry -- guarding that guided calibration
      stays inside the wizard, progression renders sequentially, and the
-     main tutorial auto-starts exactly once after setup.
+     main tutorial auto-opens once per main-app entry (disabled only by
+     the TUTORIAL_AUTO_OPEN preference, never by past dismissal).
 
 Run from the repo root:  python3 wizard_ui_tests.py
 Requires node (like tour_check.py) and the repo-local jsdom.
@@ -289,8 +290,72 @@ def t_mark_complete_readiness():
                             if r.returncode else "ok"))
 
 
+def t_tutorial_v3():
+    print("[5] tutorial lifecycle v3: v2 migration, ACTIVE stamping, "
+          "auto-open pref (real Api, isolated home)")
+    work = tempfile.mkdtemp(prefix="pp_tutv3_")
+    env = dict(os.environ, PP_DATA_DIR=work, PP_NO_HUD="1")
+    code = (
+        "import json, os\n"
+        "import prospecting_app as app\n"
+        "# a valid v2 file migrates in place: history kept, counters added\n"
+        "json.dump({'schema': 2, 'main': 'DISMISSED', 'updated': 111,\n"
+        "           'migrated_from': 'localStorage pp_tour_done'},\n"
+        "          open(app._TUTORIAL_STATE_FILE, 'w'))\n"
+        "d = app._tutorial_lifecycle()\n"
+        "assert d['schema'] == 3 and d['main'] == 'DISMISSED', d\n"
+        "assert d['updated'] == 111, d\n"
+        "assert d['migrated_from'] == 'localStorage pp_tour_done', d\n"
+        "assert d['seen_count'] == 1 and d['last_seen_version'] == '', d\n"
+        "# a v2 NOT_STARTED file migrates with seen_count 0\n"
+        "json.dump({'schema': 2, 'main': 'NOT_STARTED', 'updated': 0},\n"
+        "          open(app._TUTORIAL_STATE_FILE, 'w'))\n"
+        "d = app._tutorial_lifecycle()\n"
+        "assert d['schema'] == 3 and d['seen_count'] == 0, d\n"
+        "assert d['main'] == 'NOT_STARTED', d\n"
+        "# garbage resets to the v3 default\n"
+        "open(app._TUTORIAL_STATE_FILE, 'w').write('{bad')\n"
+        "d = app._tutorial_lifecycle()\n"
+        "assert d == {'schema': 3, 'main': 'NOT_STARTED', 'updated': 0,\n"
+        "             'seen_count': 0, 'last_seen_version': ''}, d\n"
+        "api = app.Api()\n"
+        "st = api.tutorial_state()\n"
+        "assert st['auto_open'] is True, st\n"
+        "assert st['seen_count'] == 0 and st['last_seen_version'] == '', st\n"
+        "# ACTIVE increments seen_count and stamps last_seen_version\n"
+        "r = api.tutorial_mark('ACTIVE')\n"
+        "assert r['ok'], r\n"
+        "st = api.tutorial_state()\n"
+        "assert st['seen_count'] == 1, st\n"
+        "assert st['last_seen_version'] == app.VERSION, st\n"
+        "api.tutorial_mark('DISMISSED')\n"
+        "api.tutorial_mark('ACTIVE')\n"
+        "st = api.tutorial_state()\n"
+        "assert st['seen_count'] == 2 and st['main'] == 'ACTIVE', st\n"
+        "# COMPLETED / DISMISSED never increment the counter\n"
+        "api.tutorial_mark('COMPLETED')\n"
+        "assert api.tutorial_state()['seen_count'] == 2\n"
+        "# the persisted file carries the v3 shape\n"
+        "d = json.load(open(app._TUTORIAL_STATE_FILE))\n"
+        "assert d['schema'] == 3 and d['seen_count'] == 2, d\n"
+        "# the auto-open pref persists like the welcome pref\n"
+        "r = api.tutorial_set_auto_open(False)\n"
+        "assert r['ok'] and r['value'] is False, r\n"
+        "assert app.load_saved().get('TUTORIAL_AUTO_OPEN') is False\n"
+        "assert app.Api().tutorial_state()['auto_open'] is False\n"
+        "assert api.tutorial_set_auto_open(True)['ok']\n"
+        "assert app.Api().tutorial_state()['auto_open'] is True\n"
+        "print('TUTV3OK')\n")
+    r = subprocess.run([sys.executable, "-c", code], env=env, cwd=ROOT,
+                       capture_output=True, text=True, timeout=600)
+    chk(r.returncode == 0 and "TUTV3OK" in r.stdout,
+        "v2->v3 migration keeps history, ACTIVE stamps count+version, "
+        "auto-open pref round-trips (%s)"
+        % ((r.stderr[-400:] or r.stdout[-400:]) if r.returncode else "ok"))
+
+
 def t_dom_layer():
-    print("[5] real-DOM wizard journey (jsdom over build_html)")
+    print("[6] real-DOM wizard journey (jsdom over build_html)")
     import lite_onboarding as lo
     work = tempfile.mkdtemp(prefix="pp_wizui_")
     data = os.path.join(work, "data")
@@ -343,6 +408,7 @@ def main():
     t_routing_table()
     t_completion_via()
     t_mark_complete_readiness()
+    t_tutorial_v3()
     t_dom_layer()
     if FAILS:
         print("WIZARD TESTS: %d FAILURE(S)" % len(FAILS))

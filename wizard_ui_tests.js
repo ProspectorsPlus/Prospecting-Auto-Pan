@@ -10,7 +10,9 @@
 //   - sequential progression on permissions + calibration (ACTIVE /
 //     UPCOMING labels, fading, completion activates the next step)
 //   - the permission page carries no global never-requested list
-//   - the main tutorial auto-starts once, only after setup finishes
+//   - the main tutorial auto-opens once per main-app entry (boot, and each
+//     wizard visit -> return), closable via the X, disabled only by the
+//     TUTORIAL_AUTO_OPEN preference -- never by past dismissal
 // Prints "WIZARD-UI: ALL PASS" on success; exits 1 on any failure.
 'use strict';
 const fs = require('fs');
@@ -45,6 +47,9 @@ function makeState() {
     skipAuto: false,       // SKIP_WIZARD_AUTOMATICALLY
     tutMain: 'NOT_STARTED',
     tutMarks: [],
+    tutAutoOpen: true,     // TUTORIAL_AUTO_OPEN
+    tutSeen: 0,
+    tutLastVer: '',
   };
 }
 const ONB_ORDER = ['NOT_STARTED', 'WELCOME_COMPLETE', 'TRUST_STARTED',
@@ -136,12 +141,17 @@ function makeApi(S) {
           if (args[0] === 'FINISHED') S.setupFinished = true;
           return Promise.resolve({ state: S.onbState });
         case 'tutorial_state':
-          return Promise.resolve({ schema: 2, main: S.tutMain,
-            setup_finished: S.setupFinished });
+          return Promise.resolve({ schema: 3, main: S.tutMain,
+            setup_finished: S.setupFinished, auto_open: S.tutAutoOpen,
+            seen_count: S.tutSeen, last_seen_version: S.tutLastVer });
         case 'tutorial_mark':
           S.tutMarks.push(args[0] + (args[1] ? ':legacy' : ''));
           S.tutMain = args[0];
+          if (args[0] === 'ACTIVE') { S.tutSeen++; S.tutLastVer = 'test'; }
           return Promise.resolve({ ok: true, main: args[0] });
+        case 'tutorial_set_auto_open':
+          S.tutAutoOpen = !!args[0];
+          return Promise.resolve({ ok: true, value: !!args[0] });
         case 'tutorial_content':
           return Promise.resolve(TOURS);
         case 'builds_info':
@@ -418,7 +428,8 @@ async function scenarioMainJourney() {
   await sleep(2200);
   chk(S.onbState === 'FINISHED', 'finishing marks onboarding FINISHED');
   chk(view(doc).tour === 'block', 'the main tutorial auto-starts after setup finishes');
-  chk(S.tutMarks.indexOf('ACTIVE') >= 0, 'the start is persisted Python-side (ACTIVE)');
+  chk(S.tutMarks.filter(m => m === 'ACTIVE').length === 1 && S.tutSeen === 1,
+    'the start is persisted Python-side exactly once (ACTIVE; seen_count=1)');
   // finish the tour via skip and confirm dismissal persists
   doc.getElementById('tourskip').click();
   await sleep(200);
@@ -433,12 +444,12 @@ async function scenarioMainJourney() {
   dom.window.close();
 }
 
-async function scenarioNoRestart() {
-  console.log('[B] finished install: tutorial does not restart; needs-review shown');
+async function scenarioReopenEveryEntry() {
+  console.log('[B] finished install: dismissed tutorial REOPENS per entry; X closes; wizard visit resets');
   const S = makeState();
   S.setupFinished = true;
   S.onbState = 'FINISHED';
-  S.tutMain = 'DISMISSED';
+  S.tutMain = 'DISMISSED';   // the rc.5 forever-suppressor -- now history only
   S.registry = REG_REVIEW;
   const dom = boot(S);
   const doc = dom.window.document;
@@ -446,9 +457,29 @@ async function scenarioNoRestart() {
   chk(view(doc).gate, 'welcome still shows (preference ON)');
   doc.getElementById('welGo').click();
   await sleep(2200);
-  chk(view(doc).tour !== 'block', 'a DISMISSED tutorial does not restart on launch');
-  chk(S.tutMarks.length === 0, 'no tutorial transition is written');
-  // the wizard reopened from Trust Center shows the needs-review position
+  chk(view(doc).tour === 'block',
+    'a previously-DISMISSED tutorial REOPENS on main-app entry (rc.5 suppression gone)');
+  chk(S.tutMarks.filter(m => m === 'ACTIVE').length === 1 && S.tutSeen === 1,
+    'the reopen is persisted (ACTIVE; seen_count incremented)');
+  // ---- the X control ----
+  const x = doc.getElementById('tourx');
+  chk(!!x && x.getAttribute('aria-label') === 'Close tutorial',
+    'the popover carries a real close X (aria-label "Close tutorial")');
+  chk(doc.getElementById('tourNoAutoRow').style.display !== 'none',
+    'the main tour shows the do-not-open-automatically checkbox');
+  chk(doc.getElementById('tourNoAuto').checked === false,
+    'the checkbox renders the stored preference (auto_open on -> unchecked)');
+  x.click();
+  await sleep(250);
+  chk(view(doc).tour !== 'block', 'the X closes the tutorial');
+  chk(S.tutMarks.indexOf('DISMISSED') >= 0, 'the X records DISMISSED (honest history)');
+  // ---- same entry: never reopens ----
+  await dom.window.maybeStartTour();
+  await sleep(250);
+  chk(view(doc).tour !== 'block',
+    'maybeStartTour in the SAME entry does not reopen the tutorial');
+  // ---- the wizard reopened from Trust Center shows the needs-review position
+  //      (and the visit makes the next return a FRESH entry) ----
   dom.window.SETUP.open('cal');
   await sleep(500);
   const cue = cardState(doc, 'cue_masks');
@@ -458,11 +489,21 @@ async function scenarioNoRestart() {
     const s = cardState(doc, id);
     chk(s && s.chip === 'Complete', id + ' stays COMPLETE (old values preserved)');
   });
+  doc.getElementById('supSkip').click();
+  await sleep(120);
+  doc.getElementById('skipSession').click();
+  await sleep(1400); // _skipFinish schedules maybeStartTour at +900ms
+  chk(view(doc).tour === 'block',
+    'leaving the wizard via "Skip this time" reopens the tutorial (fresh entry)');
+  chk(S.tutMarks.filter(m => m === 'ACTIVE').length === 2 && S.tutSeen === 2,
+    'the fresh entry is a new viewing (second ACTIVE; seen_count=2)');
+  chk(dom.errors.length === 0, 'no jsdom errors in the entry-model journey' +
+    (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
   dom.window.close();
 }
 
 async function scenarioLegacyTourFlag() {
-  console.log('[C] legacy localStorage flag migrates instead of restarting');
+  console.log('[C] legacy localStorage flag migrates as history; tutorial still opens');
   const S = makeState();
   S.setupFinished = true;
   S.onbState = 'FINISHED';
@@ -472,8 +513,13 @@ async function scenarioLegacyTourFlag() {
   await bridge(dom, S);
   doc.getElementById('welGo').click();
   await sleep(2200);
-  chk(view(doc).tour !== 'block', 'legacy users are not forced through the tour again');
-  chk(S.tutMarks.indexOf('COMPLETED:legacy') >= 0, 'the legacy flag migrates as COMPLETED');
+  chk(S.tutMarks.indexOf('COMPLETED:legacy') >= 0,
+    'the legacy flag migrates as COMPLETED history');
+  chk(view(doc).tour === 'block',
+    'the migration no longer suppresses: the tutorial opens for this entry');
+  let gone = false;
+  try { gone = dom.window.localStorage.getItem('pp_tour_done') === null; } catch (e) {}
+  chk(gone, 'the legacy key is removed after migration');
   dom.window.close();
 }
 
@@ -483,7 +529,8 @@ async function scenarioExplicitWelcome() {
   S.setupFinished = true;
   S.onbState = 'FINISHED';
   S.showEvery = false;          // route: main
-  S.tutMain = 'DISMISSED';      // keep the tour out of the way
+  S.tutMain = 'DISMISSED';      // history only -- no longer a suppressor
+  S.tutAutoOpen = false;        // the supported way to keep the tour away
   S.registry = REG_REVIEW;
   const dom = boot(S);
   const doc = dom.window.document;
@@ -599,10 +646,57 @@ async function scenarioAutoSkipBoot() {
   chk(!view(doc).gate && !view(doc).setup && !view(doc).supReturn,
     'route main: gate and wizard stay closed');
   chk(doc.body.dataset.welinit === '1', 'the main app booted');
-  chk(view(doc).tour !== 'block', 'no tutorial auto-start while setup is unfinished');
+  await sleep(900); // the +900ms entry check
+  chk(view(doc).tour === 'block',
+    'the tutorial auto-opens even though setup is unfinished (a skipped wizard still gets it)');
   chk(doc.getElementById('welSkipAuto').checked === true,
     'the gate checkbox mirrors the stored pref');
   chk(dom.errors.length === 0, 'no jsdom errors during auto-skip boot' +
+    (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
+  dom.window.close();
+}
+
+async function scenarioAutoOpenOff() {
+  console.log('[G] auto_open=false disables the auto-open; manual start + opt-out checkbox still work');
+  const S = makeState();
+  S.setupFinished = true;
+  S.onbState = 'FINISHED';
+  S.tutMain = 'COMPLETED';
+  S.tutSeen = 1;
+  S.tutAutoOpen = false;
+  S.showEvery = false;        // route: main -- boot straight into the app
+  S.registry = REG_REVIEW;
+  const dom = boot(S);
+  const doc = dom.window.document;
+  await bridge(dom, S);
+  chk(!view(doc).gate && doc.body.dataset.welinit === '1',
+    'booted straight into the main app');
+  await sleep(1100); // survive the +900ms entry check
+  chk(view(doc).tour !== 'block', 'auto_open=false: the tutorial does NOT open on entry');
+  chk(S.tutMarks.length === 0, 'no lifecycle transition is written');
+  // manual entry always works, whatever the pref
+  dom.window.startTour('main');
+  await sleep(600);
+  chk(view(doc).tour === 'block', 'startTour("main") from the menu still opens the tour');
+  const na = doc.getElementById('tourNoAuto');
+  chk(doc.getElementById('tourNoAutoRow').style.display !== 'none',
+    'the opt-out checkbox shows on the manual main tour');
+  chk(!!na && na.checked === true, 'the checkbox reflects auto_open=false (checked)');
+  // unchecking re-enables the auto-open
+  let n0 = S.calls.length;
+  na.checked = false;
+  na.dispatchEvent(new dom.window.Event('change'));
+  await sleep(200);
+  chk(S.calls.slice(n0).some(c => c === 'tutorial_set_auto_open(true)') && S.tutAutoOpen === true,
+    'unchecking calls tutorial_set_auto_open(true)');
+  // checking calls tutorial_set_auto_open(false)
+  n0 = S.calls.length;
+  na.checked = true;
+  na.dispatchEvent(new dom.window.Event('change'));
+  await sleep(200);
+  chk(S.calls.slice(n0).some(c => c === 'tutorial_set_auto_open(false)') && S.tutAutoOpen === false,
+    'checking #tourNoAuto calls tutorial_set_auto_open(false)');
+  chk(dom.errors.length === 0, 'no jsdom errors in the auto-open-off journey' +
     (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
   dom.window.close();
 }
@@ -708,10 +802,11 @@ async function scenarioOverlay() {
 
 (async () => {
   await scenarioMainJourney();
-  await scenarioNoRestart();
+  await scenarioReopenEveryEntry();
   await scenarioLegacyTourFlag();
   await scenarioExplicitWelcome();
   await scenarioAutoSkipBoot();
+  await scenarioAutoOpenOff();
   await scenarioOverlay();
   if (failures) { console.log('WIZARD-UI: %d FAILURE(S)', failures); process.exit(1); }
   console.log('WIZARD-UI: ALL PASS');

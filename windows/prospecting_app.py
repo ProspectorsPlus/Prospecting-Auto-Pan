@@ -582,26 +582,61 @@ def _set_skip_wizard_pref(flag):
     return _save_config_atomic(cur)
 
 
+# ---- Tutorial auto-open preference -------------------------------------------
+# TUTORIAL_AUTO_OPEN (default True): the main tutorial opens on every fresh
+# main-app entry (launch, or wizard visit -> return). Stored in the main
+# config exactly like SHOW_WELCOME_EVERY_LAUNCH. No legacy key to migrate.
+_TUTAUTO_KEY = "TUTORIAL_AUTO_OPEN"
+
+
+def _tutorial_auto_open_pref():
+    """The stored 'open the tutorial whenever the app opens' preference.
+    Missing/corrupt settings -> True (a new user gets the tutorial)."""
+    try:
+        return bool(load_saved().get(_TUTAUTO_KEY, True))
+    except Exception:
+        return True
+
+
+def _set_tutorial_auto_open(flag):
+    """Persist the auto-open checkbox immediately and atomically.
+    Returns (ok, err); a failed write is REPORTED, never hidden."""
+    cur = load_saved()
+    cur[_TUTAUTO_KEY] = bool(flag)
+    return _save_config_atomic(cur)
+
+
 # ---- Main-tutorial state -----------------------------------------------------
 # The MAIN tutorial (how to use the app) is distinct from the SETUP wizard
 # (permissions + calibration). Its lifecycle lives in its own atomically
 # written file inside the data dir -- NOT in WebKit localStorage, which is
 # invisible to the Trust Center data manifest, fails closed, and does not
-# survive a webview-profile change. Schema bumps re-offer the tutorial once
-# (a redesigned tutorial is new content); completion or dismissal within the
-# current schema is final until the user restarts it from the Tutorials menu.
+# survive a webview-profile change. Since schema 3 the lifecycle is HISTORY
+# (last outcome + seen_count + last_seen_version): it no longer gates the
+# auto-open, which happens on every fresh main-app entry unless the
+# TUTORIAL_AUTO_OPEN preference turns it off.
 _TUTORIAL_STATE_FILE = os.path.join(DATA_DIR, "tutorial_state.json")
+# 3: adds seen_count / last_seen_version, lifecycle becomes history only
 # 2: first Python-side schema (1 = the legacy localStorage pp_tour_done era)
-TUTORIAL_SCHEMA = 2
+TUTORIAL_SCHEMA = 3
 _TUT_STATES = ("NOT_STARTED", "ACTIVE", "COMPLETED", "DISMISSED")
 
 
 def _tutorial_lifecycle():
     d = _read_json(_TUTORIAL_STATE_FILE, {})
+    if (isinstance(d, dict) and d.get("schema") == 2
+            and d.get("main") in _TUT_STATES):
+        # v2 -> v3 migrates in place: main/updated/migrated_from are kept
+        # as history; the one viewing v2 could have recorded counts once.
+        d["schema"] = 3
+        d["seen_count"] = 1 if d.get("main") != "NOT_STARTED" else 0
+        d["last_seen_version"] = ""
     if (not isinstance(d, dict) or d.get("schema") != TUTORIAL_SCHEMA
             or d.get("main") not in _TUT_STATES):
         d = {"schema": TUTORIAL_SCHEMA, "main": "NOT_STARTED",
-             "updated": 0}
+             "updated": 0, "seen_count": 0, "last_seen_version": ""}
+    d.setdefault("seen_count", 0)
+    d.setdefault("last_seen_version", "")
     return d
 
 
@@ -2642,27 +2677,33 @@ class Api:
         except Exception as e:
             return {"tours": {}, "help": {}, "owner": False, "error": str(e)}
 
-    # ---- main-tutorial lifecycle (auto-start once after real setup) ----
+    # ---- main-tutorial lifecycle (history + auto-open on every entry) ----
     def tutorial_state(self):
-        """The main tutorial's lifecycle + everything the auto-start
-        decision needs: the tutorial starts only when setup is genuinely
-        FINISHED and the current-schema state is NOT_STARTED."""
+        """The main tutorial's lifecycle history + everything the
+        auto-open decision needs: `auto_open` (the TUTORIAL_AUTO_OPEN
+        preference), `seen_count` / `last_seen_version` (viewing history),
+        and `setup_finished` (informational -- since schema 3 it no
+        longer gates the auto-open; `main` is the last outcome only)."""
         d = dict(_tutorial_lifecycle())
         try:
             d["setup_finished"] = _onboarding().finished()
         except Exception:
             d["setup_finished"] = False
+        try:
+            d["auto_open"] = _tutorial_auto_open_pref()
+        except Exception:
+            d["auto_open"] = True
         return d
 
     def tutorial_mark(self, state, legacy=False):
         """Persist a lifecycle transition (ACTIVE / COMPLETED / DISMISSED).
-        NOT_STARTED is never accepted from the bridge -- only a schema
-        bump (in _tutorial_lifecycle) can re-arm the once-only auto-start.
+        NOT_STARTED is never accepted from the bridge -- the file records
+        history, never a fabricated fresh install. ACTIVE increments
+        seen_count and stamps last_seen_version (a viewing started).
         `legacy=True` records a migration from the pre-schema localStorage
         flag (honoured only from NOT_STARTED, so a live tour can never be
-        overwritten by a fabricated migration): a user who already saw or
-        dismissed the old tour is not forced through the new one. Atomic;
-        failures are reported."""
+        overwritten by a fabricated migration). Atomic; failures are
+        reported."""
         state = str(state or "")
         if state not in _TUT_STATES or state == "NOT_STARTED":
             return {"ok": False, "error": "Unknown tutorial state."}
@@ -2673,6 +2714,9 @@ class Api:
                              "tutorial ever ran."}
         d["main"] = state
         d["updated"] = int(time.time())
+        if state == "ACTIVE":
+            d["seen_count"] = int(d.get("seen_count", 0) or 0) + 1
+            d["last_seen_version"] = VERSION
         if legacy:
             d["migrated_from"] = "localStorage pp_tour_done"
         ok, err = _tutorial_lifecycle_save(d)
@@ -2682,6 +2726,29 @@ class Api:
             return {"ok": False, "error": err,
                     "error_code": "PP-TUT-SAVE"}
         return {"ok": True, "main": state}
+
+    def tutorial_set_auto_open(self, want):
+        """Persist the 'open the tutorial whenever Prospector Lite opens'
+        checkbox the moment it is toggled -- same engine-routed
+        single-writer pattern as welcome_set_always_show, same
+        report-and-revert contract on failure."""
+        val = bool(want)
+        with self._welcome_lock:
+            try:
+                ack = self._engine_settings_set(
+                    {_TUTAUTO_KEY: val}, opaque=True)
+            except Exception:
+                ack = None
+            if ack is not None:
+                ok, err = bool(ack.get("ok")), ("engine refused the write"
+                                                if not ack.get("ok") else "")
+            else:
+                ok, err = _set_tutorial_auto_open(val)
+        _wlog("tutorial_auto_open", status="ok" if ok else "fail",
+              code="" if ok else "PP-TUT-AUTO", detail=err)
+        return {"ok": ok, "value": val,
+                "error": err or None,
+                "error_code": None if ok else "PP-TUT-AUTO"}
 
     def save_tutorial_entry(self, tid, patch):
         """Owner only: store an override for one tutorial card or help entry.
@@ -7960,6 +8027,9 @@ def build_html():
         '<label class="row"><span class="lbl">Skip the setup wizard automatically on launch</span>'
         '<span class="switch"><input type="checkbox" id="set_skipwiz">'
         '<span class="track"><span class="knob"></span></span></span></label>'
+        '<label class="row"><span class="lbl">Open tutorial whenever Prospector Lite opens</span>'
+        '<span class="switch"><input type="checkbox" id="set_tutauto" checked>'
+        '<span class="track"><span class="knob"></span></span></span></label>'
         '</div>'
         '<p class="chint" style="margin-top:16px">Press Ctrl+Z to undo a setting '
         'change and Ctrl+Y to redo. Undo covers slider, box and preset changes.</p>'
@@ -8835,6 +8905,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  .tourbtn.go{background:var(--accent,#e0b873);color:#1a1005}
  .tourbtn.ghost{background:none;border:1px solid var(--line2);color:var(--mut)}
  .tourbtn.ghost:hover{color:var(--txt)}
+ .tourx{position:absolute;top:8px;right:10px;background:none;border:none;color:var(--dim);font:inherit;font-size:15px;line-height:1;padding:4px 6px;cursor:pointer;border-radius:6px}
+ .tourx:hover{color:var(--txt)}
+ .tournoauto{display:flex;align-items:center;gap:7px;margin-top:12px;font-size:12.5px;color:var(--mut);cursor:pointer}
  .introbox{background:var(--sand-dim,rgba(212,148,58,.10));border:1px solid var(--sand-glow,rgba(212,148,58,.3));border-radius:12px;padding:14px 18px;margin:0 0 14px;max-width:720px}
  .introt{font-weight:700;margin-bottom:8px}
  .introl{margin:0;padding-left:20px;line-height:1.7;font-size:14px;color:var(--mut)}
@@ -9130,6 +9203,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        <button type="button" id="welSkip" class="btn2" style="width:100%;margin-top:8px">Skip wizard</button>
        <label class="wel-again"><input type="checkbox" id="welAgain" checked> Show this screen at every launch</label>
        <label class="wel-again"><input type="checkbox" id="welSkipAuto"> Skip the setup wizard automatically on launch</label>
+       <label class="wel-again"><input type="checkbox" id="welTutAuto" checked> Open tutorial whenever Prospector Lite opens</label>
        <div class="wel-again" id="welAgainErr" style="display:none;color:#e07a6a" role="alert"></div>
        <div class="wel-links">
          <a href="#" id="welSrc" style="display:none">View source</a>
@@ -9262,12 +9336,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    <div class="mrow"><button type="button" class="btn2" id="skipCancel">Cancel</button></div></div></div>
  <div id="bsplash" aria-hidden="true"><div class="bsp-card"><span class="bsp-mark">&#9670;</span><span class="bsp-txt"></span></div></div>
  <div id="tour" class="tour" style="display:none"><div id="tourspot" class="tourspot"></div>
-  <div id="tourpop" class="tourpop"><div id="tourarrow"></div><div class="tourstepn" id="tourstepn"></div>
+  <div id="tourpop" class="tourpop"><div id="tourarrow"></div>
+   <button type="button" class="tourx" id="tourx" aria-label="Close tutorial">✕</button>
+   <div class="tourstepn" id="tourstepn"></div>
    <div class="tourtitle" id="tourtitle"></div><div class="tourbody" id="tourbody"></div>
    <div class="tourdots" id="tourdots"></div>
    <div class="tourbtns"><button type="button" class="tourbtn ghost" id="tourskip">Skip tour</button>
     <span class="grow"></span><button type="button" class="tourbtn ghost" id="tourback">Back</button>
-    <button type="button" class="tourbtn go" id="tournext">Next</button></div></div></div>
+    <button type="button" class="tourbtn go" id="tournext">Next</button></div>
+   <label class="tournoauto" id="tourNoAutoRow" style="display:none"><input type="checkbox" id="tourNoAuto"> Do not open automatically in future</label></div></div>
  <div id="lightbox" style="display:none"><img id="lightboximg" alt=""></div>
 <script>
  let DEF={},V1={},V2={},GEODE={};
@@ -9329,6 +9406,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      try{r=await window.pywebview.api.wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
      if(!r||!r.ok){el.checked=!want;
        if(window.toast)toast('Could not save this preference ['+((r&&r.error_code)||'PP-SKIP-SAVE')+']');}});})();
+ // Tutorial auto-open lives in the CONFIG too (TUTORIAL_AUTO_OPEN, shared
+ // with the Welcome gate + Trust Center + tour footer): stored value on
+ // render, revert on save failure. Checked = auto_open true.
+ (function(){var el=document.getElementById('set_tutauto');if(!el)return;
+   function sync(){try{var a=window.pywebview&&window.pywebview.api;if(!a||!a.tutorial_state)return;
+     a.tutorial_state().then(function(t){el.checked=!(t&&t.auto_open===false);}).catch(function(){});}catch(e){}}
+   window.addEventListener('pywebviewready',sync);
+   if(window.pywebview&&window.pywebview.api)sync();
+   el.addEventListener('change',async function(){var want=!!el.checked;var r=null;
+     try{r=await window.pywebview.api.tutorial_set_auto_open(want);}catch(e){r={ok:false,error:String(e)};}
+     if(!r||!r.ok){el.checked=!want;
+       if(window.toast)toast('Could not save this preference ['+((r&&r.error_code)||'PP-TUT-AUTO')+']');}});})();
  (function(){
    function T(id){return document.getElementById(id);}
    function wsleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
@@ -9425,7 +9514,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      });});
      if(anim)requestAnimationFrame(function(){pop.classList.remove('tfade');spot.classList.remove('tfade');});
    }
-   async function show(){T('tour').style.display='block';running=true;await place(true);}
+   async function show(){T('tour').style.display='block';running=true;
+     // the auto-open opt-out only belongs to the MAIN tour; it renders the
+     // STORED preference (checked = do not open automatically)
+     var nr=T('tourNoAutoRow');if(nr)nr.style.display=(curName==='main')?'':'none';
+     if(curName==='main'){try{var ta=tutApi();if(ta&&ta.tutorial_state)ta.tutorial_state().then(function(s){
+       var na=T('tourNoAuto');if(na)na.checked=!!(s&&s.auto_open===false);}).catch(function(){});}catch(e){}}
+     await place(true);}
    function end(reason){T('tour').style.display='none';running=false;mark(curName);
      if(curName==='main')tutMark(reason==='finish'?'COMPLETED':'DISMISSED');
      if(curName==='main'){var t=document.querySelector('.tab[data-tab="run"]');if(t)t.click();}}
@@ -9436,6 +9531,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    var nb=T('tournext');if(nb)nb.onclick=async function(){if(ti>=TOUR.length-1){end('finish');return;}ti++;await place(true);};
    var bk=T('tourback');if(bk)bk.onclick=async function(){if(ti>0){ti--;await place(true);}};
    var sk=T('tourskip');if(sk)sk.onclick=function(){end('skip');};
+   var tx=T('tourx');if(tx)tx.onclick=function(){end('skip');};
+   var naBox=T('tourNoAuto');
+   if(naBox)naBox.addEventListener('change',async function(){
+     var want=!naBox.checked; // checked = do NOT open automatically
+     var r=null;try{r=await tutApi().tutorial_set_auto_open(want);}catch(e){r={ok:false,error:String(e)};}
+     if(!r||!r.ok){naBox.checked=!naBox.checked;
+       if(window.toast)toast('Could not save this preference ['+((r&&r.error_code)||'PP-TUT-AUTO')+']');}});
    document.addEventListener('keydown',function(e){if(!running)return;
      if(e.key==='Escape'){end('skip');return;}
      var tg=((e.target&&e.target.tagName)||'').toLowerCase();
@@ -9493,17 +9595,26 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        if(setupOverlayVisible())return; // never over (or under) the setup wizard
        setTimeout(function(){if(!running&&!seen(name)&&!setupOverlayVisible())window.startTour(name);},430);});});
    window.addEventListener('resize',function(){var t=T('tour');if(t&&t.style.display!=='none')place();});
-   // Auto-start the MAIN tutorial exactly once per tutorial schema version,
-   // and only after setup is GENUINELY finished: never while the welcome
-   // gate or the setup wizard (even suspended) is up, never before the
-   // onboarding state machine reports FINISHED, never again after a
-   // completion or dismissal recorded for the current schema. A legacy
-   // localStorage pp_tour_done flag migrates as COMPLETED (a user who
-   // already saw or dismissed the old tour is not forced through again).
+   // Auto-open the MAIN tutorial on every fresh main-app entry (process
+   // boot, and each wizard visit -> return): since schema 3 the persisted
+   // lifecycle is HISTORY (last outcome), never a suppressor. Never while
+   // the welcome gate, the setup wizard (even suspended), the
+   // Calibrate-tab quick wizard or the skip modal is up; at most once per
+   // entry (TUT_ENTRY_SHOWN, reset by SETUP.open); the TUTORIAL_AUTO_OPEN
+   // preference turns the whole behavior off. A legacy localStorage
+   // pp_tour_done flag still migrates as COMPLETED history, but no
+   // longer suppresses the open.
    var _tutChecking=false;
+   let TUT_ENTRY_SHOWN=false;
+   window.__tutEntryReset=function(){TUT_ENTRY_SHOWN=false;};
+   function calWizardOpen(){var w=document.getElementById('wizard');
+     return !!(w&&(w.style.display==='flex'||w.style.display==='block'));}
+   function skipModalOpen(){var m=document.getElementById('skipmodal');
+     return !!(m&&m.classList.contains('show'));}
    window.maybeStartTour=async function(){if(_tutChecking)return;_tutChecking=true;try{
      var g=document.getElementById('gate');if(g&&g.classList.contains('show'))return;
      if(setupOverlayVisible()||running)return;
+     if(calWizardOpen()||skipModalOpen())return;
      var a=tutApi();if(!a)return;
      var st=null;try{st=await a.tutorial_state();}catch(e){st=null;}
      // re-check the live gates AFTER the await: a tour may have started
@@ -9512,12 +9623,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      // a fabricated legacy migration mid-tour.
      if(running||setupOverlayVisible())return;
      var g2=document.getElementById('gate');if(g2&&g2.classList.contains('show'))return;
-     if(!st||!st.setup_finished)return;
-     if(st.main!=='NOT_STARTED')return;
+     if(calWizardOpen()||skipModalOpen())return;
+     if(!st)return;
      var legacyDone=false;try{legacyDone=localStorage.getItem('pp_tour_done')==='1';}catch(e){legacyDone=false;}
      if(legacyDone){tutMark('COMPLETED',true);
-       try{localStorage.removeItem('pp_tour_done');}catch(e){}
-       return;}
+       try{localStorage.removeItem('pp_tour_done');}catch(e){}}
+     if(st.auto_open===false||TUT_ENTRY_SHOWN)return;
+     TUT_ENTRY_SHOWN=true;
      window.startTour('main');
    }catch(e){}finally{_tutChecking=false;}};
    loadTutorials();
@@ -11145,6 +11257,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      let r=null;try{r=await _api().wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
      if(!r||!r.ok){a.checked=!want;
        welErr('Could not save this preference ('+((r&&r.error)||'bridge unavailable')+'). ['+((r&&r.error_code)||'PP-SKIP-SAVE')+']');}});})();
+ // The tutorial auto-open checkbox too (checked = auto_open true). Its
+ // stored value comes from tutorial_state(), fetched on every gate render.
+ async function welTutSync(){try{const t=await _api().tutorial_state();
+   const a=document.getElementById('welTutAuto');if(a)a.checked=!(t&&t.auto_open===false);}catch(e){}}
+ (function(){const a=document.getElementById('welTutAuto');if(!a)return;
+   a.addEventListener('change',async()=>{const want=!!a.checked;welErr('');
+     let r=null;try{r=await _api().tutorial_set_auto_open(want);}catch(e){r={ok:false,error:String(e)};}
+     if(!r||!r.ok){a.checked=!want;
+       welErr('Could not save this preference ('+((r&&r.error)||'bridge unavailable')+'). ['+((r&&r.error_code)||'PP-TUT-AUTO')+']');}});})();
  // WEL_EXPLICIT: true only when the user deliberately opened Welcome
  // (Tutorial menu). boot() never sets it. Explicit Welcome always routes
  // into the wizard for review; the boot path keeps its original behavior.
@@ -11190,6 +11311,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    try{const w=await _api().welcome_state();welSetChecked(w&&w.show_every_launch);
      welSkipSet(w&&w.skip_wizard_automatically);WEL_RESUME=(w&&w.resume)||'';
      sn=!!(w&&w.setup_needed);}catch(e){}
+   welTutSync();
    welActions(sn);
    welcomeShow();};
  function welcomeFill(info){try{
@@ -11218,7 +11340,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    // route comes from lite_onboarding.compute_startup_route -- the single
    // routing authority (welcome vs wizard_resume vs main).
    const route=(w&&w.route)||'';
-   if(route==='welcome'){welcomeShow();}
+   if(route==='welcome'){welTutSync();welcomeShow();}
    else if(route==='wizard_resume'&&window.SETUP){SETUP.resume(resume);}
    else{_startApp();}}
  (function(){const b=document.getElementById('welGo');if(!b)return;
@@ -12007,6 +12129,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    window.SETUP={
      open:async function(page){await refresh(false);PLAT=DET==='win'?'win':'mac';
        const s=$id('setup');if(s)s.classList.add('show');$id('supReturn').classList.remove('show');
+       // a wizard visit makes the next return to the app a FRESH entry --
+       // the main tutorial may auto-open again after this closes
+       if(window.__tutEntryReset)window.__tutEntryReset();
        try{_api().onboarding_mark('TRUST_STARTED');}catch(e){}
        if(page==='cal')renderCal();else if(page==='ready')renderReady();else renderTrust();},
      resume:function(state){const map={NOT_STARTED:'trust',WELCOME_COMPLETE:'trust',TRUST_STARTED:'trust',TRUST_COMPLETE:'cal',CALIBRATION_STARTED:'cal',CALIBRATION_COMPLETE:'ready',READINESS_COMPLETE:'ready'};
@@ -12024,9 +12149,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      else{try{await _api().onboarding_mark('READINESS_COMPLETE');await _api().onboarding_mark('FINISHED','wizard');}catch(e){}
        const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.remove('show');_startApp();
        // _startApp is a no-op when the app already booted behind the wizard,
-       // so trigger the once-only main-tutorial check explicitly now that
-       // setup has GENUINELY finished (maybeStartTour re-verifies via
-       // tutorial_state + onboarding state; a second call is harmless).
+       // so trigger the main-tutorial entry check explicitly: the wizard is
+       // closing, which is a fresh main-app entry (maybeStartTour re-checks
+       // the live gates + the auto-open pref; a second call is harmless --
+       // TUT_ENTRY_SHOWN makes it once per entry).
        setTimeout(()=>{if(window.maybeStartTour)maybeStartTour();},1000);}};
    window.__setupRerun=async function(){try{await _api().onboarding_rerun();}catch(e){}SETUP.open('trust');};
    // Window-focus fast path: NON-destructive card patch (a full re-render
@@ -12037,10 +12163,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    // ---- Trust Center tab ----
    window.__tcRender=async function(){const box=$id('tcbody');if(!box)return;
      box.innerHTML='<p class="chint">Loading&hellip;</p>';
-     let st=null,man=null,dm=null,ws=null;try{st=await _api().trust_state();}catch(e){}
+     let st=null,man=null,dm=null,ws=null,tut=null;try{st=await _api().trust_state();}catch(e){}
      try{man=await _api().trust_manifest();}catch(e){}
      try{dm=await _api().data_manifest();}catch(e){}
      try{ws=await _api().welcome_state();}catch(e){}
+     try{tut=await _api().tutorial_state();}catch(e){}
      if(!st){box.innerHTML='<p class="chint">Trust state unavailable.</p>';return;}
      ST=st;DET=st.platform||'mac';PLAT=DET==='win'?'win':'mac';
      const id=st.identity||{};
@@ -12074,6 +12201,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<button type="button" class="btn2" id="tcResetOb">Reset wizard progress only</button></div>'
        +'<label class="row" style="margin-top:10px"><span class="lbl">Skip the setup wizard automatically on launch</span>'
        +'<span class="switch"><input type="checkbox" id="tcSkipAuto"'+((ws&&ws.skip_wizard_automatically)?' checked':'')+'>'
+       +'<span class="track"><span class="knob"></span></span></span></label>'
+       +'<label class="row" style="margin-top:6px"><span class="lbl">Open tutorial whenever Prospector Lite opens</span>'
+       +'<span class="switch"><input type="checkbox" id="tcTutAuto"'+((tut&&tut.auto_open===false)?'':' checked')+'>'
        +'<span class="track"><span class="knob"></span></span></span></label></div>';
      h+='<div class="tc-sec"><h3>Security reporting</h3><div class="cap-desc">Found a vulnerability? SECURITY.md explains how to report it privately.</div>'
        +'<div class="cap-actions"><button type="button" class="btn2" id="tcSec">Open SECURITY.md</button>'
@@ -12092,6 +12222,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      const tsk=$id('tcSkipAuto');if(tsk)tsk.onchange=async()=>{const want=!!tsk.checked;
        let r=null;try{r=await _api().wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
        if(!r||!r.ok){tsk.checked=!want;toast('Could not save this preference ['+((r&&r.error_code)||'PP-SKIP-SAVE')+']');}};
+     const tta=$id('tcTutAuto');if(tta)tta.onchange=async()=>{const want=!!tta.checked;
+       let r=null;try{r=await _api().tutorial_set_auto_open(want);}catch(e){r={ok:false,error:String(e)};}
+       if(!r||!r.ok){tta.checked=!want;toast('Could not save this preference ['+((r&&r.error_code)||'PP-TUT-AUTO')+']');}};
      w('tcSec',()=>{try{_api().open_doc('SECURITY.md');}catch(e){}});
      w('tcPriv',()=>{try{_api().open_doc('PRIVACY.md');}catch(e){}});
      w('tcPerm',()=>{try{_api().open_doc('PERMISSIONS.md');}catch(e){}});
