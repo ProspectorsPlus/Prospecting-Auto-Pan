@@ -536,8 +536,16 @@ def child_api_flow():
     # owner example tools refuse for non-owners
     r = api.owner_example_capture("cap_bar")
     assert not r.get("ok"), "owner capture must refuse non-owners"
-    # example lookup is honest
+    # example lookup is honest: approved sanitized captures ship as real
+    # images (rc.5 shipped owner-approved examples for the 11 calibratable
+    # items); anything without an approved file stays a placeholder.
     ex = api.calibration_example("cap_bar")
+    assert ex.get("placeholder") is False, "approved example must render"
+    assert str(ex.get("img", "")).startswith("data:image/png;base64,")
+    assert ex.get("alt"), "approved example carries alt text"
+    ex = api.calibration_example("roblox_window")
+    assert ex.get("placeholder") is True and "img" not in ex
+    ex = api.calibration_example("no_such_item")
     assert ex.get("placeholder") is True and "img" not in ex
     print("child_api_flow ok")
 
