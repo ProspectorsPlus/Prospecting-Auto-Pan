@@ -2,9 +2,12 @@
 
 Driven by the owner's full manual walkthrough of rc.4's guided calibration
 (21 screenshots of real capture sessions, including two defects caught in
-the act). Final build: `dist/ProspectorLite-1.0.0-rc.5-macos-arm64.dmg`
-(sha256 `2daf05c7…`), commit `9eb46c1e`, dirty=false; byte copy +
-manifest + checksums + SBOM in `release/public-candidate/` (rc.4 record
+the act). Final build after the independent-verification fix round:
+`dist/ProspectorLite-1.0.0-rc.5-macos-arm64.dmg` (sha256
+`200ec151b84054db7d0c9c6a6f1c1e5eb64569028e9ca16b49c842d3559dce89` --
+`SHA256SUMS.txt` is the machine-checkable source of truth), commit
+`6c2feeb4`, dirty=false; byte copy + manifest + checksums (now covering
+every artifact) + SBOM in `release/public-candidate/` (rc.4 record
 archived under `release/archive/1.0.0-rc.4/`).
 
 ## Root causes
@@ -50,6 +53,22 @@ archived under `release/archive/1.0.0-rc.4/`).
   the relevant Roblox area ships, downscaled) into approved example
   images for all 11 calibratable items; `roblox_window` intentionally
   keeps its honest placeholder. Raw originals are NOT in the repository.
+
+## Independent verification round
+
+Three adversarial fresh-context verifiers audited the pass (58 overlay
+probes, 48,000-call saved_summary fuzz, per-pixel image inspection,
+DMG/tarball/history sweeps). Verdict: no P0; every claim held except one
+P1/P2 cluster -- five example images still carried desktop-chrome slivers
+at their bottom edge (the autopan one showed identifiable Dock icon
+tops), the report quoted a stale DMG hash, a half-saved legacy region
+could fabricate a "Complete" box summary, and an overlay OPEN failure
+dropped the stage card. All were fixed in the follow-up commit
+(crops re-cut and pixel-scan-verified clean, honest region-pair
+completeness, in-place stage retry, plus the verifiers' overlay P3s:
+failed-reload banner clearing, confirm-rejection busy latch, mid-save
+drag snapshotting, dead-branch removal), the suites re-ran green, and
+the DMG was rebuilt from the fixed commit with full checksum coverage.
 
 ## Verification
 
