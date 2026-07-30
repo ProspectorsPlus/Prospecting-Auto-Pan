@@ -1138,7 +1138,12 @@ def build_identity(version="", project_url=""):
                            "--untracked-files=no")) if live
                  else bool(bi.get("dirty")))
     ident = {
-        "version": bi.get("version") or version,
+        # frozen builds trust the stamp; source runs trust the app's
+        # VERSION constant so a stale build_info.json from an earlier
+        # packaging run can never misreport the checkout's version
+        # (same rule as the commit fields above)
+        "version": ((bi.get("version") or version) if FROZEN
+                    else (version or bi.get("version") or "")),
         "commit": commit or "unknown",
         "commit_short": (commit or "unknown")[:12],
         "dirty": bool(dirty),
