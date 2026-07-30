@@ -48,11 +48,14 @@ echo "==> [2] --capabilities answered (${#OUT} bytes) from the mounted app"
 
 PP_DATA_DIR="$HOMEDIR" PP_NO_HUD=1 "$MNT/$APP/$BIN" &
 PID=$!
-# poll up to 30 s: the first launch of a freshly-signed binary from a
-# read-only image can take a while (XProtect scan + WebKit first paint).
-# The marker is real bridge liveness: boot() -> welcome_state() -> the
-# onboarding state machine persists its state file eagerly on first use.
-for _i in $(seq 1 30); do
+# poll up to 150 s: the VERY FIRST launch of a freshly-built ad-hoc
+# bundle stalls on Gatekeeper/AMFI verification of every Mach-O in the
+# ~200MB image (cdhash-keyed, so it repeats for each new build but not
+# for remounts) before WebKit can even paint -- measured well past 45 s
+# on this class of build, ~5 s once cached. The marker is real bridge
+# liveness: boot() -> welcome_state() -> the onboarding state machine
+# persists its state file eagerly on first use.
+for _i in $(seq 1 150); do
   [ -f "$HOMEDIR/onboarding_state.json" ] && break
   if ! kill -0 "$PID" 2>/dev/null; then
     echo "FAIL: app exited during first boot"; exit 1
