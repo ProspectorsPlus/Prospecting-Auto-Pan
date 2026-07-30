@@ -149,8 +149,10 @@ def t_dom_layer():
     # render the real page in a child so the import cannot leak state here
     r = subprocess.run([sys.executable, "-c",
                         "import prospecting_app as a;"
-                        "open(%r, 'w').write(a.build_html())"
-                        % os.path.join(work, "page.html")],
+                        "open(%r, 'w').write(a.build_html());"
+                        "open(%r, 'w').write(a._themed(a._OVERLAY_HTML))"
+                        % (os.path.join(work, "page.html"),
+                           os.path.join(work, "overlay.html"))],
                        env=env, cwd=ROOT, capture_output=True, text=True,
                        timeout=300)
     chk(r.returncode == 0, "build_html renders (%s)" % (r.stderr[-200:]

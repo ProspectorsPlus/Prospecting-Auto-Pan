@@ -263,45 +263,79 @@ async function scenarioMainJourney() {
   insideWizard(doc, 'detail open');
 
   doc.getElementById('gdstart').click();
-  await sleep(300);
+  await sleep(400);
+  // multi-capture plans NEVER auto-open the picker: a prep card comes first
+  chk(/Capture 1 of 2/.test(body.textContent) && /COMPLETELY full/.test(body.textContent),
+    'Start shows the stage-1 prep card (game setup first, no auto-capture)');
+  chk(!S.calls.some(c => c.startsWith('wizard_propose(')),
+    'no capture starts until the user explicitly starts it');
+  doc.getElementById('gdcap').click();
+  await sleep(400);
   chk(S.calls.some(c => c.startsWith('wizard_propose("CAP_RIGHT"') && c.indexOf('guided_setup') >= 0),
-    'Start runs the shared service (wizard_propose CAP_RIGHT, guided_setup context)');
+    'Start capture runs the shared service (wizard_propose CAP_RIGHT, guided_setup context)');
   insideWizard(doc, 'capture 1 armed');
   calDone(dom, { ctx: 'guided_setup', key: 'CAP_RIGHT', ok: true });
   await sleep(900); // survive the 600ms __calRefresh window mid-plan
-  chk(!!doc.getElementById('gdstart') || S.calls.some(c => c.startsWith('wizard_propose("CAP_LEFT"')),
-    'detail flow survives the deferred checklist refresh after capture 1');
-  await sleep(300);
+  chk(/Capture 2 of 2/.test(body.textContent) && /Capture 1 of 2 saved/.test(body.textContent),
+    'confirm RETURNS TO THE WIZARD with the next prep card (no chaining)');
+  chk(!S.calls.some(c => c.startsWith('wizard_propose("CAP_LEFT"')),
+    'the next capture did NOT auto-start');
+  insideWizard(doc, 'between captures');
+  doc.getElementById('gdcap').click();
+  await sleep(400);
   chk(S.calls.some(c => c.startsWith('wizard_propose("CAP_LEFT"')),
-    'first confirm advances to the LEFT-tip capture');
+    'the user explicitly starts capture 2');
   S.registry = REG_CAP_DONE; // the save happened; live status now user-calibrated
   calDone(dom, { ctx: 'guided_setup', key: 'CAP_LEFT', ok: true });
-  await sleep(500);
+  await sleep(900);
   chk(/Saved and validated/.test(body.textContent), 'success state shows after validation');
+  chk(!!doc.getElementById('gdnext') && !!doc.getElementById('gdlist'),
+    'success offers Next-step and Back-to-checklist buttons (no silent yank)');
   insideWizard(doc, 'validated');
-  await sleep(1500); // auto-return to the checklist
-  chk(/Guided Calibration/.test(body.innerHTML), 'success returns to the checklist automatically');
+  doc.getElementById('gdlist').click();
+  await sleep(500);
+  chk(/Guided Calibration/.test(body.innerHTML), 'Back returns to the checklist');
   st = cardState(doc, 'cap_bar');
   chk(st && st.chip === 'Complete', 'Capacity is now COMPLETE');
+  chk(/Saved:/.test(doc.querySelector('.cap-card[data-calid="cap_bar"]').textContent),
+    'the completed card shows its saved-state summary (never silently skipped)');
   const pan = cardState(doc, 'pan_prompt');
   chk(pan && pan.active && pan.chip === 'Do this next', 'the next step (Pan prompt) became ACTIVE');
   chk(!!doc.querySelector('button[data-gd="cap_bar"]'), 'completed steps stay reopenable');
+  // reopening a COMPLETE step offers summary + Recalibrate + Next
+  doc.querySelector('button[data-gd="cap_bar"]').click();
+  await sleep(400);
+  chk(/Saved calibration/.test(body.textContent) && /Right tip/.test(body.textContent),
+    'completed detail shows the saved summary');
+  chk(/Recalibrate/.test((doc.getElementById('gdstart') || {}).textContent || ''),
+    'completed detail offers Recalibrate');
+  chk(!!doc.getElementById('gdnextc'), 'completed detail offers a Next-step button');
+  doc.getElementById('gdnextc').click();
+  await sleep(400);
+  chk(/Pan.*prompt/i.test(body.textContent) && !!doc.getElementById('gdstart'),
+    'Next from a completed step opens the next actionable step');
+  doc.getElementById('gdback').click();
+  await sleep(400);
   insideWizard(doc, 'back on checklist');
 
   // ---- cancel stays on the detail page ----
   doc.querySelector('button[data-gd="pan_prompt"]').click();
   await sleep(300);
   doc.getElementById('gdstart').click();
-  await sleep(250);
+  await sleep(300);
+  chk(/WATER/.test(body.textContent), 'single-capture steps show their prep card too');
+  doc.getElementById('gdcap').click();
+  await sleep(350);
   calDone(dom, { ctx: 'guided_setup', key: 'PAN_PIX', ok: false, cancelled: true });
   await sleep(250);
   chk(/Cancelled - nothing was saved/.test(body.textContent), 'cancel shows inside the detail page');
-  chk(!!doc.getElementById('gdback'), 'cancel stays on the guided detail page');
+  chk(!!doc.getElementById('gdback') && !!doc.getElementById('gdcap'),
+    'cancel stays on the guided detail page with a retry Start');
   insideWizard(doc, 'after cancel');
 
   // ---- failure stays on the detail page ----
-  doc.getElementById('gdstart').click();
-  await sleep(250);
+  doc.getElementById('gdcap').click();
+  await sleep(350);
   calDone(dom, { ctx: 'guided_setup', key: 'PAN_PIX', ok: false });
   await sleep(250);
   chk(/did not save/.test(body.textContent), 'failure shows inside the detail page');
@@ -311,8 +345,8 @@ async function scenarioMainJourney() {
     'failure state survives the 600ms __calRefresh window (stays on the page)');
 
   // ---- stale/foreign results cannot navigate ----
-  doc.getElementById('gdstart').click();
-  await sleep(250);
+  doc.getElementById('gdcap').click();
+  await sleep(350);
   dom.window.__calDone({ ctx: 'normal_calibration', key: 'PAN_PIX', ok: true }); // foreign ctx: deliberately no refresh pairing
   await sleep(250);
   chk(!!doc.getElementById('gdback'), 'a normal-tab result does not touch the guided page');
@@ -407,10 +441,110 @@ async function scenarioLegacyTourFlag() {
   dom.window.close();
 }
 
+async function scenarioOverlay() {
+  console.log('[D] calibration overlay: stale-banner + dead-click regressions');
+  const ohtml = fs.readFileSync(path.join(WORK, 'overlay.html'), 'utf8');
+  const IMG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const OS = { seq: 1, d: null, delay: 0, pick: null, calls: [] };
+  function sess(o, delay) { OS.seq++; OS.delay = delay || 0;
+    OS.d = Object.assign({ src: IMG, seq: OS.seq }, o); }
+  const api = new Proxy({}, { get(_, name) {
+    if (name === 'then') return undefined;
+    return (...args) => {
+      OS.calls.push(name);
+      if (name === 'overlay_image') {
+        const snap = Object.assign({}, OS.d); const wait = OS.delay;
+        return new Promise(r => setTimeout(() => r(snap), wait));
+      }
+      if (name === 'overlay_pick')
+        return Promise.resolve(OS.pick || { x: 5, y: 6, hex: '#ffffff' });
+      if (name === 'overlay_region')
+        return Promise.resolve({ ok: true, w: 20, h: 10 });
+      if (name === 'cue_toggle')
+        return Promise.resolve({ error: 'not editing' });
+      return Promise.resolve({ ok: true });
+    };
+  } });
+  const vc = new VirtualConsole();
+  const dom = new JSDOM(ohtml, { runScripts: 'dangerously',
+    pretendToBeVisual: true, url: 'https://localhost/', virtualConsole: vc });
+  const doc = dom.window.document;
+  const click = (x, y) => doc.body.dispatchEvent(new dom.window.MouseEvent(
+    'click', { bubbles: true, clientX: x, clientY: y }));
+  await sleep(30);
+  dom.window.pywebview = { api };
+  // session 1: region mode (the mode whose old code destroyed the banner)
+  sess({ label: 'Finds pop-up box', mode: 'region', region_mode: true,
+    hint: 'drag a box around it, corner to corner' });
+  dom.window.dispatchEvent(new dom.window.Event('pywebviewready'));
+  await sleep(250);
+  chk(doc.getElementById('lab').textContent === 'Finds pop-up box',
+    'region session shows its own label');
+  chk(/drag a box/.test(doc.getElementById('act').textContent),
+    'region session shows the drag hint');
+  // session 2: pixel mode -- the banner MUST follow the new session
+  sess({ label: 'Auto Pan button (ON state)', mode: 'pixel',
+    hint: 'click the exact spot, then Confirm' });
+  dom.window.__reload();
+  await sleep(250);
+  chk(doc.getElementById('lab').textContent === 'Auto Pan button (ON state)',
+    'banner follows the session (the stale "Finds pop-up box" regression)');
+  chk(/click the exact spot/.test(doc.getElementById('act').textContent),
+    'banner action hint follows the interaction mode');
+  OS.calls.length = 0;
+  click(40, 40);
+  await sleep(150);
+  chk(OS.calls.includes('overlay_pick'),
+    'pixel clicks work right after a region session (dead-click regression)');
+  chk(!OS.calls.includes('cue_toggle'),
+    'clicks never route to a stale cue editor');
+  // session 3: an error result keeps the page responsive
+  sess({ label: 'Green dig-bar zone', mode: 'pixel',
+    hint: 'click the exact spot, then Confirm' });
+  OS.pick = { error: 'Screen capture failed' };
+  dom.window.__reload();
+  await sleep(250);
+  click(60, 60);
+  await sleep(150);
+  chk(/Screen capture failed/.test(doc.getElementById('err').textContent),
+    'a pick error is SHOWN in the banner, never a silent no-op');
+  OS.pick = null; OS.calls.length = 0;
+  click(70, 70);
+  await sleep(150);
+  chk(OS.calls.includes('overlay_pick'),
+    'the page stays clickable after an error result');
+  // session 4: cue edit, then session 5 pixel -- nothing may leak
+  sess({ label: '“Pan” cue', mode: 'cue', cue_mode: 'edit',
+    cue_img: IMG, cue_px: 12, hint: 'edit letters' });
+  dom.window.__reload();
+  await sleep(250);
+  chk(doc.getElementById('cuebar').style.display === 'block',
+    'cue edit session shows the editor card');
+  sess({ label: 'Money counter box', mode: 'region', region_mode: true,
+    hint: 'drag a box around it, corner to corner' });
+  dom.window.__reload();
+  await sleep(250);
+  chk(doc.getElementById('cuebar').style.display === 'none',
+    'the cue editor card never leaks into the next session');
+  chk(doc.getElementById('lab').textContent === 'Money counter box',
+    'banner correct again after the cue session');
+  // stale async: a SLOW old session response can never repaint a newer one
+  sess({ label: 'OLD SLOW SESSION', mode: 'pixel', hint: 'x' }, 400);
+  dom.window.__reload();
+  sess({ label: 'Shards counter box', mode: 'region', region_mode: true,
+    hint: 'drag a box around it, corner to corner' });
+  dom.window.__reload();
+  await sleep(700);
+  chk(doc.getElementById('lab').textContent === 'Shards counter box',
+    'a delayed stale overlay_image can never overwrite the live session');
+  dom.window.close();
+}
+
 (async () => {
   await scenarioMainJourney();
   await scenarioNoRestart();
   await scenarioLegacyTourFlag();
+  await scenarioOverlay();
   if (failures) { console.log('WIZARD-UI: %d FAILURE(S)', failures); process.exit(1); }
   console.log('WIZARD-UI: ALL PASS');
   process.exit(0);

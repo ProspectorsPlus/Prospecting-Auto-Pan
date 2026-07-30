@@ -15,7 +15,7 @@ The project is not published yet, so there is no public issue tracker at this ti
 
 A good report includes:
 
-1. Prospector Lite version (welcome screen, About, or the Trust Center shows it — currently 1.0.0-rc.4) and whether you run from source or a packaged build.
+1. Prospector Lite version (welcome screen, About, or the Trust Center shows it — currently 1.0.0-rc.5) and whether you run from source or a packaged build.
 2. OS and version (macOS/Windows).
 3. What you did, what you expected, what happened instead.
 4. The tail of the newest file in `run_logs/`, if the problem happened during a run.

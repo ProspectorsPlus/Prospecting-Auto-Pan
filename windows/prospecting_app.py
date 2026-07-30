@@ -42,7 +42,7 @@ except ImportError:      # windows/ dev checkout: the modules live one level up
 # update check, no analytics, no remote content fetch (see PRIVACY.md /
 # NETWORK_BEHAVIOR).
 APP_NAME    = "Prospector Lite"
-VERSION     = "1.0.0-rc.4"
+VERSION     = "1.0.0-rc.5"
 PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
@@ -5892,7 +5892,13 @@ class Api:
         """Show the pre-created overlay, re-fitted to the CURRENT main
         display (its geometry was frozen at boot; displays change).
         Per-platform lookup so the Windows copy re-fits too instead of
-        silently failing the mac-only import."""
+        silently failing the mac-only import.
+
+        Every show is a NEW overlay session: the sequence id below travels
+        through overlay_image() so the page can drop any async result that
+        belongs to a previous capture -- the reused window must never show
+        a stale banner or keep a stale interaction mode."""
+        self._overlay_seq = getattr(self, "_overlay_seq", 0) + 1
         try:
             if sys.platform == "darwin":
                 import Quartz as _Q
@@ -5998,15 +6004,26 @@ class Api:
             return {"error": str(e)}
 
     def overlay_image(self):
+        """The overlay page's single source of truth for one capture
+        session: image, label, interaction mode, the exact action hint the
+        top banner shows, and the session sequence id. The page rebuilds
+        ALL of its state from this on every reload -- banner text and
+        interaction mode are never assembled page-side from leftovers."""
         d = {"src": getattr(self, "_shot_b64", ""),
-             "label": getattr(self, "_overlay_label", "")}
+             "label": getattr(self, "_overlay_label", ""),
+             "seq": getattr(self, "_overlay_seq", 0)}
         key = getattr(self, "_overlay_key", None)
         if key and str(key).startswith("REGION:"):
             d["region_mode"] = True
+            d["mode"] = "region"
+            d["hint"] = "drag a box around it, corner to corner"
             return d
         if key and str(key).startswith("CUEMASK:"):
+            d["mode"] = "cue"
             d["cue_mode"] = getattr(self, "_cm_mode", "locate")
             if d["cue_mode"] == "edit":
+                d["hint"] = ("click each letter (and the mouse) to "
+                             "include/exclude — green = kept")
                 try:
                     st = _sensing().cue_edit_state()
                     if st:
@@ -6014,13 +6031,20 @@ class Api:
                         d["cue_px"] = st["px"]
                 except Exception:
                     pass
+            else:
+                d["hint"] = "click on the cue word"
             return d
+        d["mode"] = "pixel"
         p = getattr(self, "_overlay_proposed", None)
         w = getattr(self, "_shot_w", 0)
         h = getattr(self, "_shot_h", 0)
         if p and w and h:
             d["proposed"] = {"fx": p["x"] / float(w), "fy": p["y"] / float(h),
                              "hex": p["hex"], "x": p["x"], "y": p["y"]}
+            d["hint"] = ("the red × is the detected spot — "
+                         "Confirm or Redo")
+        else:
+            d["hint"] = "click the exact spot, then Confirm"
         return d
 
     def overlay_pick(self, fx, fy):
@@ -6179,7 +6203,9 @@ class Api:
         self._overlay_ctx = context or "normal_calibration"
         self._overlay_key = "CUEMASK:" + cue
         names = {"PAN": "Pan", "SHAKE": "Shake", "DEPOSIT": "Collect Deposit"}
-        self._overlay_label = "Click on the \u201c%s\u201d cue word" % names[cue]
+        # the banner composes "Calibrate: <label> - <hint>", so the label is
+        # just the target; the action ("click on the cue word") is the hint
+        self._overlay_label = "\u201c%s\u201d cue" % names[cue]
         try:
             self._overlay_show()
         except Exception as e:
@@ -7104,7 +7130,170 @@ def _hud_html():
 </script></body></html>"""
 
 
-_OVERLAY_HTML = '<!doctype html><html><head><meta charset="utf-8"><style>\n html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}\n #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}\n .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9}\n .bar b{color:#e0b873}\n #marker{position:fixed;width:24px;height:24px;transform:translate(-50%,-50%);display:none;z-index:8;pointer-events:none}\n #marker::before,#marker::after{content:"";position:absolute;left:50%;top:50%;width:24px;height:3px;background:#ff5b5b;border-radius:2px;box-shadow:0 0 4px #000,0 0 1px #000;transform:translate(-50%,-50%) rotate(45deg)}\n #marker::after{transform:translate(-50%,-50%) rotate(-45deg)}\n #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}\n #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}\n #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:200px}\n #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}\n #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}\n #tip .row{display:flex;gap:8px}\n button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}\n .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}\n</style></head><body>\n <img id="shot" alt="">\n <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; the red &#10005; is the detected spot &mdash; Confirm or Redo &nbsp;&middot;&nbsp; Esc cancels</div>\n <div id="loupe"></div><div id="marker"></div><div id="maskbox" style="position:fixed;border:2px solid #7faf5d;background:rgba(127,175,93,.22);display:none;z-index:7;pointer-events:none;border-radius:3px"></div>\n <div id="tip"><div class="sw" id="sw"></div>\n   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>\n   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div><div id="cuebar" style="display:none;position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:rgba(31,29,26,.97);border:1px solid #423d35;border-radius:12px;padding:12px 16px;z-index:10;text-align:center;max-width:80vw"><div id="cuemsg" style="margin-bottom:9px;line-height:1.5">Click each letter (and the mouse) to include or exclude it. <b style="color:#7faf5d">Green = kept.</b> <span id="cuepx"></span></div><div class="row" style="justify-content:center"><button class="go" id="cueok">Confirm</button><button class="re" id="cueredo">Start over</button><button class="cn" id="cuecancel">&#10005;</button></div></div>\n<script>\n const api=()=>window.pywebview&&window.pywebview.api;\n const shot=document.getElementById(\'shot\'),loupe=document.getElementById(\'loupe\'),marker=document.getElementById(\'marker\'),tip=document.getElementById(\'tip\');\n let picked=false,natW=0,natH=0,prop=null,cueMode=null;\n function reset(){picked=false;marker.style.display=\'none\';tip.style.display=\'none\';loupe.style.display=\'none\';prop=null;var mb=document.getElementById(\'maskbox\');if(mb)mb.style.display=\'none\';var sw=document.getElementById(\'sw\');if(sw)sw.style.display=\'\';var cbr=document.getElementById(\'cuebar\');if(cbr)cbr.style.display=\'none\';}\n function showTipAt(cx,cy,hex,x,y){marker.style.display=\'block\';marker.style.left=cx+\'px\';marker.style.top=cy+\'px\';\n   document.getElementById(\'sw\').style.background=hex;document.getElementById(\'hex\').textContent=hex;document.getElementById(\'xy\').textContent=x+\', \'+y;\n   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;\n   tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';picked=true;loupe.style.display=\'none\';}\n function showMask(r,cx,cy){const rc=shot.getBoundingClientRect();const mb=document.getElementById(\'maskbox\');mb.style.left=(rc.left+r.box[0]*rc.width)+\'px\';mb.style.top=(rc.top+r.box[1]*rc.height)+\'px\';mb.style.width=Math.max(4,r.box[2]*rc.width)+\'px\';mb.style.height=Math.max(4,r.box[3]*rc.height)+\'px\';mb.style.display=\'block\';document.getElementById(\'sw\').style.display=\'none\';document.getElementById(\'hex\').textContent=r.px+\' px captured\';document.getElementById(\'xy\').textContent=r.w+\'\\u00d7\'+r.h;let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';picked=true;loupe.style.display=\'none\';}\n function placeProposed(){if(!prop||!natW)return;const r=shot.getBoundingClientRect();\n   showTipAt(r.left+prop.fx*r.width, r.top+prop.fy*r.height, prop.hex, prop.x, prop.y);}\n async function boot(){try{const d=await api().overlay_image();if(d&&d.src){shot.src=d.src;document.getElementById(\'lab\').textContent=d.label||\'\';}prop=(d&&d.proposed)||null;cueMode=(d&&d.cue_mode)||null;if(cueMode===\'edit\'&&d&&d.cue_img){enterEdit(d.cue_img,d.cue_px);}}catch(e){}}\n shot.onload=()=>{natW=shot.naturalWidth;natH=shot.naturalHeight;loupe.style.backgroundImage=\'url(\'+shot.src+\')\';if(prop)placeProposed();};\n function frac(e){const r=shot.getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n document.addEventListener(\'mousemove\',e=>{if(picked||!natW||cueMode===\'edit\')return;loupe.style.display=\'block\';\n   loupe.style.left=(e.clientX+20)+\'px\';loupe.style.top=(e.clientY+20)+\'px\';\n   const z=9,bw=natW*z,bh=natH*z;loupe.style.backgroundSize=bw+\'px \'+bh+\'px\';\n   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+\'px \'+(-(f[1]*bh)+62)+\'px\';});\n document.addEventListener(\'click\',async e=>{if(picked||tip.contains(e.target))return;var cb=document.getElementById(\'cuebar\');if(cb&&cb.contains(e.target))return;\n   const f=frac(e);\n   if(cueMode===\'edit\'){let tr;try{tr=await api().cue_toggle(f[0],f[1]);}catch(_){return;}if(tr&&tr.img){shot.src=tr.img;setCuePx(tr.px);}return;}\n   let r;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){return;}\n   if(!r||r.error)return;if(r.cue_edit){cueMode=\'edit\';enterEdit(r.img,r.px);}else if(r.mask){showMask(r,e.clientX,e.clientY);}else{showTipAt(e.clientX,e.clientY,r.hex,r.x,r.y);}});\n document.getElementById(\'redo\').onclick=()=>{reset();};\n document.getElementById(\'cancel\').onclick=()=>{try{api().overlay_cancel();}catch(e){}};\n document.getElementById(\'ok\').onclick=()=>{try{api().overlay_confirm();}catch(e){}};\n function setCuePx(px){var el=document.getElementById(\'cuepx\');if(el)el.textContent=px?(\'(\'+px+\' px kept)\'):\'\';}\n function enterEdit(img,px){shot.src=img;marker.style.display=\'none\';tip.style.display=\'none\';loupe.style.display=\'none\';document.getElementById(\'lab\').textContent=\'Click each letter (and the mouse) to include/exclude \\u2014 green = kept\';var cb=document.getElementById(\'cuebar\');if(cb)cb.style.display=\'block\';setCuePx(px);}\n (function(){var a=document.getElementById(\'cueok\');if(a)a.onclick=()=>{try{api().overlay_confirm();}catch(e){}};var b=document.getElementById(\'cueredo\');if(b)b.onclick=async()=>{try{await api().cue_reset();}catch(_){}cueMode=null;var cb=document.getElementById(\'cuebar\');if(cb)cb.style.display=\'none\';reset();boot();};var c=document.getElementById(\'cuecancel\');if(c)c.onclick=()=>{try{api().overlay_cancel();}catch(e){}};})();\n document.addEventListener(\'keydown\',e=>{if(e.key===\'Escape\'){try{api().overlay_cancel();}catch(_){}}});\n window.__reload=function(){reset();boot();};\n window.addEventListener(\'pywebviewready\',boot);\n boot();\n</script>\n<script>\n (function(){\n  var R={on:false,a:null,b:null,picked:false};\n  var mb=function(){return document.getElementById(\'maskbox\');};\n  function fr(e){var r=document.getElementById(\'shot\').getBoundingClientRect();return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}\n  function draw(){if(!R.a||!R.b)return;var rc=document.getElementById(\'shot\').getBoundingClientRect();var x0=Math.min(R.a[0],R.b[0])*rc.width+rc.left,y0=Math.min(R.a[1],R.b[1])*rc.height+rc.top;var w=Math.abs(R.a[0]-R.b[0])*rc.width,h=Math.abs(R.a[1]-R.b[1])*rc.height;var m=mb();m.style.left=x0+\'px\';m.style.top=y0+\'px\';m.style.width=Math.max(2,w)+\'px\';m.style.height=Math.max(2,h)+\'px\';m.style.display=\'block\';}\n  function showConfirm(cx,cy,w,h){var tip=document.getElementById(\'tip\');document.getElementById(\'sw\').style.display=\'none\';document.getElementById(\'hex\').textContent=w+\'\\u00d7\'+h+\' px box\';document.getElementById(\'xy\').textContent=\'looks right? Confirm\';var tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;tip.style.left=tx+\'px\';tip.style.top=ty+\'px\';tip.style.display=\'block\';var lp=document.getElementById(\'loupe\');if(lp)lp.style.display=\'none\';}\n  async function rboot(){R.a=R.b=null;R.picked=false;try{var d=await (window.pywebview&&window.pywebview.api).overlay_image();R.on=!!(d&&d.region_mode);if(R.on){var bar=document.querySelector(\'.bar\');if(bar)bar.innerHTML=\'Calibrate: <b>\'+((d&&d.label)||\'\')+\'</b> &nbsp;&middot;&nbsp; drag a box around it, corner to corner &nbsp;&middot;&nbsp; Esc cancels\';}}catch(e){}}\n  document.addEventListener(\'mousedown\',function(e){if(!R.on||R.picked)return;var tip=document.getElementById(\'tip\');if(tip&&tip.contains(e.target))return;e.preventDefault();R.a=fr(e);R.b=null;});\n  document.addEventListener(\'mousemove\',function(e){if(!R.on||!R.a||R.picked)return;R.b=fr(e);draw();var lp=document.getElementById(\'loupe\');if(lp)lp.style.display=\'none\';});\n  document.addEventListener(\'mouseup\',async function(e){if(!R.on||!R.a||R.picked)return;R.b=fr(e);var r=null;try{r=await (window.pywebview&&window.pywebview.api).overlay_region(Math.min(R.a[0],R.b[0]),Math.min(R.a[1],R.b[1]),Math.max(R.a[0],R.b[0]),Math.max(R.a[1],R.b[1]));}catch(_){}\n   if(!r||r.error){R.a=R.b=null;var m=mb();if(m)m.style.display=\'none\';return;}\n   R.picked=true;draw();showConfirm(e.clientX,e.clientY,r.w,r.h);});\n  var rd=document.getElementById(\'redo\');if(rd)rd.addEventListener(\'click\',function(){R.a=R.b=null;R.picked=false;});\n  var orig=window.__reload;window.__reload=function(){if(orig)orig();rboot();};\n  window.addEventListener(\'pywebviewready\',rboot);\n  rboot();\n })();\n</script></body></html>'
+_OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
+ html,body{margin:0;height:100%;overflow:hidden;cursor:crosshair;background:#000;font:600 13px -apple-system,"Segoe UI",sans-serif;color:#ece4d6;-webkit-user-select:none;user-select:none}
+ #shot{position:fixed;inset:0;width:100vw;height:100vh;object-fit:fill;display:block}
+ .bar{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(31,29,26,.93);border:1px solid #423d35;border-radius:12px;padding:9px 16px;z-index:9;max-width:86vw;text-align:center}
+ .bar b{color:#e0b873}
+ #err{color:#f0a6a6}
+ #marker{position:fixed;width:24px;height:24px;transform:translate(-50%,-50%);display:none;z-index:8;pointer-events:none}
+ #marker::before,#marker::after{content:"";position:absolute;left:50%;top:50%;width:24px;height:3px;background:#ff5b5b;border-radius:2px;box-shadow:0 0 4px #000,0 0 1px #000;transform:translate(-50%,-50%) rotate(45deg)}
+ #marker::after{transform:translate(-50%,-50%) rotate(-45deg)}
+ #loupe{position:fixed;width:124px;height:124px;border-radius:50%;border:2px solid #e0b873;box-shadow:0 6px 20px rgba(0,0,0,.55);display:none;z-index:8;pointer-events:none;background-repeat:no-repeat;image-rendering:pixelated}
+ #loupe::after{content:"";position:absolute;left:50%;top:50%;width:11px;height:11px;transform:translate(-50%,-50%);border:1px solid #e0b873;border-radius:50%}
+ #tip{position:fixed;z-index:9;background:rgba(31,29,26,.96);border:1px solid #423d35;border-radius:12px;padding:12px;display:none;min-width:200px}
+ #tip .sw{width:100%;height:30px;border-radius:7px;border:1px solid rgba(0,0,0,.25);margin-bottom:8px}
+ #tip .meta{font-variant:tabular-nums;margin-bottom:10px;line-height:1.6} #tip .meta s{text-decoration:none;color:#9c9183}
+ #tip .row{display:flex;gap:8px}
+ button{font:inherit;font-weight:700;border:0;border-radius:9px;padding:8px 12px;cursor:pointer}
+ .go{background:#7faf5d;color:#241a02;flex:1}.re{background:#2a2418;color:#e9e0cf}.cn{background:#3a201c;color:#f0c0b0}
+</style></head><body>
+ <img id="shot" alt="">
+ <div class="bar">Calibrate: <b id="lab"></b> &nbsp;&middot;&nbsp; <span id="act"></span> &nbsp;&middot;&nbsp; Esc cancels<span id="err"></span></div>
+ <div id="loupe"></div><div id="marker"></div><div id="maskbox" style="position:fixed;border:2px solid #7faf5d;background:rgba(127,175,93,.22);display:none;z-index:7;pointer-events:none;border-radius:3px"></div>
+ <div id="tip"><div class="sw" id="sw"></div>
+   <div class="meta"><s>colour</s> <b id="hex">&mdash;</b><br><s>at</s> <b id="xy">&mdash;</b></div>
+   <div class="row"><button class="go" id="ok">Confirm</button><button class="re" id="redo">Redo</button><button class="cn" id="cancel">&#10005;</button></div></div>
+ <div id="cuebar" style="display:none;position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:rgba(31,29,26,.97);border:1px solid #423d35;border-radius:12px;padding:12px 16px;z-index:10;text-align:center;max-width:80vw"><div id="cuemsg" style="margin-bottom:9px;line-height:1.5">Click each letter (and the mouse) to include or exclude it. <b style="color:#7faf5d">Green = kept.</b> <span id="cuepx"></span></div><div class="row" style="justify-content:center"><button class="go" id="cueok">Confirm</button><button class="re" id="cueredo">Start over</button><button class="cn" id="cuecancel">&#10005;</button></div></div>
+<script>
+ 'use strict';
+ // ONE session model. Every reload rebuilds ALL state from overlay_image()
+ // (the single source of truth: src, label, hint, mode, seq). Nothing --
+ // banner text, cue-edit mode, a pending proposal, region drag state, the
+ // picked flag -- survives from a previous calibration session, and a
+ // session token guards every async return so a stale response from an
+ // earlier step can neither repaint nor dead-lock the page. History: the
+ // old page kept three of those across sessions and one region session
+ // rebuilt the banner's innerHTML, which is exactly how the "stuck on
+ // 'Finds pop-up box'" and "clicks stopped working" reports happened.
+ const api=()=>window.pywebview&&window.pywebview.api;
+ const $=function(id){return document.getElementById(id);};
+ const shot=$('shot'),loupe=$('loupe'),marker=$('marker'),tip=$('tip');
+ let BOOTN=0;
+ let S=null; // the current session; replaced wholesale by boot()
+ function blank(){return {seq:0,mode:'pixel',cueEdit:false,picked:false,
+   prop:null,natW:0,natH:0,busy:false,ra:null,rb:null,errT:null};}
+ function resetDom(){marker.style.display='none';tip.style.display='none';
+   loupe.style.display='none';$('maskbox').style.display='none';
+   $('sw').style.display='';$('cuebar').style.display='none';
+   $('err').textContent='';}
+ function flashErr(msg){if(!S)return;$('err').textContent=' · '+msg;
+   if(S.errT)clearTimeout(S.errT);
+   const tok=S;S.errT=setTimeout(function(){if(tok===S)$('err').textContent='';},3200);}
+ async function boot(){
+   const my=++BOOTN;
+   let d=null;try{d=await api().overlay_image();}catch(e){d=null;}
+   if(my!==BOOTN)return;            // a newer session started while loading
+   S=blank();resetDom();
+   if(!d){flashErr('Could not load the capture - Esc and retry.');return;}
+   S.seq=d.seq||0;S.mode=d.mode||(d.region_mode?'region':(d.cue_mode?'cue':'pixel'));
+   $('lab').textContent=d.label||'';
+   $('act').textContent=d.hint||defaultHint(d);
+   if(d.src)shot.src=d.src;
+   if(S.mode==='cue'&&d.cue_mode==='edit'&&d.cue_img){enterEdit(d.cue_img,d.cue_px);}
+   else if(S.mode==='pixel'&&d.proposed){S.prop=d.proposed;}
+ }
+ function defaultHint(d){
+   if(d.region_mode)return 'drag a box around it, corner to corner';
+   if(d.cue_mode==='edit')return 'click each letter (and the mouse) to include/exclude — green = kept';
+   if(d.cue_mode)return 'click on the cue word';
+   if(d.proposed)return 'the red × is the detected spot — Confirm or Redo';
+   return 'click the exact spot, then Confirm';
+ }
+ shot.onload=function(){if(!S||S.cueEdit)return;
+   S.natW=shot.naturalWidth;S.natH=shot.naturalHeight;
+   loupe.style.backgroundImage='url('+shot.src+')';
+   if(S.prop)placeProposed();};
+ function frac(e){const r=shot.getBoundingClientRect();
+   return [(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height];}
+ function showTipAt(cx,cy,hex,x,y){marker.style.display='block';
+   marker.style.left=cx+'px';marker.style.top=cy+'px';
+   $('sw').style.background=hex;$('hex').textContent=hex;$('xy').textContent=x+', '+y;
+   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;
+   tip.style.left=tx+'px';tip.style.top=ty+'px';tip.style.display='block';
+   S.picked=true;loupe.style.display='none';}
+ function showMask(r,cx,cy){const rc=shot.getBoundingClientRect();const mb=$('maskbox');
+   mb.style.left=(rc.left+r.box[0]*rc.width)+'px';mb.style.top=(rc.top+r.box[1]*rc.height)+'px';
+   mb.style.width=Math.max(4,r.box[2]*rc.width)+'px';mb.style.height=Math.max(4,r.box[3]*rc.height)+'px';
+   mb.style.display='block';$('sw').style.display='none';
+   $('hex').textContent=r.px+' px captured';$('xy').textContent=r.w+'×'+r.h;
+   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;
+   tip.style.left=tx+'px';tip.style.top=ty+'px';tip.style.display='block';
+   S.picked=true;loupe.style.display='none';}
+ function placeProposed(){if(!S||!S.prop||!S.natW)return;const r=shot.getBoundingClientRect();
+   showTipAt(r.left+S.prop.fx*r.width, r.top+S.prop.fy*r.height, S.prop.hex, S.prop.x, S.prop.y);}
+ function setCuePx(px){$('cuepx').textContent=px?('('+px+' px kept)'):'';}
+ function enterEdit(img,px){S.cueEdit=true;shot.src=img;
+   marker.style.display='none';tip.style.display='none';loupe.style.display='none';
+   $('act').textContent='click each letter (and the mouse) to include/exclude — green = kept';
+   $('cuebar').style.display='block';setCuePx(px);}
+ // ---- pointer input (all modes route through the ONE session) ----------
+ document.addEventListener('mousemove',function(e){
+   if(!S||S.picked||S.cueEdit||!S.natW)return;
+   if(S.mode==='region'){if(S.ra&&!S.picked){S.rb=frac(e);drawDrag();loupe.style.display='none';}return;}
+   loupe.style.display='block';
+   loupe.style.left=(e.clientX+20)+'px';loupe.style.top=(e.clientY+20)+'px';
+   const z=9,bw=S.natW*z,bh=S.natH*z;loupe.style.backgroundSize=bw+'px '+bh+'px';
+   const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+'px '+(-(f[1]*bh)+62)+'px';});
+ document.addEventListener('mousedown',function(e){
+   if(!S||S.mode!=='region'||S.picked)return;
+   if(tip.contains(e.target))return;
+   e.preventDefault();S.ra=frac(e);S.rb=null;});
+ document.addEventListener('mouseup',async function(e){
+   if(!S||S.mode!=='region'||!S.ra||S.picked||S.busy)return;
+   S.rb=frac(e);const tok=S;S.busy=true;
+   let r=null;try{r=await api().overlay_region(
+     Math.min(S.ra[0],S.rb[0]),Math.min(S.ra[1],S.rb[1]),
+     Math.max(S.ra[0],S.rb[0]),Math.max(S.ra[1],S.rb[1]));}catch(_){r=null;}
+   if(tok!==S)return;S.busy=false;
+   if(!r||r.error){S.ra=S.rb=null;$('maskbox').style.display='none';
+     flashErr((r&&r.error)||'Drag did not register - try again.');return;}
+   S.picked=true;drawDrag();showRegionConfirm(e.clientX,e.clientY,r.w,r.h);});
+ function drawDrag(){if(!S.ra||!S.rb)return;const rc=shot.getBoundingClientRect();
+   const x0=Math.min(S.ra[0],S.rb[0])*rc.width+rc.left,y0=Math.min(S.ra[1],S.rb[1])*rc.height+rc.top;
+   const w=Math.abs(S.ra[0]-S.rb[0])*rc.width,h=Math.abs(S.ra[1]-S.rb[1])*rc.height;
+   const m=$('maskbox');m.style.left=x0+'px';m.style.top=y0+'px';
+   m.style.width=Math.max(2,w)+'px';m.style.height=Math.max(2,h)+'px';m.style.display='block';}
+ function showRegionConfirm(cx,cy,w,h){$('sw').style.display='none';
+   $('hex').textContent=w+'×'+h+' px box';$('xy').textContent='looks right? Confirm';
+   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;
+   tip.style.left=tx+'px';tip.style.top=ty+'px';tip.style.display='block';
+   loupe.style.display='none';}
+ document.addEventListener('click',async function(e){
+   if(!S||S.busy)return;
+   if(tip.contains(e.target)||$('cuebar').contains(e.target))return;
+   if(S.mode==='region')return;   // region uses drag, not click
+   if(S.picked)return;            // a confirm card is open - use its buttons
+   const tok=S;const f=frac(e);
+   if(S.cueEdit){S.busy=true;let tr=null;try{tr=await api().cue_toggle(f[0],f[1]);}catch(_){tr=null;}
+     if(tok!==S)return;S.busy=false;
+     if(tr&&tr.img){shot.src=tr.img;setCuePx(tr.px);}
+     else if(tr&&tr.error)flashErr(tr.error);
+     return;}
+   S.busy=true;let r=null;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){r=null;}
+   if(tok!==S)return;S.busy=false;
+   if(!r){flashErr('No response - click again, or Esc to cancel.');return;}
+   if(r.error){flashErr(r.error);return;}
+   if(r.cue_edit){enterEdit(r.img,r.px);}
+   else if(r.mask){showMask(r,e.clientX,e.clientY);}
+   else{showTipAt(e.clientX,e.clientY,r.hex,r.x,r.y);}});
+ // ---- buttons + keys ----------------------------------------------------
+ $('redo').onclick=function(){if(!S)return;S.picked=false;S.ra=S.rb=null;S.prop=null;
+   marker.style.display='none';tip.style.display='none';$('maskbox').style.display='none';};
+ $('cancel').onclick=function(){try{api().overlay_cancel();}catch(e){}};
+ $('ok').onclick=function(){if(!S||S.busy)return;S.busy=true;try{api().overlay_confirm();}catch(e){S.busy=false;}};
+ $('cueok').onclick=function(){if(!S||S.busy)return;S.busy=true;try{api().overlay_confirm();}catch(e){S.busy=false;}};
+ $('cueredo').onclick=async function(){if(!S)return;
+   try{await api().cue_reset();}catch(_){}
+   boot();};
+ $('cuecancel').onclick=function(){try{api().overlay_cancel();}catch(e){}};
+ document.addEventListener('keydown',function(e){
+   if(e.key==='Escape'){try{api().overlay_cancel();}catch(_){}return;}
+   if(e.key==='Enter'&&S&&S.picked&&!S.busy){S.busy=true;try{api().overlay_confirm();}catch(_){S.busy=false;}}});
+ window.__reload=function(){boot();};
+ window.addEventListener('pywebviewready',boot);
+ boot();
+</script></body></html>"""
 
 
 def build_html():
@@ -11191,18 +11380,40 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    // always-on-top overlay window -- the main window stays on the wizard.
    let CALV={view:'list',item:null,awaiting:null,gen:0};
    function calNav(){CALV.gen++;CALV.awaiting=null;}
-   const GD_STEPS={ // per-item capture plans against the shared service
-     cap_bar:{kind:'propose',seq:[['CAP_RIGHT','Capacity bar - RIGHT tip'],['CAP_LEFT','Capacity bar - LEFT tip']]},
-     pan_prompt:{kind:'propose',seq:[['PAN_PIX','Pan prompt']]},
-     deposit_prompt:{kind:'propose',seq:[['DEPOSIT_PIX','Collect Deposit prompt']]},
-     shake_prompt:{kind:'propose',seq:[['SHAKE_PIX','Shake prompt']]},
-     cue_masks:{kind:'cues',cues:[['PAN','Pan (stand in the water)'],['DEPOSIT','Collect Deposit (step onto land)'],['SHAKE','Shake (begin a shake)']]},
-     dig_green:{kind:'pixel',seq:[['DIG_TRIGGER_PIXEL','Green dig-bar zone']]},
-     money_region:{kind:'region',base:'MONEY'},
-     shards_region:{kind:'region',base:'SHARDS'},
-     find_region:{kind:'region',base:'FIND'},
-     fortune_river:{kind:'pixel',seq:[['FR_OPEN_PIXEL','Fortune River - open button'],['FR_HOME_PIXEL','Fortune River - home button'],['FR_TEXT','Fortune River - reward text column'],['FR_BOX_TOP','Fortune River - box top edge'],['FR_BOX_BOTTOM','Fortune River - box bottom edge']],anykey:true},
-     autopan_button:{kind:'pixel',seq:[['AUTOPAN_ON','Auto Pan button (ON state)'],['AUTOPAN_OFF','Auto Pan button (OFF state)']],anykey:true}};
+   // Per-item capture plans against the shared service. Every stage
+   // carries its own PREP text: multi-stage plans NEVER auto-chain -- after
+   // each confirmed capture the user lands back on the wizard's stage card,
+   // switches to Roblox to set up the next target, and starts the next
+   // capture explicitly. (The rc.4 flow chained them back-to-back, which
+   // made cue/Auto-Pan calibration impossible to set up between captures.)
+   const GD_STEPS={
+     cap_bar:{kind:'propose',seq:[
+       ['CAP_RIGHT','Capacity bar - RIGHT tip','In Roblox, dig until the pan capacity bar is COMPLETELY full (all yellow). Leave it full and come back here.'],
+       ['CAP_LEFT','Capacity bar - LEFT tip','Keep the bar full - nothing else to change in the game. The picker will propose the LEFT tip next.']]},
+     pan_prompt:{kind:'propose',seq:[
+       ['PAN_PIX','Pan prompt','Stand in the WATER so the white "Pan" prompt shows at the bottom of the screen, then come back here.']]},
+     deposit_prompt:{kind:'propose',seq:[
+       ['DEPOSIT_PIX','Collect Deposit prompt','Step onto LAND at a deposit so the white "Collect Deposit" prompt shows, then come back here.']]},
+     shake_prompt:{kind:'propose',seq:[
+       ['SHAKE_PIX','Shake prompt','Fill the pan, walk to the water and BEGIN a shake so the white "Shake" prompt shows, then come back here quickly - the capture snapshots the game the moment you press Start.']]},
+     cue_masks:{kind:'cues',cues:[
+       ['PAN','"Pan" cue mask','In Roblox, stand in the WATER so the "Pan" prompt is visible. Come back here and press Start - the capture snapshots the game at that moment, then you click the word and adjust the green letters.'],
+       ['DEPOSIT','"Collect Deposit" cue mask','Now step onto LAND at a deposit so "Collect Deposit" shows. Come back here and press Start when it is on screen.'],
+       ['SHAKE','"Shake" cue mask','Now BEGIN a shake so the "Shake" prompt shows, then quickly come back and press Start while it is still on screen.']]},
+     dig_green:{kind:'pixel',seq:[
+       ['DIG_TRIGGER_PIXEL','Green dig-bar zone','Start a dig on land so the dig bar with its green zone is on screen, then come back here.']]},
+     money_region:{kind:'region',base:'MONEY',prep:'Make sure the money counter is visible in its usual corner (close any menu covering it).'},
+     shards_region:{kind:'region',base:'SHARDS',prep:'Make sure the shards counter is visible (close any menu covering it).'},
+     find_region:{kind:'region',base:'FIND',prep:'Note where find pop-ups appear - having one on screen helps you aim the box but is not required.'},
+     fortune_river:{kind:'pixel',anykey:true,seq:[
+       ['FR_OPEN_PIXEL','Fortune River - open button','In Roblox, make sure the button that OPENS the Fortune River event UI is visible, then come back here.'],
+       ['FR_HOME_PIXEL','Fortune River - home button','Now make the HOME button of the event UI visible, then come back here.'],
+       ['FR_TEXT','Fortune River - reward text column','Open the Fortune River rewards panel so the reward text column is on screen, then come back here.'],
+       ['FR_BOX_TOP','Fortune River - box top edge','Keep the rewards panel open - you will click its TOP edge next.'],
+       ['FR_BOX_BOTTOM','Fortune River - box bottom edge','Keep the rewards panel open - you will click its BOTTOM edge next.']]},
+     autopan_button:{kind:'pixel',anykey:true,seq:[
+       ['AUTOPAN_ON','Auto Pan button (ON state)','In Roblox, switch Auto Pan ON so its button shows the ON colour, then come back here.'],
+       ['AUTOPAN_OFF','Auto Pan button (OFF state)','Now switch Auto Pan OFF in the game so the button shows the OFF colour, then come back here.']]}};
    function calItem(id){return ((CAL&&CAL.items)||[]).find(x=>x.id===id)||null;}
    async function calReload(){try{CAL=await _api().calibration_registry();}catch(e){}}
    // completion callback from the overlay (Python fires __calDone after
@@ -11223,25 +11434,72 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      const ek=expect?(expect.kind==='cue'?('CUEMASK:'+expect.key):(expect.kind==='region'?('REGION:'+expect.key):expect.key)):'';
      if(r.key&&ek&&r.key!==ek)return;
      CALV.awaiting=null;
-     if(r.cancelled){gdOut('<span class="no">Cancelled - nothing was saved.</span> You are still on this step; press Start to try again.');gdButtons(false);return;}
-     if(!r.ok){gdOut('<span class="no">That capture did not save.</span> Press Start calibration to run it again.');gdButtons(false);return;}
-     if(aw.next<aw.plan.length){ // more captures in this item's plan
+     if(r.cancelled){
+       gdStageCard(aw.item,aw.plan,aw.next-1,
+         '<span class="no">Cancelled - nothing was saved.</span> Set up the game again if needed, then press Start capture to retry this one.');
+       gdButtons(false);return;}
+     if(!r.ok){
+       gdStageCard(aw.item,aw.plan,aw.next-1,
+         '<span class="no">That capture did not save.</span> Press Start capture to retry it.');
+       gdButtons(false);return;}
+     if(aw.next<aw.plan.length){
+       // more captures in this plan: RETURN TO THE WIZARD with the next
+       // stage's prep card -- the user goes back into Roblox, prepares the
+       // next target, and starts the next capture explicitly. Never chain.
        if(gen!==CALV.gen)return;
-       gdRunStage(aw.item,aw.plan,aw.next);return;}
+       gdStageCard(aw.item,aw.plan,aw.next,
+         '<span class="ok">&#10003; Capture '+(aw.next)+' of '+aw.plan.length+' saved.</span>');
+       gdButtons(false);return;}
      gdOut('Validating&hellip;');
      await calReload();
      if(gen!==CALV.gen)return; // user navigated away while validating
      const it=calItem(aw.item.id);
      const st=(it&&it.live&&it.live.status)||'';
      const good=(st==='ok')||(!it.required&&st!=='unset');
-     if(good){
-       gdOut('<span class="ok">&#10003; Saved and validated.</span> Returning to the checklist&hellip;');
-       const g2=CALV.gen;
-       setTimeout(()=>{if(g2===CALV.gen&&CALV.view==='detail')renderCal();},1400);
-     }else{
+     if(good){gdSuccess(it);}
+     else{
        gdOut('<span class="no">Saved, but validation reports: '+E((it&&it.live&&it.live.detail)||st||'unknown')+'</span> Press Start calibration to redo this step; the checklist keeps it active until it passes.');
        gdButtons(false);}
    }
+   // The next actionable step after `id` in registry order (for the
+   // success panel's Next button): the first later non-complete step, else
+   // the first non-complete anywhere, else null (everything done).
+   function gdNextTarget(id){
+     const items=(CAL&&CAL.items||[]).filter(i=>i.id!=='roblox_window');
+     const idx=items.findIndex(i=>i.id===id);
+     const after=items.slice(idx+1).find(i=>(i.prog||{}).state!=='COMPLETE'&&(i.prog||{}).state!=='OPTIONAL');
+     if(after)return after;
+     const opt=items.slice(idx+1).find(i=>(i.prog||{}).state==='OPTIONAL'&&(i.live||{}).status==='unset');
+     if(opt)return opt;
+     return items.find(i=>i.id!==id&&(i.prog||{}).state!=='COMPLETE'&&(i.prog||{}).state!=='OPTIONAL')||null;}
+   function gdSuccess(it){
+     const nxt=gdNextTarget(it.id);
+     const saved=it.saved?(' <span class="cal-keys">'+E(it.saved)+'</span>'):'';
+     gdOut('<span class="ok">&#10003; Saved and validated.</span>'+saved
+       +'<div class="cap-actions" style="margin-top:9px">'
+       +(nxt?('<button type="button" class="btn" id="gdnext">Next: '+E(nxt.title)+' &rarr;</button>'):'')
+       +'<button type="button" class="btn2" id="gdlist">Back to the checklist</button>'
+       +(nxt?'':'<span class="cal-keys">All steps are covered - continue to Readiness when ready.</span>')
+       +'</div>');
+     gdButtons(false);
+     const nb=$id('gdnext');if(nb)nb.onclick=()=>{calNav();renderCalDetail(nxt.id);};
+     const lb=$id('gdlist');if(lb)lb.onclick=()=>{calNav();renderCal();};}
+   // Stage card: what to do IN THE GAME before this capture + an explicit
+   // Start button. Rendered between every capture of a multi-stage plan.
+   function gdStageCard(item,plan,idx,note){
+     CALV.stage=idx;
+     const st=plan[idx];
+     gdOut((note?note+'<br>':'')
+       +'<b>Capture '+(idx+1)+' of '+plan.length+': '+E(st.label)+'</b>'
+       +'<div class="gd-kv" style="margin-top:5px">'+E(st.prep||'Set up the game as described above, then start the capture.')+'</div>'
+       +'<div class="cap-actions" style="margin-top:8px">'
+       +'<button type="button" class="btn" id="gdcap">Start capture '+(idx+1)+'</button>'
+       +(idx>0?'<button type="button" class="btn2" id="gdredoprev">Redo previous capture</button>':'')
+       +'<button type="button" class="btn2" id="gdstop">Stop this sequence</button>'
+       +'</div>');
+     const cb=$id('gdcap');if(cb)cb.onclick=()=>gdCapture(item,plan,idx);
+     const rp=$id('gdredoprev');if(rp)rp.onclick=()=>gdStageCard(item,plan,idx-1,'Redoing the previous capture.');
+     const sb=$id('gdstop');if(sb)sb.onclick=()=>{CALV.awaiting=null;renderCalDetail(item.id);};}
    function gdOut(h){const o=$id('gdout');if(o)o.innerHTML=h;}
    function gdButtons(running){const s=$id('gdstart');if(s)s.disabled=!!running;
      const t=$id('gdtest');if(t)t.disabled=!!running;}
@@ -11255,10 +11513,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        gdOut('<span class="no">Roblox was not found on screen.</span> Open Roblox in Prospecting on your primary display, set up the scene as described above, then press Start again.');
        return false;}
      return true;}
-   async function gdRunStage(item,plan,idx){
+   // Start ONE capture (one overlay session) for stage `idx`. Advancing to
+   // the next stage happens only through onGdDone -> gdStageCard -> the
+   // user's explicit Start; nothing here chains captures.
+   async function gdCapture(item,plan,idx){
      const step=plan[idx];CALV.awaiting={item:item,plan:plan,next:idx+1};
      gdButtons(true);
-     gdOut('Capture '+(idx+1)+' of '+plan.length+': <b>'+E(step.label)+'</b> - the full-screen picker is open on top. '+E(step.hint||'Click the target, then Confirm (or Cancel to come back here).'));
+     gdOut('Capture '+(idx+1)+' of '+plan.length+': <b>'+E(step.label)+'</b> - the full-screen picker is open on top. Click the target, then Confirm (or Cancel to come back here).');
      let r=null;
      try{
        if(step.kind==='propose')r=await _api().wizard_propose(step.key,step.label,'guided_setup');
@@ -11270,10 +11531,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    }
    function gdPlan(item){
      const p=GD_STEPS[item.id];if(!p)return [];
-     if(p.kind==='propose')return p.seq.map(s=>({kind:'propose',key:s[0],label:s[1]}));
-     if(p.kind==='pixel')return p.seq.map(s=>({kind:'pixel',key:s[0],label:s[1]}));
-     if(p.kind==='region')return [{kind:'region',key:p.base,label:item.title}];
-     if(p.kind==='cues')return p.cues.map(c=>({kind:'cue',key:c[0],label:c[1],hint:'Click the prompt word; the letters light up green. Click any stray white blob to remove it, then Confirm.'}));
+     if(p.kind==='propose'||p.kind==='pixel')
+       return p.seq.map(s=>({kind:p.kind,key:s[0],label:s[1],prep:s[2]||''}));
+     if(p.kind==='region')return [{kind:'region',key:p.base,label:item.title,prep:p.prep||''}];
+     if(p.kind==='cues')return p.cues.map(c=>({kind:'cue',key:c[0],label:c[1],prep:c[2]||''}));
      return [];}
    function gdCalErr(r){let h='&#10007; '+E((r&&r.error)||'failed')+((r&&r.error_code)?(' ['+E(r.error_code)+']'):'');
      if(r&&r.needs_permission)h+=' <button type="button" class="btn2" data-goperm="1">Open the permission step</button>';
@@ -11285,7 +11546,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      if(!await gdPreflight(item))return;
      const plan=gdPlan(item);
      if(!plan.length){gdOut('This item has no guided capture plan.');return;}
-     gdRunStage(item,plan,0);}
+     // Multi-stage plans open with the FIRST stage's prep card so the user
+     // can set the game up before anything captures; single captures with
+     // a prep note show it once too, then start on the user's click.
+     if(plan.length>1||plan[0].prep){gdStageCard(item,plan,0,'');}
+     else{gdCapture(item,plan,0);}}
    async function gdTest(item){
      gdButtons(true);gdOut('Testing against the live screen&hellip;');
      try{
@@ -11350,15 +11615,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<div class="cal-eg" id="gdeg">Loading example&hellip;</div>'
        +'<div class="gd-sec"><h4>Privacy</h4>'+kv('Captured',ins.captured_data)+kv('Retention',ins.retention)+kv('Validated by',ins.validation)+'</div>'
        +kv('If you skip it',ins.unavailable_without||it.skip_consequence)
+       +(live.status==='ok'?('<div class="gd-sec"><h4>Saved calibration</h4><div class="gd-kv"><span class="ok">&#10003; Complete.</span> '+E(it.saved||live.detail||'Values saved.')+' Press Next to continue, or Recalibrate to redo it.</div></div>'):'')
        +'<div class="cap-actions">'
        +'<button type="button" class="btn" id="gdstart">'+(live.status==='ok'?'Recalibrate':'Start calibration')+'</button>'
        +'<button type="button" class="btn2" id="gdtest">Test existing calibration</button>'
        +(it.id==='cue_masks'?'<button type="button" class="btn2" id="gdclear">Clear captured masks</button>':'')
        +'<button type="button" class="btn2" id="gdcode">View code</button>'
+       +(live.status==='ok'?(function(){const nx=gdNextTarget(it.id);return nx?('<button type="button" class="btn" id="gdnextc">Next: '+E(nx.title)+' &rarr;</button>'):'';})():'')
        +'</div>'
-       +'<div class="gd-out" id="gdout" aria-live="polite">'+E(live.detail||'')+'</div>'
+       +'<div class="gd-out" id="gdout" aria-live="polite">'+(live.status==='ok'?'':E(live.detail||''))+'</div>'
        +kv('Retry',ins.retry_help);
      const bk=$id('gdback');if(bk)bk.onclick=()=>{calNav();renderCal();};
+     const nc=$id('gdnextc');if(nc)nc.onclick=()=>{const nx=gdNextTarget(it.id);calNav();if(nx)renderCalDetail(nx.id);else renderCal();};
      const st=$id('gdstart');if(st)st.onclick=()=>gdStart(it);
      const ts=$id('gdtest');if(ts)ts.onclick=()=>gdTest(it);
      const cl=$id('gdclear');if(cl)cl.onclick=async()=>{
@@ -11401,12 +11669,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        const open=(p.state==='UPCOMING')?'':('<button type="button" class="btn2" data-gd="'+i.id+'">'+(p.state==='COMPLETE'?'Review / redo':'Open this step')+'</button>');
        const disabled=(p.state==='UPCOMING')?('<button type="button" class="btn2" disabled aria-disabled="true" title="'+E(p.reason)+'">Open this step</button>'):'';
        const reason=(p.state==='UPCOMING'||p.state==='NEEDS_REVIEW'||p.state==='BLOCKED')?('<div class="cap-desc"><b>'+(p.state==='UPCOMING'?'Upcoming:':'Review:')+'</b> '+E(p.reason)+'</div>'):'';
+       const savedLine=(p.state==='COMPLETE'&&i.saved)?('<div class="cap-desc"><b>Saved:</b> '+E(i.saved)+' &middot; open the step to review or recalibrate, or just carry on.</div>'):'';
        return '<div class="cap-card'+stepClass(p)+'" data-calid="'+i.id+'" aria-label="Step '+(p.seq||0)+': '+E(i.title)+' - '+E((p.state||'').toLowerCase().replace('_',' '))+'"><div class="cap-head">'
          +(p.seq?('<span class="step-num" aria-hidden="true">'+p.seq+'</span>'):'')
          +'<span class="cap-title">'+E(i.title)+'</span>'
          +(i.required?'<span class="cap-badge req">Required</span>':'<span class="cap-badge opt">Optional</span>')+stepChip(p)
          +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></div>'
-         +'<div class="cap-desc">'+E(i.purpose)+' '+E(live.detail||'')+'</div>'+reason
+         +'<div class="cap-desc">'+E(i.purpose)+' '+E(live.detail||'')+'</div>'+savedLine+reason
          +'<div class="cap-actions">'+open+disabled+'<button type="button" class="btn2" data-cal="code" data-item="'+i.id+'">View code</button></div>'
          +'<div class="cap-test" id="caltest_'+i.id+'" aria-live="polite"></div></div>';};
      const wlive=(win&&win.live)||{};

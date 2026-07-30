@@ -1039,6 +1039,65 @@ def calibration_status(cfg, health=None, window_found=None,
     return out
 
 
+def saved_summary(cfg, item_id):
+    """One human-readable line describing what is CURRENTLY saved for a
+    registry item -- rendered on completed guided cards so a returning
+    user sees their calibration instead of a bare checkmark. Empty string
+    when nothing meaningful is saved."""
+    def px(key):
+        v = cfg.get(key)
+        if (isinstance(v, (list, tuple)) and len(v) == 2
+                and list(v) != [0, 0]):
+            try:
+                return "(%d, %d)" % (int(v[0]), int(v[1]))
+            except (TypeError, ValueError):
+                return ""
+        return ""
+    try:
+        if item_id == "cap_bar":
+            r, l = px("CAP_FULL_PIXEL"), px("CAP_LEFT_PIXEL")
+            if r and l:
+                return ("Right tip %s, left tip %s, width %s px"
+                        % (r, l, cfg.get("CAP_BAR_WIDTH", "?")))
+        elif item_id in ("pan_prompt", "deposit_prompt", "shake_prompt",
+                         "dig_green"):
+            key = {"pan_prompt": "PAN_PIX", "deposit_prompt": "DEPOSIT_PIX",
+                   "shake_prompt": "SHAKE_PIX",
+                   "dig_green": "DIG_TRIGGER_PIXEL"}[item_id]
+            p = px(key)
+            if p:
+                return "Saved point %s" % p
+        elif item_id == "cue_masks":
+            captured, _ = cue_masks_state(cfg)
+            if captured:
+                masks = cfg.get("CUE_MASKS") or {}
+                return "Captured: " + ", ".join(
+                    "%s (%s px)" % (c, (masks.get(c) or {}).get("px", "?"))
+                    for c in captured)
+        elif item_id in ("money_region", "shards_region", "find_region"):
+            base = {"money_region": "MONEY", "shards_region": "SHARDS",
+                    "find_region": "FIND"}[item_id]
+            tl, br = cfg.get(base + "_TL_PIXEL"), cfg.get(base + "_BR_PIXEL")
+            if (isinstance(tl, (list, tuple)) and isinstance(br, (list, tuple))
+                    and len(tl) == 2 and len(br) == 2 and list(tl) != [0, 0]):
+                return ("%dx%d px box at (%d, %d)"
+                        % (abs(int(br[0]) - int(tl[0])),
+                           abs(int(br[1]) - int(tl[1])),
+                           int(tl[0]), int(tl[1])))
+        elif item_id == "fortune_river":
+            got = [k for k in ("FR_OPEN_PIXEL", "FR_HOME_PIXEL", "FR_SCAN_X",
+                               "FR_BOX_TOP", "FR_BOX_BOTTOM") if cfg.get(k)]
+            if got:
+                return "%d of 5 points saved" % len(got)
+        elif item_id == "autopan_button":
+            p = px("AUTOPAN_BTN_PIXEL")
+            if p:
+                return "Button at %s" % p
+    except Exception:
+        return ""
+    return ""
+
+
 def compose_registry(cfg, health=None, window_found=None,
                      setup_finished=False, owner=False):
     """The full guided-calibration payload (items + live statuses +
@@ -1079,6 +1138,7 @@ def compose_registry(cfg, health=None, window_found=None,
                               {"state": "CHECK", "seq": 0,
                                "reason": "Live prerequisite check."})
         it["instruction"] = CALIBRATION_INSTRUCTIONS.get(item["id"], {})
+        it["saved"] = saved_summary(cfg, item["id"])
         items.append(it)
     ready, blockers = calibration_ready(statuses)
     return {"items": items, "ready": ready, "blockers": blockers,

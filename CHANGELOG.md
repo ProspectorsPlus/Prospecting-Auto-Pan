@@ -4,6 +4,19 @@ All notable changes to Prospector Lite are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0-rc.5] — 2026-07
+
+The calibration-polish release candidate, driven by the owner's full manual walkthrough of rc.4's guided calibration (with screenshots of every reported defect).
+
+### Fixed
+- **Stale overlay banner (root-caused and eliminated).** The capture overlay's region mode used to rebuild the top banner's HTML, destroying the label element it contained; every later capture session then silently failed to update the banner (the "stuck on 'Finds pop-up box'" reports) and — worse — aborted before resetting the previous session's interaction mode, so a stale cue-editor mode or stale pending proposal could swallow every click (the "overlay stops letting me click" reports). The overlay page was rewritten around one session model: `overlay_image()` is the single source of truth (image, label, action hint, interaction mode, session id), every reload rebuilds ALL page state from it, the banner is only ever written via `textContent`, a session token guards every async return, and a bridge error is now shown in the banner instead of dying silently. Twelve DOM regressions in `wizard_ui_tests.py` lock this in (stale banner, dead clicks after region/cue sessions, error responsiveness, delayed stale responses).
+- **Multi-capture calibrations no longer chain.** Every capture stage now returns to the wizard with a prep card ("Capture 2 of 3 — step onto LAND so 'Collect Deposit' shows…") and an explicit **Start capture** button, so you can switch to Roblox and set up the next target between captures. This covers Advanced cue matching (three prompts in three different game states), Auto Pan (ON then OFF), Fortune River (five UI states), and the Capacity bar's two tips. Cancel or a failed capture keeps you on the stage card with a retry.
+- **Saved calibrations are walked through, never skipped.** Completed steps stay in the sequence with a "Saved:" summary of the actual values (coordinates, bar width, box size, captured masks), and their detail pages open with the summary plus **Recalibrate** and **Next step** actions. The success panel after a capture now offers **Next: <step>** and **Back to the checklist** instead of auto-navigating.
+- Capture-session hygiene: the overlay's Enter key confirms an open card, Redo fully clears a pending pick/drag/proposal, and confirm buttons are single-fire.
+
+### Added
+- **Real in-app example screenshots.** The owner's calibration captures were sanitized through the new `packaging/sanitize_examples.py` pipeline (macOS menu bar, dock, personal name and desktop chrome cropped out; only the relevant Roblox area kept) and shipped as approved example images for all 11 calibration items — the guided detail pages now show a real picture of what each step looks like.
+
 ## [1.0.0-rc.4] — 2026-07
 
 The visible-onboarding release candidate: guided calibration now lives entirely inside the setup wizard, setup progresses sequentially, Advanced Cue Matching becomes the required primary detector, the main tutorial starts itself exactly once after setup, and the app finally wears its diamond icon at the OS level.

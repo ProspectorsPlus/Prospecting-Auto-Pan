@@ -1,6 +1,6 @@
 # Prospector Lite
 
-**Version 1.0.0-rc.4** (release candidate) — a free desktop macro for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
+**Version 1.0.0-rc.5** (release candidate) — a free desktop macro for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
 
 Prospector Lite automates the pan/dig/shake loop by **reading pixels from your screen and sending ordinary keyboard/mouse input through the operating system**. It is an *external* tool: it never touches the Roblox process, its memory, its files, or its network traffic.
 
