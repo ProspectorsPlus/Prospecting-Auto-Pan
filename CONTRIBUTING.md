@@ -59,6 +59,7 @@ python3 engine_pacing_tests.py
 python3 engine_trace_tests.py
 python3 public_release_tests.py     # the release gate
 python3 onboarding_trust_tests.py   # the onboarding/trust suite
+python3 capacity_tests.py           # capacity calibration validation (sim-safe)
 ```
 
 Note: `studio_conformance.py` resolves its goldens from a private sibling repository and **skips cleanly (exit 0)** when they are absent — it no longer blocks outside contributors or public CI. The Studio engine paths remain covered by the tracked `engine_*` suites.

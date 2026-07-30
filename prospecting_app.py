@@ -3555,6 +3555,24 @@ class Api:
         except Exception:
             pass
 
+    def _cap_repair_backup(self):
+        """One-time safety net before a capacity save REPLACES a stored
+        pair that fails the suspicion check (lite_onboarding.
+        cap_pair_suspicion): snapshot the config once to
+        CONFIG_FILE + '.pre-caprepair.bak' so the pre-repair values stay
+        recoverable. Values are never modified or deleted here -- the
+        _advcue_migration_backup pattern."""
+        try:
+            cfg = load_saved()
+            if not lite_onboarding.cap_pair_suspicion(cfg):
+                return
+            bak = CONFIG_FILE + ".pre-caprepair.bak"
+            if not os.path.isfile(bak) and os.path.isfile(CONFIG_FILE):
+                import shutil
+                shutil.copyfile(CONFIG_FILE, bak)
+        except Exception:
+            pass
+
     def calibration_registry(self):
         """Registry items + live statuses + sequential progression for the
         guided-calibration step and the Trust Center."""
@@ -4082,11 +4100,17 @@ class Api:
         calibration write -- pixel persistence, CAP_BAR_WIDTH derivation,
         window rect/origin + PIXEL_RATIOS capture, the FR/autopan group
         and the AUTO_CALIBRATE / WINDOW_RELATIVE force -- runs in the
-        engine's one implementation (protocol 4.15 savePixels)."""
+        engine's one implementation (protocol 4.15 savePixels). A
+        capacity-pair rejection (ok:False + reasons; nothing written,
+        previous values retained) is forwarded verbatim so every caller
+        can show the exact reasons; successful saves keep the legacy
+        "saved" result."""
         s = _sensing()
         if s is None:
             return _SENSING_ERR
-        s.save_pixels(pixels, colors=colors, fr=fr)
+        r = s.save_pixels(pixels, colors=colors, fr=fr)
+        if isinstance(r, dict) and r.get("ok") is False:
+            return r
         return "saved"
 
     # ---- calibration export / import ----
@@ -4480,6 +4504,36 @@ class Api:
                 "No saved calibration points to sample. Auto-calibration "
                 "is OFF, so calibrate the required points first.")
         return res
+
+    def cap_bar_review(self):
+        """The Calibrate tab's banner check for the capacity pair: the
+        stored-pair suspicion detail (the needs_review migration,
+        lite_onboarding.cap_pair_suspicion) or empty. Pure config read --
+        cheap enough for the tab's 8 s health poll."""
+        try:
+            return {"detail":
+                    lite_onboarding.cap_pair_suspicion(load_saved()) or ""}
+        except Exception:
+            return {"detail": ""}
+
+    def test_capacity(self):
+        """Test Capacity Calibration: one fresh grab evaluated with the
+        exact RUNTIME capacity math (right-tip is_yellow over the 6x6
+        runtime box, fill fraction over the cap_fill band, pair
+        validation) plus an annotated preview of the bar region. Routed
+        to the same in-process engine Sensing every calibration verb
+        uses (capacity_probe)."""
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "tip_yellow": False, "tip_hex": "",
+                    "fill_frac": 0.0, "preview": "",
+                    "reasons": [_SENSING_ERR]}
+        try:
+            return s.capacity_probe()
+        except Exception as e:
+            return {"ok": False, "tip_yellow": False, "tip_hex": "",
+                    "fill_frac": 0.0, "preview": "",
+                    "reasons": ["The capacity probe failed: %s" % e]}
 
     def test_find_read(self):
         """OCR the find pop-up region ONCE and show raw lines + what parsed,
@@ -6319,14 +6373,47 @@ class Api:
         p = getattr(self, "_overlay_pending", None)
         if p and key:
             x, y, hexv = p["x"], p["y"], p["hex"]
-            if key in ("CAP", "CAP_RIGHT"):
-                px = {"CAP_FULL_PIXEL": [x, y]}
-                cl = getattr(self, "_overlay_cap_left", None)
-                if key == "CAP" and cl:
-                    px["CAP_LEFT_PIXEL"] = cl
-                self.save_pixels(px, {"CAP_FULL_PIXEL": hexv})
-            elif key == "CAP_LEFT":
-                self.save_pixels({"CAP_LEFT_PIXEL": [x, y]})
+            if key in ("CAP", "CAP_RIGHT", "CAP_LEFT"):
+                # capacity endpoints: guard the pick against the SESSION
+                # frame first (manual clicks on the pale anti-aliased tip
+                # used to save fine and then fail the runtime gold test --
+                # reproduction report issue 5). A failed guard or a
+                # rejected pair save returns WITHOUT closing the overlay:
+                # the page shows the exact reasons, Redo stays possible
+                # and the previous values remain untouched.
+                gk = "CAP_LEFT" if key == "CAP_LEFT" else "CAP_RIGHT"
+                try:
+                    guard = _sensing().cap_endpoint_guard(gk, x, y)
+                except Exception as e:
+                    guard = {"ok": False,
+                             "reason": "Could not validate the click "
+                                       "against the capture: %s" % e}
+                if not guard.get("ok"):
+                    return {"ok": False, "error": "cap_endpoint",
+                            "reason": guard.get("reason", ""),
+                            "reasons": [guard.get("reason", "")]}
+                x, y = int(guard["x"]), int(guard["y"])
+                hexv = guard.get("hex") or hexv
+                if key == "CAP_LEFT":
+                    self._cap_repair_backup()
+                    r = self.save_pixels({"CAP_LEFT_PIXEL": [x, y]})
+                else:
+                    px = {"CAP_FULL_PIXEL": [x, y]}
+                    cl = getattr(self, "_overlay_cap_left", None)
+                    prop = getattr(self, "_overlay_proposed", None)
+                    # the auto-detected left tip came from the SAME frame
+                    # as the proposal: save the pair together when the
+                    # user confirmed the proposal unchanged (a manual
+                    # re-pick saves the right end alone -- validation
+                    # then runs against the stored left)
+                    same = (prop is not None and p.get("x") == prop.get("x")
+                            and p.get("y") == prop.get("y"))
+                    if cl and (key == "CAP" or same):
+                        px["CAP_LEFT_PIXEL"] = [int(cl[0]), int(cl[1])]
+                    self._cap_repair_backup()
+                    r = self.save_pixels(px, {"CAP_FULL_PIXEL": hexv})
+                if isinstance(r, dict) and r.get("ok") is False:
+                    return r
             elif key == "FR_TEXT":
                 self.save_pixels({}, None, {"FR_SCAN_X": x,
                                             "FR_TEXT_RGB": [p["r"], p["g"], p["b"]]})
@@ -7360,7 +7447,8 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    $('err').textContent='';}
  function flashErr(msg){if(!S)return;$('err').textContent=' · '+msg;
    if(S.errT)clearTimeout(S.errT);
-   const tok=S;S.errT=setTimeout(function(){if(tok===S)$('err').textContent='';},3200);}
+   const ms=Math.min(15000,Math.max(3200,60*String(msg||'').length));
+   const tok=S;S.errT=setTimeout(function(){if(tok===S)$('err').textContent='';},ms);}
  async function boot(){
    const my=++BOOTN;
    let d=null;try{d=await api().overlay_image();}catch(e){d=null;}
@@ -7460,7 +7548,15 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    marker.style.display='none';tip.style.display='none';$('maskbox').style.display='none';};
  $('cancel').onclick=function(){try{api().overlay_cancel();}catch(e){}};
  function doConfirm(){if(!S||S.busy)return;S.busy=true;const tok=S;
-   try{Promise.resolve(api().overlay_confirm()).catch(function(){
+   try{Promise.resolve(api().overlay_confirm()).then(function(r){
+     // a REJECTED save (r.ok===false) leaves the overlay open: show the
+     // exact reasons in the banner, unlock the session so Redo / a new
+     // pick / Esc all still work, and keep the previous values intact.
+     if(tok!==S)return;
+     if(r&&r.ok===false){S.busy=false;
+       flashErr((r.reasons&&r.reasons.length?r.reasons.join(' '):'')
+                ||r.reason||r.error||'Not saved - try again or Esc.');}
+   }).catch(function(){
      if(tok===S){S.busy=false;flashErr('Confirm failed - try again or Esc.');}});}
    catch(e){S.busy=false;flashErr('Confirm failed - try again or Esc.');}}
  $('ok').onclick=doConfirm;
@@ -7567,6 +7663,19 @@ def build_html():
             f'<span class="calsw2" id="cs_{key}"></span></div>'
             f'<button type="button" class="btn2 calbtn" data-pkey="{key}">Calibrate</button>'
             f'</div>')
+        if key == "CAP_LEFT_PIXEL":
+            # Test Capacity Calibration: fresh screenshot + the exact
+            # runtime math on the two capacity rows above
+            calrows.append(
+                '<div class="calrow" id="capTestRow">'
+                '<div class="calinfo"><div class="calname">Test capacity '
+                'calibration</div>'
+                '<div class="caldesc">One fresh screenshot read with the '
+                'exact runtime math: right-tip gold test, fill fraction '
+                'over the bar band, endpoint-pair validation.</div></div>'
+                '<button type="button" class="btn2" id="capTest">'
+                'Test capacity calibration</button></div>'
+                '<div class="detout" id="capTestOut"></div>')
     panels.append(
         '<section class="panel" id="pcal"><div class="phead"><h2>Calibrate pixels</h2>'
         '<p class="chint">Open Prospecting in Roblox with the HUD visible, then run '
@@ -10168,10 +10277,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    el.title=on?'Tuning may be off in this stage; see the Cycle warning above.':'';}
  let HEALTH_CAL={ok:true,reason:''};
  function applyCalBadge(){const bs=document.querySelectorAll('.calbanner');
-   if(!HEALTH_CAL.ok){setNavBadge('cal','red',HEALTH_CAL.reason);
-     bs.forEach(b=>{b.innerHTML='<b>Re-calibration needed.</b> '+HEALTH_CAL.reason;b.classList.add('show');});}
+   const msgs=[];
+   if(!HEALTH_CAL.ok)msgs.push('<b>Re-calibration needed.</b> '+HEALTH_CAL.reason);
+   if(window.CAP_REVIEW)msgs.push('<b>Capacity calibration needs review.</b> '+(window.__esc?window.__esc(window.CAP_REVIEW):window.CAP_REVIEW));
+   if(msgs.length){setNavBadge('cal','red',(!HEALTH_CAL.ok?HEALTH_CAL.reason:window.CAP_REVIEW));
+     bs.forEach(b=>{b.innerHTML=msgs.join('<br>');b.classList.add('show');});}
    else{bs.forEach(b=>b.classList.remove('show'));}}
- async function checkCalHealth(){try{HEALTH_CAL=await window.pywebview.api.calibration_health()||{ok:true};}catch(_){HEALTH_CAL={ok:true};}applyCalBadge();}
+ async function checkCalHealth(){try{HEALTH_CAL=await window.pywebview.api.calibration_health()||{ok:true};}catch(_){HEALTH_CAL={ok:true};}
+   try{window.CAP_REVIEW=((await window.pywebview.api.cap_bar_review())||{}).detail||'';}catch(_){window.CAP_REVIEW='';}
+   applyCalBadge();}
  function applyHealth(s){
    const hard=(s&&s.hard_stops>0);
    if(!HEALTH_CAL.ok){setNavBadge('cal','red',HEALTH_CAL.reason);}
@@ -10438,7 +10552,34 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    const k=row.dataset.pkey,c=(row.querySelector('.chex').value||'').trim();if(c)o[k]=c;});return o;}
  document.querySelectorAll('.chex').forEach(inp=>inp.addEventListener('input',()=>{
    const cs=inp.closest('.calrow').querySelector('.calsw2');if(cs)cs.style.background=inp.value;}));
- $('#savepixels').onclick=async()=>{await window.pywebview.api.save_pixels(collectPixels(),collectColors(),collectFR());toast('Calibration saved');};
+ $('#savepixels').onclick=async()=>{
+   const r=await window.pywebview.api.save_pixels(collectPixels(),collectColors(),collectFR());
+   if(r&&r.ok===false){ // capacity pair rejected: nothing was written
+     toast('Not saved - the capacity endpoints failed validation');
+     const o=document.getElementById('capTestOut');
+     if(o)o.innerHTML='<div class="detrow det-no"><b>Calibration NOT saved.</b> Previous values kept.</div>'
+       +((r.reasons)||[]).map(x=>'<div class="detrow det-no">'+window.__esc(x)+'</div>').join('');
+     return;}
+   toast('Calibration saved');};
+ window.__esc=s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+ // Shared PASS/FAIL card for the Test Capacity Calibration action (used
+ // by the Calibrate tab and the wizard's cap_bar detail page).
+ window.__capTestCard=function(r){r=r||{};const E2=window.__esc;
+   let h='<div class="detrow">'+(r.ok?'<span class="det-ok"><b>PASS ✓</b></span>':'<span class="det-no"><b>FAIL ✗</b></span>')+'</div>';
+   if(r.right&&r.left)h+='<div class="detrow">Right tip ('+E2(r.right[0])+', '+E2(r.right[1])+') · left tip ('+E2(r.left[0])+', '+E2(r.left[1])+') · tips '+E2(r.width)+' px apart · stored width '+E2(r.stored_width!=null?r.stored_width:r.width)+' px</div>';
+   if(r.tip_hex)h+='<div class="detrow"><span class="detsw" style="background:'+E2(r.tip_hex)+'"></span>Right-tip reads <b>'+E2(r.tip_hex)+'</b> → '+(r.tip_yellow?'<span class="det-ok">gold ✓</span>':'<span class="det-no">not gold</span>')+'</div>';
+   if(typeof r.fill_frac==='number')h+='<div class="detrow">Fill: <b>'+Math.round(r.fill_frac*100)+'%</b> of the runtime band reads yellow</div>';
+   h+=((r.reasons)||[]).map(x=>'<div class="detrow det-no">'+E2(x)+'</div>').join('');
+   if(r.preview)h+='<div class="detrow"><img src="'+r.preview+'" alt="annotated capacity bar crop" style="max-width:100%;image-rendering:pixelated;border-radius:6px"></div>';
+   if(!r.ok)h+='<div class="detrow"><button type="button" class="btn2" id="capRecal">Recalibrate right end</button></div>';
+   return h;};
+ (function(){const b=document.getElementById('capTest');if(!b)return;
+   b.onclick=async()=>{const o=document.getElementById('capTestOut');if(!o)return;
+     o.innerHTML='<div class="detrow">testing against a fresh screenshot…</div>';
+     let r=null;try{r=await window.pywebview.api.test_capacity();}catch(e){r={ok:false,reasons:[String(e)]};}
+     o.innerHTML=window.__capTestCard(r);
+     const rb=o.querySelector('#capRecal');
+     if(rb)rb.onclick=()=>{const cb=document.querySelector('.calbtn[data-pkey="CAP_FULL_PIXEL"]');if(cb)cb.click();};};})();
  let _detT=null;
  function _sw(c){return c?('rgb('+c.r+','+c.g+','+c.b+')'):'#000';}
  function _drow(label,c,verdict){return '<div class="detrow"><span class="detsw" style="background:'+_sw(c)+'"></span>'
@@ -11949,6 +12090,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<div class="cap-actions">'
        +'<button type="button" class="btn" id="gdstart">'+(live.status==='ok'?'Recalibrate':'Start calibration')+'</button>'
        +'<button type="button" class="btn2" id="gdtest">Test existing calibration</button>'
+       +(it.id==='cap_bar'?'<button type="button" class="btn2" id="capTest">Test capacity calibration</button>':'')
        +(it.id==='cue_masks'?'<button type="button" class="btn2" id="gdclear">Clear captured masks</button>':'')
        +'<button type="button" class="btn2" id="gdcode">View code</button>'
        +(live.status==='ok'?(function(){const nx=gdNextTarget(it.id);return nx?('<button type="button" class="btn" id="gdnextc">Next: '+E(nx.title)+' &rarr;</button>'):'';})():'')
@@ -11959,6 +12101,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      const nc=$id('gdnextc');if(nc)nc.onclick=()=>{const nx=gdNextTarget(it.id);calNav();if(nx)renderCalDetail(nx.id);else renderCal();};
      const st=$id('gdstart');if(st)st.onclick=()=>gdStart(it);
      const ts=$id('gdtest');if(ts)ts.onclick=()=>gdTest(it);
+     // Test Capacity Calibration (cap_bar only): runtime-math probe with
+     // the shared PASS/FAIL card; the Recalibrate button re-enters the
+     // guided right-end flow.
+     const ctb=b.querySelector('#capTest');if(ctb)ctb.onclick=async()=>{
+       gdOut('Testing against a fresh screenshot&hellip;');
+       let r=null;try{r=await _api().test_capacity();}catch(e){r={ok:false,reasons:[String(e)]};}
+       const o=$id('gdout');if(!o)return;
+       o.innerHTML=window.__capTestCard?window.__capTestCard(r):(r&&r.ok?'PASS':'FAIL');
+       const rb=o.querySelector('#capRecal');if(rb)rb.onclick=()=>gdStart(it);};
      const cl=$id('gdclear');if(cl)cl.onclick=async()=>{
        for(const c of ['PAN','DEPOSIT','SHAKE']){try{await _api().clear_cue_mask(c);}catch(e){}}
        toast('Cleared captured masks');renderCalDetail('cue_masks');};

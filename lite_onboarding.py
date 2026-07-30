@@ -232,6 +232,7 @@ def compute_startup_route(*, explicit_welcome, studio_launch,
 CALIBRATION_ITEMS = [
     {
         "id": "roblox_window",
+        "deep_link_id": "roblox_window",
         "title": "Roblox window",
         "purpose": "Everything is calibrated relative to where the Roblox "
                    "window sits. Detection confirms the game is visible on "
@@ -251,6 +252,12 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "cap_bar",
+        "deep_link_id": "cap_bar",
+        # Phase 23 repair metadata: the in-app repair action for a
+        # suspect pair, and the diagnostics-chunk ids that will link
+        # here (the ids are the contract; the diagnostics land later).
+        "repair_action": "test_capacity",
+        "related_diagnostics": ["PP-D-CAP-SUSPECT", "PP-D-CAP-HARDSTOP"],
         "title": "Pan capacity bar (right + left ends)",
         "purpose": "The yellow fill bar tells the macro when the pan is "
                    "full, when it's empty and when a dig registered -- the "
@@ -271,6 +278,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "pan_prompt",
+        "deep_link_id": "pan_prompt",
         "title": "'Pan' prompt pixel",
         "purpose": "Anchors the walk-back to water: the macro knows it is "
                    "at the water when this white prompt appears.",
@@ -286,6 +294,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "deposit_prompt",
+        "deep_link_id": "deposit_prompt",
         "title": "'Collect Deposit' prompt pixel",
         "purpose": "Anchors the land side: dig starts when this prompt is "
                     "visible.",
@@ -302,6 +311,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "shake_prompt",
+        "deep_link_id": "shake_prompt",
         "title": "'Shake' prompt pixel",
         "purpose": "Confirms the shake started; a missed shake is retried "
                    "instead of wasting the pan.",
@@ -317,6 +327,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "cue_masks",
+        "deep_link_id": "cue_masks",
         "title": "Advanced cue matching",
         "purpose": "The primary prompt detector: it matches the exact "
                    "letter shapes of the Pan / Collect Deposit / Shake "
@@ -342,6 +353,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "dig_green",
+        "deep_link_id": "dig_green",
         "title": "Green dig-bar pixel",
         "purpose": "The green zone of the dig bar. Needed by Perfect digs "
                    "and the shards/geode green-confirm nudges.",
@@ -361,6 +373,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "money_region",
+        "deep_link_id": "money_region",
         "title": "Money counter box",
         "purpose": "Lets the earnings tracker read your money counter "
                    "locally (OCR on this machine).",
@@ -379,6 +392,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "shards_region",
+        "deep_link_id": "shards_region",
         "title": "Shards counter box",
         "purpose": "Same as money, for the shards counter.",
         "keys": ["SHARDS_TL_PIXEL", "SHARDS_BR_PIXEL"],
@@ -395,6 +409,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "find_region",
+        "deep_link_id": "find_region",
         "title": "Finds pop-up box",
         "purpose": "Lets the finds tracker read the item pop-ups locally.",
         "keys": ["FIND_TL_PIXEL", "FIND_BR_PIXEL"],
@@ -411,6 +426,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "fortune_river",
+        "deep_link_id": "fortune_river",
         "title": "Fortune River recovery points",
         "purpose": "Recovery clicks for the Fortune River event UI.",
         "keys": ["FR_OPEN_PIXEL", "FR_HOME_PIXEL", "FR_SCAN_X",
@@ -434,6 +450,7 @@ CALIBRATION_ITEMS = [
     },
     {
         "id": "autopan_button",
+        "deep_link_id": "autopan_button",
         "title": "Auto Pan button pixel",
         "purpose": "Lets relic tracking verify the Auto Pan toggle state.",
         "keys": ["AUTOPAN_BTN_PIXEL"],
@@ -947,6 +964,48 @@ def cue_masks_state(cfg):
     return captured, missing
 
 
+def cap_pair_suspicion(cfg):
+    """Suspicion check on a STORED capacity endpoint pair (migration for
+    values saved before save-time validation existed -- reproduction
+    report issue 5). Returns a detail sentence naming the exact problem
+    when the stored pair could not pass today's validation, else None.
+    Pure status computation: values are NEVER modified or deleted here.
+
+    Triggers: right.x <= left.x + 20, stored CAP_BAR_WIDTH more than
+    2 px off the tips' distance, tips more than 8 px apart vertically,
+    or CAP_BAR_WIDTH < 24."""
+    right = cfg.get("CAP_FULL_PIXEL")
+    left = cfg.get("CAP_LEFT_PIXEL")
+    if not (_pix_set(cfg, "CAP_FULL_PIXEL")
+            and _pix_set(cfg, "CAP_LEFT_PIXEL")):
+        return None
+    try:
+        rx, ry = int(right[0]), int(right[1])
+        lx, ly = int(left[0]), int(left[1])
+        bw = int(cfg.get("CAP_BAR_WIDTH", 0) or 0)
+    except (TypeError, ValueError, IndexError):
+        return None
+    tail = (" Run Test capacity calibration or redo the Capacity "
+            "step.")
+    if rx <= lx + 20:
+        return ("The saved right tip x=%d is not right of the left tip "
+                "x=%d - the stored endpoints are swapped or landed on "
+                "the same end, so the runtime would read the wrong "
+                "span.%s" % (rx, lx, tail))
+    if abs(ry - ly) > 8:
+        return ("The saved tips sit %d px apart vertically (right y=%d, "
+                "left y=%d) - the bar is horizontal, so one click "
+                "missed it.%s" % (abs(ry - ly), ry, ly, tail))
+    if bw < 24:
+        return ("The saved bar width is %d px - below the 24 px minimum "
+                "a readable capacity bar needs.%s" % (bw, tail))
+    if abs((rx - lx) - bw) > 2:
+        return ("The saved bar width %d px does not match the saved "
+                "tips, which are %d px apart - the width is stale from "
+                "an earlier calibration.%s" % (bw, rx - lx, tail))
+    return None
+
+
 def _required_values_present(cfg, item):
     """When AUTO_CALIBRATE is off, a required item is only 'calibrated' if
     its values actually exist: every pixel key set (non-[0,0]) and, for the
@@ -1089,6 +1148,15 @@ def calibration_status(cfg, health=None, window_found=None,
                                   "moved or resized since -- recalibrate "
                                   "or restore the window."}
         else:
+            if iid == "cap_bar":
+                # values present + window healthy, but the stored pair
+                # itself is suspect (saved before save-time validation
+                # existed): surface it as needs_review -- values are
+                # never modified or deleted by status computation.
+                sus = cap_pair_suspicion(cfg)
+                if sus:
+                    out[iid] = {"status": "needs_review", "detail": sus}
+                    continue
             out[iid] = {"status": "ok", "detail": "User-calibrated."}
     return out
 

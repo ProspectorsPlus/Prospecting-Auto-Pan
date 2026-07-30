@@ -57,6 +57,9 @@ jobs:
       - name: Onboarding + trust suite (wizard, registry, TLS, identity)
         run: python onboarding_trust_tests.py
 
+      - name: Capacity calibration suite (sim-safe)
+        run: python capacity_tests.py
+
       - name: UI + protocol checks
         run: python tour_check.py
 

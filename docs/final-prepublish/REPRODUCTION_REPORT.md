@@ -247,8 +247,8 @@ acceptance script.
   `PUBLIC_RELEASE_READINESS.md:23`, `PUBLIC_RELEASE_STATUS.md:75-76`); all
   Windows verification is static (py_compile, tour_check lockstep, YAML).
 - Cosmetic rot: `windows/Install.bat` still launches the long-gone
-  `Prospectors Plus.bat` (line 64) with pre-rename branding — source-checkout
-  path only, not bundled.
+  pre-rename launcher `.bat` (line 64) with the old product branding —
+  source-checkout path only, not bundled.
 
 **Expected:** all new behavior lands in shared code or the synced mirror; the
 ui divergence is healed and guarded; a `windows_acceptance.ps1` exists; the

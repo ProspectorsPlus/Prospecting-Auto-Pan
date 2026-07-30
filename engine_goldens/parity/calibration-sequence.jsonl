@@ -13,5 +13,5 @@
 {"cmd": "calibration.cueMask", "ok": true, "r": {"preview": "<png>", "px": 100}}
 {"cmd": "calibration.health", "ok": true, "r": {"ok": true, "reason": ""}}
 {"cmd": "calibration.auto", "ok": true, "r": {"count": 6, "pixels": {"CAP_FULL_PIXEL": [848, 679], "CAP_LEFT_PIXEL": [552, 680], "DEPOSIT_PIX": [612, 747], "DIG_TRIGGER_PIXEL": [821, 411], "PAN_PIX": [663, 745], "SHAKE_PIX": [654, 746]}, "placed": true, "window": {"h": 800, "w": 1200, "x": 100, "y": 50}}}
-{"cmd": "calibration.savePixels", "ok": true, "r": {"saved": ["AUTO_CALIBRATE", "CALIB_WINDOW_ORIGIN", "CALIB_WINDOW_RECT", "CAP_BAR_WIDTH", "CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "PIXEL_RATIOS", "WINDOW_RELATIVE"]}}
+{"cmd": "calibration.savePixels", "ok": true, "r": {"ok": true, "saved": ["AUTO_CALIBRATE", "CALIB_WINDOW_ORIGIN", "CALIB_WINDOW_RECT", "CAP_BAR_WIDTH", "CAP_FULL_PIXEL", "CAP_LEFT_PIXEL", "PIXEL_RATIOS", "WINDOW_RELATIVE"], "width": 400}}
 {"cmd": "calibration.pick", "ok": true, "r": {"hex": "#101010", "rgb": [16, 16, 16], "x": 1426, "y": 891}}

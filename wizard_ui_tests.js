@@ -705,7 +705,8 @@ async function scenarioOverlay() {
   console.log('[D] calibration overlay: stale-banner + dead-click regressions');
   const ohtml = fs.readFileSync(path.join(WORK, 'overlay.html'), 'utf8');
   const IMG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-  const OS = { seq: 1, d: null, delay: 0, pick: null, calls: [] };
+  const OS = { seq: 1, d: null, delay: 0, pick: null, confirm: null,
+    calls: [] };
   function sess(o, delay) { OS.seq++; OS.delay = delay || 0;
     OS.d = Object.assign({ src: IMG, seq: OS.seq }, o); }
   const api = new Proxy({}, { get(_, name) {
@@ -722,6 +723,8 @@ async function scenarioOverlay() {
         return Promise.resolve({ ok: true, w: 20, h: 10 });
       if (name === 'cue_toggle')
         return Promise.resolve({ error: 'not editing' });
+      if (name === 'overlay_confirm')
+        return Promise.resolve(OS.confirm || { ok: true });
       return Promise.resolve({ ok: true });
     };
   } });
@@ -797,6 +800,29 @@ async function scenarioOverlay() {
   await sleep(700);
   chk(doc.getElementById('lab').textContent === 'Shards counter box',
     'a delayed stale overlay_image can never overwrite the live session');
+  // capacity-endpoint validation (reproduction issue 5): a REJECTED
+  // confirm (ok:false + reasons) keeps the overlay OPEN, shows the exact
+  // reasons in the banner, and Redo / a new pick still work
+  OS.confirm = { ok: false, error: 'cap_endpoints',
+    reasons: ['Right tip x=400 is left of the left tip x=678 - the two ' +
+              'ends are swapped or the window moved between captures.'] };
+  sess({ label: 'Capacity bar - RIGHT tip', mode: 'pixel',
+    hint: 'click the exact spot, then Confirm' });
+  dom.window.__reload();
+  await sleep(250);
+  click(80, 80);
+  await sleep(150);
+  doc.getElementById('ok').click();
+  await sleep(150);
+  chk(/x=400/.test(doc.getElementById('err').textContent)
+    && /x=678/.test(doc.getElementById('err').textContent),
+    'a rejected capacity confirm shows the exact reasons in the banner');
+  OS.confirm = null; OS.calls.length = 0;
+  doc.getElementById('redo').click();
+  click(90, 90);
+  await sleep(150);
+  chk(OS.calls.includes('overlay_pick'),
+    'the overlay stays interactive after a rejected confirm (Redo works)');
   dom.window.close();
 }
 

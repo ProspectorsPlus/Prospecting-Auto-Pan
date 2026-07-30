@@ -117,6 +117,88 @@ def _png_data_url(rgb_array):
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
+def validate_cap_pair(right, left, frame_w, frame_h, window_rect=None):
+    """Pure endpoint-pair validation for the capacity bar (ISS-137 /
+    reproduction report issue 5). Returns (ok, reasons, width) where
+    ``reasons`` is a list of complete, user-readable sentences naming the
+    actual numbers and ``width`` is right.x - left.x.
+
+    Checks: right.x > left.x + 20; |right.y - left.y| <= 8; both points
+    inside the frame (skipped when frame dims are unknown, i.e. 0); width
+    within [24, 0.9*frame_w]; when window_rect [x, y, w, h] is known:
+    both points inside it and width <= window w; the runtime fill band
+    start (right.x - width) >= 0. Pure -- no screen access, no store."""
+    try:
+        rx, ry = int(right[0]), int(right[1])
+        lx, ly = int(left[0]), int(left[1])
+    except (TypeError, ValueError, IndexError):
+        return False, ["The capacity endpoints must be [x, y] integer "
+                       "pairs."], 0
+    reasons = []
+    width = rx - lx
+    if rx < lx:
+        reasons.append(
+            "Right tip x=%d is left of the left tip x=%d - the two ends "
+            "are swapped or the window moved between captures." % (rx, lx))
+    elif width <= 20:
+        reasons.append(
+            "The two tips are only %d px apart (right x=%d, left x=%d) - "
+            "both clicks landed on the same end of the bar." % (width, rx,
+                                                                lx))
+    elif width < 24:
+        reasons.append(
+            "The derived bar width %d px (right x=%d minus left x=%d) is "
+            "below the 24 px minimum a readable capacity bar needs."
+            % (width, rx, lx))
+    if abs(ry - ly) > 8:
+        reasons.append(
+            "The two tips sit on different rows (right y=%d, left y=%d, "
+            "%d px apart) - the bar is horizontal, so the rows must match "
+            "within 8 px." % (ry, ly, abs(ry - ly)))
+    if frame_w and frame_h:
+        for name, px_, py_ in (("right", rx, ry), ("left", lx, ly)):
+            if not (0 <= px_ < frame_w and 0 <= py_ < frame_h):
+                reasons.append(
+                    "The %s tip (%d, %d) is outside the %dx%d capture "
+                    "frame." % (name, px_, py_, frame_w, frame_h))
+        if width > 0 and width > 0.9 * frame_w:
+            reasons.append(
+                "The derived bar width %d px is wider than 90%% of the "
+                "%d px frame - one end was picked on the wrong side of "
+                "the screen." % (width, frame_w))
+    wr = None
+    if isinstance(window_rect, (list, tuple)) and len(window_rect) == 4:
+        try:
+            wr = [int(v) for v in window_rect]
+        except (TypeError, ValueError):
+            wr = None
+    if wr and wr[2] > 0 and wr[3] > 0:
+        wx, wy, ww, wh = wr
+        for name, px_, py_ in (("right", rx, ry), ("left", lx, ly)):
+            if not (wx <= px_ < wx + ww and wy <= py_ < wy + wh):
+                reasons.append(
+                    "The %s tip (%d, %d) is outside the Roblox window "
+                    "(%d, %d, %dx%d px) the calibration is anchored to."
+                    % (name, px_, py_, wx, wy, ww, wh))
+        if width > ww:
+            reasons.append(
+                "The derived bar width %d px is wider than the %d px "
+                "Roblox window." % (width, ww))
+    if width > 0 and rx - width < 0:
+        reasons.append(
+            "The runtime fill band would start at x=%d, off the left "
+            "edge of the screen (right tip x=%d minus width %d px)."
+            % (rx - width, rx, width))
+    return (not reasons), reasons, width
+
+
+def _cap_endpoint_set(v):
+    """True when v looks like a real saved endpoint ([x, y], not the
+    [0, 0] 'unset' marker)."""
+    return (isinstance(v, (list, tuple)) and len(v) == 2
+            and list(v)[:2] != [0, 0])
+
+
 class Sensing(object):
     """The one calibration sensing implementation (protocol 4.15)."""
 
@@ -268,6 +350,63 @@ class Sensing(object):
 
     # -- wizard detection (calibration.detect) ----------------------------
 
+    @staticmethod
+    def _solid_gold(r, g, b):
+        """The SOLID-gold single-pixel test the capacity auto-detector
+        walks both tips inward to (_detect_capacity_px): stricter than
+        the runtime is_yellow because the literal edge pixel is a pale
+        anti-aliased blend that fails it. ONE definition -- the manual
+        endpoint guard (cap_endpoint_guard) reuses these thresholds."""
+        return r >= 140 and g >= 140 and b <= min(r, g) - 55
+
+    def cap_endpoint_guard(self, kind, x, y):
+        """Validate/adjust a manually-picked capacity endpoint against the
+        CURRENT session frame. kind in ('CAP_RIGHT', 'CAP_LEFT'). Walks up
+        to 10 px inward (left for the right tip, right for the left tip)
+        to the first pixel passing the SOLID-gold test used by
+        _detect_capacity_px (also tries y+-1 to tolerate a 1-px row
+        misclick); returns {'ok': bool, 'x': int, 'y': int,
+        'adjusted': bool, 'hex': str, 'reason': str}. A pick with no
+        solid gold within reach is REJECTED -- the runtime full-pan test
+        (is_yellow over a 6x6 box at the saved tip) would never fire on
+        it (reproduction report issue 5, root cause 1)."""
+        if kind not in ("CAP_RIGHT", "CAP_LEFT"):
+            raise SensingError("BAD_PARAMS", "unknown endpoint kind",
+                               {"kind": kind})
+        with self.lock:
+            self._require_session()
+            arr = self._shot
+            H, W = self._shot_h, self._shot_w
+            x = max(0, min(W - 1, int(x)))
+            y = max(0, min(H - 1, int(y)))
+            step = -1 if kind == "CAP_RIGHT" else 1
+            for dy in (0, -1, 1):
+                yy = y + dy
+                if not (0 <= yy < H):
+                    continue
+                for i in range(11):
+                    xx = x + step * i
+                    if not (0 <= xx < W):
+                        break
+                    px = arr[yy, xx]
+                    b, g, r = int(px[0]), int(px[1]), int(px[2])
+                    if self._solid_gold(r, g, b):
+                        return {"ok": True, "x": xx, "y": yy,
+                                "adjusted": bool(i or dy),
+                                "hex": "#%02x%02x%02x" % (r, g, b),
+                                "reason": ""}
+            px = arr[y, x]
+            b, g, r = int(px[0]), int(px[1]), int(px[2])
+            hexv = "#%02x%02x%02x" % (r, g, b)
+            return {"ok": False, "x": x, "y": y, "adjusted": False,
+                    "hex": hexv,
+                    "reason": "that point is not on the gold capacity "
+                              "bar - the clicked pixel reads %s and no "
+                              "solid gold sits within 10 px %s of it. "
+                              "Make sure the bar is completely full and "
+                              "click ON the yellow fill."
+                              % (hexv, "left" if step < 0 else "right")}
+
     def _detect_capacity_px(self, arr):
         """Verbatim Api._detect_capacity_px (app:4283-4328) MINUS the
         dormant empty-bar-diff branch (wizard_capture_empty had no
@@ -299,8 +438,8 @@ class Sensing(object):
         # literal edge pixel is a pale anti-aliased blend that fails it.
         # Walk both ends inward to a solidly-gold pixel, plus a margin.
         def _solid(x):
-            pr, pg, pb = int(r[y, x]), int(g[y, x]), int(b[y, x])
-            return pr >= 140 and pg >= 140 and pb <= min(pr, pg) - 55
+            return self._solid_gold(int(r[y, x]), int(g[y, x]),
+                                    int(b[y, x]))
         xr = right
         while xr > left and not _solid(xr):
             xr -= 1
@@ -385,6 +524,123 @@ class Sensing(object):
             proposal["rgb"] = [r, g, b]
             proposal["hex"] = "#%02x%02x%02x" % (r, g, b)
             return {"detected": True, "proposal": proposal}
+
+    # -- Test capacity calibration (runtime-math probe) --------------------
+
+    def capacity_probe(self):
+        """Test Capacity Calibration: take a FRESH grab (it becomes the
+        capture session, like detect) and evaluate the STORED capacity
+        calibration with the exact RUNTIME math engine.Detector uses:
+
+          * right-tip test -- mean RGB over the 6x6 box at
+            {rx-3, ry-3} (Detector._box) -> the engine's is_yellow
+            verdict (sample_saved's pattern: po thresholds, no copies);
+          * fill fraction -- yellow fraction over the exact cap_fill
+            band {left: rx - CAP_BAR_WIDTH, top: ry-10, w: WIDTH, h: 20};
+          * pair validation (validate_cap_pair) on the stored endpoints,
+            plus a stored-vs-derived width consistency check (the
+            runtime band uses the STORED width);
+          * a small annotated crop of the bar region (endpoints red,
+            band edges cyan).
+
+        Returns {'ok', 'right', 'left', 'width', 'stored_width',
+        'tip_yellow', 'tip_hex', 'fill_frac', 'reasons', 'preview'};
+        ok = pair valid AND tip_yellow."""
+        po = self.po
+        np = po.np
+        cur = self.store.get()
+        right = cur.get("CAP_FULL_PIXEL")
+        left = cur.get("CAP_LEFT_PIXEL")
+        try:
+            stored_w = int(cur.get("CAP_BAR_WIDTH", 0) or 0)
+        except (TypeError, ValueError):
+            stored_w = 0
+        if not (_cap_endpoint_set(right) and _cap_endpoint_set(left)):
+            return {"ok": False, "right": None, "left": None,
+                    "width": 0, "stored_width": stored_w,
+                    "tip_yellow": False, "tip_hex": "",
+                    "fill_frac": 0.0, "preview": "",
+                    "reasons": ["The capacity endpoints are not "
+                                "calibrated yet - run the Capacity bar "
+                                "step first."]}
+        with self.lock:
+            arr = self._grab_full()
+            self._set_session(arr)
+            self._cm = None
+            H, W = self._shot_h, self._shot_w
+            rx, ry = int(right[0]), int(right[1])
+            lx, ly = int(left[0]), int(left[1])
+            derived = rx - lx
+            pair_ok, reasons, _w = validate_cap_pair(
+                [rx, ry], [lx, ly], W, H, cur.get("CALIB_WINDOW_RECT"))
+            if pair_ok and abs(derived - stored_w) > 2:
+                pair_ok = False
+                reasons.append(
+                    "The stored bar width %d px does not match the "
+                    "stored tips (%d px apart) - the runtime fill band "
+                    "uses the stored width, so it would measure the "
+                    "wrong span." % (stored_w, derived))
+            # right-tip test: the runtime 6x6 box (Detector._box:
+            # left = x-3, top = y-3), clamped to the frame for the probe
+            bx = max(0, min(W - 6, rx - 3))
+            by = max(0, min(H - 6, ry - 3))
+            box = arr[by:by + 6, bx:bx + 6, :3]
+            b, g, r = [int(c) for c in box.reshape(-1, 3).mean(0)]
+            tip_yellow = bool(po.is_yellow(r, g, b))
+            tip_hex = "#%02x%02x%02x" % (r, g, b)
+            if not tip_yellow:
+                reasons.append(
+                    "The saved right tip reads %s (mean of the runtime "
+                    "6x6 box at (%d, %d)), which fails the runtime gold "
+                    "test - the pan-full check would never fire. The tip "
+                    "is on the bar's pale anti-aliased edge, off the bar, "
+                    "or the bar is not full right now." % (tip_hex, rx,
+                                                           ry))
+            # fill fraction over the exact runtime band (engine.cap_fill)
+            bw = stored_w if stored_w > 0 else max(derived, 1)
+            fx0, fy0 = rx - bw, ry - 10
+            cx0, cy0 = max(0, fx0), max(0, fy0)
+            cx1, cy1 = min(W, rx), min(H, fy0 + 20)
+            fill_frac = 0.0
+            if cx1 > cx0 and cy1 > cy0:
+                band = arr[cy0:cy1, cx0:cx1, :3].astype(np.int16)
+                bb, gg, rr = band[:, :, 0], band[:, :, 1], band[:, :, 2]
+                yellow = ((rr >= po.YEL_MIN) & (gg >= po.YEL_MIN)
+                          & (bb <= np.minimum(rr, gg) - po.YEL_BLUE_GAP))
+                fill_frac = float(yellow.mean())
+            preview = ""
+            try:
+                px0 = max(0, min(fx0, lx) - 24)
+                px1 = min(W, rx + 25)
+                py0 = max(0, ry - 26)
+                py1 = min(H, ry + 27)
+                crop = np.ascontiguousarray(
+                    arr[py0:py1, px0:px1, :3][:, :, ::-1]).copy()
+                red = np.array([255, 60, 60], np.uint8)
+                cyan = np.array([0, 200, 255], np.uint8)
+                for cx in (rx, lx):                    # endpoints (red)
+                    if px0 <= cx < px1:
+                        crop[:, cx - px0] = red
+                b0, b1 = fy0 - py0, fy0 + 20 - py0     # band rows (cyan)
+                for cx in (rx - bw, rx - 1):           # band edge columns
+                    if px0 <= cx < px1 and cx not in (rx, lx):
+                        crop[max(0, b0):max(0, b1), cx - px0] = cyan
+                bc0 = max(0, rx - bw - px0)
+                bc1 = max(0, min(crop.shape[1], rx - px0))
+                for cy in (b0, b1 - 1):                # band edge rows
+                    if 0 <= cy < crop.shape[0]:
+                        crop[cy, bc0:bc1] = cyan
+                if crop.shape[1] > 1400:               # keep <= ~80 KB
+                    crop = np.ascontiguousarray(crop[:, ::2])
+                preview = _png_data_url(crop)
+            except Exception:
+                preview = ""
+            return {"ok": bool(pair_ok and tip_yellow),
+                    "right": [rx, ry], "left": [lx, ly],
+                    "width": derived, "stored_width": stored_w,
+                    "tip_yellow": tip_yellow, "tip_hex": tip_hex,
+                    "fill_frac": round(fill_frac, 3),
+                    "reasons": reasons, "preview": preview}
 
     # -- one-shot OCR test reads (calibration.testRead) --------------------
 
@@ -904,10 +1160,53 @@ class Sensing(object):
           auto-calibrate flags -- import_calibration's shipped semantics
           (a pixels-only import stays an import: the host passes
           derive_from_window=False explicitly; the wire infers it from
-          the presence of ratios/windowRect per the protocol)."""
+          the presence of ratios/windowRect per the protocol).
+
+        Capacity-pair validation (reproduction report issue 5): when the
+        incoming pixels touch CAP_FULL_PIXEL or CAP_LEFT_PIXEL and the
+        RESULTING config would contain both endpoints, the merged pair
+        must pass validate_cap_pair -- frame dims come from the live
+        capture session when one is active, else from the stored (or
+        explicitly passed) CALIB_WINDOW_RECT, else the inside-frame
+        checks are skipped (ordering/row/width checks always run). On
+        failure NOTHING is written (the whole call is rejected
+        atomically -- previous values stay byte-intact) and the result is
+        {"saved": [], "ok": False, "error": "cap_endpoints",
+        "reasons": [...], "right", "left", "width"}. A validated pair
+        save ALWAYS updates CAP_BAR_WIDTH -- the old silent
+        stale-width path (>20 gate skipping the update) is dead for
+        pair saves. The import path gets the same validation: a broken
+        import fails loudly with reasons and retains the old values."""
         if derive_from_window is None:
             derive_from_window = ratios is None and window_rect is None
         cur = self.store.get()
+        cap_pair_width = None
+        if "CAP_FULL_PIXEL" in pixels or "CAP_LEFT_PIXEL" in pixels:
+            right = pixels.get("CAP_FULL_PIXEL", cur.get("CAP_FULL_PIXEL"))
+            left = pixels.get("CAP_LEFT_PIXEL", cur.get("CAP_LEFT_PIXEL"))
+            if _cap_endpoint_set(right) and _cap_endpoint_set(left):
+                wrect = (list(window_rect)
+                         if isinstance(window_rect, (list, tuple))
+                         and len(window_rect) == 4
+                         else cur.get("CALIB_WINDOW_RECT"))
+                frame_w = frame_h = 0
+                if self._shot is not None:
+                    frame_w, frame_h = self._shot_w, self._shot_h
+                elif (isinstance(wrect, (list, tuple)) and len(wrect) == 4):
+                    try:
+                        frame_w = int(wrect[0]) + int(wrect[2])
+                        frame_h = int(wrect[1]) + int(wrect[3])
+                    except (TypeError, ValueError):
+                        frame_w = frame_h = 0
+                ok, reasons, width = validate_cap_pair(
+                    right, left, frame_w, frame_h, wrect)
+                if not ok:
+                    return {"saved": [], "ok": False,
+                            "error": "cap_endpoints", "reasons": reasons,
+                            "right": [int(right[0]), int(right[1])],
+                            "left": [int(left[0]), int(left[1])],
+                            "width": width}
+                cap_pair_width = width
         changed = set()
         for key in PIXEL_KEYS:
             if key != "CAP_LEFT_PIXEL" and key in pixels:
@@ -917,7 +1216,12 @@ class Sensing(object):
             cur["CAP_LEFT_PIXEL"] = [int(pixels["CAP_LEFT_PIXEL"][0]),
                                      int(pixels["CAP_LEFT_PIXEL"][1])]
             changed.add("CAP_LEFT_PIXEL")
-        if "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
+        if cap_pair_width is not None:
+            # validated pair save: the width ALWAYS follows the endpoints
+            cur["CAP_BAR_WIDTH"] = int(cap_pair_width)
+            changed.add("CAP_BAR_WIDTH")
+        elif "CAP_FULL_PIXEL" in cur and "CAP_LEFT_PIXEL" in cur:
+            # save not touching the (complete) pair: legacy derivation
             w = int(cur["CAP_FULL_PIXEL"][0] - cur["CAP_LEFT_PIXEL"][0])
             if w > 20:
                 cur["CAP_BAR_WIDTH"] = w
@@ -1001,7 +1305,11 @@ class Sensing(object):
                     cur["PIXEL_RATIOS"] = rat
                     changed.add("PIXEL_RATIOS")
         self.store.write(cur, sorted(changed), "cmd")
-        return {"saved": sorted(changed)}
+        res = {"saved": sorted(changed)}
+        if cap_pair_width is not None:
+            res["ok"] = True
+            res["width"] = int(cap_pair_width)
+        return res
 
     # -- vision (PPE1 1.3): reference-image authoring verbs ----------------
 
