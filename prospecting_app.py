@@ -7185,7 +7185,9 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    let d=null;try{d=await api().overlay_image();}catch(e){d=null;}
    if(my!==BOOTN)return;            // a newer session started while loading
    S=blank();resetDom();
-   if(!d){flashErr('Could not load the capture - Esc and retry.');return;}
+   if(!d){S.mode='dead';$('lab').textContent='';
+     $('act').textContent='press Esc to close, then reopen the capture';
+     flashErr('Could not load the capture - Esc and retry.');return;}
    S.seq=d.seq||0;S.mode=d.mode||(d.region_mode?'region':(d.cue_mode?'cue':'pixel'));
    $('lab').textContent=d.label||'';
    $('act').textContent=d.hint||defaultHint(d);
@@ -7212,14 +7214,6 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;
    tip.style.left=tx+'px';tip.style.top=ty+'px';tip.style.display='block';
    S.picked=true;loupe.style.display='none';}
- function showMask(r,cx,cy){const rc=shot.getBoundingClientRect();const mb=$('maskbox');
-   mb.style.left=(rc.left+r.box[0]*rc.width)+'px';mb.style.top=(rc.top+r.box[1]*rc.height)+'px';
-   mb.style.width=Math.max(4,r.box[2]*rc.width)+'px';mb.style.height=Math.max(4,r.box[3]*rc.height)+'px';
-   mb.style.display='block';$('sw').style.display='none';
-   $('hex').textContent=r.px+' px captured';$('xy').textContent=r.w+'×'+r.h;
-   let tx=cx+24,ty=cy+24;if(tx>innerWidth-236)tx=cx-220;if(ty>innerHeight-160)ty=cy-160;
-   tip.style.left=tx+'px';tip.style.top=ty+'px';tip.style.display='block';
-   S.picked=true;loupe.style.display='none';}
  function placeProposed(){if(!S||!S.prop||!S.natW)return;const r=shot.getBoundingClientRect();
    showTipAt(r.left+S.prop.fx*r.width, r.top+S.prop.fy*r.height, S.prop.hex, S.prop.x, S.prop.y);}
  function setCuePx(px){$('cuepx').textContent=px?('('+px+' px kept)'):'';}
@@ -7236,19 +7230,20 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    const z=9,bw=S.natW*z,bh=S.natH*z;loupe.style.backgroundSize=bw+'px '+bh+'px';
    const f=frac(e);loupe.style.backgroundPosition=(-(f[0]*bw)+62)+'px '+(-(f[1]*bh)+62)+'px';});
  document.addEventListener('mousedown',function(e){
-   if(!S||S.mode!=='region'||S.picked)return;
+   if(!S||S.mode!=='region'||S.picked||S.busy)return;
    if(tip.contains(e.target))return;
    e.preventDefault();S.ra=frac(e);S.rb=null;});
  document.addEventListener('mouseup',async function(e){
    if(!S||S.mode!=='region'||!S.ra||S.picked||S.busy)return;
    S.rb=frac(e);const tok=S;S.busy=true;
+   const da=S.ra.slice(),db=S.rb.slice(); // snapshot: repaint THIS drag only
    let r=null;try{r=await api().overlay_region(
-     Math.min(S.ra[0],S.rb[0]),Math.min(S.ra[1],S.rb[1]),
-     Math.max(S.ra[0],S.rb[0]),Math.max(S.ra[1],S.rb[1]));}catch(_){r=null;}
+     Math.min(da[0],db[0]),Math.min(da[1],db[1]),
+     Math.max(da[0],db[0]),Math.max(da[1],db[1]));}catch(_){r=null;}
    if(tok!==S)return;S.busy=false;
    if(!r||r.error){S.ra=S.rb=null;$('maskbox').style.display='none';
      flashErr((r&&r.error)||'Drag did not register - try again.');return;}
-   S.picked=true;drawDrag();showRegionConfirm(e.clientX,e.clientY,r.w,r.h);});
+   S.picked=true;S.ra=da;S.rb=db;drawDrag();showRegionConfirm(e.clientX,e.clientY,r.w,r.h);});
  function drawDrag(){if(!S.ra||!S.rb)return;const rc=shot.getBoundingClientRect();
    const x0=Math.min(S.ra[0],S.rb[0])*rc.width+rc.left,y0=Math.min(S.ra[1],S.rb[1])*rc.height+rc.top;
    const w=Math.abs(S.ra[0]-S.rb[0])*rc.width,h=Math.abs(S.ra[1]-S.rb[1])*rc.height;
@@ -7260,7 +7255,7 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
    tip.style.left=tx+'px';tip.style.top=ty+'px';tip.style.display='block';
    loupe.style.display='none';}
  document.addEventListener('click',async function(e){
-   if(!S||S.busy)return;
+   if(!S||S.busy||S.mode==='dead')return;
    if(tip.contains(e.target)||$('cuebar').contains(e.target))return;
    if(S.mode==='region')return;   // region uses drag, not click
    if(S.picked)return;            // a confirm card is open - use its buttons
@@ -7269,27 +7264,33 @@ _OVERLAY_HTML = r"""<!doctype html><html><head><meta charset="utf-8"><style>
      if(tok!==S)return;S.busy=false;
      if(tr&&tr.img){shot.src=tr.img;setCuePx(tr.px);}
      else if(tr&&tr.error)flashErr(tr.error);
+     else flashErr('No response - click again.');
      return;}
    S.busy=true;let r=null;try{r=await api().overlay_pick(f[0],f[1]);}catch(_){r=null;}
    if(tok!==S)return;S.busy=false;
    if(!r){flashErr('No response - click again, or Esc to cancel.');return;}
    if(r.error){flashErr(r.error);return;}
    if(r.cue_edit){enterEdit(r.img,r.px);}
-   else if(r.mask){showMask(r,e.clientX,e.clientY);}
    else{showTipAt(e.clientX,e.clientY,r.hex,r.x,r.y);}});
  // ---- buttons + keys ----------------------------------------------------
- $('redo').onclick=function(){if(!S)return;S.picked=false;S.ra=S.rb=null;S.prop=null;
+ $('redo').onclick=function(){if(!S)return;
+   if(S.prop&&S.mode==='pixel')$('act').textContent='click the exact spot, then Confirm';
+   S.picked=false;S.ra=S.rb=null;S.prop=null;
    marker.style.display='none';tip.style.display='none';$('maskbox').style.display='none';};
  $('cancel').onclick=function(){try{api().overlay_cancel();}catch(e){}};
- $('ok').onclick=function(){if(!S||S.busy)return;S.busy=true;try{api().overlay_confirm();}catch(e){S.busy=false;}};
- $('cueok').onclick=function(){if(!S||S.busy)return;S.busy=true;try{api().overlay_confirm();}catch(e){S.busy=false;}};
+ function doConfirm(){if(!S||S.busy)return;S.busy=true;const tok=S;
+   try{Promise.resolve(api().overlay_confirm()).catch(function(){
+     if(tok===S){S.busy=false;flashErr('Confirm failed - try again or Esc.');}});}
+   catch(e){S.busy=false;flashErr('Confirm failed - try again or Esc.');}}
+ $('ok').onclick=doConfirm;
+ $('cueok').onclick=doConfirm;
  $('cueredo').onclick=async function(){if(!S)return;
    try{await api().cue_reset();}catch(_){}
    boot();};
  $('cuecancel').onclick=function(){try{api().overlay_cancel();}catch(e){}};
  document.addEventListener('keydown',function(e){
    if(e.key==='Escape'){try{api().overlay_cancel();}catch(_){}return;}
-   if(e.key==='Enter'&&S&&S.picked&&!S.busy){S.busy=true;try{api().overlay_confirm();}catch(_){S.busy=false;}}});
+   if(e.key==='Enter'&&S&&S.picked&&!S.busy){doConfirm();}});
  window.__reload=function(){boot();};
  window.addEventListener('pywebviewready',boot);
  boot();
@@ -11527,7 +11528,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        else if(step.kind==='region')r=await _api().start_overlay_region(step.key,step.label,'guided_setup');
        else if(step.kind==='cue')r=await _api().start_cue_mask_capture(step.key,null,'guided_setup');
      }catch(e){r={error:String(e)};}
-     if(r&&(r.error||(r.ok===false))){CALV.awaiting=null;gdButtons(false);gdCalErr(r);}
+     if(r&&(r.error||(r.ok===false))){
+       // an OPEN failure (capture/permission) must not lose the sequence
+       // position: re-render THIS stage's card with the error as its note
+       // so Start capture retries in place. Permission routing stays.
+       CALV.awaiting=null;gdButtons(false);
+       let note='&#10007; '+E((r&&r.error)||'failed')+((r&&r.error_code)?(' ['+E(r.error_code)+']'):'');
+       if(r&&r.needs_permission)note+=' <button type="button" class="btn2" data-goperm="1">Open the permission step</button>';
+       gdStageCard(item,plan,idx,'<span class="no">'+note+'</span>');
+       const o=$id('gdout');if(o){const gp=o.querySelector('button[data-goperm]');
+         if(gp)gp.onclick=()=>{calNav();renderTrust();};}}
    }
    function gdPlan(item){
      const p=GD_STEPS[item.id];if(!p)return [];
@@ -11669,7 +11679,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        const open=(p.state==='UPCOMING')?'':('<button type="button" class="btn2" data-gd="'+i.id+'">'+(p.state==='COMPLETE'?'Review / redo':'Open this step')+'</button>');
        const disabled=(p.state==='UPCOMING')?('<button type="button" class="btn2" disabled aria-disabled="true" title="'+E(p.reason)+'">Open this step</button>'):'';
        const reason=(p.state==='UPCOMING'||p.state==='NEEDS_REVIEW'||p.state==='BLOCKED')?('<div class="cap-desc"><b>'+(p.state==='UPCOMING'?'Upcoming:':'Review:')+'</b> '+E(p.reason)+'</div>'):'';
-       const savedLine=(p.state==='COMPLETE'&&i.saved)?('<div class="cap-desc"><b>Saved:</b> '+E(i.saved)+' &middot; open the step to review or recalibrate, or just carry on.</div>'):'';
+       const savedLine=((p.state==='COMPLETE'||(p.state==='OPTIONAL'&&live.status==='ok'))&&i.saved)?('<div class="cap-desc"><b>Saved:</b> '+E(i.saved)+' &middot; open the step to review or recalibrate, or just carry on.</div>'):'';
        return '<div class="cap-card'+stepClass(p)+'" data-calid="'+i.id+'" aria-label="Step '+(p.seq||0)+': '+E(i.title)+' - '+E((p.state||'').toLowerCase().replace('_',' '))+'"><div class="cap-head">'
          +(p.seq?('<span class="step-num" aria-hidden="true">'+p.seq+'</span>'):'')
          +'<span class="cap-title">'+E(i.title)+'</span>'

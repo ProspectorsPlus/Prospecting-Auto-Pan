@@ -1003,9 +1003,14 @@ def calibration_status(cfg, health=None, window_found=None,
                           for flag in cond.replace(" or ", ",").split(",")
                           if flag.strip().isupper())
             keys = item["keys"]
-            any_set = any(_pix_set(cfg, k) for k in keys
-                          if k.endswith("_PIXEL") or k.endswith("_PIX")) \
-                or (keys == ["CUE_MASKS"] and bool(cfg.get("CUE_MASKS")))
+            if item.get("action") == "region":
+                # a region is only calibrated when BOTH corners exist --
+                # half a legacy save must never read as a working box
+                any_set = all(_pix_set(cfg, k) for k in keys)
+            else:
+                any_set = any(_pix_set(cfg, k) for k in keys
+                              if k.endswith("_PIXEL") or k.endswith("_PIX")) \
+                    or (keys == ["CUE_MASKS"] and bool(cfg.get("CUE_MASKS")))
             if any_set:
                 out[iid] = {"status": "ok", "detail": "Calibrated."}
             elif flag_on:
@@ -1078,8 +1083,11 @@ def saved_summary(cfg, item_id):
             base = {"money_region": "MONEY", "shards_region": "SHARDS",
                     "find_region": "FIND"}[item_id]
             tl, br = cfg.get(base + "_TL_PIXEL"), cfg.get(base + "_BR_PIXEL")
+            # BOTH corners must be real: a half-saved legacy region must
+            # never fabricate a box that does not exist
             if (isinstance(tl, (list, tuple)) and isinstance(br, (list, tuple))
-                    and len(tl) == 2 and len(br) == 2 and list(tl) != [0, 0]):
+                    and len(tl) == 2 and len(br) == 2
+                    and list(tl) != [0, 0] and list(br) != [0, 0]):
                 return ("%dx%d px box at (%d, %d)"
                         % (abs(int(br[0]) - int(tl[0])),
                            abs(int(br[1]) - int(tl[1])),

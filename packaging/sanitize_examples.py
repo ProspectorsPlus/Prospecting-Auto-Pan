@@ -52,26 +52,26 @@ SPECS = {
                 "The pan-fill capacity bar completely full (all yellow), "
                 "with the picker's confirm card on the detected RIGHT tip "
                 "of the bar."),
-    "pan_prompt": (S % "4.06.10", (1350, 1700, 2450, 2345),
+    "pan_prompt": (S % "4.06.10", (1350, 1700, 2450, 2318),
                    "Standing in the water: the white 'Pan' prompt under "
                    "the full capacity bar, with the picker's confirm card "
                    "on the detected prompt pixel."),
-    "deposit_prompt": (S % "4.06.35", (1350, 1700, 2450, 2345),
+    "deposit_prompt": (S % "4.06.35", (1350, 1700, 2450, 2318),
                        "Standing on land: the white 'Collect Deposit' "
                        "prompt, with the picker's confirm card on the "
                        "detected prompt pixel."),
-    "shake_prompt": (S % "4.07.03", (1350, 1700, 2450, 2345),
+    "shake_prompt": (S % "4.07.03", (1350, 1700, 2450, 2318),
                      "Mid-shake: the white 'Shake' prompt with the "
                      "picker's confirm card on the detected pixel (the "
                      "colourful pan-shake fills the background)."),
-    "cue_masks": (S % "4.07.43", (460, 130, 3560, 2340),
+    "cue_masks": (S % "4.07.43", (460, 275, 3560, 2318),
                   "The cue-mask editor after clicking the 'Pan' prompt "
                   "word: kept letters glow green; the card below confirms "
                   "or restarts the selection."),
     "dig_green": (S % "4.10.44", (1900, 900, 2900, 1700),
                   "A dig in progress: the dig bar with its green target "
                   "zone, magnified by the picker's loupe."),
-    "money_region": (S % "4.11.39", (3050, 1980, 3720, 2330),
+    "money_region": (S % "4.11.39", (3050, 1980, 3720, 2318),
                      "The money counter in the lower-right corner with "
                      "the picker's box-confirm card after dragging a "
                      "tight box around the number."),
@@ -79,14 +79,14 @@ SPECS = {
                       "The shards counter in the lower-right corner with "
                       "the picker's box-confirm card after dragging a "
                       "tight box around the number."),
-    "find_region": (S % "4.12.55", (2600, 380, 3720, 2330),
+    "find_region": (S % "4.12.55", (2600, 380, 3720, 2318),
                     "A dragged find pop-up box on the right side of the "
                     "screen where finds appear, with the box-confirm "
                     "card."),
     "fortune_river": (S % "4.13.59", (1350, 600, 2500, 1850),
                       "The Fortune River / Fast Travel panel open with "
                       "the picker's confirm card on a captured point."),
-    "autopan_button": (S % "4.15.30", (1350, 1650, 2450, 2350),
+    "autopan_button": (S % "4.15.30", (1350, 1650, 2450, 2318),
                        "The Auto Pan button showing its ON (green) state, with "
                        "the picker's confirm card on the captured ON "
                        "colour."),
