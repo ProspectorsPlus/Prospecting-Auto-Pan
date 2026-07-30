@@ -176,6 +176,22 @@ removed and gate-tested. Owner actions carried forward unchanged (license,
 repo URL, webhook revocation, signing/notarization, Windows CI on a real
 runner, calibration example screenshots).
 
+## 1.0.0-rc.5 — calibration polish pass (2026-07-30)
+
+The owner's full manual walkthrough of rc.4's guided calibration (with
+screenshots) surfaced four defects; all reproduced, root-caused, fixed
+and regression-locked (docs/final-visible-pass/CALIBRATION_POLISH_RC5.md):
+the overlay's stale banner and its unclickable states were ONE bug (the
+region mode destroyed the banner element, poisoning every later session's
+state reset -- the overlay page now rebuilds everything from a
+sequence-guarded overlay_image() single source of truth); multi-capture
+calibrations no longer chain (per-stage prep cards with explicit Start,
+covering advanced cues, Auto Pan, Fortune River, capacity tips); saved
+calibrations walk with "Saved:" value summaries + Recalibrate/Next; and
+the owner's screenshots were sanitized (menu bar/dock/name cropped) into
+approved in-app examples for all 11 items via
+packaging/sanitize_examples.py. Owner actions carried forward unchanged.
+
 ## If interrupted, resume with
 ```
 cd <repo root>
