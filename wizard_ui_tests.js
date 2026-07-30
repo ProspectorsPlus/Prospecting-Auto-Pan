@@ -181,7 +181,9 @@ function makeApi(S) {
             LAND_SETTLE_MS: { control: 'cycle', tab: 'cycle',
               section: 'Return to land (dig-probe)' },
             FINDS_MIN_CONF: { control: 'tab', tab: 'Earnings',
-              section: 'Earnings' } });
+              section: 'Earnings' },
+            AUTOPAN_SETTLE_MS: { control: 'tab', tab: 'Tracker',
+              section: 'Tracker' } });
         case 'faq_list':
           return Promise.resolve({ entries: [
             { id: 'faq-mac-screen-recording',
@@ -910,6 +912,16 @@ async function scenarioDiagnostics() {
   doc.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await sleep(150);
   chk(!drawer.classList.contains('show'), 'Esc closes the drawer');
+
+  // ---- a deep link to a NEVER-visited section tab must not be yanked
+  // away by the first-visit tab tour (its auto-start steps switch to the
+  // tour's own tab -- the verifier's P2) ----
+  dom.window.navigateToSetting('AUTOPAN_SETTLE_MS', null);
+  await sleep(1100); // past the 430ms tour auto-offer timer
+  chk(doc.querySelector('.tab.active').dataset.tab === 'Tracker',
+    'a section-tab deep link stays on its tab (no tour hijack)');
+  chk(view(doc).tour !== 'block',
+    'the first-visit tab tour did not auto-start over the deep link');
   chk(dom.errors.length === 0, 'no jsdom errors in the diagnostics journey' +
     (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
   dom.window.close();

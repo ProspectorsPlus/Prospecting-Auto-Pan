@@ -4069,6 +4069,10 @@ class Api:
         ("tutorial_state.json", "Tutorial viewing history"),
         ("diagnostics_state.json",
          "Diagnostics history + suppressions (local only)"),
+        ("onboarding.log", "Setup wizard + diagnostics action log"),
+        ("onboarding.log.1", "Setup wizard log (rotated)"),
+        ("coach_history.json", "Coach chat transcript"),
+        ("prospecting_calib_log.csv", "Calibration session log"),
         ("studio_macro_status.json", "Studio live-status mirror"),
         ("studio_push.json", "Studio publish handshake"),
         ("instance_id", "Engine instance identity (random local id)"),
@@ -10090,6 +10094,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      a.welcome_state().then(function(w){el.checked=!!(w&&w.skip_wizard_automatically);}).catch(function(){});}catch(e){}}
    window.addEventListener('pywebviewready',sync);
    if(window.pywebview&&window.pywebview.api)sync();
+   // the same pref is writable from Welcome and the Trust Center --
+   // re-read the stored value every time the Settings tab opens
+   document.querySelectorAll('.tab[data-tab="settings"]').forEach(function(b){b.addEventListener('click',function(){setTimeout(sync,60);});});
    el.addEventListener('change',async function(){var want=!!el.checked;var r=null;
      try{r=await window.pywebview.api.wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
      if(!r||!r.ok){el.checked=!want;
@@ -10102,6 +10109,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      a.tutorial_state().then(function(t){el.checked=!(t&&t.auto_open===false);}).catch(function(){});}catch(e){}}
    window.addEventListener('pywebviewready',sync);
    if(window.pywebview&&window.pywebview.api)sync();
+   document.querySelectorAll('.tab[data-tab="settings"]').forEach(function(b){b.addEventListener('click',function(){setTimeout(sync,60);});});
    el.addEventListener('change',async function(){var want=!!el.checked;var r=null;
      try{r=await window.pywebview.api.tutorial_set_auto_open(want);}catch(e){r={ok:false,error:String(e)};}
      if(!r||!r.ok){el.checked=!want;
@@ -10282,6 +10290,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      t.addEventListener('click',function(){
        var name=TAB_TOURS[t.getAttribute('data-tab')];
        if(!name||running||seen(name))return;
+       // a diagnostics/FAQ deep link owns this navigation: its tab click
+       // must not auto-start a first-visit tour that then yanks the user
+       // to the tour's own tab
+       if(Date.now()-(window.__deepNavAt||0)<1600)return;
        var g=T('gate');if(g&&g.classList.contains('show'))return;
        if(setupOverlayVisible())return; // never over (or under) the setup wizard
        setTimeout(function(){if(!running&&!seen(name)&&!setupOverlayVisible())window.startTour(name);},430);});});
@@ -11082,6 +11094,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      if(!LOC||typeof LOC!=='object')LOC={};
      return LOC;}
    window.navigateToSetting=async function(key,info){
+     window.__deepNavAt=Date.now(); // a deep link owns this navigation -- the first-visit tab tour must not yank it away
      const loc=(await locator())[key]||null;
      if(loc&&loc.control==='cycle'){
        const ct=document.querySelector('.tab[data-tab="cycle"]');
@@ -11121,6 +11134,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      try{el.scrollIntoView({block:'center'});}catch(e){}
      el.classList.add('hlrow');setTimeout(()=>el.classList.remove('hlrow'),1900);}
    window.navigateToCalibration=function(itemId){
+     window.__deepNavAt=Date.now();
      const s=document.getElementById('setup');
      if(s&&s.classList.contains('show')&&window.__wizCalDetail){__wizCalDetail(itemId);return;}
      const tb=document.querySelector('.tab[data-tab="cal"]');
@@ -11135,6 +11149,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          if(ctb){ctb.classList.add('hlrow');setTimeout(()=>ctb.classList.remove('hlrow'),1900);}}
        flashEl(el);},420);};
    window.navigateToPermission=function(capId){
+     window.__deepNavAt=Date.now();
      const tb=document.querySelector('.tab[data-tab="trust"]');
      if(tb&&!tb.classList.contains('active'))tb.click();
      let tries=0;

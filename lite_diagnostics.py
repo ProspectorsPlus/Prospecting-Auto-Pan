@@ -328,6 +328,13 @@ def setting_target(key, current=None, suggested=None, reason=""):
         current = DEFAULTS.get(key)
     if suggested is not None:
         suggested = clamp_suggestion(key, suggested)
+        # a clamped suggestion that lands ON the current value is a no-op
+        # (the value already sits at the bound the step would cross) --
+        # keep the target as an open-setting pointer, never an Apply
+        if (isinstance(current, (int, float))
+                and isinstance(suggested, (int, float))
+                and suggested == current):
+            suggested = None
     delta = None
     if isinstance(current, (int, float)) and isinstance(suggested,
                                                         (int, float)):

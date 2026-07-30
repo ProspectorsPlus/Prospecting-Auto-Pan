@@ -28,6 +28,7 @@ Default network activity is **zero requests**. The complete inventory of code th
 | `run_history.json` | Run statistics kept for the Analytics page |
 | `run_logs/` | Per-run engine logs (rotated; the app keeps a bounded number) |
 | `prospecting_calib_log.csv` | Calibration session log written by the engine |
+| `onboarding.log` | Setup-wizard and diagnostics action log (operation names and error codes only — no secrets, no content); rotates once to `onboarding.log.1` at 256 KB |
 | `tutorial_content.json` | Your local edits to the built-in help |
 | `onboarding_state.json` | Setup-wizard progress (which step you are on, declined capabilities); written atomically; resetting the wizard deletes only this |
 | `tutorial_state.json` | Tutorial history (last outcome, how many times seen, last version seen) and nothing else; written atomically |

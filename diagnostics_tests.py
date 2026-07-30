@@ -151,6 +151,18 @@ def t_clamping():
     rec = ld.make_recommendation("x", "t", "e", auto_apply=True)
     chk(rec["auto_apply"] is False,
         "auto_apply forced False without setting targets")
+    # a clamped suggestion landing ON the current value is a no-op: the
+    # target must become open-only and the recommendation loses one-click
+    t = ld.setting_target("WATER_EXTRA_BACK_MS", current=0, suggested=-80)
+    chk(t["suggested"] is None and t["delta"] is None,
+        "bound-pinned suggestion (current 0, step down) becomes open-only")
+    rec = ld.make_recommendation("x", "t", "e", setting_targets=[t],
+                                 auto_apply=True)
+    chk(rec["auto_apply"] is False,
+        "auto_apply forced False when the clamped suggestion is a no-op")
+    t = ld.setting_target("WATER_EXTRA_BACK_MS", current=400, suggested=320)
+    chk(t["suggested"] == 320 and t["delta"] == -80,
+        "a real reduction away from the bound keeps its suggestion")
 
 
 def t_rule_nudge_far():
