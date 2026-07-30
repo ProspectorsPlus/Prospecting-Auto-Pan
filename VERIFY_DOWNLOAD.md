@@ -32,7 +32,7 @@ Compare the output against the line for your file in `SHA256SUMS.txt` **taken fr
 
 After installing, open the **Trust Center** (shield tab) → **Build identity**. It shows, from the `build_info.json` stamped at build time (`lite_trust.py`, `build_identity`):
 
-- **Version** — must match the release you downloaded (e.g. `1.0.0-rc.3`).
+- **Version** — must match the release you downloaded (e.g. `1.0.0-rc.4`).
 - **Commit** — the exact git commit the build was made from. A "(built from modified source)" marker means the source tree was dirty at build time; released builds should never show it.
 - **Signed** / **Notarized** — whether a real code-signing certificate and Apple notarization were used. Current builds honestly show `no` (see below).
 

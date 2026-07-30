@@ -153,6 +153,29 @@ unverified); owner actions unchanged — license, secret revocation +
 fresh history, public URL, approved example screenshots, signing
 credentials.
 
+## 1.0.0-rc.4 — final visible-onboarding pass (2026-07-30)
+
+The owner's manual test of rc.3 reported the visible product gaps this
+pass closes: guided calibration still escaped into the normal Calibrate
+tab, no sequential progression existed on the permission or calibration
+pages, Advanced Cue Matching was optional, the tutorial never began after
+setup, and the OS-level icon was still the old artwork. Each gap was
+reproduced against the real embedded UI in a scripted DOM probe
+(docs/final-visible-pass/REPRODUCTION_REPORT.md), fixed, and locked in by
+a permanent jsdom regression suite (`wizard_ui_tests.py` — wired into CI)
+plus extended `onboarding_trust_tests.py` / release-gate scans. Highlights:
+in-wizard guided detail pages over the one shared calibration service; one
+progression engine (`lite_onboarding.progression`) for permissions and
+calibration; Advanced Cue Matching required in the registry, readiness and
+the classic Start gate (existing installs migrate to a preserved
+NEEDS_REVIEW, never silently un-finished); a Python-side tutorial
+lifecycle with once-only auto-start after FINISHED; a structured
+instruction registry on every guided step; and a deterministic diamond
+icon pipeline (`packaging/make_icon.py`) with the stale-icon build guards
+removed and gate-tested. Owner actions carried forward unchanged (license,
+repo URL, webhook revocation, signing/notarization, Windows CI on a real
+runner, calibration example screenshots).
+
 ## If interrupted, resume with
 ```
 cd <repo root>

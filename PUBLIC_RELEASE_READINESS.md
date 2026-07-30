@@ -1,7 +1,10 @@
 # Prospector Lite — Public-release readiness
 
-Updated for 1.0.0-rc.3 (wizard-stabilization pass; the rc.2 first-run
-blockers are resolved -- see docs/stabilization/STABILIZATION_REPORT.md).
+Updated for 1.0.0-rc.4 (final visible-onboarding pass: in-wizard guided
+calibration, sequential progression, required Advanced Cue Matching,
+once-only tutorial auto-start, diamond icon -- see
+docs/final-visible-pass/IMPLEMENTATION_REPORT.md; rc.3 stabilization
+history in docs/stabilization/STABILIZATION_REPORT.md).
 
 Verdict: **READY AFTER USER ACTION** — the engineering work is complete and
 verified on macOS; the remaining blockers are decisions/credentials/assets only
