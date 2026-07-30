@@ -887,11 +887,10 @@ def cue_masks_state(cfg):
         ok = False
         if isinstance(m, dict) and m.get("bits"):
             ratio = m.get("ratio")
-            try:
-                ok = (isinstance(ratio, (list, tuple)) and len(ratio) == 4
-                      and int(m.get("w", 0)) > 0 and int(m.get("h", 0)) > 0)
-            except (TypeError, ValueError):
-                ok = False
+            w, h = m.get("w"), m.get("h")
+            ok = (isinstance(ratio, (list, tuple)) and len(ratio) == 4
+                  and isinstance(w, (int, float)) and w > 0
+                  and isinstance(h, (int, float)) and h > 0)
         if ok:
             captured.append(cue)
         else:

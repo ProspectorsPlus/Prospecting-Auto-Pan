@@ -3586,6 +3586,12 @@ class Api:
             add("cue_masks", "Advanced cue matching", "fail",
                 cm_live.get("detail", "Masks need review."),
                 fix="calibration")
+        elif cm_st == "stale":
+            # masks ARE captured -- only the re-capture guidance applies
+            add("cue_masks", "Advanced cue matching", "fail",
+                cm_live.get("detail", "Masks captured, but the window "
+                                      "changed -- re-capture the three "
+                                      "prompts."), fix="calibration")
         else:
             missing_note = cm_live.get(
                 "detail", "Capture the three prompt masks from the "
@@ -10897,7 +10903,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    function cardStamp(c,prog){const l=c.live||{};
      return [l.status,l.requires_restart?1:0,l.requested?1:0,
              (l.test&&l.test.status)||'',
-             prog?(prog.state+':'+prog.seq):''].join('|');}
+             prog?(prog.state+':'+prog.seq+':'+(prog.reason||'')):''].join('|');}
    // ---- sequential progression over the REQUIRED capabilities ----------
    // Derived from real state only: a mac capability is complete when the
    // OS reports granted with no restart pending; on Windows (no OS
