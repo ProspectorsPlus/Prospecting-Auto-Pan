@@ -606,7 +606,15 @@ try:
     check("switching back restores the remembered build",
           r["ok"] and r["active"] == "Pushed Build")
 
-    # classic with a stale active build refuses (invariant, belt and braces)
+    # classic with a stale active build refuses (invariant, belt and braces).
+    # Advanced cue matching is required since rc.4, so seed the three prompt
+    # masks first -- otherwise launch()'s calibration gate ("cal:cue_masks")
+    # fires before the studio invariant this check is about.
+    cfg = app.load_saved()
+    cfg["CUE_MASKS"] = {c: {"ratio": [0.1, 0.2, 0.05, 0.02], "w": 40,
+                            "h": 12, "bits": "AAAA", "px": 30}
+                        for c in ("PAN", "DEPOSIT", "SHAKE")}
+    app._save_config_atomic(cfg)
     d = app._studio_load()
     d["mode"] = "classic"
     app._studio_write(d)

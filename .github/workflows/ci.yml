@@ -60,6 +60,12 @@ jobs:
       - name: UI + protocol checks
         run: python tour_check.py
 
+      - name: Wizard UI suite (jsdom drives the real embedded UI)
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+          python wizard_ui_tests.py
+
       - name: Finds simulation
         run: python finds_sim.py
 

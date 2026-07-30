@@ -43,8 +43,16 @@ def load_app():
 
 def scratch_home(flag_on):
     home = tempfile.mkdtemp(prefix="ppe-lite-drive-")
+    # Advanced cue matching is REQUIRED since rc.4: launch()'s calibration
+    # gate refuses classic runs without the three prompt masks, so the
+    # drive home ships minimal (synthetic) masks -- this suite drives the
+    # spawn/pump/stop seams, not detection quality.
+    masks = {c: {"ratio": [0.1, 0.2, 0.05, 0.02], "w": 40, "h": 12,
+                 "bits": "AAAA", "px": 30, "preview": ""}
+             for c in ("PAN", "DEPOSIT", "SHAKE")}
     cfg = {"ENGINE_IPC": bool(flag_on), "RELICS_ENABLED": False,
-           "WEBHOOK_URL": "", "WEBHOOK_SECRET": ""}
+           "WEBHOOK_URL": "", "WEBHOOK_SECRET": "",
+           "CUE_MASKS": masks}
     with open(os.path.join(home, "prospecting_config.json"), "w",
               encoding="utf-8") as f:
         json.dump(cfg, f)

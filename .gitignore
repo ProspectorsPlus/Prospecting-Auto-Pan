@@ -38,8 +38,8 @@ Output/
 *.icns
 build_info.json
 node_modules/
-package.json
-package-lock.json
+# package.json + package-lock.json ARE tracked: they pin jsdom for the
+# wizard_ui_tests.py DOM suite (npm install --no-audit --no-fund in CI).
 
 # ---- private / pre-1.0 material kept locally, not part of the public tree ----
 ACCESS_CODES_PRIVATE.txt

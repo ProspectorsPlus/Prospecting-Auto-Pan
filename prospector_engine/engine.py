@@ -224,7 +224,9 @@ CUE_WHITE_FRAC    = 0.12          # cue present if >= this FRACTION of the box i
 # reproduce the precise letter shape, so it is spoof-proof. Falls back to the
 # box check above for any cue without a mask, and whenever the window is resized
 # (a fixed mask would misalign -> raises a recalibration warning).
-ADVANCED_CUES     = False
+# Default ON since 1.0.0-rc.4: advanced cue matching is the REQUIRED primary
+# detector; with no masks captured the behavior is unchanged (box fallback).
+ADVANCED_CUES     = True
 CUE_MASK_FRAC     = 0.85          # cue present if >= this fraction of the mask's
                                   # captured pixels read white right now
 CUE_MASKS         = {}            # cue -> {ratio:[l,t,w,h], w, h, bits(b64)}

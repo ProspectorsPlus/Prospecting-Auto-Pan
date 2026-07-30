@@ -42,7 +42,7 @@ except ImportError:      # windows/ dev checkout: the modules live one level up
 # update check, no analytics, no remote content fetch (see PRIVACY.md /
 # NETWORK_BEHAVIOR).
 APP_NAME    = "Prospector Lite"
-VERSION     = "1.0.0-rc.3"
+VERSION     = "1.0.0-rc.4"
 PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
@@ -556,6 +556,40 @@ def _set_welcome_pref(flag):
     return _save_config_atomic(cur)
 
 
+# ---- Main-tutorial state -----------------------------------------------------
+# The MAIN tutorial (how to use the app) is distinct from the SETUP wizard
+# (permissions + calibration). Its lifecycle lives in its own atomically
+# written file inside the data dir -- NOT in WebKit localStorage, which is
+# invisible to the Trust Center data manifest, fails closed, and does not
+# survive a webview-profile change. Schema bumps re-offer the tutorial once
+# (a redesigned tutorial is new content); completion or dismissal within the
+# current schema is final until the user restarts it from the Tutorials menu.
+_TUTORIAL_STATE_FILE = os.path.join(DATA_DIR, "tutorial_state.json")
+# 2: first Python-side schema (1 = the legacy localStorage pp_tour_done era)
+TUTORIAL_SCHEMA = 2
+_TUT_STATES = ("NOT_STARTED", "ACTIVE", "COMPLETED", "DISMISSED")
+
+
+def _tutorial_lifecycle():
+    d = _read_json(_TUTORIAL_STATE_FILE, {})
+    if (not isinstance(d, dict) or d.get("schema") != TUTORIAL_SCHEMA
+            or d.get("main") not in _TUT_STATES):
+        d = {"schema": TUTORIAL_SCHEMA, "main": "NOT_STARTED",
+             "updated": 0}
+    return d
+
+
+def _tutorial_lifecycle_save(d):
+    tmp = _TUTORIAL_STATE_FILE + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=1)
+        os.replace(tmp, _TUTORIAL_STATE_FILE)
+        return True, ""
+    except OSError as e:
+        return False, str(e)
+
+
 # ---- onboarding / wizard diagnostics log ------------------------------------
 # A small append-only log of every wizard-relevant operation so a user report
 # ("the test did nothing") can be matched to what actually ran. Contains NO
@@ -727,13 +761,16 @@ TOUR_DEFAULTS = {
            "sections for Modes, Tracking, Alerts and Setup. The search box "
            "up top jumps straight to any setting by name."},
   {"id": "main.cal", "tab": "cal", "sel": "#wizbtn",
-   "title": "Calibrate first, always",
-   "body": "Calibration teaches the macro <b>where your HUD is</b>. Nothing "
-           "works until it is done. Open Roblox with the Prospecting HUD "
-           "visible and press <b>Guided calibration</b>: it proposes each "
-           "spot and you confirm. Redo it whenever the window size, "
-           "resolution or monitor changes; a red badge on Calibrate warns "
-           "you when that is needed."},
+   "title": "Recalibrate here whenever the window changes",
+   "body": "Setup already walked you through calibration step by step; "
+           "this tab is where you maintain it afterwards. It edits the "
+           "SAME saved values as the setup wizard. Redo a spot whenever "
+           "the window size, resolution or monitor changes; a red badge "
+           "on Calibrate warns you when that is needed. <b>Advanced cue "
+           "matching</b> (the three prompt masks) is required and lives "
+           "at the bottom of this page; re-capture the masks after any "
+           "resize. You can also re-run the full guided setup any time "
+           "from the Tutorial menu."},
   {"id": "main.caltest", "tab": "cal", "sel": "#dettest",
    "title": "Prove it worked",
    "body": "Press <b>Test detection (live)</b> right after calibrating. It "
@@ -828,6 +865,14 @@ TOUR_DEFAULTS = {
            "is a small always-on-top card with the current stage and live "
            "stats to park next to the game. <b>Pop out</b> is a mini control "
            "pill. Hover each button to preview it."},
+  {"id": "main.trust", "tab": "trust", "sel": "#tcbody",
+   "title": "The Trust Center is your control room",
+   "body": "Everything about permissions and your data lives here: live "
+           "permission status with real tests (including the <b>Safe "
+           "Stop</b> hotkey test), exactly what this build can touch, the "
+           "local data folder with export and delete controls, and a "
+           "re-run of the full setup wizard. Nothing leaves this computer "
+           "unless you turn on a feature that says so."},
   {"id": "main.save", "tab": "run", "sel": "#savebtn",
    "title": "Save your settings",
    "body": "Changes apply live while the app is open. <b>Save settings</b> "
@@ -2571,6 +2616,39 @@ class Api:
         except Exception as e:
             return {"tours": {}, "help": {}, "owner": False, "error": str(e)}
 
+    # ---- main-tutorial lifecycle (auto-start once after real setup) ----
+    def tutorial_state(self):
+        """The main tutorial's lifecycle + everything the auto-start
+        decision needs: the tutorial starts only when setup is genuinely
+        FINISHED and the current-schema state is NOT_STARTED."""
+        d = dict(_tutorial_lifecycle())
+        try:
+            d["setup_finished"] = _onboarding().finished()
+        except Exception:
+            d["setup_finished"] = False
+        return d
+
+    def tutorial_mark(self, state, legacy=False):
+        """Persist a lifecycle transition (ACTIVE / COMPLETED / DISMISSED).
+        `legacy=True` records a migration from the pre-schema localStorage
+        flag: a user who already saw or dismissed the old tour is not
+        forced through the new one. Atomic; failures are reported."""
+        state = str(state or "")
+        if state not in _TUT_STATES:
+            return {"ok": False, "error": "Unknown tutorial state."}
+        d = _tutorial_lifecycle()
+        d["main"] = state
+        d["updated"] = int(time.time())
+        if legacy:
+            d["migrated_from"] = "localStorage pp_tour_done"
+        ok, err = _tutorial_lifecycle_save(d)
+        _wlog("tutorial_mark", status=state if ok else "error",
+              detail=err)
+        if not ok:
+            return {"ok": False, "error": err,
+                    "error_code": "PP-TUT-SAVE"}
+        return {"ok": True, "main": state}
+
     def save_tutorial_entry(self, tid, patch):
         """Owner only: store an override for one tutorial card or help entry.
         Empty strings clear that field back to the default."""
@@ -3262,9 +3340,35 @@ class Api:
     # ---- guided calibration (drives the SAME engine + save path as the
     # Calibrate tab; the registry lives in lite_onboarding.py) -------------
 
+    def _advcue_migration_backup(self, cfg):
+        """One-time safety net when an install that FINISHED setup under the
+        old schema meets the new Advanced-cue-matching requirement: snapshot
+        the config before the user recalibrates anything, and remember the
+        review in the onboarding state. Values are never modified or deleted
+        here -- this only preserves what already exists."""
+        try:
+            ob = _onboarding()
+            if not ob.finished():
+                return
+            if ob.state.get("advcue_review"):
+                return
+            _, missing = lite_onboarding.cue_masks_state(cfg)
+            if not missing:
+                return
+            bak = CONFIG_FILE + ".pre-advcue.bak"
+            if not os.path.isfile(bak) and os.path.isfile(CONFIG_FILE):
+                import shutil
+                shutil.copyfile(CONFIG_FILE, bak)
+            ob.state["advcue_review"] = {"when": int(time.time()),
+                                         "missing": missing,
+                                         "backup": bak}
+            ob._save()
+        except Exception:
+            pass
+
     def calibration_registry(self):
-        """Registry items + live statuses for the guided-calibration step
-        and the Trust Center."""
+        """Registry items + live statuses + sequential progression for the
+        guided-calibration step and the Trust Center."""
         cfg = load_saved()
         health = None
         found = None
@@ -3282,22 +3386,15 @@ class Api:
                 found = bool(d.get("found")) if isinstance(d, dict) else None
             except Exception:
                 found = None
-        statuses = lite_onboarding.calibration_status(
-            cfg, health=health, window_found=found)
-        items = []
-        for item in lite_onboarding.CALIBRATION_ITEMS:
-            it = dict(item)
-            it["refs"] = [{"module": m, "symbol": sym or "(module)",
-                           "why": w}
-                          for (m, sym, w) in item["source_references"]]
-            it.pop("source_references", None)
-            it["live"] = statuses.get(item["id"], {})
-            items.append(it)
-        ready, blockers = lite_onboarding.calibration_ready(statuses)
-        return {"items": items, "ready": ready, "blockers": blockers,
-                "auto_calibrate": bool(cfg.get("AUTO_CALIBRATE", True)),
-                "owner": bool(_is_owner() and not FROZEN),
-                "schema": lite_onboarding.CALIBRATION_SCHEMA}
+        try:
+            setup_finished = _onboarding().finished()
+        except Exception:
+            setup_finished = False
+        self._advcue_migration_backup(cfg)
+        return lite_onboarding.compose_registry(
+            cfg, health=health, window_found=found,
+            setup_finished=setup_finished,
+            owner=bool(_is_owner() and not FROZEN))
 
     # ---- calibration example screenshots (assets/onboarding/calibration) --
     # Honest pipeline: an example image is shown ONLY when a real, owner-
@@ -3465,6 +3562,26 @@ class Api:
             add("calibration", "Required calibration", "fail",
                 "Required items need attention: %s"
                 % ", ".join(reg["blockers"]), fix="calibration")
+        # Advanced cue matching -- the required primary prompt detector.
+        # Its own row so the requirement is visible even inside the
+        # aggregate: single-pixel-only data never reads as ready.
+        captured, missing = lite_onboarding.cue_masks_state(saved)
+        if not bool(saved.get("ADVANCED_CUES", True)):
+            add("cue_masks", "Advanced cue matching", "fail",
+                "Switched off. It is the required primary detector -- "
+                "turn it back on from the Calibrate tab.",
+                fix="calibration")
+        elif not missing:
+            add("cue_masks", "Advanced cue matching", "pass",
+                "All three prompt masks are captured (%s)."
+                % ", ".join(captured), fix="calibration")
+        else:
+            add("cue_masks", "Advanced cue matching", "fail",
+                "Required: capture the %s prompt mask%s from the guided "
+                "calibration step. Existing single-pixel values are kept "
+                "as a fallback but do not count as ready."
+                % (", ".join(missing), "s" if len(missing) > 1 else ""),
+                fix="calibration")
         # Data directory write probe
         try:
             probe = os.path.join(DATA_DIR, ".write_probe")
@@ -5272,8 +5389,23 @@ class Api:
     def cue_mask_status(self):
         s = _sensing()
         if s is None:
-            return {"advanced": False, "masks_only": False, "cues": {}}
+            return {"advanced": True, "masks_only": False, "cues": {}}
         return s.cue_status()
+
+    def cue_mask_check(self, cue):
+        """Validate a saved mask against the LIVE screen with the real
+        detector math (Sensing.cue_check mirrors Detector._cue_mask_match:
+        ratio re-placement, 2 px drift refusal, 85% white-over-mask
+        threshold). Used by the guided detail page's Test button."""
+        s = _sensing()
+        if s is None:
+            return {"ok": False, "error": _SENSING_ERR}
+        if cue not in ("PAN", "SHAKE", "DEPOSIT"):
+            return {"ok": False, "error": "Unknown cue."}
+        try:
+            return s.cue_check(cue)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def clear_cue_mask(self, cue):
         s = _sensing()
@@ -5759,12 +5891,17 @@ class Api:
         _overlay.evaluate_js("window.__reload && window.__reload()")
         _overlay.show()
 
-    def start_overlay_calibrate(self, key, label=""):
+    def start_overlay_calibrate(self, key, label="", context=""):
         """Open a full-screen overlay (a snapshot of your screen). Click the
         target pixel, see a marker + colour + coords, Confirm to save.
         [Phase 04 C8] the frame lives in the ENGINE's capture session
         (4.15 capture); this host keeps only overlay-window state and the
-        stride-downsampled preview the engine hands back."""
+        stride-downsampled preview the engine hands back.
+
+        `context` ('guided_setup' | 'normal_calibration') affects ONLY the
+        completion callback the main window receives (__calDone) so each
+        surface can route its own navigation; calibration semantics and the
+        saved values are identical for both."""
         global _overlay
         err = self._overlay_preconditions()
         if err:
@@ -5784,21 +5921,41 @@ class Api:
         self._overlay_pending = None
         self._overlay_proposed = None
         self._overlay_region = None
+        self._overlay_ctx = context or "normal_calibration"
         try:
             self._overlay_show()
         except Exception as e:
             return {"error": str(e), "error_code": "PP-CAL-OVERLAY"}
-        _wlog("overlay_open", cap=str(key), status="ok")
+        _wlog("overlay_open", cap=str(key), status="ok",
+              detail=self._overlay_ctx)
         return {"ok": True}
 
-    def start_overlay_region(self, base, label=""):
+    def start_overlay_region(self, base, label="", context=""):
         """Open the overlay in REGION mode: the user drags one rectangle and
         both corner pixels (<base>_TL_PIXEL / <base>_BR_PIXEL) get saved.
         Much easier to aim than two separate corner clicks."""
         if base not in ("MONEY", "SHARDS", "FIND"):
             return {"error": "Unknown region."}
-        r = self.start_overlay_calibrate("REGION:" + base, label or base)
+        r = self.start_overlay_calibrate("REGION:" + base, label or base,
+                                         context)
         return r
+
+    def _cal_done_notify(self, ok, cancelled=False):
+        """Tell the MAIN window a calibration overlay finished. Carries the
+        calling context and the overlay key so the guided wizard can react
+        to ITS captures only; a stale or foreign result is ignored by the
+        listener. Fires alongside (never instead of) __calRefresh."""
+        try:
+            if _window is not None:
+                payload = json.dumps({
+                    "ctx": getattr(self, "_overlay_ctx",
+                                   "normal_calibration"),
+                    "key": str(getattr(self, "_overlay_key", "") or ""),
+                    "ok": bool(ok), "cancelled": bool(cancelled)})
+                _window.evaluate_js(
+                    "window.__calDone && window.__calDone(%s)" % payload)
+        except Exception:
+            pass
 
     def overlay_region(self, fx0, fy0, fx1, fy1):
         """Store the dragged rectangle (screen fractions) and echo its pixel
@@ -5918,18 +6075,22 @@ class Api:
                     _window.evaluate_js("window.__calRefresh&&window.__calRefresh()")
             except Exception:
                 pass
+            self._cal_done_notify(True)
             return {"ok": True}
         if key and str(key).startswith("CUEMASK:"):
+            saved = False
             try:
-                _sensing().cue_save()
+                r = _sensing().cue_save()
+                saved = isinstance(r, dict) and "error" not in r
             except Exception:
-                pass
+                saved = False
             self._close_overlay()
             try:
                 if _window is not None:
                     _window.evaluate_js("window.renderCueCaps&&window.renderCueCaps()")
             except Exception:
                 pass
+            self._cal_done_notify(saved)
             return {"ok": True}
         p = getattr(self, "_overlay_pending", None)
         if p and key:
@@ -5964,18 +6125,21 @@ class Api:
                 _window.evaluate_js("window.__calRefresh&&window.__calRefresh()")
         except Exception:
             pass
+        self._cal_done_notify(bool(p and key))
         return {"ok": True}
 
     def overlay_cancel(self):
         self._close_overlay()
+        self._cal_done_notify(False, cancelled=True)
         return {"ok": True}
 
-    def start_cue_mask_capture(self, cue, thresh=None):
+    def start_cue_mask_capture(self, cue, thresh=None, context=""):
         """Open the calibration OVERLAY to capture a cue mask: first LOCATE (click
         the cue word on the game), then EDIT (click each letter / the mouse to
         include or exclude it), then Confirm. [Phase 04 C8] the frame goes
         into the ENGINE's capture session; locate/edit pixel math runs
-        engine-side (4.15 cueMask); this host keeps overlay state."""
+        engine-side (4.15 cueMask); this host keeps overlay state.
+        `context` affects only the __calDone navigation callback."""
         global _overlay
         if cue not in ("PAN", "SHAKE", "DEPOSIT"):
             return {"ok": False, "error": "Unknown cue."}
@@ -5993,6 +6157,7 @@ class Api:
         self._cm_mode = "locate"
         self._shot_w, self._shot_h = cap["fullW"], cap["fullH"]
         self._shot_b64 = cap["image"]
+        self._overlay_ctx = context or "normal_calibration"
         self._overlay_key = "CUEMASK:" + cue
         names = {"PAN": "Pan", "SHAKE": "Shake", "DEPOSIT": "Collect Deposit"}
         self._overlay_label = "Click on the \u201c%s\u201d cue word" % names[cue]
@@ -6051,16 +6216,18 @@ class Api:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def wizard_propose(self, kind, label=""):
+    def wizard_propose(self, kind, label="", context=""):
         """Auto-detect a spot, then OPEN THE OVERLAY pre-marked with a red X at
         the guess so the user can Confirm or Redo. Nothing is saved until they
         confirm. If detection fails, the overlay opens for a plain manual pick.
         [Phase 04 C8] detection + the frame run engine-side (4.15 detect:
-        the fresh grab becomes the capture session)."""
+        the fresh grab becomes the capture session).
+        `context` affects only the __calDone navigation callback."""
         global _overlay
         err = self._overlay_preconditions()
         if err:
             return err
+        self._overlay_ctx = context or "normal_calibration"
         s = _sensing()
         if kind in ("CAP", "CAP_RIGHT", "CAP_LEFT"):
             target, cue = "capacityBar", None
@@ -7080,13 +7247,17 @@ def build_html():
         '<input type="file" id="importfile" accept="application/json,.json" style="display:none">'
         '</div>'
         '<div class="advcal"><div class="phead" style="margin-top:6px">'
-        '<h2>Advanced cue matching <span class="advbeta">optional</span></h2>'
-        '<p class="chint">Spoof-proof detection: instead of checking a small white '
-        'box, it matches the EXACT letter shape of each cue, so a player standing '
-        'in white can\'t trigger it. Open Prospecting with the cue on screen, then '
-        'Capture. Any cue you don\'t capture uses normal detection. Re-capture if '
-        'you change window size or resolution.</p></div>'
-        '<label class="row"><span class="lbl">Use advanced cue matching</span>'
+        '<h2>Advanced cue matching <span class="advbeta">required</span></h2>'
+        '<p class="chint">The primary prompt detector: instead of checking a small '
+        'white box, it matches the EXACT letter shape of each cue, so a player '
+        'standing in white can\'t trigger it, and it tolerates minor visual '
+        'variation better than a single exact pixel. All three captures are '
+        'REQUIRED for readiness -- the single-pixel checks remain only as a '
+        'fallback while a mask is missing or disabled. Open Prospecting with the '
+        'cue on screen, then Capture. Re-capture if you change window size or '
+        'resolution.</p></div>'
+        '<label class="row"><span class="lbl">Use advanced cue matching '
+        '(required; switching it off keeps readiness blocked)</span>'
         '<span class="switch"><input type="checkbox" id="advcue"><span class="track">'
         '<span class="knob"></span></span></span></label>'
         '<label class="row"><span class="lbl">Masks only \u2014 no pixel fallback (for testing)</span>'
@@ -8521,6 +8692,39 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  .cap-st.no{color:#f0a6a6}.cap-st.no .dot{background:#e07a6a}
  .cap-st.mid{color:#e8cf8f}.cap-st.mid .dot{background:#d9a441}
  .cap-st.off{color:var(--mut)}.cap-st.off .dot{background:var(--line2)}
+ /* Sequential progression (one engine for permissions + calibration):
+    UPCOMING steps fade but stay readable; the ACTIVE step is highlighted;
+    every state also carries a text chip -- never colour/opacity alone. */
+ .step-upcoming{opacity:.55}
+ .step-upcoming .cap-actions button:not([data-act="code"]):not([data-cal="code"]){pointer-events:none;opacity:.55}
+ .step-active{border-color:#d9a441;box-shadow:0 0 0 1px rgba(217,164,65,.35)}
+ .step-chip{display:inline-flex;align-items:center;font-size:11px;font-weight:800;
+   border-radius:8px;padding:2px 8px;margin-left:8px;letter-spacing:.02em}
+ .step-chip.next{background:rgba(217,164,65,.18);color:#e8cf8f}
+ .step-chip.done{background:rgba(127,175,93,.16);color:#8fce7d}
+ .step-chip.up{background:var(--line2);color:var(--mut)}
+ .step-chip.rev{background:rgba(224,122,106,.16);color:#f0a6a6}
+ .step-chip.optional{background:var(--line2);color:var(--mut)}
+ .step-num{display:inline-flex;align-items:center;justify-content:center;
+   width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);
+   font-size:12px;font-weight:800;margin-right:9px;flex:none}
+ .step-active .step-num{border-color:#d9a441;color:#e8cf8f}
+ .sup-progress{font-size:12.5px;color:var(--mut);margin:2px 0 10px}
+ .cal-pre{border:1px dashed var(--line2);border-radius:11px;padding:10px 13px;
+   margin:0 0 13px;font-size:13px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+ .gd-back{margin:0 0 10px}
+ .gd-sec{margin:12px 0}
+ .gd-sec h4{font-size:12.5px;text-transform:uppercase;letter-spacing:.06em;
+   color:var(--mut);margin:0 0 5px}
+ .gd-sec ol,.gd-sec ul{margin:4px 0 4px 20px;padding:0}
+ .gd-sec li{margin:3px 0;font-size:13.5px}
+ .gd-kv{font-size:13.5px;margin:3px 0}
+ .gd-out{margin-top:10px;font-size:13.5px}
+ .gd-out .ok{color:#8fce7d}.gd-out .no{color:#f0a6a6}
+ .gd-cues{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0}
+ .gd-cue{border:1px solid var(--line2);border-radius:10px;padding:9px 11px;min-width:150px}
+ .gd-cue img{max-width:140px;display:block;margin:6px 0;border-radius:6px}
+ .gd-cue .st{font-size:12px;font-weight:800}
  .cap-desc{color:var(--mut);font-size:13px;line-height:1.55;margin:8px 0 10px;max-width:82ch}
  .cap-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px 16px;margin:0 0 11px}
  .cap-facts div{font-size:12px;color:var(--mut);line-height:1.5}
@@ -8587,6 +8791,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          <li><b>Safe Stop.</b> Esc or Ctrl+K stops the macro instantly and releases every key and mouse button.</li>
        </ul>
        <button type="button" id="welGo" class="btn">Continue</button>
+       <div class="wel-links" id="welActions" style="display:none">
+         <a href="#" id="welReview">Review setup</a>
+         <a href="#" id="welTut">Start tutorial</a>
+         <a href="#" id="welTrustC">Trust Center</a>
+       </div>
        <label class="wel-again"><input type="checkbox" id="welAgain" checked> Show this screen at every launch</label>
        <div class="wel-again" id="welAgainErr" style="display:none;color:#e07a6a" role="alert"></div>
        <div class="wel-links">
@@ -8780,6 +8989,14 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    function flagKey(n){return n==='main'?'pp_tour_done':'pp_tour_'+n;}
    function seen(n){try{return localStorage.getItem(flagKey(n))==='1';}catch(e){return true;}}
    function mark(n){try{localStorage.setItem(flagKey(n),'1');}catch(e){}}
+   // MAIN-tutorial lifecycle lives Python-side (tutorial_state.json, atomic,
+   // schema-versioned) -- localStorage remains only for the per-page mini
+   // tours and as the legacy migration source.
+   function tutApi(){return window.pywebview&&window.pywebview.api;}
+   function tutMark(st,legacy){try{var a=tutApi();if(a)a.tutorial_mark(st,!!legacy);}catch(e){}}
+   function setupOverlayVisible(){
+     var s=document.getElementById('setup'),r=document.getElementById('supReturn');
+     return (s&&s.classList.contains('show'))||(r&&r.classList.contains('show'));}
    function ytEmbed(u){if(!u)return '';var m=String(u).match(/(?:youtu\.be\/|v=|embed\/)([\w-]{6,})/);var id=m?m[1]:'';if(!id&&/^[\w-]{6,}$/.test(u))id=u;return id?('https://www.youtube.com/embed/'+id):'';}
    function mediaHTML(st){var h='';if(st&&st.img)h+='<img class="tmimg" src="'+esc(st.img)+'" alt="">';var e=ytEmbed(st&&st.vid);if(e)h+='<div class="ph-vid"><iframe src="'+e+'" allowfullscreen loading="lazy"></iframe></div>';return h;}
    // media + owner-edit affordances live in the card, built once
@@ -8849,15 +9066,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      if(anim)requestAnimationFrame(function(){pop.classList.remove('tfade');spot.classList.remove('tfade');});
    }
    async function show(){T('tour').style.display='block';running=true;await place(true);}
-   function end(){T('tour').style.display='none';running=false;mark(curName);
+   function end(reason){T('tour').style.display='none';running=false;mark(curName);
+     if(curName==='main')tutMark(reason==='finish'?'COMPLETED':'DISMISSED');
      if(curName==='main'){var t=document.querySelector('.tab[data-tab="run"]');if(t)t.click();}}
    window.startTour=async function(name){await loadTutorials();curName=(name&&TOURS[name])?name:'main';
-     TOUR=TOURS[curName]||[];if(!TOUR.length){return;}ti=0;mark(curName);closeMenu();await show();};
-   var nb=T('tournext');if(nb)nb.onclick=async function(){if(ti>=TOUR.length-1){end();return;}ti++;await place(true);};
+     TOUR=TOURS[curName]||[];if(!TOUR.length){return;}ti=0;mark(curName);
+     if(curName==='main')tutMark('ACTIVE');
+     closeMenu();await show();};
+   var nb=T('tournext');if(nb)nb.onclick=async function(){if(ti>=TOUR.length-1){end('finish');return;}ti++;await place(true);};
    var bk=T('tourback');if(bk)bk.onclick=async function(){if(ti>0){ti--;await place(true);}};
-   var sk=T('tourskip');if(sk)sk.onclick=function(){end();};
+   var sk=T('tourskip');if(sk)sk.onclick=function(){end('skip');};
    document.addEventListener('keydown',function(e){if(!running)return;
-     if(e.key==='Escape'){end();return;}
+     if(e.key==='Escape'){end('skip');return;}
      var tg=((e.target&&e.target.tagName)||'').toLowerCase();
      if(tg==='input'||tg==='textarea'||tg==='select')return;
      if(e.key==='ArrowRight'){e.preventDefault();if(nb)nb.click();}
@@ -8910,9 +9130,27 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        var name=TAB_TOURS[t.getAttribute('data-tab')];
        if(!name||running||seen(name))return;
        var g=T('gate');if(g&&g.classList.contains('show'))return;
-       setTimeout(function(){if(!running&&!seen(name))window.startTour(name);},430);});});
+       if(setupOverlayVisible())return; // never over (or under) the setup wizard
+       setTimeout(function(){if(!running&&!seen(name)&&!setupOverlayVisible())window.startTour(name);},430);});});
    window.addEventListener('resize',function(){var t=T('tour');if(t&&t.style.display!=='none')place();});
-   window.maybeStartTour=function(){try{var g=document.getElementById('gate');if(g&&g.classList.contains('show'))return;if(!seen('main'))window.startTour('main');}catch(e){}};
+   // Auto-start the MAIN tutorial exactly once per tutorial schema version,
+   // and only after setup is GENUINELY finished: never while the welcome
+   // gate or the setup wizard (even suspended) is up, never before the
+   // onboarding state machine reports FINISHED, never again after a
+   // completion or dismissal recorded for the current schema. A legacy
+   // localStorage pp_tour_done flag migrates as COMPLETED (a user who
+   // already saw or dismissed the old tour is not forced through again).
+   window.maybeStartTour=async function(){try{
+     var g=document.getElementById('gate');if(g&&g.classList.contains('show'))return;
+     if(setupOverlayVisible()||running)return;
+     var a=tutApi();if(!a)return;
+     var st=null;try{st=await a.tutorial_state();}catch(e){st=null;}
+     if(!st||!st.setup_finished)return;
+     if(st.main!=='NOT_STARTED')return;
+     var legacyDone=false;try{legacyDone=localStorage.getItem('pp_tour_done')==='1';}catch(e){legacyDone=false;}
+     if(legacyDone){tutMark('COMPLETED',true);return;}
+     window.startTour('main');
+   }catch(e){}};
    loadTutorials();
    window.addEventListener('pywebviewready',function(){if(!LOADED)loadTutorials(true);});
    setTimeout(function(){if(!LOADED)loadTutorials(true);},700);
@@ -10530,8 +10768,17 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      let r=null;try{r=await _api().welcome_set_always_show(want);}catch(e){r={ok:false,error:String(e)};}
      if(!r||!r.ok){a.checked=!want;
        welErr('Could not save this preference ('+((r&&r.error)||'bridge unavailable')+'). ['+((r&&r.error_code)||'PP-WEL-SAVE')+']');}});})();
+ // Post-setup welcome actions: once setup is FINISHED the welcome screen
+ // offers Review setup / Start tutorial / Trust Center. Showing the welcome
+ // at every launch never re-runs permissions or calibration -- Continue just
+ // opens the app.
+ function welActions(setupNeeded){
+   const w=document.getElementById('welActions');if(w)w.style.display=setupNeeded?'none':'';
+   const g=document.getElementById('welGo');
+   if(g)g.textContent=setupNeeded?'Continue':'Open Prospector Lite';}
  window.openWelcome=async function(){
-   try{const w=await _api().welcome_state();welSetChecked(w&&w.show_every_launch);}catch(e){}
+   try{const w=await _api().welcome_state();welSetChecked(w&&w.show_every_launch);
+     welActions(!!(w&&w.setup_needed));}catch(e){}
    welcomeShow();};
  function welcomeFill(info){try{
    const v=document.getElementById('welVer');if(v)v.textContent='v'+(info.version||'');
@@ -10554,7 +10801,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    if(!w){bootFail(err||'no response');return;}
    splashHide();
    _welInfo=(w&&w.info)||{};welcomeFill(_welInfo);_setupNeeded=!!(w&&w.setup_needed);
-   welSetChecked(w&&w.show_every_launch);
+   welSetChecked(w&&w.show_every_launch);welActions(_setupNeeded);
    const resume=(w&&w.resume)||'';
    if(w&&w.show){welcomeShow();}
    else if(_setupNeeded&&resume==='NOT_STARTED'){welcomeShow();} // full wizard reset re-enters at the welcome step
@@ -10566,6 +10813,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      if(r&&r.ok===false){welErr('Could not save setup progress ('+(r.error||'')+'). ['+(r.error_code||'PP-WEL-DONE')+']');}
      welcomeHide();
      if(_setupNeeded&&window.SETUP){SETUP.open('trust');}else{_startApp();}});
+   const wr=document.getElementById('welReview');if(wr)wr.onclick=e=>{e.preventDefault();
+     welcomeHide();if(window.SETUP)SETUP.open('trust');};
+   const wt=document.getElementById('welTut');if(wt)wt.onclick=e=>{e.preventDefault();
+     welcomeHide();_startApp();setTimeout(()=>{if(window.startTour)startTour('main');},450);};
+   const wtc=document.getElementById('welTrustC');if(wtc)wtc.onclick=e=>{e.preventDefault();
+     welcomeHide();_startApp();setTimeout(()=>{const t=document.querySelector('.tab[data-tab="trust"]');if(t)t.click();},200);};
    const sc=document.getElementById('welSrc');if(sc)sc.onclick=e=>{e.preventDefault();try{_api().open_external((_welInfo&&_welInfo.project_url)||'');}catch(_){}};
    const pv=document.getElementById('welPriv');if(pv)pv.onclick=e=>{e.preventDefault();try{_api().open_doc('PRIVACY.md');}catch(_){}};
    const se=document.getElementById('welSec');if(se)se.onclick=e=>{e.preventDefault();try{_api().open_doc('SECURITY.md');}catch(_){}};
@@ -10614,15 +10867,48 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          d+=' The change applies after Prospector Lite restarts.';
        if(live.test)d+=' Last test this session: '+live.test.status+'.';}
      return d;}
-   function cardStamp(c){const l=c.live||{};
+   function cardStamp(c,prog){const l=c.live||{};
      return [l.status,l.requires_restart?1:0,l.requested?1:0,
-             (l.test&&l.test.status)||''].join('|');}
+             (l.test&&l.test.status)||'',
+             prog?(prog.state+':'+prog.seq):''].join('|');}
+   // ---- sequential progression over the REQUIRED capabilities ----------
+   // Derived from real state only: a mac capability is complete when the
+   // OS reports granted with no restart pending; on Windows (no OS
+   // preflights) only a passed session test completes it. Opening System
+   // Settings never completes anything.
+   function capComplete(c){const l=c.live||{};
+     if(OS_CAPS.indexOf(c.id)<0)return false;
+     if(DET==='mac')return l.status==='granted'&&!l.requires_restart;
+     return !!(l.test&&l.test.status==='passed');}
+   function trustProg(reqCaps){const steps=reqCaps.map(c=>({id:c.id,required:true,
+       complete:capComplete(c),title:c.title}));
+     // same rules as the Python engine (lite_onboarding.progression):
+     const out={};let seq=0,done=0,active=null,gate='';
+     steps.forEach(s=>{seq++;
+       if(s.complete){done++;out[s.id]={state:'COMPLETE',seq,reason:'Complete - reopen any time.'};return;}
+       if(active===null){active=s.id;gate=s.title;
+         out[s.id]={state:'ACTIVE',seq,reason:'Do this next.'};return;}
+       out[s.id]={state:'UPCOMING',seq,reason:'Complete '+gate+' first.'};});
+     out['']={total:steps.length,done:done,active:active};
+     return out;}
+   function stepChip(p){if(!p)return '';
+     if(p.state==='COMPLETE')return '<span class="step-chip done">Complete</span>';
+     if(p.state==='ACTIVE')return '<span class="step-chip next">Do this next</span>';
+     if(p.state==='UPCOMING')return '<span class="step-chip up">Upcoming</span>';
+     if(p.state==='NEEDS_REVIEW')return '<span class="step-chip rev">Needs review</span>';
+     if(p.state==='BLOCKED')return '<span class="step-chip rev">Blocked</span>';
+     if(p.state==='OPTIONAL')return '<span class="step-chip optional">Optional</span>';
+     return '';}
+   function stepClass(p){if(!p)return '';
+     if(p.state==='ACTIVE'||p.state==='NEEDS_REVIEW')return ' step-active';
+     if(p.state==='UPCOMING')return ' step-upcoming';
+     return '';}
    function reqBadge(l){if(l==='REQUIRED_FOR_CORE')return '<span class="cap-badge req">Required</span>';
      if(l==='REQUIRED_FOR_SPECIFIC_FEATURE')return '<span class="cap-badge req">Required for a feature</span>';
      if(l==='OPTIONAL')return '<span class="cap-badge opt">Optional</span>';
      if(l==='NOT_REQUIRED')return '<span class="cap-badge">Never requested</span>';
      return '<span class="cap-badge">Info</span>';}
-   function capCard(c,compact){
+   function capCard(c,compact,prog){
      const live=c.live||{},[cls,lab]=capPill(c);
      const osl=(c.operating_system_label||{})[PLAT]||'';
      const real=(PLAT===DET); // action buttons only on the platform we are actually on
@@ -10653,10 +10939,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<div class="cap-desc"><b>To revoke:</b> '+E((c.revoke_instructions||{})[PLAT]||'')+'</div>'
        +(c.privacy_notes?('<div class="cap-desc"><b>Privacy note:</b> '+E(c.privacy_notes)+'</div>'):'')
        +'</details>';
-     return '<div class="cap-card" data-capid="'+c.id+'" data-compact="'+(compact?1:0)+'" data-stamp="'+E(cardStamp(c))+'"><div class="cap-head">'
-       +'<span class="cap-title">'+E(c.title)+'</span>'+reqBadge(c.required_level)
+     const num=(prog&&prog.seq)?('<span class="step-num" aria-hidden="true">'+prog.seq+'</span>'):'';
+     const reason=(prog&&(prog.state==='UPCOMING'||prog.state==='NEEDS_REVIEW'||prog.state==='BLOCKED'))
+       ?('<div class="cap-desc"><b>'+(prog.state==='UPCOMING'?'Upcoming:':'Review:')+'</b> '+E(prog.reason)+'</div>'):'';
+     const aria=prog?(' aria-label="Step '+prog.seq+': '+E(c.title)+' - '
+       +E(prog.state==='COMPLETE'?'complete':(prog.state==='ACTIVE'?'do this next':prog.state.toLowerCase().replace('_',' ')))+'"'):'';
+     return '<div class="cap-card'+stepClass(prog)+'" data-capid="'+c.id+'" data-compact="'+(compact?1:0)+'" data-stamp="'+E(cardStamp(c,prog))+'"'+aria+'><div class="cap-head">'
+       +num+'<span class="cap-title">'+E(c.title)+'</span>'+reqBadge(c.required_level)+stepChip(prog)
        +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></div>'
-       +'<div class="cap-desc">'+E(c.short_description)+' '+E(capDetail(c))+'</div>'
+       +'<div class="cap-desc">'+E(c.short_description)+' '+E(capDetail(c))+'</div>'+reason
        +(compact?'':facts)
        +'<div class="cap-actions">'+acts+'</div>'
        +'<div class="cap-test" id="captest_'+c.id+'" aria-live="polite"></div>'
@@ -10667,14 +10958,21 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    // in-flight test (the old full re-render did exactly that).
    const _busy={};
    function updateCards(root){if(!ST||!root)return;let rewire=null;
+     // recompute progression when this surface is the wizard trust step
+     // (the Trust Center has no progression: prog stays undefined there)
+     let prog=null;
+     if(root.id==='supBody'&&PAGE==='trust'){
+       const caps=ST.capabilities.filter(c=>(c.platforms||[]).indexOf(PLAT)>=0);
+       prog=trustProg(caps.filter(c=>c.required_level.indexOf('REQUIRED')===0));}
      ST.capabilities.forEach(c=>{
        const card=root.querySelector('.cap-card[data-capid="'+c.id+'"]');
        if(!card||_busy[c.id])return;
-       const stamp=cardStamp(c);
+       const p=prog?prog[c.id]:undefined;
+       const stamp=cardStamp(c,p);
        if(card.dataset.stamp===stamp)return;
        const keepEl=card.querySelector('.cap-test');
        const wrap=document.createElement('div');
-       wrap.innerHTML=capCard(c,card.dataset.compact==='1');
+       wrap.innerHTML=capCard(c,card.dataset.compact==='1',p);
        const fresh=wrap.firstChild;
        const ct=fresh.querySelector('.cap-test');
        // MOVE the live test-output node (listeners and all) into the fresh
@@ -10682,7 +10980,11 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        // whose Start-test button is dead.
        if(ct&&keepEl)ct.replaceWith(keepEl);
        card.replaceWith(fresh);rewire=root;});
-     if(rewire)wireCards(rewire);}
+     if(rewire){wireCards(rewire);
+       const sum=root.querySelector('.sup-progress');
+       if(sum&&prog&&prog[''])sum.textContent=trustProgText(prog['']);}}
+   function trustProgText(s){return 'Required permissions: '+s.done+' of '+s.total
+     +' complete'+(s.active?'':' - all done');}
    let _reqId=0;
    function wireCards(box){
      box.querySelectorAll('button[data-act]').forEach(b=>{b.onclick=async()=>{
@@ -10804,16 +11106,24 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      const caps=ST.capabilities.filter(c=>(c.platforms||[]).indexOf(PLAT)>=0);
      const req=caps.filter(c=>c.required_level.indexOf('REQUIRED')===0);
      const opt=caps.filter(c=>c.required_level==='OPTIONAL');
-     const none=caps.filter(c=>c.required_level==='NOT_REQUIRED'||c.required_level==='INFORMATIONAL_ONLY');
+     // Sequential progression over the required permissions: exactly one
+     // ACTIVE step, later ones faded + labelled Upcoming. The full
+     // "never requested" capability list stays in the Trust Center; this
+     // first-run page keeps only the capabilities being set up.
+     const prog=trustProg(req);
+     const sum=prog['']||{};
      b.innerHTML='<h2 class="sup-h1">Trust &amp; Permissions<span class="plat-badge">'+(DET==='mac'?'macOS detected':(DET==='win'?'Windows detected':DET))+'</span></h2>'
-       +'<p class="sup-sub">Before the operating system shows a single prompt, here is every capability this app has: what it is for, what it can touch, and how to test and revoke it. Nothing is requested until you click a button below. '+(ST.dev_note?E(ST.dev_note):'')+'</p>'
+       +'<p class="sup-sub">Work through the required permissions in order - the highlighted card is the one to do next. Nothing is requested until you click a button below. '+(ST.dev_note?E(ST.dev_note):'')+'</p>'
        +platTabs()
        +(PLAT!==DET?'<p class="sup-sub">You are browsing the '+(PLAT==='mac'?'macOS':'Windows')+' column for reference; live statuses always describe THIS computer ('+(DET==='mac'?'macOS':'Windows')+').</p>':'')
        +'<div class="cap-actions" style="margin:2px 0 8px"><button type="button" class="btn2" id="trustRefresh">&#8635; Refresh status</button><span class="sup-note" id="trustChecked" aria-live="polite"></span></div>'
-       +'<div class="sup-group">Required for the macro</div>'+req.map(c=>capCard(c,false)).join('')
-       +'<div class="sup-group">Optional &mdash; off by default</div>'+opt.map(c=>capCard(c,false)).join('')
-       +'<div class="sup-group">Never requested (so you can see we know)</div>'+none.map(c=>capCard(c,true)).join('');
+       +'<div class="sup-progress" aria-live="polite">'+E(trustProgText(sum))+'</div>'
+       +'<div class="sup-group">Required for the macro</div>'+req.map(c=>capCard(c,false,prog[c.id])).join('')
+       +'<div class="sup-group">Optional &mdash; off by default, never blocks setup</div>'+opt.map(c=>capCard(c,false,{state:'OPTIONAL',seq:0,reason:''})).join('')
+       +'<p class="sup-sub">Prospector Lite uses only the access shown here. Detailed privacy and network information - including everything this app never requests (microphone, camera, location, admin rights, full-disk access) - is in the <b>Trust Center</b> tab after setup.</p>';
      wirePlat(b,renderTrust);wireCards(b);
+     const act=sum.active?b.querySelector('.cap-card[data-capid="'+sum.active+'"]'):null;
+     if(act&&act.scrollIntoView)try{act.scrollIntoView({block:'nearest'});}catch(e){}
      const rf=$id('trustRefresh');if(rf)rf.onclick=async()=>{rf.disabled=true;await refresh(false);rf.disabled=false;stampChecked();};
      stampChecked();
      $id('supBack').textContent='← Welcome';$id('supNext').textContent='Continue to Calibration →';
@@ -10823,42 +11133,241 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    }
    function stampChecked(){const el=$id('trustChecked');
      if(el&&ST&&ST.checked_at)el.textContent='Status checked '+new Date(ST.checked_at*1000).toLocaleTimeString();}
-   function calStatus(st){const m={ok:['ok','Calibrated'],auto:['mid','Auto'],stale:['no','Stale'],unset:['off','Not set'],off:['off','Off']};return m[st]||['mid',st||'?'];}
-   async function renderCal(){const g=++GEN;PAGE='cal';railSet();const b=$id('supBody');
+   function calStatus(st){const m={ok:['ok','Calibrated'],auto:['mid','Auto'],stale:['no','Stale'],unset:['off','Not set'],needs_review:['no','Needs review'],off:['off','Off']};return m[st]||['mid',st||'?'];}
+   // ---- guided calibration: checklist + in-wizard detail pages ------------
+   // The guided flow NEVER leaves the wizard: every capture drives the same
+   // shared calibration service (wizard_propose / start_overlay_calibrate /
+   // start_overlay_region / start_cue_mask_capture) with
+   // context='guided_setup'; the only difference from the Calibrate tab is
+   // where the completion callback navigates. The full-screen picker is an
+   // always-on-top overlay window -- the main window stays on the wizard.
+   let CALV={view:'list',item:null,awaiting:null,gen:0};
+   function calNav(){CALV.gen++;CALV.awaiting=null;}
+   const GD_STEPS={ // per-item capture plans against the shared service
+     cap_bar:{kind:'propose',seq:[['CAP_RIGHT','Capacity bar - RIGHT tip'],['CAP_LEFT','Capacity bar - LEFT tip']]},
+     pan_prompt:{kind:'propose',seq:[['PAN_PIX','Pan prompt']]},
+     deposit_prompt:{kind:'propose',seq:[['DEPOSIT_PIX','Collect Deposit prompt']]},
+     shake_prompt:{kind:'propose',seq:[['SHAKE_PIX','Shake prompt']]},
+     cue_masks:{kind:'cues',cues:[['PAN','Pan (stand in the water)'],['DEPOSIT','Collect Deposit (step onto land)'],['SHAKE','Shake (begin a shake)']]},
+     dig_green:{kind:'pixel',seq:[['DIG_TRIGGER_PIXEL','Green dig-bar zone']]},
+     money_region:{kind:'region',base:'MONEY'},
+     shards_region:{kind:'region',base:'SHARDS'},
+     find_region:{kind:'region',base:'FIND'},
+     fortune_river:{kind:'pixel',seq:[['FR_OPEN_PIXEL','Fortune River - open button'],['FR_HOME_PIXEL','Fortune River - home button'],['FR_TEXT','Fortune River - reward text column'],['FR_BOX_TOP','Fortune River - box top edge'],['FR_BOX_BOTTOM','Fortune River - box bottom edge']],anykey:true},
+     autopan_button:{kind:'pixel',seq:[['AUTOPAN_ON','Auto Pan button (ON state)'],['AUTOPAN_OFF','Auto Pan button (OFF state)']],anykey:true}};
+   function calItem(id){return ((CAL&&CAL.items)||[]).find(x=>x.id===id)||null;}
+   async function calReload(){try{CAL=await _api().calibration_registry();}catch(e){}}
+   // completion callback from the overlay (Python fires __calDone after
+   // Confirm or Cancel, carrying the calling context + overlay key). A
+   // guided listener reacts ONLY to guided_setup results while a guided
+   // detail page is actually awaiting one -- a stale or foreign result can
+   // never navigate the wizard.
+   const _prevCalDone=window.__calDone;
+   window.__calDone=function(r){if(_prevCalDone)try{_prevCalDone(r);}catch(e){}
+     try{onGdDone(r||{});}catch(e){}};
+   async function onGdDone(r){
+     if(r.ctx!=='guided_setup')return;
+     if(CALV.view!=='detail'||!CALV.awaiting)return;
+     const aw=CALV.awaiting,gen=CALV.gen;CALV.awaiting=null;
+     if(r.cancelled){gdOut('<span class="no">Cancelled - nothing was saved.</span> You are still on this step; press Start to try again.');gdButtons(false);return;}
+     if(!r.ok){gdOut('<span class="no">That capture did not save.</span> Press Retry to run it again.');gdButtons(false);return;}
+     if(aw.next<aw.plan.length){ // more captures in this item's plan
+       if(gen!==CALV.gen)return;
+       gdRunStage(aw.item,aw.plan,aw.next);return;}
+     gdOut('Validating&hellip;');
+     await calReload();
+     if(gen!==CALV.gen)return; // user navigated away while validating
+     const it=calItem(aw.item.id);
+     const st=(it&&it.live&&it.live.status)||'';
+     const good=(st==='ok')||(!it.required&&st!=='unset');
+     if(good){
+       gdOut('<span class="ok">&#10003; Saved and validated.</span> Returning to the checklist&hellip;');
+       const g2=CALV.gen;
+       setTimeout(()=>{if(g2===CALV.gen&&CALV.view==='detail')renderCal();},1400);
+     }else{
+       gdOut('<span class="no">Saved, but validation reports: '+E((it&&it.live&&it.live.detail)||st||'unknown')+'</span> Press Retry to redo this step; the checklist keeps it active until it passes.');
+       gdButtons(false);}
+   }
+   function gdOut(h){const o=$id('gdout');if(o)o.innerHTML=h;}
+   function gdButtons(running){const s=$id('gdstart');if(s)s.disabled=!!running;
+     const t=$id('gdtest');if(t)t.disabled=!!running;}
+   async function gdPreflight(item){
+     // Readiness confirm INSIDE the page: Roblox must be visible for any
+     // screen capture; a missing permission is routed by calErr (below) to
+     // the exact trust step -- also inside the wizard.
+     gdOut('Checking Roblox is visible&hellip;');
+     let w=null;try{w=await _api().detect_roblox();}catch(e){w=null;}
+     if(!(w&&w.found)){
+       gdOut('<span class="no">Roblox was not found on screen.</span> Open Roblox in Prospecting on your primary display, set up the scene as described above, then press Start again.');
+       return false;}
+     return true;}
+   async function gdRunStage(item,plan,idx){
+     const step=plan[idx];CALV.awaiting={item:item,plan:plan,next:idx+1};
+     gdButtons(true);
+     gdOut('Capture '+(idx+1)+' of '+plan.length+': <b>'+E(step.label)+'</b> - the full-screen picker is open on top. '+E(step.hint||'Click the target, then Confirm (or Cancel to come back here).'));
+     let r=null;
+     try{
+       if(step.kind==='propose')r=await _api().wizard_propose(step.key,step.label,'guided_setup');
+       else if(step.kind==='pixel')r=await _api().start_overlay_calibrate(step.key,step.label,'guided_setup');
+       else if(step.kind==='region')r=await _api().start_overlay_region(step.key,step.label,'guided_setup');
+       else if(step.kind==='cue')r=await _api().start_cue_mask_capture(step.key,null,'guided_setup');
+     }catch(e){r={error:String(e)};}
+     if(r&&(r.error||(r.ok===false))){CALV.awaiting=null;gdButtons(false);gdCalErr(r);}
+   }
+   function gdPlan(item){
+     const p=GD_STEPS[item.id];if(!p)return [];
+     if(p.kind==='propose')return p.seq.map(s=>({kind:'propose',key:s[0],label:s[1]}));
+     if(p.kind==='pixel')return p.seq.map(s=>({kind:'pixel',key:s[0],label:s[1]}));
+     if(p.kind==='region')return [{kind:'region',key:p.base,label:item.title}];
+     if(p.kind==='cues')return p.cues.map(c=>({kind:'cue',key:c[0],label:c[1],hint:'Click the prompt word; the letters light up green. Click any stray white blob to remove it, then Confirm.'}));
+     return [];}
+   function gdCalErr(r){let h='&#10007; '+E((r&&r.error)||'failed')+((r&&r.error_code)?(' ['+E(r.error_code)+']'):'');
+     if(r&&r.needs_permission)h+=' <button type="button" class="btn2" data-goperm="1">Open the permission step</button>';
+     gdOut(h);
+     const o=$id('gdout');if(o){const gp=o.querySelector('button[data-goperm]');
+       if(gp)gp.onclick=()=>{calNav();renderTrust();};}}
+   async function gdStart(item){
+     calNav();CALV.view='detail'; // fresh generation for this attempt
+     if(!await gdPreflight(item))return;
+     const plan=gdPlan(item);
+     if(!plan.length){gdOut('This item has no guided capture plan.');return;}
+     gdRunStage(item,plan,0);}
+   async function gdTest(item){
+     gdButtons(true);gdOut('Testing against the live screen&hellip;');
+     try{
+       if(item.id==='cue_masks'){
+         const parts=[];
+         for(const c of ['PAN','DEPOSIT','SHAKE']){
+           let r=null;try{r=await _api().cue_mask_check(c);}catch(e){r={ok:false,error:String(e)};}
+           if(r&&r.ok)parts.push('<b>'+c+'</b>: '+(r.match?'<span class="ok">match ('+Math.round(r.fraction*100)+'% of letter pixels white)</span>':'<span class="no">no match right now ('+Math.round(r.fraction*100)+'%; needs 85%)</span>')+(r.background_white>0.5?' <span class="no">warning: the background is mostly white too - re-check the capture</span>':''));
+           else parts.push('<b>'+c+'</b>: <span class="no">'+E((r&&r.error)||'no result')+'</span>');}
+         gdOut(parts.join('<br>')+'<br>A prompt only matches while it is on screen - test each one in its real situation.');
+       }else if(item.id==='money_region'||item.id==='shards_region'){
+         let r=null;try{r=await _api().test_earn_read();}catch(e){r={};}
+         gdOut('money: '+E((r&&r.money)||'?')+' &middot; shards: '+E((r&&r.shards)||'?'));
+       }else if(item.id==='find_region'){
+         let r=null;try{r=await _api().test_find_read();}catch(e){r={};}
+         const lines=(r&&r.lines)||[];
+         gdOut(r&&r.error?('<span class="no">'+E(r.error)+'</span>'):('OCR lines: '+(lines.length?lines.map(x=>'&ldquo;'+E(x)+'&rdquo;').join(' &middot; '):'(nothing right now - test while a find pop-up is showing)')));
+       }else{
+         let r=null;try{r=await _api().sample_pixels();}catch(e){r={error:String(e)};}
+         if(r&&r.error)gdCalErr(r);
+         else if(r&&r.empty)gdOut('&#9432; '+E(r.note||'Nothing saved to sample yet.'));
+         else gdOut('<pre class="tc-pre">'+E(JSON.stringify(r,null,1))+'</pre>');}
+     }finally{gdButtons(false);}}
+   async function renderCalDetail(id){const g=++GEN;PAGE='cal';railSet();calNav();
+     CALV.view='detail';CALV.item=id;
+     const b=$id('supBody');
+     if(!CAL){await calReload();if(g!==GEN)return;}
+     const it=calItem(id);
+     if(!it){renderCal();return;}
+     const ins=it.instruction||{};
+     const live=it.live||{},[cls,lab]=calStatus(live.status);
+     const p=it.prog||{};
+     const list=(t,a)=>((a&&a.length)?('<div class="gd-sec"><h4>'+t+'</h4><ul>'+a.map(x=>'<li>'+E(x)+'</li>').join('')+'</ul></div>'):'');
+     const kv=(t,v)=>(v?('<div class="gd-kv"><b>'+t+':</b> '+E(v)+'</div>'):'');
+     let cuesHtml='';
+     if(it.id==='cue_masks'){
+       let cs=null;try{cs=await _api().cue_mask_status();}catch(e){cs=null;}
+       if(g!==GEN)return;
+       const NAMES={PAN:'Pan (in water)',DEPOSIT:'Collect Deposit (on land)',SHAKE:'Shake'};
+       cuesHtml='<div class="gd-sec"><h4>The three captures</h4><div class="gd-cues">'
+         +Object.keys(NAMES).map(cu=>{const c=(cs&&cs.cues&&cs.cues[cu])||{};
+           return '<div class="gd-cue"><b>'+NAMES[cu]+'</b>'
+             +(c.has?('<img src="'+c.preview+'" alt="captured letter mask for '+cu+'">'):'')
+             +'<div class="st">'+(c.has?('<span class="ok">captured &middot; '+c.px+' px</span>'):'<span class="no">not captured</span>')+'</div></div>';}).join('')
+         +'</div></div>';}
+     b.innerHTML='<div class="cap-actions gd-back"><button type="button" class="btn2" id="gdback">&larr; Back to calibration steps</button></div>'
+       +'<h2 class="sup-h1">'+(p.seq?('Step '+p.seq+' &middot; '):'')+E(it.title)
+       +(it.required?'<span class="cap-badge req">Required</span>':'<span class="cap-badge opt">Optional</span>')
+       +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></h2>'
+       +'<p class="sup-sub">'+E(ins.purpose||it.purpose)+'</p>'
+       +list('Used by',ins.affected_modes||it.modes)
+       +list('Before you start',ins.prerequisites)
+       +list('Set up Roblox',ins.roblox_setup_steps)
+       +kv('Where to stand',ins.player_position)
+       +kv('Camera',ins.camera_setup)
+       +list('Must be visible',ins.required_visible_elements)
+       +list('Close or hide',ins.close_or_hide)
+       +'<div class="gd-sec"><h4>What to select</h4><div class="gd-kv">'+E(ins.selection_target||it.instructions)+'</div>'+kv('How',ins.exact_action)+'</div>'
+       +kv('A correct result looks like',ins.correct_result)
+       +list('Common mistakes',ins.common_mistakes)
+       +cuesHtml
+       +'<div class="cal-eg" id="gdeg">Loading example&hellip;</div>'
+       +'<div class="gd-sec"><h4>Privacy</h4>'+kv('Captured',ins.captured_data)+kv('Retention',ins.retention)+kv('Validated by',ins.validation)+'</div>'
+       +kv('If you skip it',ins.unavailable_without||it.skip_consequence)
+       +'<div class="cap-actions">'
+       +'<button type="button" class="btn" id="gdstart">'+(live.status==='ok'?'Recalibrate':'Start calibration')+'</button>'
+       +'<button type="button" class="btn2" id="gdtest">Test existing calibration</button>'
+       +(it.id==='cue_masks'?'<button type="button" class="btn2" id="gdclear">Clear captured masks</button>':'')
+       +'<button type="button" class="btn2" id="gdcode">View code</button>'
+       +'</div>'
+       +'<div class="gd-out" id="gdout" aria-live="polite">'+E(live.detail||'')+'</div>'
+       +kv('Retry',ins.retry_help);
+     const bk=$id('gdback');if(bk)bk.onclick=()=>{calNav();renderCal();};
+     const st=$id('gdstart');if(st)st.onclick=()=>gdStart(it);
+     const ts=$id('gdtest');if(ts)ts.onclick=()=>gdTest(it);
+     const cl=$id('gdclear');if(cl)cl.onclick=async()=>{
+       for(const c of ['PAN','DEPOSIT','SHAKE']){try{await _api().clear_cue_mask(c);}catch(e){}}
+       toast('Cleared captured masks');renderCalDetail('cue_masks');};
+     const cd=$id('gdcode');if(cd)cd.onclick=()=>{const ref=(it.refs||[])[0];
+       gdOut(ref?('Implemented in <b>'+E(ref.module.replace(/\./g,'/'))+'.py</b> &mdash; '+E(ref.symbol)+' ('+E(ref.why)+'). Exact line-anchored links live in the Trust Center.'):'No reference.');};
+     // honest example imagery: a real approved capture or a clearly-labelled note
+     (async()=>{let ex=null;try{ex=await _api().calibration_example(it.id);}catch(e){}
+       const eg=$id('gdeg');if(!eg)return;
+       if(ex&&ex.img){eg.innerHTML='<div style="position:relative;display:inline-block"><img src="'+ex.img+'" alt="'+E(ex.alt)+'">'
+         +'<svg style="position:absolute;inset:0;width:100%;height:100%" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">'
+         +(ex.annotations||[]).map(a=>{if(a.type==='rect')return '<rect x="'+(a.x*100)+'" y="'+(a.y*100)+'" width="'+((a.w||0)*100)+'" height="'+((a.h||0)*100)+'" fill="none" stroke="#ff5b5b" stroke-width="0.6" vector-effect="non-scaling-stroke"/>';
+           if(a.type==='point')return '<circle cx="'+(a.x*100)+'" cy="'+(a.y*100)+'" r="1.4" fill="none" stroke="#ff5b5b" stroke-width="0.6"/>';
+           return '';}).join('')+'</svg></div>'
+         +(ex.annotations||[]).filter(a=>a.label).map(a=>'<div style="margin-top:4px">&#9656; '+E(a.label)+'</div>').join('');}
+       else if(ex){eg.innerHTML='Example screenshot: '+(ex.pending_review?'captured, awaiting owner review.':'not yet available in this build.')+' The instructions above are complete without it.';}
+       if(CAL&&CAL.owner&&eg){eg.innerHTML+='<div class="cap-actions" style="margin-top:7px"><button type="button" class="btn2" id="gdowncap">Owner: capture example</button>'
+         +((ex&&ex.pending_review)?'<button type="button" class="btn2" id="gdownok">Owner: approve</button>':'')
+         +((ex&&ex.img)?'<button type="button" class="btn2" id="gdownrev">Owner: revoke approval</button>':'')+'</div>';
+         const oc=$id('gdowncap');if(oc)oc.onclick=async()=>{try{const r=await _api().owner_example_capture(it.id);toast(r&&r.ok?('Captured: '+r.note):((r&&r.error)||'failed'));renderCalDetail(it.id);}catch(e){}};
+         const ok2=$id('gdownok');if(ok2)ok2.onclick=async()=>{try{await _api().owner_example_approve(it.id,true);toast('Approved');renderCalDetail(it.id);}catch(e){}};
+         const rv=$id('gdownrev');if(rv)rv.onclick=async()=>{try{await _api().owner_example_approve(it.id,false);toast('Approval revoked');renderCalDetail(it.id);}catch(e){}};}})();
+     $id('supBack').textContent='← Calibration steps';$id('supNext').textContent='Continue to Readiness →';
+     $id('supNote').textContent='';b.focus();}
+   async function renderCal(){const g=++GEN;PAGE='cal';railSet();calNav();
+     CALV.view='list';CALV.item=null;
+     const b=$id('supBody');
      b.innerHTML='<p class="sup-sub">Loading calibration&hellip;</p>';
-     try{CAL=await _api().calibration_registry();}catch(e){CAL=null;}
+     await calReload();
      if(g!==GEN)return; // the user navigated away while this loaded
      if(!CAL){b.innerHTML='<p class="sup-sub">Calibration engine unavailable.</p><div class="cap-actions"><button type="button" class="btn2" id="calRetry">Retry</button></div>';
        const cr=$id('calRetry');if(cr)cr.onclick=renderCal;return;}
-     const req=CAL.items.filter(i=>i.required), opt=CAL.items.filter(i=>!i.required);
+     const win=calItem('roblox_window');
+     const req=CAL.items.filter(i=>i.required&&i.id!=='roblox_window');
+     const opt=CAL.items.filter(i=>!i.required);
+     const sum=CAL.progress||{};
      const card=i=>{const live=i.live||{},[cls,lab]=calStatus(live.status);
-       let acts='';
-       if(i.action==='detect')acts+='<button type="button" class="btn2" data-cal="detect" data-item="'+i.id+'">Detect Roblox window</button>';
-       if(i.action==='wizard')acts+='<button type="button" class="btn2" data-cal="wizard" data-item="'+i.id+'">Calibrate (guided)</button>';
-       if(i.action==='pixel')acts+='<button type="button" class="btn2" data-cal="pixel" data-item="'+i.id+'" data-key="'+E((i.keys||[])[0]||'')+'">Calibrate this pixel</button>';
-       if(i.action==='region')acts+='<button type="button" class="btn2" data-cal="region" data-item="'+i.id+'" data-key="'+E(((i.keys||[])[0]||'').replace('_TL_PIXEL',''))+'">Draw the box</button>';
-       if(i.action==='tab')acts+='<button type="button" class="btn2" data-cal="tab" data-item="'+i.id+'">Open the Calibrate tab</button>';
-       acts+='<button type="button" class="btn2" data-cal="test" data-item="'+i.id+'">Test</button>';
-       acts+='<button type="button" class="btn2" data-cal="code" data-item="'+i.id+'">View code</button>';
-       return '<div class="cap-card" data-calid="'+i.id+'"><div class="cap-head"><span class="cap-title">'+E(i.title)+'</span>'
-         +(i.required?'<span class="cap-badge req">Required</span>':'<span class="cap-badge opt">Optional'+(i.condition?(' &middot; '+E(i.condition)):'')+'</span>')
+       const p=i.prog||{};
+       const open=(p.state==='UPCOMING')?'':('<button type="button" class="btn2" data-gd="'+i.id+'">'+(p.state==='COMPLETE'?'Review / redo':'Open this step')+'</button>');
+       const disabled=(p.state==='UPCOMING')?('<button type="button" class="btn2" disabled aria-disabled="true" title="'+E(p.reason)+'">Open this step</button>'):'';
+       const reason=(p.state==='UPCOMING'||p.state==='NEEDS_REVIEW'||p.state==='BLOCKED')?('<div class="cap-desc"><b>'+(p.state==='UPCOMING'?'Upcoming:':'Review:')+'</b> '+E(p.reason)+'</div>'):'';
+       return '<div class="cap-card'+stepClass(p)+'" data-calid="'+i.id+'" aria-label="Step '+(p.seq||0)+': '+E(i.title)+' - '+E((p.state||'').toLowerCase().replace('_',' '))+'"><div class="cap-head">'
+         +(p.seq?('<span class="step-num" aria-hidden="true">'+p.seq+'</span>'):'')
+         +'<span class="cap-title">'+E(i.title)+'</span>'
+         +(i.required?'<span class="cap-badge req">Required</span>':'<span class="cap-badge opt">Optional</span>')+stepChip(p)
          +'<span class="cap-st '+cls+'"><span class="dot"></span>'+E(lab)+'</span></div>'
-         +'<div class="cap-desc">'+E(i.purpose)+' '+E(live.detail||'')+'</div>'
-         +'<div class="cal-eg" id="caleg_'+i.id+'">'+E(i.instructions)+(i.keys&&i.keys.length?(' <span class="cal-keys">('+i.keys.join(', ')+')</span>'):'')+'</div>'
-         +(i.skip_consequence?('<div class="cap-desc"><b>If you skip it:</b> '+E(i.skip_consequence)+'</div>'):'')
-         +'<div class="cap-actions">'+acts+'</div>'
+         +'<div class="cap-desc">'+E(i.purpose)+' '+E(live.detail||'')+'</div>'+reason
+         +'<div class="cap-actions">'+open+disabled+'<button type="button" class="btn2" data-cal="code" data-item="'+i.id+'">View code</button></div>'
          +'<div class="cap-test" id="caltest_'+i.id+'" aria-live="polite"></div></div>';};
+     const wlive=(win&&win.live)||{};
      b.innerHTML='<h2 class="sup-h1">Guided Calibration</h2>'
-       +'<p class="sup-sub">The macro is driven by a handful of screen positions. Auto-calibration places the required ones from a built-in profile so it runs out of the box; calibrating by hand makes them exact for YOUR window. This wizard drives the same calibration engine and the same save file as the Calibrate tab &mdash; there is exactly one set of values.</p>'
-       +'<div class="sup-group">Required</div>'+req.map(card).join('')
-       +'<div class="sup-group">Optional &mdash; only for the features you turn on</div>'+opt.map(card).join('');
+       +'<p class="sup-sub">Work through the numbered steps in order - the highlighted card is the one to do next. Every step runs the same calibration engine and the same save file as the Calibrate tab (there is exactly one set of values); the guided pages just walk you through it without leaving setup.</p>'
+       +'<div class="sup-progress" aria-live="polite">Required calibration: '+(sum.done||0)+' of '+(sum.total||0)+' complete'+(sum.active?'':' - all done')+'</div>'
+       +'<div class="cal-pre"><span><b>Before you calibrate:</b> '+E((win&&win.purpose)||'Roblox must be visible.')+' <span id="calwin">'+E(wlive.detail||'')+'</span></span>'
+       +'<button type="button" class="btn2" data-cal="detect" data-item="roblox_window">Detect Roblox window</button>'
+       +'<span class="cap-test" id="caltest_roblox_window" aria-live="polite"></span></div>'
+       +'<div class="sup-group">Required - in order</div>'+req.map(card).join('')
+       +'<div class="sup-group">Optional - only for the features you turn on</div>'+opt.map(card).join('');
+     b.querySelectorAll('button[data-gd]').forEach(btn=>{btn.onclick=()=>renderCalDetail(btn.dataset.gd);});
      b.querySelectorAll('button[data-cal]').forEach(btn=>{btn.onclick=async()=>{
        const item=btn.dataset.item, act=btn.dataset.cal, out=$id('caltest_'+item);
        const show=h=>{if(out){out.classList.add('show');out.innerHTML=h;}};
-       // one shared renderer for calibration bridge errors: shows the real
-       // message + code, and routes to the Trust step when the cause is a
-       // missing permission -- a capture failure must READ as what it is,
-       // never crash the page or silently no-op.
        const calErr=r=>{let h='&#10007; '+E((r&&r.error)||'failed')+((r&&r.error_code)?(' ['+E(r.error_code)+']'):'');
          if(r&&r.needs_permission)h+=' <button type="button" class="btn2" data-goperm="1">Open Trust &amp; Permissions</button>';
          show(h);
@@ -10868,43 +11377,13 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
          show(r&&r.found?('&#10003; Found: '+E(r.w+'×'+r.h)+' at ('+E(r.x+', '+r.y)+')')
            :('&#10007; Not found &mdash; '+E((r&&r.error)||'open Roblox on your primary display, then retry.')));
          renderCalSoon();return;}
-       if(act==='wizard'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="cal"]');if(t)t.click();
-         const w=$id('wizbtn');if(w)w.click();return;}
-       if(act==='pixel'){show('The full-screen picker opens on top &mdash; click the exact pixel, then Confirm.');
-         let r=null;try{r=await _api().start_overlay_calibrate(btn.dataset.key);}catch(e){r={error:String(e)};}
-         if(r&&r.error)calErr(r);return;}
-       if(act==='region'){show('The full-screen picker opens on top &mdash; drag a box, then Confirm.');
-         let r=null;try{r=await _api().start_overlay_region(btn.dataset.key);}catch(e){r={error:String(e)};}
-         if(r&&r.error)calErr(r);return;}
-       if(act==='tab'){SETUP.suspend();const t=document.querySelector('.tab[data-tab="cal"]');if(t)t.click();return;}
-       if(act==='test'){show('Sampling the saved points live&hellip;');
-         let r={};try{r=await _api().sample_pixels();}catch(e){r={error:String(e)};}
-         if(r&&r.error){calErr(r);}
-         else if(r&&r.empty){show('&#9432; '+E(r.note||'Nothing saved to sample yet.'));}
-         else if(r){show('<pre class="tc-pre">'+E(JSON.stringify(r,null,1))+'</pre>');}
-         else{show('&#10007; failed');}return;}
-       if(act==='code'){const it=(CAL.items||[]).find(x=>x.id===item)||{};const ref=(it.refs||[])[0];
+       if(act==='code'){const it=calItem(item)||{};const ref=(it.refs||[])[0];
          show(ref?('Implemented in <b>'+E(ref.module.replace(/\./g,'/'))+'.py</b> &mdash; '+E(ref.symbol)+' ('+E(ref.why)+'). Exact line-anchored links live in the Trust Center.'):'No reference.');return;}
      };});
-     CAL.items.forEach(async i=>{let ex=null;try{ex=await _api().calibration_example(i.id);}catch(e){}
-       const eg=$id('caleg_'+i.id);if(!eg||!ex)return;
-       let h='<b>'+E(i.instructions)+'</b>'+(i.keys&&i.keys.length?(' <span class="cal-keys">('+i.keys.join(', ')+')</span>'):'');
-       if(ex.img){h+='<div style="position:relative;display:inline-block;margin-top:6px"><img src="'+ex.img+'" alt="'+E(ex.alt)+'">'
-         +'<svg style="position:absolute;inset:0;width:100%;height:100%" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">'
-         +(ex.annotations||[]).map(a=>{if(a.type==='rect')return '<rect x="'+(a.x*100)+'" y="'+(a.y*100)+'" width="'+((a.w||0)*100)+'" height="'+((a.h||0)*100)+'" fill="none" stroke="#ff5b5b" stroke-width="0.6" vector-effect="non-scaling-stroke"/>';
-           if(a.type==='point')return '<circle cx="'+(a.x*100)+'" cy="'+(a.y*100)+'" r="1.4" fill="none" stroke="#ff5b5b" stroke-width="0.6"/>';
-           return '';}).join('')+'</svg></div>'
-         +(ex.annotations||[]).filter(a=>a.label).map(a=>'<div style="margin-top:4px">&#9656; '+E(a.label)+'</div>').join('');}
-       else{h+='<div style="margin-top:6px">Example screenshot: '+(ex.pending_review?'captured, awaiting owner review.':'not yet available in this build.')+' It will show: <i>'+E(ex.alt||i.instructions)+'</i></div>';}
-       if(CAL.owner){h+='<div class="cap-actions" style="margin-top:7px"><button type="button" class="btn2" data-owncap="'+i.id+'">Owner: capture example</button>'
-         +(ex.pending_review?('<button type="button" class="btn2" data-ownok="'+i.id+'">Owner: approve</button>'):'')
-         +(ex.img?('<button type="button" class="btn2" data-ownrev="'+i.id+'">Owner: revoke approval</button>'):'')+'</div>';}
-       eg.innerHTML=h;
-       eg.querySelectorAll('button[data-owncap]').forEach(ob=>{ob.onclick=async()=>{try{const r=await _api().owner_example_capture(ob.dataset.owncap);toast(r&&r.ok?('Captured: '+r.note):((r&&r.error)||'failed'));renderCalSoon();}catch(e){}};});
-       eg.querySelectorAll('button[data-ownok]').forEach(ob=>{ob.onclick=async()=>{try{await _api().owner_example_approve(ob.dataset.ownok,true);toast('Approved');renderCalSoon();}catch(e){}};});
-       eg.querySelectorAll('button[data-ownrev]').forEach(ob=>{ob.onclick=async()=>{try{await _api().owner_example_approve(ob.dataset.ownrev,false);toast('Approval revoked');renderCalSoon();}catch(e){}};});});
+     const act=sum.active?b.querySelector('.cap-card[data-calid="'+sum.active+'"]'):null;
+     if(act&&act.scrollIntoView)try{act.scrollIntoView({block:'nearest'});}catch(e){}
      $id('supBack').textContent='← Trust & Permissions';$id('supNext').textContent='Continue to Readiness →';
-     $id('supNote').textContent=CAL.ready?'Required calibration is covered - you can continue.':'Required items need attention: '+CAL.blockers.join(', ');
+     $id('supNote').textContent=CAL.ready?'Required calibration is covered - you can continue.':'Do this next: '+((calItem(sum.active)||{}).title||CAL.blockers.join(', '));
      b.focus();}
    let _calTimer=null;function renderCalSoon(){if(PAGE!=='cal')return;clearTimeout(_calTimer);_calTimer=setTimeout(()=>{if(PAGE==='cal')renderCal();},600);}
    const _prevCalRefresh=window.__calRefresh;
@@ -10916,7 +11395,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      if(!rc){b.innerHTML='<p class="sup-sub">Readiness check unavailable.</p><div class="cap-actions"><button type="button" class="btn2" id="rdyRetry">Retry</button></div>';
        const rr=$id('rdyRetry');if(rr)rr.onclick=renderReady;return;}
      const row=i=>{const m={pass:'PASS',fail:'FAIL',warn:'WARN',info:'INFO'};
-       const fix=i.fix?('<button type="button" class="btn2" data-fix="'+E(i.fix)+'">Fix now</button>'):'';
+       const fix=i.fix?('<button type="button" class="btn2" data-fix="'+E(i.fix)+'" data-fixitem="'+E(i.id)+'">Fix now</button>'):'';
        return '<div class="rdy-item '+E(i.status)+'"><span class="mark">'+(m[i.status]||'?')+'</span>'
          +'<div><div class="t">'+E(i.title)+'</div><div class="d">'+E(i.detail)+'</div></div>'+fix+'</div>';};
      b.innerHTML='<h2 class="sup-h1">Readiness Check</h2>'
@@ -10929,7 +11408,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'<button type="button" class="btn2" id="rdyLog">Open wizard log</button>'
        +'<button type="button" class="btn2" id="rdyFolder">Open data folder</button>'
        +'<button type="button" class="btn2" id="rdyQuit">Exit app</button></div>';
-     b.querySelectorAll('button[data-fix]').forEach(f=>{f.onclick=()=>{if(f.dataset.fix==='trust')renderTrust();else if(f.dataset.fix==='calibration')renderCal();};});
+     // Fix Now opens the EXACT wizard step: a calibration failure whose id
+     // is a registry item deep-links to its guided detail page; everything
+     // else lands on the right wizard page. Never the normal Calibrate tab.
+     b.querySelectorAll('button[data-fix]').forEach(f=>{f.onclick=()=>{
+       if(f.dataset.fix==='trust')renderTrust();
+       else if(f.dataset.fix==='calibration'){
+         const iid=f.dataset.fixitem;
+         if(iid&&iid!=='calibration')renderCalDetail(iid); // unknown ids fall back to the checklist inside renderCalDetail
+         else renderCal();}};});
      const rt=$id('rdyRetest');if(rt)rt.onclick=renderReady;
      const dg=$id('rdyDiag');if(dg)dg.onclick=async()=>{try{const r=await _api().export_diagnostics();if(r&&r.ok)toast('Saved '+r.path);else if(r&&r.error)toast('Export failed: '+r.error);}catch(e){}};
      const cp=$id('rdyCopy');if(cp)cp.onclick=async()=>{try{const r=await _api().diag_summary();
@@ -10999,7 +11486,12 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      if(PAGE==='trust'){try{await _api().onboarding_mark('TRUST_COMPLETE');}catch(e){}renderCal();}
      else if(PAGE==='cal'){try{await _api().onboarding_mark('CALIBRATION_STARTED');await _api().onboarding_mark('CALIBRATION_COMPLETE');}catch(e){}renderReady();}
      else{try{await _api().onboarding_mark('READINESS_COMPLETE');await _api().onboarding_mark('FINISHED');}catch(e){}
-       const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.remove('show');_startApp();}};
+       const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.remove('show');_startApp();
+       // _startApp is a no-op when the app already booted behind the wizard,
+       // so trigger the once-only main-tutorial check explicitly now that
+       // setup has GENUINELY finished (maybeStartTour re-verifies via
+       // tutorial_state + onboarding state; a second call is harmless).
+       setTimeout(()=>{if(window.maybeStartTour)maybeStartTour();},1000);}};
    window.__setupRerun=async function(){try{await _api().onboarding_rerun();}catch(e){}SETUP.open('trust');};
    // Window-focus fast path: NON-destructive card patch (a full re-render
    // here used to wipe an in-flight test the instructions told the user to

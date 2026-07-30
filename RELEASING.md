@@ -27,6 +27,8 @@ These block publication; do not tag a public release until all are done.
   # plus every engine_* suite (see CONTRIBUTING.md)
   python3 public_release_tests.py       # the release gate
   python3 onboarding_trust_tests.py     # the onboarding/trust suite
+  npm install --no-audit --no-fund      # jsdom for the wizard DOM suite
+  python3 wizard_ui_tests.py            # wizard containment + progression
   ```
 
   `studio_conformance.py` self-skips with exit 0 when the private Studio goldens

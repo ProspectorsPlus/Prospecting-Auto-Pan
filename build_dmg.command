@@ -68,15 +68,17 @@ if dirty:
 PY
 "$PYB" lite_trust.py --emit build/trust_manifest.json
 
-# 3) icon: icon.icns from icon.png
-if [ -f icon.png ] && [ ! -f build/icon.icns ]; then
-  rm -rf build/icon.iconset && mkdir -p build/icon.iconset
+# 3) icon: icon.icns is ALWAYS rebuilt from icon.png (a stale-icns guard
+#    here once shipped an outdated icon; never reuse a previous compile).
+if [ -f icon.png ]; then
+  rm -rf build/icon.iconset build/icon.icns && mkdir -p build/icon.iconset
   for s in 16 32 64 128 256 512; do
     sips -z $s $s icon.png --out "build/icon.iconset/icon_${s}x${s}.png" >/dev/null 2>&1 || true
     d=$((s*2)); sips -z $d $d icon.png --out "build/icon.iconset/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
   done
   iconutil -c icns build/icon.iconset -o build/icon.icns 2>/dev/null || true
 fi
+[ -f build/icon.icns ] || { echo "!! build/icon.icns missing -- icon compile failed"; exit 1; }
 
 # 4) the self-contained .app. SOURCE_DATE_EPOCH pins the commit time into
 #    every archive timestamp PyInstaller writes, so two builds of the same

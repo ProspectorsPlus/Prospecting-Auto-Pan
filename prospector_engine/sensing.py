@@ -480,7 +480,7 @@ class Sensing(object):
         """op:status -- verbatim cue_mask_status (app:3407-3418)."""
         cur = self.store.get()
         masks = cur.get("CUE_MASKS") or {}
-        out = {"advanced": bool(cur.get("ADVANCED_CUES")),
+        out = {"advanced": bool(cur.get("ADVANCED_CUES", True)),
                "masks_only": bool(cur.get("CUE_MASKS_ONLY")), "cues": {}}
         for cue in ("PAN", "SHAKE", "DEPOSIT"):
             m = masks.get(cue) or {}
@@ -490,6 +490,66 @@ class Sensing(object):
                                 "h": int(m.get("h", 0)),
                                 "preview": m.get("preview", "")}
         return out
+
+    def cue_check(self, cue):
+        """Validate a SAVED cue mask against the LIVE screen with the same
+        math the run-time Detector uses (engine.Detector._cue_mask_match):
+        re-place the mask from its stored window fractions, refuse when the
+        window size drifted more than 2 px (exactly like place_cue_masks),
+        then report the white fraction over the mask's letter pixels and
+        whether it clears the run-time threshold (0.85). Also reports the
+        white fraction over the NON-mask pixels of the box, so a blank or
+        uniformly-white capture reads as the false-positive risk it is."""
+        np = self.po.np
+        import base64 as _b64
+        cur = self.store.get()
+        masks = cur.get("CUE_MASKS") or {}
+        m = masks.get(cue)
+        if not (isinstance(m, dict) and m.get("bits") and m.get("ratio")):
+            return {"ok": False, "error": "No mask captured for %s." % cue}
+        rect = self.po.find_roblox_window()
+        if not rect.get("found"):
+            return {"ok": False,
+                    "error": rect.get("error", "Roblox window not found.")}
+        try:
+            rl, rt, rw, rh = m["ratio"]
+            x, y, w, h = rect["x"], rect["y"], rect["w"], rect["h"]
+            bw, bh = int(round(rw * w)), int(round(rh * h))
+            if abs(bw - int(m["w"])) > 2 or abs(bh - int(m["h"])) > 2:
+                return {"ok": False, "placed": False,
+                        "error": "The Roblox window size changed since "
+                                 "this mask was captured -- re-capture "
+                                 "it (the run-time matcher would skip "
+                                 "it too)."}
+            left = int(round(x + rl * w))
+            top = int(round(y + rt * h))
+            mw, mh = int(m["w"]), int(m["h"])
+            with self.lock:
+                self._set_session(self._grab_full())
+                shot = self._shot
+            H, W = shot.shape[0], shot.shape[1]
+            if left < 0 or top < 0 or left + mw > W or top + mh > H:
+                return {"ok": False, "placed": False,
+                        "error": "Mask placement is off screen."}
+            box = shot[top:top + mh, left:left + mw, :3].astype(np.int16)
+            b, g, r = box[:, :, 0], box[:, :, 1], box[:, :, 2]
+            lo = np.minimum(np.minimum(r, g), b)
+            hi = np.maximum(np.maximum(r, g), b)
+            # engine constants: CUE_WHITE_MIN=160, CUE_WHITE_SPREAD=70,
+            # CUE_MASK_FRAC=0.85 (prospector_engine/engine.py:217-228)
+            white = (lo >= 160) & ((hi - lo) <= 70)
+            bits = np.frombuffer(_b64.b64decode(m["bits"]), dtype=np.uint8)
+            mask = np.unpackbits(bits)[:mw * mh].reshape(mh, mw).astype(bool)
+            if not mask.any():
+                return {"ok": False, "error": "Stored mask is empty."}
+            frac = float(white[mask].mean())
+            bg = float(white[~mask].mean()) if (~mask).any() else 0.0
+            return {"ok": True, "placed": True, "match": frac >= 0.85,
+                    "fraction": round(frac, 3),
+                    "background_white": round(bg, 3),
+                    "threshold": 0.85, "px": int(mask.sum())}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def cue_clear(self, cue):
         """op:clear -- verbatim clear_cue_mask (app:3420-3431), through
@@ -776,7 +836,7 @@ class Sensing(object):
         cw, ch = int(cal[2]), int(cal[3])
         if abs(rect["w"] - cw) <= 4 and abs(rect["h"] - ch) <= 4:
             return {"ok": True, "reason": ""}
-        adv = bool(cur.get("ADVANCED_CUES"))
+        adv = bool(cur.get("ADVANCED_CUES", True))
         auto = bool(cur.get("AUTO_CALIBRATE", True))
         parts = ["The Roblox window is %d×%d now but you calibrated "
                  "at %d×%d." % (rect["w"], rect["h"], cw, ch)]

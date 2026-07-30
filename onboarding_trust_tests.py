@@ -264,9 +264,10 @@ def t_cal_registry():
     ids = [c["id"] for c in lo.CALIBRATION_ITEMS]
     chk(len(ids) == len(set(ids)), "calibration ids unique")
     req = sorted(c["id"] for c in lo.CALIBRATION_ITEMS if c["required"])
-    chk(req == ["cap_bar", "deposit_prompt", "pan_prompt", "roblox_window",
-                "shake_prompt"],
-        "required set matches the engine's every-cycle needs")
+    chk(req == ["cap_bar", "cue_masks", "deposit_prompt", "pan_prompt",
+                "roblox_window", "shake_prompt"],
+        "required set = every-cycle pixels + advanced cue matching "
+        "(required since rc.4)")
     engine_src = read("prospector_engine/engine.py") + \
         read("prospector_engine/sensing.py")
     for c in lo.CALIBRATION_ITEMS:
@@ -274,25 +275,56 @@ def t_cal_registry():
             chk(k in engine_src,
                 "config key %s (item %s) is read by the engine"
                 % (k, c["id"]))
-    # status semantics
+    # status semantics. Advanced cue matching (cue_masks) can NEVER be
+    # 'auto': auto-calibration places pixels from the ratio profile, but a
+    # letter-shape mask only exists after a real capture -- so a fresh
+    # install is runnable-per-pixels yet NOT ready until masks exist.
+    pix_req = [i for i in req if i not in ("roblox_window", "cue_masks")]
+    _MASKS = {c: {"ratio": [0.1, 0.2, 0.05, 0.02], "w": 40, "h": 12,
+                  "bits": "AAAA", "px": 30}
+              for c in ("PAN", "DEPOSIT", "SHAKE")}
     st = lo.calibration_status({"AUTO_CALIBRATE": True})
-    chk(all(st[i]["status"] == "auto" for i in req if i != "roblox_window"),
-        "AUTO_CALIBRATE=default => required items report 'auto'")
+    chk(all(st[i]["status"] == "auto" for i in pix_req),
+        "AUTO_CALIBRATE=default => pixel items report 'auto'")
+    chk(st["cue_masks"]["status"] == "unset",
+        "cue_masks is never 'auto' -- masks need a real capture")
     ready, blockers = lo.calibration_ready(st)
-    chk(ready and not blockers, "auto state is runnable (matches engine)")
+    chk(not ready and blockers == ["cue_masks"],
+        "single-pixel-only auto state is NOT ready (cue_masks blocks)")
+    st = lo.calibration_status({"AUTO_CALIBRATE": True,
+                                "CUE_MASKS": dict(_MASKS)})
+    ready, blockers = lo.calibration_ready(st)
+    chk(ready and not blockers,
+        "auto pixels + all three masks is runnable (matches engine)")
     manual = {"AUTO_CALIBRATE": False,
               "CAP_FULL_PIXEL": [1120, 900], "CAP_LEFT_PIXEL": [680, 900],
               "CAP_BAR_WIDTH": 440, "PAN_PIX": [847, 981],
-              "DEPOSIT_PIX": [770, 981], "SHAKE_PIX": [830, 981]}
+              "DEPOSIT_PIX": [770, 981], "SHAKE_PIX": [830, 981],
+              "CUE_MASKS": dict(_MASKS)}
     st = lo.calibration_status(dict(manual), health={"ok": False})
     chk(all(st[i]["status"] == "stale" for i in req
             if i != "roblox_window"),
-        "manual values + moved window => 'stale'")
+        "manual values + moved window => 'stale' (masks included)")
     ready, blockers = lo.calibration_ready(st)
     chk(not ready and blockers, "stale required calibration blocks a run")
     st = lo.calibration_status(dict(manual), health={"ok": True})
     ready, _ = lo.calibration_ready(st)
-    chk(ready, "manual + real values + matching window is ready")
+    chk(ready, "manual values + masks + matching window is ready")
+    # partial masks never count
+    part = dict(manual, CUE_MASKS={"PAN": _MASKS["PAN"]})
+    ready, blockers = lo.calibration_ready(lo.calibration_status(part))
+    chk(not ready and "cue_masks" in blockers,
+        "one captured mask of three is not ready")
+    # migration honesty: an install that FINISHED setup before the
+    # requirement reads NEEDS_REVIEW (values preserved), a fresh one 'unset'
+    nomask = {k: v for k, v in manual.items() if k != "CUE_MASKS"}
+    st = lo.calibration_status(dict(nomask), setup_finished=True)
+    chk(st["cue_masks"]["status"] == "needs_review",
+        "finished installs without masks => NEEDS_REVIEW")
+    chk(st["cap_bar"]["status"] == "ok",
+        "migration preserves the old pixel calibration")
+    ready, _ = lo.calibration_ready(st)
+    chk(not ready, "needs-review still blocks readiness (honest state)")
     # a hand-edited config with auto OFF but no real values must never
     # show a false 'User-calibrated' green
     st = lo.calibration_status({"AUTO_CALIBRATE": False,

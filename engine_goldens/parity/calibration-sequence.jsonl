@@ -7,7 +7,7 @@
 {"cmd": "calibration.detect", "ok": true, "r": {"detected": true, "proposal": {"hex": "#ffffff", "pixel": [559, 631], "rgb": [255, 255, 255]}}}
 {"cmd": "calibration.testRead", "ok": true, "r": {"lines": ["Stone Chunk", "Common", "312 kg"]}}
 {"cmd": "calibration.testRead", "ok": true, "r": {"money": "1,204,500", "shards": "no text found -- widen the region"}}
-{"cmd": "calibration.cueMask", "ok": true, "r": {"advanced": false, "cues": {"DEPOSIT": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}, "PAN": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}, "SHAKE": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}}, "masks_only": false}}
+{"cmd": "calibration.cueMask", "ok": true, "r": {"advanced": true, "cues": {"DEPOSIT": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}, "PAN": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}, "SHAKE": {"h": 0, "has": false, "preview": "", "px": 0, "w": 0}}, "masks_only": false}}
 {"cmd": "calibration.cueMask", "ok": true, "r": {"cueEdit": true, "image": "<png>", "px": 200}}
 {"cmd": "calibration.cueMask", "ok": true, "r": {"image": "<png>", "px": 100}}
 {"cmd": "calibration.cueMask", "ok": true, "r": {"preview": "<png>", "px": 100}}
