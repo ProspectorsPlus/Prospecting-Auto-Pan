@@ -30,11 +30,15 @@ Default network activity is **zero requests**. The complete inventory of code th
 | `prospecting_calib_log.csv` | Calibration session log written by the engine |
 | `tutorial_content.json` | Your local edits to the built-in help |
 | `onboarding_state.json` | Setup-wizard progress (which step you are on, declined capabilities); written atomically; resetting the wizard deletes only this |
+| `tutorial_state.json` | Tutorial history (last outcome, how many times seen, last version seen) and nothing else; written atomically |
+| `diagnostics_state.json` | The diagnostic system's local store: your "Don't show again" suppressions, apply/undo snapshots for suggested-value applies (last 20), and a bounded action history (last 50). No screenshots, no keystrokes, no run content |
 | `instance_id` | A random UUID used only for the local Prospector Studio companion handshake; never transmitted |
 | `coach_history.json` | Your Coach chat transcript (the text you typed and its replies), kept locally so conversations survive restarts |
 | `prospecting_secrets.json` | Your Coach API key, if you set one. Stored in this data folder by packaged builds (next to the scripts, gitignored, when running from source); never bundled into builds |
 
-**Deleting your data**: quit the app and delete the folder above (or individual files). That is the entire data footprint; nothing exists anywhere else.
+**Deleting your data**: quit the app and delete the folder above (or individual files). That is the entire data footprint; nothing exists anywhere else. The Trust Center's "Delete ALL local data" action covers the same known-files list shown in its Local Data table, including `diagnostics_state.json` and `tutorial_state.json`.
+
+**Diagnostics are local.** The warning badges, the diagnostic drawer, its recommendations, and the FAQ are computed entirely on your machine from data the app already has (run statistics, engine safety events, calibration statuses, permission states). Nothing about them is transmitted anywhere, they add no network behavior, and they capture no screenshots — the only capacity-test image is shown to you in-app and the only screenshot that can ever leave the machine remains the separate, off-by-default Discord webhook attachment described below. What persists is exactly the `diagnostics_state.json` contents in the table above.
 
 **Managing your data in-app**: the Trust Center's **Local Data** section lists these files live with their sizes, and offers: Open folder, Export calibration, Export diagnostics, Delete history, Delete logs, and Delete ALL (double-confirmed). The delete actions are scoped to the known Prospector Lite files only — they never touch anything else. The diagnostics export (`export_diagnostics` in `prospecting_app.py`) is **secret-free by construction**: it contains readiness/identity/capability statuses and no webhook URL, no webhook secret, no API key, and no config dump. `prospecting_secrets.json` is never exported by any action.
 

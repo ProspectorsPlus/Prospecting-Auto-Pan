@@ -2,6 +2,8 @@
 
 ## Self-help first (fastest)
 
+- **The warning drawer** — if something is wrong, a red or yellow count badge usually already sits on the Calibrate, Cycle, or Trust tab. Click it: the drawer explains what was observed (with the actual numbers), the most likely cause with an honest confidence label, and the exact setting, calibration, or permission to fix — with an Open button that jumps to the precise control, and a bounded Apply/Undo for suggested values. Start there before anything else. See [DIAGNOSTICS.md](DIAGNOSTICS.md).
+- **The in-app FAQ** — Help/Tutorial menu → "FAQ & troubleshooting" (also reachable from the drawer, Settings, Calibrate, the wizard's Readiness Check, and the Trust Center). Twenty searchable entries covering permissions, calibration, detection, and tuning, each ending with a deep link to the exact surface to fix. See [FAQ.md](FAQ.md) for the entry list.
 - **In-app tutorial** — the Tutorial menu walks through setup, calibration, and every page. It also reopens the welcome/privacy/version screen ("Welcome, privacy & version").
 - **Re-run the setup wizard** — Tutorial menu → "Re-run setup wizard" (also available from the Trust Center). It re-checks permissions, calibration, and readiness step by step; re-running deletes nothing.
 - **Trust Center** — the permanent Trust Center tab shows live permission status with one-click in-app tests, your build identity, network behavior, and your local data files. Most "nothing is detected" or "hotkeys don't work" problems are visible there as a missing permission.
@@ -15,7 +17,7 @@ The project is not published yet, so there is no public issue tracker at this ti
 
 A good report includes:
 
-1. Prospector Lite version (welcome screen, About, or the Trust Center shows it — currently 1.0.0-rc.5) and whether you run from source or a packaged build.
+1. Prospector Lite version (welcome screen, About, or the Trust Center shows it — currently 1.0.0-rc.6) and whether you run from source or a packaged build.
 2. OS and version (macOS/Windows).
 3. What you did, what you expected, what happened instead.
 4. The tail of the newest file in `run_logs/`, if the problem happened during a run.

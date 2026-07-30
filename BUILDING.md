@@ -54,7 +54,7 @@ CI build: `.github/workflows/build-windows.yml` runs the same steps on a real Gi
 
 - Stamps **build identity**: writes `build/build_info.json` with `{commit, date, version, dirty, package, project_url, signed, notarized}`. A dirty working tree marks the build as a "development build" in-app. `PP_PROJECT_URL` (env) optionally stamps the public repository URL so in-app "View code" links can point at the exact commit.
 - Emits the **trust manifest**: `python3 lite_trust.py --emit` writes `build/trust_manifest.json` — per-capability source references (file, symbol, exact line ranges) resolved from the AST of the exact source being packaged. A reference that no longer resolves fails the build.
-- Builds a self-contained `Prospector Lite.app` with PyInstaller (bundling the app files and the `prospector_engine/` package).
+- Builds a self-contained `Prospector Lite.app` with PyInstaller (bundling the app files, the local `lite_trust` / `lite_onboarding` / `lite_diagnostics` modules — the last is the rc.6 diagnostics/recommendation engine, pinned as a hidden import in both specs — and the `prospector_engine/` package).
 - Ships a clean default config — never the developer's personal config, webhook, or secrets.
 - Signs: **ad-hoc** by default; set `CODESIGN_ID` to a Developer ID to sign with the hardened runtime and the minimal `packaging/entitlements.plist`, followed by `codesign`/`spctl` verification. Notarization/stapling are manual owner steps ([RELEASING.md](RELEASING.md)).
 - Wraps the `.app` in a drag-to-install DMG under `dist/` and emits its SHA-256.

@@ -1,6 +1,6 @@
 # Prospector Lite
 
-**Version 1.0.0-rc.5** (release candidate) — a free desktop macro for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
+**Version 1.0.0-rc.6** (release candidate) — a free desktop macro for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
 
 Prospector Lite automates the pan/dig/shake loop by **reading pixels from your screen and sending ordinary keyboard/mouse input through the operating system**. It is an *external* tool: it never touches the Roblox process, its memory, its files, or its network traffic.
 
@@ -15,9 +15,10 @@ Prospector Lite automates the pan/dig/shake loop by **reading pixels from your s
 - **Discord notifications (opt-in)** — paste *your own* Discord webhook URL to get start/stop/stats/safety alerts, optionally with a screenshot. Off by default; nothing is built in.
 - **The Coach** — an in-app helper. The default "offline brain" is a local rule engine with no network access. An optional AI mode uses *your own* API key (Anthropic, OpenAI, Gemini, DeepSeek, or a custom/local endpoint).
 - **Prospector Studio** — a built-in visual block editor for custom farming scripts (`.ppscript` files). Scripts are validated JSON walked as data — they are never executed as program code.
-- **Five-step setup wizard** on first run — Welcome → Trust & Permissions → Guided Calibration → Readiness Check → the app. Progress is saved locally and the wizard can be re-run any time from the Tutorial menu ("Re-run setup wizard") or the Trust Center.
+- **Five-step setup wizard** on first run — Welcome → Trust & Permissions → Guided Calibration → Readiness Check → the app. Progress is saved locally and the wizard can be re-run any time from the Tutorial menu ("Re-run setup wizard") or the Trust Center. A **Skip Wizard** button offers four honest options (skip this session, mark complete, always skip, cancel) — each states exactly what it stores, every choice is reversible, and none of them weakens the Start checks. See [WELCOME_AND_SETUP.md](WELCOME_AND_SETUP.md).
+- **Diagnostics & recommendations** — red/yellow count badges on the Calibrate/Cycle/Trust tabs open a warning drawer that explains what was observed (with numeric evidence and honest confidence), the most likely cause, and the exact setting/calibration/permission to fix — with deep links, bounded one-click Apply/Undo for suggested values, and a searchable 20-entry local FAQ. Everything is computed and stored locally; nothing is transmitted. See [DIAGNOSTICS.md](DIAGNOSTICS.md) and [RECOMMENDATIONS.md](RECOMMENDATIONS.md).
 - **Trust Center** — a permanent tab showing every capability the app uses (with live permission status and one-click in-app tests), the exact build identity (commit, version, signing state), network behavior, and your local data files with management actions (open folder, export, delete).
-- **Interactive tutorial** that explains every page, plus a welcome screen showing the exact version/build you are running.
+- **Interactive tutorial** that explains every page, plus a welcome screen showing the exact version/build you are running. The tutorial opens automatically each time you enter the main app; close it with the X, or turn auto-open off from the tour footer, Settings, the Welcome screen, or the Trust Center — the Tutorial menu always works either way. See [TUTORIAL.md](TUTORIAL.md).
 
 ## How it works (the safety boundary)
 

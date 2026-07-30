@@ -58,6 +58,17 @@ HOTKEYS
   Esc        Safe Stop: stops instantly and releases every key and button
 
 ------------------------------------------------------------
+VERIFYING A BUILD (optional, for the curious)
+------------------------------------------------------------
+The source repository ships an automated acceptance script,
+packaging\windows_acceptance.ps1. From a normal (non-administrator)
+PowerShell it probes an app folder: version identity, an isolated
+offline smoke run, first-boot liveness with zero network connections,
+and bundle content. It never touches your data — probes run against
+temporary folders, and %APPDATA%\Prospector Lite stays exactly where
+and what it was. Details: WINDOWS_TESTING.md in the source repository.
+
+------------------------------------------------------------
 TROUBLESHOOTING
 ------------------------------------------------------------
 - "Nothing happens in game": keep Roblox on the same monitor and focused.

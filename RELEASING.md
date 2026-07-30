@@ -17,7 +17,7 @@ These block publication; do not tag a public release until all are done.
 
 ### 1. Prepare
 
-- [ ] Bump `VERSION` in `prospecting_app.py` (currently `1.0.0-rc.5`; confirm the `windows/` copy matches).
+- [ ] Bump `VERSION` in `prospecting_app.py` (currently `1.0.0-rc.6`; regenerate the `windows/` mirror with `python3 packaging/sync_windows_app.py` and update `windows/installer.iss` `MyAppVersion` — `public_release_tests.py` checks all three agree).
 - [ ] Update [CHANGELOG.md](CHANGELOG.md) — move changes under the new version heading with the date.
 - [ ] Run the full test matrix and require all-pass:
 

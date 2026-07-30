@@ -128,6 +128,7 @@ The capability registry carries explicit `NOT_REQUIRED` entries for these, so th
 ## Verify it yourself
 
 - **Trust Center → Permissions & capability tests**: live status from the real OS APIs, plus a Test button per capability.
+- **From a warning**: when a diagnostic names a missing permission (a required permission that is definitively not granted is a CRITICAL warning; a broken Safe Stop listener is an ERROR), its **Open permission** button deep-links straight to that capability's card in the Trust Center and highlights its Test button — the diagnostic never requests anything itself.
 - **Trust Center → Source code**: the trust manifest lists file, symbol, and exact line range for every capability above, generated at build time from the exact source of the build; **View Code** opens the file at the exact commit when a public repository URL is configured, or shows the local file + symbol + commit otherwise.
 - **From a checkout:** `python3 lite_trust.py` prints the live capability statuses; `python3 lite_trust.py --emit` regenerates the trust manifest and fails on any dead reference.
 

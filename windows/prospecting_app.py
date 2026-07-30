@@ -46,7 +46,7 @@ except Exception:        # diagnostics degrade to "no events", never a crash
 # update check, no analytics, no remote content fetch (see PRIVACY.md /
 # NETWORK_BEHAVIOR).
 APP_NAME    = "Prospector Lite"
-VERSION     = "1.0.0-rc.5"
+VERSION     = "1.0.0-rc.6"
 PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
@@ -4066,6 +4066,9 @@ class Api:
         ("prospecting_secrets.json",
          "Local secrets (Coach API key) -- never exported"),
         ("onboarding_state.json", "Setup wizard progress"),
+        ("tutorial_state.json", "Tutorial viewing history"),
+        ("diagnostics_state.json",
+         "Diagnostics history + suppressions (local only)"),
         ("studio_macro_status.json", "Studio live-status mirror"),
         ("studio_push.json", "Studio publish handshake"),
         ("instance_id", "Engine instance identity (random local id)"),
@@ -4642,10 +4645,17 @@ class Api:
                  else None)
         colors = (data["PIXEL_COLORS"]
                   if isinstance(data.get("PIXEL_COLORS"), dict) else None)
-        s.save_pixels(applied, colors=colors, ratios=ratios,
-                      window_rect=wrect,
-                      cap_bar_width_fallback=data.get("CAP_BAR_WIDTH"),
-                      derive_from_window=False)
+        r = s.save_pixels(applied, colors=colors, ratios=ratios,
+                          window_rect=wrect,
+                          cap_bar_width_fallback=data.get("CAP_BAR_WIDTH"),
+                          derive_from_window=False)
+        # the one calibration writer validates capacity pairs -- a
+        # rejected import wrote nothing, so say so (reasons verbatim)
+        if isinstance(r, dict) and r.get("ok") is False:
+            return {"ok": False,
+                    "error": " ".join(r.get("reasons") or [])
+                             or "The calibration file failed validation.",
+                    "reasons": r.get("reasons") or []}
         return {"ok": True, "pixels": applied,
                 "colors": load_saved().get("PIXEL_COLORS", {})}
 
@@ -6875,7 +6885,7 @@ class Api:
                              "reason": "Could not validate the click "
                                        "against the capture: %s" % e}
                 if not guard.get("ok"):
-                    return {"ok": False, "error": "cap_endpoint",
+                    return {"ok": False, "error": "cap_endpoints",
                             "reason": guard.get("reason", ""),
                             "reasons": [guard.get("reason", "")]}
                 x, y = int(guard["x"]), int(guard["y"])

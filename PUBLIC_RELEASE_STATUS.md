@@ -192,6 +192,41 @@ the owner's screenshots were sanitized (menu bar/dock/name cropped) into
 approved in-app examples for all 11 items via
 packaging/sanitize_examples.py. Owner actions carried forward unchanged.
 
+## 1.0.0-rc.6 — final pre-publish pass (2026-07-30)
+
+Seven issues reproduced against the real code first
+(docs/final-prepublish/REPRODUCTION_REPORT.md: probes on the real
+save_pixels and the real build_html page), then fixed across six
+commits (docs/final-prepublish/IMPLEMENTATION_REPORT.md): explicit
+Welcome always continues into the wizard via one routing authority
+(compute_startup_route, 96 combinations tested); a real Skip Wizard
+with four honestly-persisted options (session flag / marked_complete
+stamp / SKIP_WIZARD_AUTOMATICALLY pref / cancel — no option weakens
+the Start gates); the tutorial auto-opens on every main-app entry with
+an X and an honest opt-out (TUTORIAL_AUTO_OPEN, tutorial_state schema
+3); the pan-capacity right-end release blocker is dead (endpoint guard
+to solid gold, pure pair validation with named reasons, write-nothing
+rejection, always-rewritten width, same-frame pair save, Test capacity
+calibration with the exact runtime math, needs_review migration that
+never modifies values); a full local diagnostic/recommendation system
+(lite_diagnostics: 16 rule families, 146-entry bounded setting
+registry, 20-entry FAQ; drawer with exact-setting deep links,
+clamped one-key Apply/Undo, per-code suppression never for CRITICAL);
+Fortune River out of onboarding (Calibrate-tab section kept, relabelled
+optional/advanced); and the Windows mirror healed (prospecting_ui
+atomic-write divergence) + guarded (sync covers the four twins,
+tour_check full-file byte parity) + windows_acceptance.ps1 (honest:
+never yet executed — no PowerShell on this Mac). New suites in CI:
+capacity_tests.py (51 checks), diagnostics_tests.py (185 checks).
+Version bumped to 1.0.0-rc.6 on all three surfaces; new user docs
+(WELCOME_AND_SETUP, TUTORIAL, DIAGNOSTICS, RECOMMENDATIONS, FAQ) and
+five engineering reports under docs/final-prepublish/. Known honest
+gaps recorded (diagnostics_state.json/tutorial_state.json missing from
+the data manifest; import_calibration drops the save_pixels rejection).
+Owner actions carried forward unchanged (license, repo URL, webhook +
+bot-secret revocation + fresh-history publish, signing/notarization
+credentials, first green Windows CI run).
+
 ## If interrupted, resume with
 ```
 cd <repo root>

@@ -23,7 +23,7 @@ Exactly which build you are running (`lite_trust.py`, `build_identity`):
 
 | Row | Meaning |
 |---|---|
-| Version | The app version (e.g. `1.0.0-rc.5`). |
+| Version | The app version (e.g. `1.0.0-rc.6`). |
 | Commit | The exact git commit this build was made from. "(built from modified source)" marks a development build whose tree did not match that commit. |
 | Built | Build timestamp from the stamped `build_info.json` (blank for source runs). |
 | Platform | OS and architecture the app is running on now. |
@@ -65,6 +65,17 @@ Management actions:
 
 - **Re-run setup wizard** — reopens the full first-run flow (Trust & Permissions → Guided Calibration → Readiness Check) any time. Re-running deletes nothing; it simply walks you through again. Also available from the Tutorial menu.
 - **Reset wizard progress only** — resets the wizard to a brand-new first run. This touches *only* the wizard's own progress (`onboarding_state.json`); builds, calibration, settings, and history are untouched (`lite_onboarding.py`, `Onboarding.reset`).
+- **Skip the setup wizard automatically on launch** — the `SKIP_WIZARD_AUTOMATICALLY` preference (also settable from the Welcome screen, Settings, and the Skip Wizard modal). Launches go straight to the app; explicitly opening Welcome still shows the wizard, and readiness warnings stay honest.
+- **Open tutorial whenever Prospector Lite opens** — the `TUTORIAL_AUTO_OPEN` preference (default on; also on the Welcome screen, in Settings, and in the tour footer as "Do not open automatically in future"). Turning it off never removes the manual Tutorial menu.
+
+## Help & troubleshooting
+
+Two controls (`prospecting_app.py`, `__tcRender`):
+
+- **FAQ & troubleshooting** — opens the built-in, fully local FAQ browser (20 entries covering permissions, calibration, detection, and tuning, each with deep links to the exact surface to fix). The same browser is reachable from the Help menu, Settings, Calibrate, the wizard's Readiness Check, and the warning drawer.
+- **Show suppressed warnings again** — reverses every "Don't show again" choice made in the warning drawer (`Api.diag_unsuppress_all`). Suppressions are per-warning-code and never apply to CRITICAL events.
+
+**Where diagnostics data lives**: everything the diagnostic system computes stays on your machine and is never transmitted. Suppressions, apply/undo snapshots, and a bounded action history persist in `diagnostics_state.json` in the data folder. Both it and `tutorial_state.json` appear in the Local Data table above and are removed by "Delete ALL local data". See [PRIVACY.md](PRIVACY.md).
 
 ## Security reporting
 
