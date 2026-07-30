@@ -138,9 +138,159 @@ def t_python_layer():
                 for i in reg["items"]),
             "no vague instruction text: '%s'" % vague)
 
+    # ---- Fortune River stays OUT of the wizard registry -------------------
+    chk(lo.CAL_BY_ID["fortune_river"].get("wizard") is False,
+        "fortune_river is flagged wizard=False in the registry")
+    chk(all("wizard" not in c for c in lo.CALIBRATION_ITEMS
+            if c["id"] != "fortune_river"),
+        "no other registry item carries the wizard key (default True)")
+    fresh_ids = [i["id"] for i in
+                 lo.compose_registry({"AUTO_CALIBRATE": True})["items"]]
+    chk("fortune_river" not in fresh_ids,
+        "fresh install: fortune_river absent from the composed wizard items")
+    chk("autopan_button" in fresh_ids and "roblox_window" in fresh_ids,
+        "the other items (incl. optionals + prerequisite) still compose")
+    done_reg = lo.compose_registry(dict(PIXELS, CUE_MASKS=masks()),
+                                   setup_finished=True)
+    chk("fortune_river" not in [i["id"] for i in done_reg["items"]],
+        "finished install: fortune_river absent from the composed items")
+    chk(done_reg["ready"] and not done_reg["blockers"],
+        "readiness unaffected: optional fortune_river never blocked")
+    st = lo.calibration_status(dict(PIXELS))
+    chk("fortune_river" in st,
+        "calibration_status still computes fortune_river (Calibrate tab)")
+    chk(lo.saved_summary({"FR_OPEN_PIXEL": [5, 6]}, "fortune_river") != "",
+        "saved_summary still covers fortune_river for the tab/export")
+
+
+def t_routing_table():
+    print("[2] startup routing table (compute_startup_route, full product)")
+    import itertools
+    import lite_onboarding as lo
+
+    # Independent restatement of the routing policy (the literal table from
+    # the spec) -- NOT a call into compute_startup_route.
+    def expected(explicit, studio, show_every, skip_auto, wstate, sess):
+        if studio:
+            return "main"           # studio host owns onboarding
+        if explicit:
+            return "welcome"        # explicit Welcome always enters wizard
+        if sess:
+            return "main"           # skipped this session
+        if wstate == "FINISHED":
+            if skip_auto:
+                return "main"
+            return "welcome" if show_every else "main"
+        if skip_auto:
+            return "main"           # auto-skip; warnings stay honest
+        if wstate == "NOT_STARTED":
+            return "welcome"
+        return "welcome" if show_every else "wizard_resume"
+
+    # spot-check literal expectations for the priority order itself
+    literals = [
+        ((False, True, True, False, "NOT_STARTED", False), "main"),
+        ((True, True, True, True, "NOT_STARTED", True), "main"),
+        ((True, False, False, True, "FINISHED", False), "welcome"),
+        ((True, False, False, True, "TRUST_COMPLETE", True), "welcome"),
+        ((False, False, True, False, "TRUST_COMPLETE", True), "main"),
+        ((False, False, True, True, "FINISHED", False), "main"),
+        ((False, False, True, False, "FINISHED", False), "welcome"),
+        ((False, False, False, False, "FINISHED", False), "main"),
+        ((False, False, True, True, "TRUST_COMPLETE", False), "main"),
+        ((False, False, False, False, "NOT_STARTED", False), "welcome"),
+        ((False, False, True, False, "TRUST_COMPLETE", False), "welcome"),
+        ((False, False, False, False, "TRUST_COMPLETE", False),
+         "wizard_resume"),
+    ]
+    for args, want in literals:
+        chk(expected(*args) == want,
+            "literal table row %s -> %s" % (args, want))
+
+    bad = []
+    n = 0
+    for combo in itertools.product(
+            (False, True), (False, True), (False, True), (False, True),
+            ("NOT_STARTED", "TRUST_COMPLETE", "FINISHED"), (False, True)):
+        explicit, studio, show_every, skip_auto, wstate, sess = combo
+        r = lo.compute_startup_route(
+            explicit_welcome=explicit, studio_launch=studio,
+            show_welcome_every_launch=show_every,
+            skip_wizard_automatically=skip_auto,
+            wizard_state=wstate, session_skip=sess)
+        n += 1
+        if r.get("route") != expected(*combo) or not r.get("reason"):
+            bad.append((combo, r))
+    chk(n == 96 and not bad,
+        "all 96 routing combinations match the policy table"
+        + ("" if not bad else " :: first bad %s" % (bad[0],)))
+
+
+def t_completion_via():
+    print("[3] mark_completed_via semantics + reset clears the stamp")
+    import lite_onboarding as lo
+    d = tempfile.mkdtemp(prefix="pp_wizob_")
+    ob = lo.Onboarding(d, "mac", version="test")
+    chk("completion_via" not in ob.state,
+        "default state carries no completion_via key")
+    st = ob.mark_completed_via("marked_complete")
+    chk(st["state"] == "FINISHED"
+        and st.get("completion_via") == "marked_complete",
+        "mark_completed_via marks FINISHED and stamps marked_complete")
+    ob2 = lo.Onboarding(d, "mac", version="test")
+    chk(ob2.state.get("completion_via") == "marked_complete",
+        "the stamp persists across a reload")
+    ob2.reset()
+    chk(ob2.state["state"] == "NOT_STARTED"
+        and "completion_via" not in ob2.state,
+        "reset() restores the default state (stamp gone)")
+    chk("completion_via" not in lo.Onboarding(d, "mac", version="test").state,
+        "the cleared stamp persists across a reload too")
+    ob3 = lo.Onboarding(d, "mac", version="test")
+    ob3.mark("READINESS_COMPLETE")
+    st = ob3.mark_completed_via("wizard")
+    chk(st["state"] == "FINISHED" and st.get("completion_via") == "wizard",
+        "the wizard's own completion stamps completion_via=wizard")
+
+
+def t_mark_complete_readiness():
+    print("[4] wizard_skip('mark_complete') does not fake readiness"
+          " (real Api, isolated home)")
+    work = tempfile.mkdtemp(prefix="pp_wizskip_")
+    env = dict(os.environ, PP_DATA_DIR=work, PP_NO_HUD="1")
+    code = (
+        "import json, os\n"
+        "import prospecting_app as app\n"
+        "api = app.Api()\n"
+        "before = api.readiness_check()\n"
+        "r = api.wizard_skip('mark_complete')\n"
+        "assert r.get('ok'), r\n"
+        "st = api.onboarding_state()\n"
+        "assert st['state'] == 'FINISHED', st\n"
+        "assert st.get('completion_via') == 'marked_complete', st\n"
+        "after = api.readiness_check()\n"
+        "key = lambda rc: (rc['ok'],\n"
+        "                  [(i['id'], i['status']) for i in rc['items']])\n"
+        "assert key(before) == key(after), (key(before), key(after))\n"
+        "assert 'SKIP_WIZARD_AUTOMATICALLY' not in app.load_saved(), \\\n"
+        "    'mark_complete must not write the auto-skip pref'\n"
+        "r = api.wizard_skip('session')\n"
+        "assert r.get('ok'), r\n"
+        "r = api.wizard_skip('auto')\n"
+        "assert r.get('ok'), r\n"
+        "assert app.load_saved().get('SKIP_WIZARD_AUTOMATICALLY') is True\n"
+        "assert app.Api().welcome_state()['route'] == 'main'\n"
+        "print('MARKOK')\n")
+    r = subprocess.run([sys.executable, "-c", code], env=env, cwd=ROOT,
+                       capture_output=True, text=True, timeout=600)
+    chk(r.returncode == 0 and "MARKOK" in r.stdout,
+        "readiness_check unchanged by mark_complete; skip kinds persist "
+        "correctly (%s)" % ((r.stderr[-400:] or r.stdout[-400:])
+                            if r.returncode else "ok"))
+
 
 def t_dom_layer():
-    print("[2] real-DOM wizard journey (jsdom over build_html)")
+    print("[5] real-DOM wizard journey (jsdom over build_html)")
     import lite_onboarding as lo
     work = tempfile.mkdtemp(prefix="pp_wizui_")
     data = os.path.join(work, "data")
@@ -190,6 +340,9 @@ def t_dom_layer():
 
 def main():
     t_python_layer()
+    t_routing_table()
+    t_completion_via()
+    t_mark_complete_readiness()
     t_dom_layer()
     if FAILS:
         print("WIZARD TESTS: %d FAILURE(S)" % len(FAILS))

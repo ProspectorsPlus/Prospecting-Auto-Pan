@@ -133,6 +133,18 @@ class Onboarding(object):
             self._save()
         return self.state
 
+    def mark_completed_via(self, label):
+        """Mark FINISHED and record HOW it finished: 'wizard' for a real
+        wizard completion, 'marked_complete' for the Skip-wizard shortcut.
+        The stamp is bookkeeping only -- readiness stays live-computed --
+        and reset() drops it with the rest of the state (the default state
+        carries no completion_via key)."""
+        self.mark("FINISHED")
+        if self.state.get("completion_via") != label:
+            self.state["completion_via"] = str(label)
+            self._save()
+        return self.state
+
     def record_readiness(self, result):
         self.state["last_readiness"] = result
         self._save()
@@ -174,6 +186,38 @@ class Onboarding(object):
 
     def finished(self):
         return self.state["state"] == "FINISHED"
+
+
+def compute_startup_route(*, explicit_welcome, studio_launch,
+                          show_welcome_every_launch,
+                          skip_wizard_automatically,
+                          wizard_state, session_skip):
+    """Single authority for wizard-vs-welcome-vs-main routing.
+    Returns {'route': 'main'|'welcome'|'wizard_resume', 'reason': str}.
+    wizard_state is one of STATES. Pure: every input is explicit so the
+    boot path, the explicit Welcome action and the tests all consult the
+    SAME policy table (priority order top to bottom)."""
+    if studio_launch:
+        return {"route": "main", "reason": "studio host owns onboarding"}
+    if explicit_welcome:
+        return {"route": "welcome",
+                "reason": "explicit Welcome always opens the wizard entry"}
+    if session_skip:
+        return {"route": "main", "reason": "skipped this session"}
+    if wizard_state == "FINISHED":
+        if skip_wizard_automatically:
+            return {"route": "main", "reason": "auto-skip preference"}
+        if show_welcome_every_launch:
+            return {"route": "welcome", "reason": "show-welcome preference"}
+        return {"route": "main", "reason": "setup finished"}
+    if skip_wizard_automatically:
+        return {"route": "main",
+                "reason": "auto-skip; readiness warnings stay honest"}
+    if wizard_state == "NOT_STARTED":
+        return {"route": "welcome", "reason": "fresh install"}
+    if show_welcome_every_launch:
+        return {"route": "welcome", "reason": "show-welcome preference"}
+    return {"route": "wizard_resume", "reason": "resume setup in progress"}
 
 
 # ---------------------------------------------------------------------------
@@ -372,6 +416,11 @@ CALIBRATION_ITEMS = [
         "keys": ["FR_OPEN_PIXEL", "FR_HOME_PIXEL", "FR_SCAN_X",
                  "FR_BOX_TOP", "FR_BOX_BOTTOM"],
         "required": False,
+        # wizard=False: advanced/optional feature calibrated from the
+        # Calibrate tab only -- compose_registry keeps it out of the setup
+        # wizard entirely (calibration_status/saved_summary still cover it
+        # for the tab and exports). Items without the key default to True.
+        "wizard": False,
         "condition": "FR_RECOVERY",
         "modes": ["Fortune River recovery"],
         "instructions": "Use the Fortune River section on the Calibrate "
@@ -1123,7 +1172,7 @@ def compose_registry(cfg, health=None, window_found=None,
     steps = []
     for item in CALIBRATION_ITEMS:
         iid = item["id"]
-        if iid == "roblox_window":
+        if iid == "roblox_window" or not item.get("wizard", True):
             continue
         st = statuses.get(iid, {}).get("status")
         steps.append({"id": iid, "required": item["required"],
@@ -1136,6 +1185,8 @@ def compose_registry(cfg, health=None, window_found=None,
     summary = prog.pop("", {})
     items = []
     for item in CALIBRATION_ITEMS:
+        if not item.get("wizard", True):
+            continue
         it = dict(item)
         it["refs"] = [{"module": m, "symbol": sym or "(module)",
                        "why": w}

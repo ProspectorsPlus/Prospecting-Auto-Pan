@@ -556,6 +556,32 @@ def _set_welcome_pref(flag):
     return _save_config_atomic(cur)
 
 
+# ---- Skip-wizard preference --------------------------------------------------
+# SKIP_WIZARD_AUTOMATICALLY (default False): launches go straight to the main
+# app; explicitly opening Welcome still shows the wizard, and readiness
+# warnings stay live-computed. Stored in the main config exactly like
+# SHOW_WELCOME_EVERY_LAUNCH. No legacy key to migrate.
+_SKIPWIZ_KEY = "SKIP_WIZARD_AUTOMATICALLY"
+
+
+def _skip_wizard_pref():
+    """The stored 'skip the setup wizard automatically on launch'
+    preference. Missing/corrupt settings -> False (a new user goes
+    through the wizard)."""
+    try:
+        return bool(load_saved().get(_SKIPWIZ_KEY, False))
+    except Exception:
+        return False
+
+
+def _set_skip_wizard_pref(flag):
+    """Persist the auto-skip checkbox immediately and atomically.
+    Returns (ok, err); a failed write is REPORTED, never hidden."""
+    cur = load_saved()
+    cur[_SKIPWIZ_KEY] = bool(flag)
+    return _save_config_atomic(cur)
+
+
 # ---- Main-tutorial state -----------------------------------------------------
 # The MAIN tutorial (how to use the app) is distinct from the SETUP wizard
 # (permissions + calibration). Its lifecycle lives in its own atomically
@@ -2909,12 +2935,28 @@ class Api:
         if STUDIO_LAUNCH:
             show = False        # the Studio host owns its own onboarding
             setup_needed = False
-        _wlog("welcome_state", status="show=%s pref=%s setup=%s"
-              % (show, show_every, setup_needed))
+        skip_auto = _skip_wizard_pref()
+        wstate = "NOT_STARTED"
+        try:
+            wstate = _onboarding().state.get("state") or "NOT_STARTED"
+        except Exception:
+            pass
+        # `route` is the single startup-routing authority (boot() acts on
+        # it verbatim). The legacy show/setup_needed/resume fields stay
+        # byte-compatible for older consumers and the packaged probes.
+        route = lite_onboarding.compute_startup_route(
+            explicit_welcome=False, studio_launch=STUDIO_LAUNCH,
+            show_welcome_every_launch=bool(show_every),
+            skip_wizard_automatically=bool(skip_auto),
+            wizard_state=wstate, session_skip=False)
+        _wlog("welcome_state", status="show=%s pref=%s setup=%s route=%s"
+              % (show, show_every, setup_needed, route["route"]))
         return {"show": show, "show_every_launch": bool(show_every),
                 "setup_needed": setup_needed,
                 "resume": (_onboarding().state.get("state")
                            if setup_needed else ""),
+                "route": route["route"],
+                "skip_wizard_automatically": bool(skip_auto),
                 "info": self.app_info()}
 
     def welcome_set_always_show(self, flag):
@@ -2943,6 +2985,29 @@ class Api:
                 "error": err or None,
                 "error_code": None if ok else "PP-WEL-SAVE"}
 
+    def wizard_skip_pref(self, flag):
+        """Persist the 'skip the setup wizard automatically on launch'
+        checkbox the moment it is toggled -- same engine-routed
+        single-writer pattern as welcome_set_always_show, same
+        report-and-revert contract on failure."""
+        want = bool(flag)
+        with self._welcome_lock:
+            try:
+                ack = self._engine_settings_set(
+                    {_SKIPWIZ_KEY: want}, opaque=True)
+            except Exception:
+                ack = None
+            if ack is not None:
+                ok, err = bool(ack.get("ok")), ("engine refused the write"
+                                                if not ack.get("ok") else "")
+            else:
+                ok, err = _set_skip_wizard_pref(want)
+        _wlog("wizard_skip_pref", status="ok" if ok else "fail",
+              code="" if ok else "PP-SKIP-SAVE", detail=err)
+        return {"ok": ok, "value": want,
+                "error": err or None,
+                "error_code": None if ok else "PP-SKIP-SAVE"}
+
     def welcome_done(self, always_show=None):
         """Continue past the welcome screen. `always_show` is optional: the
         checkbox persists itself on toggle (welcome_set_always_show), so a
@@ -2968,6 +3033,49 @@ class Api:
             return {"ok": False, "error": "; ".join(errs),
                     "error_code": "PP-WEL-DONE"}
         return {"ok": True}
+
+    def wizard_skip(self, kind):
+        """The Skip-wizard modal's three persistence contracts:
+        'session' logs only (the skip lives in JS for this session);
+        'mark_complete' records the wizard as reviewed via
+        mark_completed_via (readiness warnings stay live-computed --
+        nothing here fakes readiness); 'auto' sets the auto-skip
+        preference through the engine-routed path and does NOT mark
+        complete. launch()'s own calibration/permission gates are
+        untouched by every branch."""
+        k = str(kind or "")
+        try:
+            if k == "session":
+                _wlog("wizard_skip", status="session")
+                return {"ok": True}
+            if k == "mark_complete":
+                ob = _onboarding()
+                st = ob.mark_completed_via("marked_complete")
+                err = ob.last_save_error
+                _wlog("wizard_skip", status="mark_complete",
+                      code="" if not err else "PP-SKIP", detail=err)
+                if err:
+                    return {"ok": False, "error": err,
+                            "error_code": "PP-SKIP"}
+                return {"ok": True, "state": st.get("state")}
+            if k == "auto":
+                r = self.wizard_skip_pref(True)
+                ok = bool(r.get("ok"))
+                _wlog("wizard_skip", status="auto",
+                      code="" if ok else "PP-SKIP",
+                      detail=r.get("error") or "")
+                if not ok:
+                    return {"ok": False, "error": r.get("error"),
+                            "error_code": "PP-SKIP"}
+                return {"ok": True}
+            _wlog("wizard_skip", status="fail", code="PP-SKIP",
+                  detail="unknown kind: %s" % k)
+            return {"ok": False, "error": "unknown skip kind",
+                    "error_code": "PP-SKIP"}
+        except Exception as e:
+            _wlog("wizard_skip", status="fail", code="PP-SKIP",
+                  detail=str(e))
+            return {"ok": False, "error": str(e), "error_code": "PP-SKIP"}
 
     # ---- trust & permissions (registry-driven; see lite_trust.py) --------
     # Every status below comes from a real check; every test runs the real
@@ -3327,9 +3435,15 @@ class Api:
     def onboarding_state(self):
         return _onboarding().state
 
-    def onboarding_mark(self, state):
-        """Advance the wizard (forward-only; rerun/reset go backward)."""
-        return _onboarding().mark(str(state or ""))
+    def onboarding_mark(self, state, via=None):
+        """Advance the wizard (forward-only; rerun/reset go backward).
+        `via` stamps completion_via when marking FINISHED (the wizard's
+        own completion passes 'wizard'; the Skip-wizard modal's
+        mark-complete path goes through wizard_skip instead)."""
+        s = str(state or "")
+        if s == "FINISHED" and via:
+            return _onboarding().mark_completed_via(str(via))
+        return _onboarding().mark(s)
 
     def onboarding_decline(self, cap_id, declined=True):
         return _onboarding().decline_optional(str(cap_id or ""),
@@ -7406,7 +7520,7 @@ def build_html():
         'either click the exact spot in-game, or hover it and press <b>Enter</b>. '
         'Press <b>Esc</b> to cancel. Do them all, then <b>Save calibration</b>.</p>'
         f'<div class="calrows">{"".join(calrows)}</div>'
-        '<div class="caldiv"><span>Fortune River recovery (optional)</span></div>'
+        '<div class="caldiv"><span>Fortune River recovery (optional, advanced)</span></div>'
         '<p class="chint" style="margin:0 0 10px">Only for <b>Fortune River recovery</b> '
         '(Smart tab). Open the Fast Travel menu in-game first, then calibrate each spot.</p>'
         '<div class="calrows">'
@@ -7842,6 +7956,9 @@ def build_html():
         '<span class="track"><span class="knob"></span></span></span></label>'
         '<label class="row"><span class="lbl">Reduce animations</span>'
         '<span class="switch"><input type="checkbox" id="set_reduce">'
+        '<span class="track"><span class="knob"></span></span></span></label>'
+        '<label class="row"><span class="lbl">Skip the setup wizard automatically on launch</span>'
+        '<span class="switch"><input type="checkbox" id="set_skipwiz">'
         '<span class="track"><span class="knob"></span></span></span></label>'
         '</div>'
         '<p class="chint" style="margin-top:16px">Press Ctrl+Z to undo a setting '
@@ -8428,6 +8545,8 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
  .mbox h3{margin:0 0 8px;font-size:15px}
  .mbox p{margin:0 0 16px;color:var(--mut);font-size:12.5px;line-height:1.55}
  .mrow{display:flex;gap:9px;justify-content:flex-end}
+ .skipopt{margin:0 0 13px}
+ .skipopt p{margin:6px 0 0;color:var(--mut);font-size:12px;line-height:1.5}
  /* ---- settings ownership card ---- */
  .ownercard{margin-top:22px;padding:16px 18px;border:1px solid var(--line2);border-radius:12px;background:var(--bg2)}
  .ownercard h3{margin:0 0 6px;font-size:13.5px}
@@ -9001,11 +9120,16 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        </ul>
        <button type="button" id="welGo" class="btn">Continue</button>
        <div class="wel-links" id="welActions" style="display:none">
+         <a href="#" id="welContinue" style="display:none">Continue through setup</a>
          <a href="#" id="welReview">Review setup</a>
+         <a href="#" id="welCal" style="display:none">Review calibration</a>
          <a href="#" id="welTut">Start tutorial</a>
+         <a href="#" id="welOpenApp" style="display:none">Open the main app</a>
          <a href="#" id="welTrustC">Trust Center</a>
        </div>
+       <button type="button" id="welSkip" class="btn2" style="width:100%;margin-top:8px">Skip wizard</button>
        <label class="wel-again"><input type="checkbox" id="welAgain" checked> Show this screen at every launch</label>
+       <label class="wel-again"><input type="checkbox" id="welSkipAuto"> Skip the setup wizard automatically on launch</label>
        <div class="wel-again" id="welAgainErr" style="display:none;color:#e07a6a" role="alert"></div>
        <div class="wel-links">
          <a href="#" id="welSrc" style="display:none">View source</a>
@@ -9034,6 +9158,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      <button type="button" class="btn2" id="supBack">&larr; Back</button>
      <div class="grow"></div>
      <span class="sup-note" id="supNote" aria-live="polite"></span>
+     <button type="button" class="btn2" id="supSkip">Skip wizard</button>
      <button type="button" class="btn" id="supNext">Continue &rarr;</button>
    </div>
  </div>
@@ -9126,6 +9251,15 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
   <div class="mbox"><h3 id="mcfmtitle"></h3><p id="mcfmbody"></p>
    <div class="mrow"><button type="button" class="btn" id="mcfmyes">Yes</button>
     <button type="button" class="btn2" id="mcfmno">Cancel</button></div></div></div>
+ <div class="mmodal" id="skipmodal" role="dialog" aria-modal="true" aria-labelledby="skiptitle" style="z-index:1300">
+  <div class="mbox" style="max-width:480px"><h3 id="skiptitle">Skip the setup wizard?</h3>
+   <div class="skipopt"><button type="button" class="btn" id="skipSession">Skip this time</button>
+    <p>Open the app now. Setup stays exactly as it is and the wizard can come back next launch.</p></div>
+   <div class="skipopt"><button type="button" class="btn2" id="skipMark">Mark wizard complete</button>
+    <p>Records the wizard as reviewed. Anything actually missing (permissions, calibration) still shows as a warning.</p></div>
+   <div class="skipopt"><button type="button" class="btn2" id="skipAuto">Skip wizard automatically in future</button>
+    <p>From now on, launches go straight to the app. Explicitly opening Welcome still shows the wizard. You can turn this off in Welcome, Settings, or the Trust Center.</p></div>
+   <div class="mrow"><button type="button" class="btn2" id="skipCancel">Cancel</button></div></div></div>
  <div id="bsplash" aria-hidden="true"><div class="bsp-card"><span class="bsp-mark">&#9670;</span><span class="bsp-txt"></span></div></div>
  <div id="tour" class="tour" style="display:none"><div id="tourspot" class="tourspot"></div>
   <div id="tourpop" class="tourpop"><div id="tourarrow"></div><div class="tourstepn" id="tourstepn"></div>
@@ -9183,6 +9317,18 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    pref('set_wood','nowood',true,true);
    pref('set_reduce','reduce-motion',false,false);
  })();
+ // Skip-wizard-automatically lives in the CONFIG (SKIP_WIZARD_AUTOMATICALLY,
+ // shared with the Welcome gate + Trust Center), not localStorage: manual
+ // wiring, stored value on render, revert on save failure.
+ (function(){var el=document.getElementById('set_skipwiz');if(!el)return;
+   function sync(){try{var a=window.pywebview&&window.pywebview.api;if(!a||!a.welcome_state)return;
+     a.welcome_state().then(function(w){el.checked=!!(w&&w.skip_wizard_automatically);}).catch(function(){});}catch(e){}}
+   window.addEventListener('pywebviewready',sync);
+   if(window.pywebview&&window.pywebview.api)sync();
+   el.addEventListener('change',async function(){var want=!!el.checked;var r=null;
+     try{r=await window.pywebview.api.wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
+     if(!r||!r.ok){el.checked=!want;
+       if(window.toast)toast('Could not save this preference ['+((r&&r.error_code)||'PP-SKIP-SAVE')+']');}});})();
  (function(){
    function T(id){return document.getElementById(id);}
    function wsleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
@@ -10991,17 +11137,60 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      let r=null;try{r=await _api().welcome_set_always_show(want);}catch(e){r={ok:false,error:String(e)};}
      if(!r||!r.ok){a.checked=!want;
        welErr('Could not save this preference ('+((r&&r.error)||'bridge unavailable')+'). ['+((r&&r.error_code)||'PP-WEL-SAVE')+']');}});})();
+ // The auto-skip checkbox follows the same render-stored-value +
+ // revert-on-save-failure contract as welAgain.
+ function welSkipSet(v){const a=document.getElementById('welSkipAuto');if(a)a.checked=!!v;}
+ (function(){const a=document.getElementById('welSkipAuto');if(!a)return;
+   a.addEventListener('change',async()=>{const want=!!a.checked;welErr('');
+     let r=null;try{r=await _api().wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
+     if(!r||!r.ok){a.checked=!want;
+       welErr('Could not save this preference ('+((r&&r.error)||'bridge unavailable')+'). ['+((r&&r.error_code)||'PP-SKIP-SAVE')+']');}});})();
+ // WEL_EXPLICIT: true only when the user deliberately opened Welcome
+ // (Tutorial menu). boot() never sets it. Explicit Welcome always routes
+ // into the wizard for review; the boot path keeps its original behavior.
+ // WEL_RESUME mirrors welcome_state().resume so Continue can reopen the
+ // wizard at the right page (SETUP.resume falls back to 'trust', which is
+ // also the review entry when setup is FINISHED).
+ let WEL_EXPLICIT=false, WEL_RESUME='';
+ // SESSION_SKIP: JS-only 'skip this time' flag -- nothing persists, next
+ // launch routes normally.
+ let SESSION_SKIP=false;
+ function skipModalShow(){const m=document.getElementById('skipmodal');if(m)m.classList.add('show');}
+ function skipModalHide(){const m=document.getElementById('skipmodal');if(m)m.classList.remove('show');}
+ function _skipFinish(){skipModalHide();welcomeHide();
+   const s=document.getElementById('setup');if(s)s.classList.remove('show');
+   const r=document.getElementById('supReturn');if(r)r.classList.remove('show');
+   _startApp();setTimeout(()=>{if(window.maybeStartTour)window.maybeStartTour();},900);}
+ (function(){const w=(id,f)=>{const el=document.getElementById(id);if(el)el.addEventListener('click',f);};
+   w('welSkip',()=>skipModalShow());
+   w('supSkip',()=>skipModalShow());
+   w('skipCancel',()=>skipModalHide());
+   w('skipSession',async()=>{SESSION_SKIP=true;
+     try{await _api().wizard_skip('session');}catch(e){} // logging only -- no persistence
+     _skipFinish();});
+   w('skipMark',async()=>{try{await _api().wizard_skip('mark_complete');}catch(e){}_skipFinish();});
+   w('skipAuto',async()=>{try{await _api().wizard_skip('auto');}catch(e){}_skipFinish();});})();
  // Post-setup welcome actions: once setup is FINISHED the welcome screen
  // offers Review setup / Start tutorial / Trust Center. Showing the welcome
  // at every launch never re-runs permissions or calibration -- Continue just
- // opens the app.
+ // opens the app. An EXPLICIT Welcome (menu) always reveals the full action
+ // list and relabels Continue: it goes INTO the wizard, never straight out.
  function welActions(setupNeeded){
-   const w=document.getElementById('welActions');if(w)w.style.display=setupNeeded?'none':'';
+   const ex=WEL_EXPLICIT;
+   const w=document.getElementById('welActions');if(w)w.style.display=(ex||!setupNeeded)?'':'none';
+   const sh=(id,on)=>{const el=document.getElementById(id);if(el)el.style.display=on?'':'none';};
+   sh('welContinue',ex);sh('welCal',ex);sh('welOpenApp',ex);
+   const wr=document.getElementById('welReview');
+   if(wr)wr.textContent=ex?'Review permissions':'Review setup';
    const g=document.getElementById('welGo');
-   if(g)g.textContent=setupNeeded?'Continue':'Open Prospector Lite';}
+   if(g)g.textContent=ex?'Continue through setup →':(setupNeeded?'Continue':'Open Prospector Lite');}
  window.openWelcome=async function(){
+   WEL_EXPLICIT=true;
+   let sn=_setupNeeded;
    try{const w=await _api().welcome_state();welSetChecked(w&&w.show_every_launch);
-     welActions(!!(w&&w.setup_needed));}catch(e){}
+     welSkipSet(w&&w.skip_wizard_automatically);WEL_RESUME=(w&&w.resume)||'';
+     sn=!!(w&&w.setup_needed);}catch(e){}
+   welActions(sn);
    welcomeShow();};
  function welcomeFill(info){try{
    const v=document.getElementById('welVer');if(v)v.textContent='v'+(info.version||'');
@@ -11024,18 +11213,30 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    if(!w){bootFail(err||'no response');return;}
    splashHide();
    _welInfo=(w&&w.info)||{};welcomeFill(_welInfo);_setupNeeded=!!(w&&w.setup_needed);
-   welSetChecked(w&&w.show_every_launch);welActions(_setupNeeded);
-   const resume=(w&&w.resume)||'';
-   if(w&&w.show){welcomeShow();}
-   else if(_setupNeeded&&resume==='NOT_STARTED'){welcomeShow();} // full wizard reset re-enters at the welcome step
-   else if(_setupNeeded&&window.SETUP){SETUP.resume(resume);}
+   welSetChecked(w&&w.show_every_launch);welSkipSet(w&&w.skip_wizard_automatically);welActions(_setupNeeded);
+   const resume=(w&&w.resume)||'';WEL_RESUME=resume;
+   // route comes from lite_onboarding.compute_startup_route -- the single
+   // routing authority (welcome vs wizard_resume vs main).
+   const route=(w&&w.route)||'';
+   if(route==='welcome'){welcomeShow();}
+   else if(route==='wizard_resume'&&window.SETUP){SETUP.resume(resume);}
    else{_startApp();}}
  (function(){const b=document.getElementById('welGo');if(!b)return;
    b.addEventListener('click',async()=>{
      let r=null;try{r=await _api().welcome_done();}catch(e){r={ok:false,error:String(e)};}
      if(r&&r.ok===false){welErr('Could not save setup progress ('+(r.error||'')+'). ['+(r.error_code||'PP-WEL-DONE')+']');}
      welcomeHide();
-     if(_setupNeeded&&window.SETUP){SETUP.open('trust');}else{_startApp();}});
+     // Explicit Welcome ALWAYS continues into the wizard for review,
+     // whatever the completion state; the boot path keeps its behavior.
+     if(WEL_EXPLICIT&&window.SETUP){SETUP.resume(WEL_RESUME);}
+     else if(_setupNeeded&&window.SETUP){SETUP.open('trust');}else{_startApp();}});
+   const wc=document.getElementById('welContinue');if(wc)wc.onclick=e=>{e.preventDefault();
+     try{_api().welcome_done();}catch(_){}
+     welcomeHide();if(window.SETUP)SETUP.resume(WEL_RESUME);};
+   const wca=document.getElementById('welCal');if(wca)wca.onclick=e=>{e.preventDefault();
+     welcomeHide();if(window.SETUP)SETUP.open('cal');};
+   const wo=document.getElementById('welOpenApp');if(wo)wo.onclick=e=>{e.preventDefault();
+     welcomeHide();_startApp();};
    const wr=document.getElementById('welReview');if(wr)wr.onclick=e=>{e.preventDefault();
      welcomeHide();if(window.SETUP)SETUP.open('trust');};
    const wt=document.getElementById('welTut');if(wt)wt.onclick=e=>{e.preventDefault();
@@ -11406,12 +11607,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      money_region:{kind:'region',base:'MONEY',prep:'Make sure the money counter is visible in its usual corner (close any menu covering it).'},
      shards_region:{kind:'region',base:'SHARDS',prep:'Make sure the shards counter is visible (close any menu covering it).'},
      find_region:{kind:'region',base:'FIND',prep:'Note where find pop-ups appear - having one on screen helps you aim the box but is not required.'},
-     fortune_river:{kind:'pixel',anykey:true,seq:[
-       ['FR_OPEN_PIXEL','Fortune River - open button','In Roblox, make sure the button that OPENS the Fortune River event UI is visible, then come back here.'],
-       ['FR_HOME_PIXEL','Fortune River - home button','Now make the HOME button of the event UI visible, then come back here.'],
-       ['FR_TEXT','Fortune River - reward text column','Open the Fortune River rewards panel so the reward text column is on screen, then come back here.'],
-       ['FR_BOX_TOP','Fortune River - box top edge','Keep the rewards panel open - you will click its TOP edge next.'],
-       ['FR_BOX_BOTTOM','Fortune River - box bottom edge','Keep the rewards panel open - you will click its BOTTOM edge next.']]},
+     // fortune_river has NO wizard plan: the registry excludes it from the
+     // wizard (wizard:false) and it is calibrated from the Calibrate tab's
+     // Fortune River section only.
      autopan_button:{kind:'pixel',anykey:true,seq:[
        ['AUTOPAN_ON','Auto Pan button (ON state)','In Roblox, switch Auto Pan ON so its button shows the ON colour, then come back here.'],
        ['AUTOPAN_OFF','Auto Pan button (OFF state)','Now switch Auto Pan OFF in the game so the button shows the OFF colour, then come back here.']]}};
@@ -11823,7 +12021,7 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    $id('supNext').onclick=async()=>{
      if(PAGE==='trust'){try{await _api().onboarding_mark('TRUST_COMPLETE');}catch(e){}renderCal();}
      else if(PAGE==='cal'){try{await _api().onboarding_mark('CALIBRATION_STARTED');await _api().onboarding_mark('CALIBRATION_COMPLETE');}catch(e){}renderReady();}
-     else{try{await _api().onboarding_mark('READINESS_COMPLETE');await _api().onboarding_mark('FINISHED');}catch(e){}
+     else{try{await _api().onboarding_mark('READINESS_COMPLETE');await _api().onboarding_mark('FINISHED','wizard');}catch(e){}
        const s=$id('setup');if(s)s.classList.remove('show');$id('supReturn').classList.remove('show');_startApp();
        // _startApp is a no-op when the app already booted behind the wizard,
        // so trigger the once-only main-tutorial check explicitly now that
@@ -11839,9 +12037,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
    // ---- Trust Center tab ----
    window.__tcRender=async function(){const box=$id('tcbody');if(!box)return;
      box.innerHTML='<p class="chint">Loading&hellip;</p>';
-     let st=null,man=null,dm=null;try{st=await _api().trust_state();}catch(e){}
+     let st=null,man=null,dm=null,ws=null;try{st=await _api().trust_state();}catch(e){}
      try{man=await _api().trust_manifest();}catch(e){}
      try{dm=await _api().data_manifest();}catch(e){}
+     try{ws=await _api().welcome_state();}catch(e){}
      if(!st){box.innerHTML='<p class="chint">Trust state unavailable.</p>';return;}
      ST=st;DET=st.platform||'mac';PLAT=DET==='win'?'win':'mac';
      const id=st.identity||{};
@@ -11872,7 +12071,10 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
        +'</div></div>';}
      h+='<div class="tc-sec"><h3>Setup wizard</h3><div class="cap-desc">Re-run the full first-run wizard (trust, calibration, readiness) any time. Re-running deletes nothing.</div>'
        +'<div class="cap-actions"><button type="button" class="btn2" id="tcRerun">Re-run setup wizard</button>'
-       +'<button type="button" class="btn2" id="tcResetOb">Reset wizard progress only</button></div></div>';
+       +'<button type="button" class="btn2" id="tcResetOb">Reset wizard progress only</button></div>'
+       +'<label class="row" style="margin-top:10px"><span class="lbl">Skip the setup wizard automatically on launch</span>'
+       +'<span class="switch"><input type="checkbox" id="tcSkipAuto"'+((ws&&ws.skip_wizard_automatically)?' checked':'')+'>'
+       +'<span class="track"><span class="knob"></span></span></span></label></div>';
      h+='<div class="tc-sec"><h3>Security reporting</h3><div class="cap-desc">Found a vulnerability? SECURITY.md explains how to report it privately.</div>'
        +'<div class="cap-actions"><button type="button" class="btn2" id="tcSec">Open SECURITY.md</button>'
        +'<button type="button" class="btn2" id="tcPriv">Open PRIVACY.md</button>'
@@ -11887,6 +12089,9 @@ HTML = r"""<!doctype html><html><head><meta charset="utf-8"><!-- system fonts on
      w('tcDelAll',()=>{mconfirm('Delete ALL Prospector Lite data on this computer - settings, calibration, builds, scripts, history, secrets? This cannot be undone.',()=>{mconfirm('Really delete everything? The app returns to a fresh first run.',async()=>{try{await _api().delete_local_data('all');toast('All local data deleted');__tcRender();}catch(e){}});});});
      w('tcRerun',()=>{if(window.__setupRerun)__setupRerun();});
      w('tcResetOb',()=>{mconfirm('Reset the setup wizard to a fresh first run? Builds, calibration and settings are NOT touched.',async()=>{try{await _api().onboarding_reset();toast('Wizard reset - it will open on next launch');}catch(e){}});});
+     const tsk=$id('tcSkipAuto');if(tsk)tsk.onchange=async()=>{const want=!!tsk.checked;
+       let r=null;try{r=await _api().wizard_skip_pref(want);}catch(e){r={ok:false,error:String(e)};}
+       if(!r||!r.ok){tsk.checked=!want;toast('Could not save this preference ['+((r&&r.error_code)||'PP-SKIP-SAVE')+']');}};
      w('tcSec',()=>{try{_api().open_doc('SECURITY.md');}catch(e){}});
      w('tcPriv',()=>{try{_api().open_doc('PRIVACY.md');}catch(e){}});
      w('tcPerm',()=>{try{_api().open_doc('PERMISSIONS.md');}catch(e){}});

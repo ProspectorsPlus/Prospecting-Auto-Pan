@@ -41,10 +41,15 @@ function makeState() {
     granted: {},           // capId -> true
     onbState: 'NOT_STARTED',
     setupFinished: false,
+    showEvery: true,       // SHOW_WELCOME_EVERY_LAUNCH
+    skipAuto: false,       // SKIP_WIZARD_AUTOMATICALLY
     tutMain: 'NOT_STARTED',
     tutMarks: [],
   };
 }
+const ONB_ORDER = ['NOT_STARTED', 'WELCOME_COMPLETE', 'TRUST_STARTED',
+  'TRUST_COMPLETE', 'CALIBRATION_STARTED', 'CALIBRATION_COMPLETE',
+  'READINESS_COMPLETE', 'FINISHED'];
 const mkCap = (id, title, level) => ({
   id, title, required_level: level, platforms: ['mac', 'win'],
   short_description: 's', data_accessed: 'd', data_retained: 'k',
@@ -58,10 +63,31 @@ function makeApi(S) {
     return (...args) => {
       S.calls.push(name + '(' + JSON.stringify(args).slice(1, -1) + ')');
       switch (name) {
-        case 'welcome_state':
-          return Promise.resolve({ show: true, show_every_launch: true,
-            setup_needed: !S.setupFinished, resume: S.onbState,
+        case 'welcome_state': {
+          // route computed the way the policy table says (studio/explicit/
+          // session inputs are always false through this bridge)
+          let route;
+          if (S.skipAuto) route = 'main';
+          else if (S.setupFinished) route = S.showEvery ? 'welcome' : 'main';
+          else if (S.onbState === 'NOT_STARTED') route = 'welcome';
+          else if (S.showEvery) route = 'welcome';
+          else route = 'wizard_resume';
+          return Promise.resolve({ show: S.showEvery,
+            show_every_launch: S.showEvery,
+            setup_needed: !S.setupFinished,
+            resume: S.setupFinished ? '' : S.onbState,
+            route, skip_wizard_automatically: S.skipAuto,
             info: { version: 'test', name: 'Prospector Lite' } });
+        }
+        case 'wizard_skip':
+          if (args[0] === 'mark_complete') {
+            S.onbState = 'FINISHED'; S.setupFinished = true;
+          }
+          if (args[0] === 'auto') S.skipAuto = true;
+          return Promise.resolve({ ok: true });
+        case 'wizard_skip_pref':
+          S.skipAuto = !!args[0];
+          return Promise.resolve({ ok: true, value: !!args[0] });
         case 'trust_state': {
           const caps = [
             mkCap('screen_detection', 'Screen detection', 'REQUIRED_FOR_CORE'),
@@ -103,7 +129,10 @@ function makeApi(S) {
           return new Promise(r => setTimeout(() =>
             r({ ok: true, detected: true, msg: 'found' }), 250));
         case 'onboarding_mark':
-          S.onbState = args[0];
+          // forward-only, like the real state machine (a TRUST_STARTED
+          // mark from reopening the wizard can never un-finish setup)
+          if (ONB_ORDER.indexOf(args[0]) > ONB_ORDER.indexOf(S.onbState))
+            S.onbState = args[0];
           if (args[0] === 'FINISHED') S.setupFinished = true;
           return Promise.resolve({ state: S.onbState });
         case 'tutorial_state':
@@ -239,6 +268,13 @@ async function scenarioMainJourney() {
   chk(/Guided Calibration/.test(body.innerHTML), 'calibration step rendered');
   chk(!body.querySelector('button[data-cal="wizard"]') && !body.querySelector('button[data-cal="tab"]'),
     'no Calibrate-tab escape buttons exist on the checklist');
+  chk(!/Fortune River/.test(body.textContent),
+    'the wizard calibration checklist carries NO Fortune River text');
+  chk(!doc.querySelector('.cap-card[data-calid="fortune_river"]'),
+    'no fortune_river card is rendered in the wizard');
+  const calPanel = doc.getElementById('pcal');
+  chk(!!calPanel && /Fortune River recovery \(optional, advanced\)/.test(calPanel.textContent),
+    'the Calibrate tab keeps its Fortune River section (optional, advanced)');
   let st = cardState(doc, 'cap_bar');
   chk(st && st.active && st.chip === 'Do this next', 'Capacity is the first ACTIVE step');
   ['pan_prompt', 'deposit_prompt', 'shake_prompt', 'cue_masks'].forEach(id => {
@@ -441,6 +477,136 @@ async function scenarioLegacyTourFlag() {
   dom.window.close();
 }
 
+async function scenarioExplicitWelcome() {
+  console.log('[E] finished install, pref off: explicit Welcome opens the wizard; skip modal');
+  const S = makeState();
+  S.setupFinished = true;
+  S.onbState = 'FINISHED';
+  S.showEvery = false;          // route: main
+  S.tutMain = 'DISMISSED';      // keep the tour out of the way
+  S.registry = REG_REVIEW;
+  const dom = boot(S);
+  const doc = dom.window.document;
+  await bridge(dom, S);
+  chk(!view(doc).gate && !view(doc).setup, 'route main: no gate, no wizard on boot');
+  chk(doc.body.dataset.welinit === '1', 'boot went straight to the main app');
+
+  // ---- explicit Welcome always opens the wizard entry ----
+  dom.window.openWelcome();
+  await sleep(300);
+  chk(view(doc).gate, 'openWelcome overlays the gate');
+  chk(doc.getElementById('welActions').style.display !== 'none',
+    'explicit Welcome reveals the action list');
+  ['welContinue', 'welCal', 'welOpenApp'].forEach(id => {
+    const el = doc.getElementById(id);
+    chk(!!el && el.style.display !== 'none', 'explicit action ' + id + ' is visible');
+  });
+  chk(doc.getElementById('welReview').textContent === 'Review permissions',
+    'the review action names permissions when explicit');
+  chk(/Continue through setup/.test(doc.getElementById('welGo').textContent),
+    'welGo is relabeled "Continue through setup"');
+  chk(!!doc.getElementById('welSkip') && !!doc.getElementById('supSkip'),
+    'both skip buttons exist (gate + wizard footer)');
+  doc.getElementById('welGo').click();
+  await sleep(500);
+  chk(view(doc).setup && !view(doc).gate,
+    'explicit #welGo opens the WIZARD (never straight back to the app)');
+  const body = doc.getElementById('supBody');
+  chk(/Trust\s*&(amp;)?\s*Permissions/.test(body.innerHTML),
+    'a FINISHED install reviews from the start (trust page)');
+
+  // ---- skip modal: Cancel is a pure no-op ----
+  const modal = doc.getElementById('skipmodal');
+  let n0 = S.calls.length;
+  doc.getElementById('supSkip').click();
+  await sleep(120);
+  chk(modal.classList.contains('show'), 'wizard-footer Skip opens the modal');
+  doc.getElementById('skipCancel').click();
+  await sleep(120);
+  chk(!modal.classList.contains('show') && view(doc).setup,
+    'Cancel closes the modal and keeps the wizard open');
+  chk(!S.calls.slice(n0).some(c => /^(wizard_skip|onboarding_mark|wizard_skip_pref)\(/.test(c)),
+    'Cancel calls no skip/mark/pref api');
+
+  // ---- Skip this time: session only, nothing persists ----
+  doc.getElementById('supSkip').click();
+  await sleep(120);
+  n0 = S.calls.length;
+  doc.getElementById('skipSession').click();
+  await sleep(400);
+  let after = S.calls.slice(n0);
+  chk(!view(doc).setup && !view(doc).gate && !view(doc).supReturn
+    && !modal.classList.contains('show'), 'Skip this time lands in the main app');
+  chk(after.some(c => c === 'wizard_skip("session")'),
+    'session skip logs via wizard_skip("session")');
+  chk(!after.some(c => c.startsWith('onboarding_mark(')
+    || c === 'wizard_skip("mark_complete")'
+    || c.startsWith('wizard_skip_pref(')),
+    'session skip writes NO state and NO preference');
+  chk(S.skipAuto === false, 'the auto-skip preference stays off');
+
+  // ---- Mark wizard complete ----
+  dom.window.openWelcome();
+  await sleep(250);
+  doc.getElementById('welGo').click();
+  await sleep(500);
+  chk(view(doc).setup, 'wizard reopened for the mark-complete pass');
+  doc.getElementById('supSkip').click();
+  await sleep(120);
+  n0 = S.calls.length;
+  doc.getElementById('skipMark').click();
+  await sleep(400);
+  after = S.calls.slice(n0);
+  chk(after.some(c => c === 'wizard_skip("mark_complete")'),
+    'Mark wizard complete calls wizard_skip("mark_complete")');
+  chk(!view(doc).setup && !view(doc).gate, 'mark-complete lands in the main app');
+
+  // ---- Skip automatically ----
+  dom.window.openWelcome();
+  await sleep(250);
+  doc.getElementById('welGo').click();
+  await sleep(500);
+  doc.getElementById('supSkip').click();
+  await sleep(120);
+  n0 = S.calls.length;
+  doc.getElementById('skipAuto').click();
+  await sleep(400);
+  after = S.calls.slice(n0);
+  chk(after.some(c => c === 'wizard_skip("auto")'),
+    'Skip automatically calls wizard_skip("auto")');
+  chk(S.skipAuto === true, 'the auto-skip preference is now on');
+  chk(!view(doc).setup && !view(doc).gate, 'auto-skip lands in the main app');
+  // the reversal checkbox reflects the stored value on the next open
+  dom.window.openWelcome();
+  await sleep(250);
+  chk(doc.getElementById('welSkipAuto').checked === true,
+    'the gate reversal checkbox renders the stored pref');
+  chk(!!doc.getElementById('set_skipwiz'),
+    'the Settings page carries its reversal checkbox');
+  chk(dom.errors.length === 0, 'no jsdom errors in the explicit/skip journey' +
+    (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
+  dom.window.close();
+}
+
+async function scenarioAutoSkipBoot() {
+  console.log('[F] auto-skip pref on an UNFINISHED install boots to the main app');
+  const S = makeState();
+  S.onbState = 'TRUST_COMPLETE';   // mid-wizard
+  S.skipAuto = true;
+  const dom = boot(S);
+  const doc = dom.window.document;
+  await bridge(dom, S);
+  chk(!view(doc).gate && !view(doc).setup && !view(doc).supReturn,
+    'route main: gate and wizard stay closed');
+  chk(doc.body.dataset.welinit === '1', 'the main app booted');
+  chk(view(doc).tour !== 'block', 'no tutorial auto-start while setup is unfinished');
+  chk(doc.getElementById('welSkipAuto').checked === true,
+    'the gate checkbox mirrors the stored pref');
+  chk(dom.errors.length === 0, 'no jsdom errors during auto-skip boot' +
+    (dom.errors.length ? ' :: ' + dom.errors[0] : ''));
+  dom.window.close();
+}
+
 async function scenarioOverlay() {
   console.log('[D] calibration overlay: stale-banner + dead-click regressions');
   const ohtml = fs.readFileSync(path.join(WORK, 'overlay.html'), 'utf8');
@@ -544,6 +710,8 @@ async function scenarioOverlay() {
   await scenarioMainJourney();
   await scenarioNoRestart();
   await scenarioLegacyTourFlag();
+  await scenarioExplicitWelcome();
+  await scenarioAutoSkipBoot();
   await scenarioOverlay();
   if (failures) { console.log('WIZARD-UI: %d FAILURE(S)', failures); process.exit(1); }
   console.log('WIZARD-UI: ALL PASS');

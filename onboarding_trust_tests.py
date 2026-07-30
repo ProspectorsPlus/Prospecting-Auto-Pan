@@ -618,6 +618,9 @@ def child_welcome_pref():
     # default ON
     w = api.welcome_state()
     assert w["show"] is True and w["show_every_launch"] is True, w
+    # new routing fields ride along without disturbing the legacy shape
+    assert w["skip_wizard_automatically"] is False, w
+    assert w["route"] == "welcome", w
     # toggle OFF persists immediately and atomically
     r = api.welcome_set_always_show(False)
     assert r["ok"] and r["value"] is False, r
@@ -626,6 +629,8 @@ def child_welcome_pref():
     # simulated restart: a NEW Api against the same home reads it back
     w2 = app.Api().welcome_state()
     assert w2["show"] is False and w2["show_every_launch"] is False, w2
+    # pref off mid-wizard resumes the wizard directly
+    assert w2["route"] == "wizard_resume", w2
     # toggle back ON persists too
     assert api.welcome_set_always_show(True)["ok"]
     assert app.Api().welcome_state()["show_every_launch"] is True
@@ -643,6 +648,19 @@ def child_welcome_pref():
     api.onboarding_reset()
     w4 = api.welcome_state()
     assert w4["setup_needed"] is True and w4["resume"] == "NOT_STARTED", w4
+    assert w4["route"] == "welcome", w4   # fresh reset re-enters at Welcome
+    # the auto-skip preference persists exactly like the welcome pref and
+    # flips the route to main even mid-setup (readiness stays honest)
+    r = api.wizard_skip_pref(True)
+    assert r["ok"] and r["value"] is True, r
+    cfg = json.load(open(app.CONFIG_FILE))
+    assert cfg["SKIP_WIZARD_AUTOMATICALLY"] is True, cfg
+    w5 = app.Api().welcome_state()
+    assert w5["skip_wizard_automatically"] is True, w5
+    assert w5["route"] == "main", w5
+    assert w5["setup_needed"] is True, w5   # honesty: skip is not completion
+    assert api.wizard_skip_pref(False)["ok"]
+    assert app.Api().welcome_state()["skip_wizard_automatically"] is False
     print("child_welcome_pref ok")
 
 
