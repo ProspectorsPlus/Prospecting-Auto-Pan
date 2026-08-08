@@ -80,6 +80,16 @@ def one_pair(cfg, program, tag):
 
 
 def main():
+    if os.environ.get("GITHUB_ACTIONS") and not os.environ.get("PP_FORCE_PACING"):
+        # Wall-clock pacing budgets (±15 ms cue seams, event-rate floors)
+        # need a quiet machine. Hosted CI runners are persistently
+        # oversubscribed — observed stalls of hundreds of ms are scheduler
+        # noise, not engine behavior. The suite stays in the local
+        # pre-release matrix; set PP_FORCE_PACING=1 to run it here anyway.
+        print("PACING TESTS: SKIPPED on hosted CI (wall-clock-sensitive; "
+              "set PP_FORCE_PACING=1 to force)")
+        return
+
     cfg, program = load_fixtures()
 
     # a clean pair: same behavior signature end to end AND within the gap

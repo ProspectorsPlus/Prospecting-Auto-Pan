@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Windows consoles default to cp1252; test/tour output contains UTF-8.
+  PYTHONUTF8: "1"
+
 jobs:
   tests:
     strategy:

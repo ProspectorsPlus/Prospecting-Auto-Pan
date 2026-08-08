@@ -23,6 +23,8 @@ jobs:
       # Public source repository, stamped into build_info.json so the in-app
       # View Code links resolve to the exact build commit.
       PP_PROJECT_URL: https://github.com/ProspectorsPlus/Prospecting-Auto-Pan
+      # Windows consoles default to cp1252; app/test output contains UTF-8.
+      PYTHONUTF8: "1"
       # The `secrets` context cannot be used in step `if:` expressions;
       # hoist the presence check into job env once.
       HAVE_WIN_CERT: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
@@ -96,6 +98,9 @@ jobs:
       # never run on real Windows before this workflow does it.
       - name: Acceptance probes (windows_acceptance.ps1)
         shell: pwsh
+        env:
+          # hosted runners are always elevated; the script states the caveat
+          PP_ACCEPT_ELEVATED: "1"
         run: pwsh -File ../packaging/windows_acceptance.ps1 "dist\Prospector Lite"
 
       # Authenticode signing readiness: runs ONLY when the repository has the

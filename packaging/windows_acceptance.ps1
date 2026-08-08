@@ -38,16 +38,25 @@ function Fail([string]$msg) { $script:Fails += $msg; Write-Output ('  FAIL: ' + 
 
 # ---- [6] no-admin assertion ------------------------------------------------
 # Checked FIRST: results must reflect a normal user. An elevated run would
-# mask AppData/permission behavior a real user would hit.
+# mask AppData/permission behavior a real user would hit. Hosted CI runners
+# are unavoidably elevated, so CI sets PP_ACCEPT_ELEVATED=1 to proceed with
+# that caveat stated; the refusal stays for humans running it by hand.
 $wid = [Security.Principal.WindowsIdentity]::GetCurrent()
 $wp  = New-Object Security.Principal.WindowsPrincipal($wid)
 if ($wp.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Output '[6] REFUSED: this shell is elevated (Administrator).'
-    Write-Output '    Run from a normal PowerShell so the results reflect a'
-    Write-Output '    real per-user install. No probes were run.'
-    exit 2
+    if ($env:PP_ACCEPT_ELEVATED -eq '1') {
+        Write-Output '[6] elevated shell ACCEPTED (PP_ACCEPT_ELEVATED=1, CI):'
+        Write-Output '    hosted runners are always elevated; AppData and'
+        Write-Output '    permission probes reflect that caveat.'
+    } else {
+        Write-Output '[6] REFUSED: this shell is elevated (Administrator).'
+        Write-Output '    Run from a normal PowerShell so the results reflect a'
+        Write-Output '    real per-user install. No probes were run.'
+        exit 2
+    }
+} else {
+    Write-Output '[6] not elevated -- probes reflect a normal user'
 }
-Write-Output '[6] not elevated -- probes reflect a normal user'
 
 # ---- helpers ---------------------------------------------------------------
 $RepoRoot = Split-Path -Parent $PSScriptRoot
