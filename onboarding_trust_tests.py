@@ -806,14 +806,28 @@ def child_cal_guards():
         assert "cap_bar" in r, r
     finally:
         lite_trust.capability_statuses = real_caps
-    # welcome/save-failure honesty: a read-only data dir reports the
-    # failed write instead of pretending it saved
-    os.chmod(app.DATA_DIR, 0o500)
-    try:
-        r = api.welcome_set_always_show(False)
-        assert r["ok"] is False and r["error"], r
-    finally:
-        os.chmod(app.DATA_DIR, 0o700)
+    # welcome/save-failure honesty: a blocked config write reports the
+    # failed write instead of pretending it saved. POSIX: read-only data
+    # dir. Windows: chmod on a directory cannot block writes inside it,
+    # so make the config file itself read-only (opening/replacing it
+    # then fails with PermissionError).
+    if os.name == "nt":
+        if not os.path.exists(app.CONFIG_FILE):
+            with open(app.CONFIG_FILE, "w") as f:
+                f.write("{}")
+        os.chmod(app.CONFIG_FILE, 0o400)
+        try:
+            r = api.welcome_set_always_show(False)
+            assert r["ok"] is False and r["error"], r
+        finally:
+            os.chmod(app.CONFIG_FILE, 0o600)
+    else:
+        os.chmod(app.DATA_DIR, 0o500)
+        try:
+            r = api.welcome_set_always_show(False)
+            assert r["ok"] is False and r["error"], r
+        finally:
+            os.chmod(app.DATA_DIR, 0o700)
     print("child_cal_guards ok")
 
 

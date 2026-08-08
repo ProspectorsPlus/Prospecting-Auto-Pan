@@ -823,15 +823,31 @@ def test_calibration_commands():
         chk(a.get("ok") and a["result"]["rgb"] == [200, 10, 30]
             and a["result"]["x"] == 310 and a["result"]["y"] == 205,
             "cmd.calibration-pick: full-res read (red phase)")
-        time.sleep(9)          # virtual clock crosses the 5000 ms mutation
+        # The sim clock is VIRTUAL: it advances with the engine's own
+        # activity, not wall time, so a fixed sleep is a race on slow CI
+        # runners. Sleep once, assert the stored session still reads red
+        # (stored-frame semantics hold whether or not the mutation
+        # happened yet), then poll re-capture until the blue phase is
+        # visible — each request drives the engine and its clock forward.
+        time.sleep(9)
         a = cli.request("calibration.pick", {"fx": fx, "fy": fy})
         chk(a.get("ok") and a["result"]["rgb"] == [200, 10, 30],
             "cmd.calibration-pick: STORED frame, not a fresh grab "
             "(screen mutated, pick did not)")
-        a = cli.request("calibration.capture")
-        chk(a.get("ok"), "calibration: re-capture replaces the session")
-        a = cli.request("calibration.pick", {"fx": fx, "fy": fy})
-        chk(a.get("ok") and a["result"]["rgb"] == [30, 10, 200],
+        recap_ok, blue = False, None
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            a = cli.request("calibration.capture")
+            recap_ok = bool(a.get("ok"))
+            if not recap_ok:
+                break
+            a = cli.request("calibration.pick", {"fx": fx, "fy": fy})
+            if a.get("ok") and a["result"]["rgb"] == [30, 10, 200]:
+                blue = a
+                break
+            time.sleep(0.5)
+        chk(recap_ok, "calibration: re-capture replaces the session")
+        chk(blue is not None,
             "cmd.calibration-capture: session replaced (blue phase)")
         a = cli.request("calibration.crop",
                         {"rect": {"x": 200, "y": 200, "w": 40, "h": 30}})
