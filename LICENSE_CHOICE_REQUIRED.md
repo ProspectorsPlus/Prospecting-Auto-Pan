@@ -35,4 +35,4 @@ All three are compatible with this project's dependencies (mostly BSD/MIT-licens
 5. Delete this file.
 6. Only then proceed with the publication checklist in [RELEASING.md](RELEASING.md).
 
-Until step 2 is done, do not publish the repository or distribute release builds.
+> **Status (2026-08-08, 5.0.0 launch):** the owner decided to publish the repository and release builds **before** choosing a license. Every public surface therefore says "source available for inspection" and never "open source", and no redistribution rights are granted. Choosing a license (steps 1–6 above) remains an open owner task; this file stays until it is done.

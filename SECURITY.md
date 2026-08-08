@@ -4,15 +4,15 @@
 
 | Version | Supported |
 |---|---|
-| 1.0.0-rc.x | Yes |
-| Anything older ("Prospectors Plus" 1.x–4.x) | No — those were private pre-releases and are not supported |
+| 5.0.0 | Yes |
+| 1.0.0-rc.x | No — superseded pre-release builds; update to 5.0.0 |
+| Anything older ("Prospectors Plus" 1.x–4.x) | No — old pre-rebrand builds, not supported |
 
 ## Reporting a vulnerability
 
 Please report vulnerabilities **privately** rather than in a public issue.
 
-- Once the repository is public: use **GitHub private vulnerability reporting** (the "Report a vulnerability" button under the repository's Security tab / Security Advisories).
-- Until then: `<security contact — to be filled in when the repository is published>`.
+Use **GitHub private vulnerability reporting**: <https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new> (the "Report a vulnerability" button under the repository's Security tab).
 
 Include what you found, the file/function involved, and reproduction steps if you have them. You should get an acknowledgment within a reasonable time; coordinated disclosure is appreciated.
 

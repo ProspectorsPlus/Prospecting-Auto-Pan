@@ -13,11 +13,13 @@ These block publication; do not tag a public release until all are done.
 5. **Tracked tree is clean.** `windows/prospecting_config.json` (the only tracked config) must contain empty `WEBHOOK_URL`/`WEBHOOK_SECRET` and no legacy keys. `prospecting_secrets.json` must remain gitignored and unbundled.
 6. **`PROJECT_URL` filled in.** Set the constant in `prospecting_app.py` to the real repository URL so the welcome/About links work, and replace the `<repository URL — to be filled in when published>` placeholders in the docs.
 
+> **5.0.0 launch record (2026-08-08).** The preconditions above were resolved as follows, with evidence in `docs/public-launch/`: (2) fresh history became moot — the full history has been public on `main` since June 2026, so a rewrite would protect nothing; (3) the historical webhook was live-probed and is revoked (HTTP 404), and the companion `WEBHOOK_SECRET` only authenticated posts to that dead endpoint; (4)–(5) verified unchanged; (6) `PROJECT_URL` is set. (1) — a license — remains an **owner decision deliberately deferred**: the owner authorized publishing as source-available-for-inspection, and every surface words it that way (no "open source" claim, no redistribution grant).
+
 ## Release process (every release)
 
 ### 1. Prepare
 
-- [ ] Bump `VERSION` in `prospecting_app.py` (currently `1.0.0-rc.6`; regenerate the `windows/` mirror with `python3 packaging/sync_windows_app.py` and update `windows/installer.iss` `MyAppVersion` — `public_release_tests.py` checks all three agree).
+- [ ] Bump `VERSION` in `prospecting_app.py` (currently `5.0.0`; regenerate the `windows/` mirror with `python3 packaging/sync_windows_app.py` and update `windows/installer.iss` `MyAppVersion` — `public_release_tests.py` checks all three agree).
 - [ ] Update [CHANGELOG.md](CHANGELOG.md) — move changes under the new version heading with the date.
 - [ ] Run the full test matrix and require all-pass:
 

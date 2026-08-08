@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "product": "Prospector Lite",
+  "version": "5.0.0",
+  "date": "2026-08-08",
+  "channel": "stable",
+  "release_url": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0",
+  "source_url": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan",
+  "checksums_url": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/SHA256SUMS.txt",
+  "signing": {
+    "macos_signed": false,
+    "macos_notarized": false,
+    "windows_authenticode": false,
+    "note": "All builds are unsigned; verify the SHA-256 checksum against SHA256SUMS.txt before running anything."
+  },
+  "downloads": {
+    "windows_installer": {
+      "name": "ProspectorLite-5.0.0-Windows-x64-Setup.exe",
+      "url": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe",
+      "platform": "windows",
+      "arch": "x64",
+      "kind": "installer"
+    },
+    "windows_portable": {
+      "name": "ProspectorLite-5.0.0-Windows-x64-Portable.zip",
+      "url": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Portable.zip",
+      "platform": "windows",
+      "arch": "x64",
+      "kind": "portable"
+    },
+    "macos_dmg": {
+      "name": "ProspectorLite-5.0.0-macos-arm64.dmg",
+      "url": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-macos-arm64.dmg",
+      "platform": "macos",
+      "arch": "arm64",
+      "kind": "dmg"
+    }
+  }
+}

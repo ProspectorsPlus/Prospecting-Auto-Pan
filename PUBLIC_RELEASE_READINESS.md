@@ -13,6 +13,15 @@ Verdict: **READY AFTER USER ACTION** — the engineering work is complete and
 verified on macOS; the remaining blockers are decisions/credentials only
 the owner can provide, plus the first green Windows CI run after pushing.
 
+> **Superseded by launch (2026-08-08).** Prospector Lite **5.0.0** was
+> published: branch pushed, tag `v5.0.0`, public GitHub Release with
+> macOS + Windows artifacts from CI, website deployed from `docs/`.
+> The user-action list resolved as recorded in `RELEASING.md` (launch
+> record) and `docs/public-launch/`: secrets verified revoked, fresh
+> history moot (history public since June 2026), `PROJECT_URL` set,
+> Windows CI green. Still open, owner-only: license choice, Apple
+> signing/notarization, Windows Authenticode.
+
 ## Category verdicts
 
 | Category | Verdict | Basis |

@@ -272,3 +272,28 @@ git status --short --untracked-files=no && git log -5 --oneline
 python3 tour_check.py && python3 finds_sim.py && python3 studio_tests.py
 python3 public_release_tests.py   # once it exists
 ```
+
+## 5.0.0 public launch (2026-08-08)
+
+- Version bumped `1.0.0-rc.6` → **5.0.0** (stable). Rationale: the old
+  pre-rebrand releases already occupy tags `v1.0.0`–`v4.2.0` in the same
+  public repository, so the rc line ships as 5.0.0 to keep the tag
+  lineage monotonic instead of destroying an existing public release.
+- Historical-secret gate PASSED with live evidence: the single webhook
+  in all of git history probes HTTP 404 (revoked); zero hits for any
+  other credential shape across `git log --all -p`; the discord-bot
+  folder was never tracked. History is already public on `main` (since
+  June 2026), so a fresh-history rewrite protects nothing — publication
+  proceeds on the existing history. Details: `docs/public-launch/`.
+- `PROJECT_URL` set to the real repository; gates re-scoped: the org
+  slug is sanctioned only inside `github.com/ProspectorsPlus/...`, the
+  website host only outside code files.
+- `build-windows.yml` was undispatchable (GitHub rejects `secrets` in
+  step `if:`); fixed via a job-env presence flag. Windows artifact names
+  are now versioned (`ProspectorLite-<v>-Windows-x64-Setup.exe` /
+  `-Portable.zip`).
+- New public website in `docs/` (hero, features, trust, downloads via
+  static `release.json`, FAQ); replaces the old access-code site that
+  was still live on `main`.
+- License remains unchosen by explicit owner decision; all public
+  wording is "source available for inspection".

@@ -19,6 +19,13 @@ jobs:
     defaults:
       run:
         working-directory: windows
+    env:
+      # Public source repository, stamped into build_info.json so the in-app
+      # View Code links resolve to the exact build commit.
+      PP_PROJECT_URL: https://github.com/ProspectorsPlus/Prospecting-Auto-Pan
+      # The `secrets` context cannot be used in step `if:` expressions;
+      # hoist the presence check into job env once.
+      HAVE_WIN_CERT: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
     steps:
       # NOTE: pin to commit SHAs before enabling on a public repo.
       - uses: actions/checkout@v4
@@ -37,6 +44,13 @@ jobs:
           python -c "import json,os,datetime,re;v=re.search(r'VERSION\s*=\s*\"([^\"]+)\"',open('prospecting_app.py',encoding='utf-8').read()).group(1);json.dump({'commit':os.environ['GITHUB_SHA'],'date':datetime.date.today().isoformat(),'version':v,'dirty':False,'package':'windows','project_url':os.environ.get('PP_PROJECT_URL',''),'signed':False,'notarized':False},open('build_info.json','w'))"
           python ..\lite_trust.py --emit trust_manifest.json
 
+      - name: Read app version into env
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path prospecting_app.py -Pattern 'VERSION\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          "APP_VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Output "version: $v"
+
       - name: Make icon.ico
         run: python -c "from PIL import Image;Image.open('icon.png').convert('RGBA').save('icon.ico',sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])"
 
@@ -46,8 +60,12 @@ jobs:
       - name: Package-content scan (branding / endpoints / secrets)
         shell: pwsh
         run: |
-          $bad = @('Prospectors Plus','ProspectorsPlus','PPLUS-','ip-api.com',
-                   'prospectorsplus.github.io','discord.com/api/webhooks/1')
+          # 'ProspectorsPlus' (the org slug) and the project website host are
+          # sanctioned: they are the official source URL stamped into
+          # build_info.json and referenced by shipped docs. The spaced
+          # old-brand name and the removed endpoints stay banned.
+          $bad = @('Prospectors Plus','PPLUS-','ip-api.com',
+                   'discord.com/api/webhooks/1')
           $hits = @()
           # shipped docs may reference the old name in migration/history
           # context; the tracked-tree gate (public_release_tests.py) already
@@ -82,7 +100,7 @@ jobs:
       # certificate is committed; unsigned builds are produced (and clearly
       # labelled unsigned in-app) when the secrets are absent.
       - name: Sign exe (optional, needs WINDOWS_CERT_PFX_B64 secret)
-        if: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
+        if: ${{ env.HAVE_WIN_CERT == 'true' }}
         env:
           PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
           PFX_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
@@ -100,20 +118,20 @@ jobs:
         run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
 
       - name: Sign installer (optional, needs WINDOWS_CERT_PFX_B64 secret)
-        if: ${{ secrets.WINDOWS_CERT_PFX_B64 != '' }}
+        if: ${{ env.HAVE_WIN_CERT == 'true' }}
         env:
           PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_B64 }}
           PFX_PASS: ${{ secrets.WINDOWS_CERT_PASSWORD }}
         shell: pwsh
         run: |
           [IO.File]::WriteAllBytes("cert.pfx",[Convert]::FromBase64String($env:PFX_B64))
-          & signtool sign /f cert.pfx /p $env:PFX_PASS /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "Output/ProspectorLiteSetup.exe"
-          & signtool verify /pa "Output/ProspectorLiteSetup.exe"
+          & signtool sign /f cert.pfx /p $env:PFX_PASS /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 "Output/ProspectorLite-$env:APP_VERSION-Windows-x64-Setup.exe"
+          & signtool verify /pa "Output/ProspectorLite-$env:APP_VERSION-Windows-x64-Setup.exe"
           Remove-Item cert.pfx
 
       - name: Portable ZIP
         shell: pwsh
-        run: Compress-Archive -Path "dist/Prospector Lite" -DestinationPath "Output/ProspectorLite-portable-win64.zip"
+        run: Compress-Archive -Path "dist/Prospector Lite" -DestinationPath "Output/ProspectorLite-$env:APP_VERSION-Windows-x64-Portable.zip"
 
       - name: SBOM (CycloneDX, build environment)
         run: python -m cyclonedx_py environment --of JSON -o Output/sbom-windows.cdx.json
@@ -122,7 +140,7 @@ jobs:
         shell: pwsh
         run: |
           cd Output
-          Get-FileHash ProspectorLiteSetup.exe, ProspectorLite-portable-win64.zip -Algorithm SHA256 |
+          Get-FileHash ProspectorLite-*-Setup.exe, ProspectorLite-*-Portable.zip -Algorithm SHA256 |
             ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
             Set-Content SHA256SUMS-windows.txt
           Get-Content SHA256SUMS-windows.txt
@@ -132,8 +150,8 @@ jobs:
         with:
           name: prospector-lite-windows
           path: |
-            windows/Output/ProspectorLiteSetup.exe
-            windows/Output/ProspectorLite-portable-win64.zip
+            windows/Output/ProspectorLite-*-Setup.exe
+            windows/Output/ProspectorLite-*-Portable.zip
             windows/Output/SHA256SUMS-windows.txt
             windows/Output/sbom-windows.cdx.json
           retention-days: 30

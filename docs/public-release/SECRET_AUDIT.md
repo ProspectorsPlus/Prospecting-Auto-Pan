@@ -62,3 +62,31 @@ git ls-files | grep config
 ```
 
 Re-run this audit whenever the release process changes, and always before the first public push.
+
+---
+
+## Launch-day verification (2026-08-08, 5.0.0)
+
+The revocation and history questions above were closed with live evidence
+(values never printed or stored; probes report HTTP status only):
+
+1. **Webhook revoked — verified.** A sweep of the *entire* history
+   (`git log --all -p`) found exactly one unique Discord webhook URL
+   (the finding-1/finding-2 credential). A live GET returns
+   **HTTP 404 (Unknown Webhook)**: deleted on Discord's side, unusable.
+2. **The "notify-bot secret" is inert.** `WEBHOOK_SECRET` was a payload
+   field sent only to that webhook; with the endpoint dead there is
+   nothing left to authenticate to.
+3. **No other credential shapes in history.** Full-history sweep for
+   GitHub PATs, AWS keys, Slack hooks, OpenAI/Anthropic-style keys and
+   Discord bot tokens: zero hits. `prospectors-discord-bot/` was never
+   tracked. `prospecting_secrets.json` was never committed.
+4. **Fresh history is moot.** The history containing findings 1–2 has
+   been public on `main` since June 2026 (the repository was already
+   public with releases v1.0.0–v4.2.0). A history rewrite now would
+   protect nothing and break existing clones; publication proceeds on
+   the existing history with the credential verifiably dead.
+
+Residual (accepted, documented): old public releases may embed the dead
+webhook; some historical commits carry a personal author name/email.
+Neither is reachable/actionable without destroying public history.

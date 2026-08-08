@@ -13,11 +13,11 @@
 
 ## Asking for help
 
-The project is not published yet, so there is no public issue tracker at this time: `<repository URL — to be filled in when published>`. Once it is public, use **GitHub Issues** for bugs and questions, and **GitHub Discussions** if enabled.
+Use **GitHub Issues** for bugs and questions: <https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues> (and **GitHub Discussions** if enabled).
 
 A good report includes:
 
-1. Prospector Lite version (welcome screen, About, or the Trust Center shows it — currently 1.0.0-rc.6) and whether you run from source or a packaged build.
+1. Prospector Lite version (welcome screen, About, or the Trust Center shows it — currently 5.0.0) and whether you run from source or a packaged build.
 2. OS and version (macOS/Windows).
 3. What you did, what you expected, what happened instead.
 4. The tail of the newest file in `run_logs/`, if the problem happened during a run.

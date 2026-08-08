@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prospector Lite — free automation companion for Prospecting</title>
+<meta name="description" content="Prospector Lite automates the pan/dig/shake loop in the Roblox game Prospecting by reading your screen and sending ordinary keyboard and mouse input. Free, external-only, zero network by default, source available for inspection.">
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/">
+<style>
+  :root{
+    --bg:#0b1220; --bg2:#0f1729; --panel:#141e33; --panel2:#182a44;
+    --line:#26334f; --text:#e7edf8; --muted:#9fb0ca; --dim:#77879f;
+    --gem:#4cc9f0; --gem2:#8be9d9; --warn:#f4c15d;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  a{color:var(--gem);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:1000px;margin:0 auto;padding:0 20px}
+  header.hero{background:
+    radial-gradient(1200px 500px at 50% -10%, #1b2b4d 0%, transparent 60%),
+    linear-gradient(180deg,#0e1830 0%,var(--bg) 100%);
+    border-bottom:1px solid var(--line); text-align:center; padding:64px 0 48px}
+  .hero img.logo{width:96px;height:96px;image-rendering:auto}
+  .hero h1{margin:14px 0 6px;font-size:2.4rem;letter-spacing:.5px}
+  .hero p.tag{margin:0 auto 10px;max-width:620px;color:var(--muted);font-size:1.12rem}
+  .badge{display:inline-block;background:var(--panel);border:1px solid var(--line);
+    color:var(--gem2);border-radius:999px;padding:4px 14px;font-size:.85rem;margin:10px 4px 22px}
+  .btnrow{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+  .btn{display:inline-block;padding:12px 22px;border-radius:10px;font-weight:600;
+    border:1px solid var(--line);background:var(--panel);color:var(--text)}
+  .btn:hover{text-decoration:none;border-color:var(--gem);}
+  .btn.primary{background:linear-gradient(135deg,#2563eb,#0ea5e9);border-color:transparent;color:#fff}
+  .btn.primary:hover{filter:brightness(1.1)}
+  .note{color:var(--dim);font-size:.85rem;margin-top:16px}
+  section{padding:48px 0;border-bottom:1px solid var(--line)}
+  section h2{font-size:1.6rem;margin:0 0 8px}
+  section p.lead{color:var(--muted);max-width:760px;margin-top:0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin-top:24px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card h3{margin:0 0 6px;font-size:1.05rem;color:var(--gem2)}
+  .card p{margin:0;color:var(--muted);font-size:.95rem}
+  .shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:20px}
+  .shots figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px}
+  .shots img{width:100%;height:150px;object-fit:cover;border-radius:8px;display:block}
+  .shots figcaption{color:var(--dim);font-size:.82rem;padding:8px 4px 0;text-align:center}
+  ol.steps{counter-reset:s;list-style:none;padding:0;display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-top:22px}
+  ol.steps li{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px}
+  ol.steps li::before{counter-increment:s;content:counter(s);display:inline-block;width:26px;height:26px;
+    border-radius:50%;background:#1d4ed8;color:#fff;text-align:center;line-height:26px;font-weight:700;margin-bottom:8px}
+  ol.steps b{display:block;margin-bottom:4px}
+  ol.steps span{color:var(--muted);font-size:.92rem}
+  .dl{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-top:22px}
+  .dl .card ul{margin:10px 0 0;padding-left:0;list-style:none}
+  .dl .card li{margin:8px 0}
+  .dl small{color:var(--dim)}
+  .pill{display:inline-block;border:1px solid var(--warn);color:var(--warn);
+    border-radius:999px;font-size:.75rem;padding:1px 10px;margin-left:8px;vertical-align:middle}
+  table{border-collapse:collapse;width:100%;margin-top:14px;font-size:.95rem}
+  th,td{border:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+  th{background:var(--panel);color:var(--gem2)}
+  td{color:var(--muted)}
+  code,kbd{background:#0d1526;border:1px solid var(--line);border-radius:6px;
+    padding:1px 6px;font-size:.88em;color:var(--gem2)}
+  pre{background:#0d1526;border:1px solid var(--line);border-radius:10px;
+    padding:14px;overflow-x:auto;color:var(--text);font-size:.9rem}
+  details{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:12px 16px;margin:10px 0}
+  details summary{cursor:pointer;font-weight:600;color:var(--text)}
+  details p{color:var(--muted);margin:10px 0 2px}
+  footer{padding:36px 0 48px;color:var(--dim);font-size:.9rem}
+  footer .links{display:flex;flex-wrap:wrap;gap:8px 20px;margin-bottom:14px}
+  .disclaimer{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--warn);
+    border-radius:8px;padding:12px 16px;color:var(--muted);font-size:.92rem;margin-top:22px}
+  @media (max-width:560px){ .hero h1{font-size:1.8rem} section{padding:36px 0} }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <img class="logo" src="./site/icon-256.png" alt="Prospector Lite diamond logo" width="96" height="96">
+    <h1>Prospector Lite</h1>
+    <p class="tag">A free automation companion for the Roblox game <em>Prospecting</em>. It reads your screen, drives the pan/dig/shake loop with ordinary keyboard and mouse input, and never touches the game's process.</p>
+    <span class="badge">Version 5.0.0 · 2026-08-08 · Windows x64 &amp; macOS (Apple&nbsp;Silicon)</span>
+    <div class="btnrow">
+      <a class="btn primary" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe">⬇ Download for Windows</a>
+      <a class="btn primary" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-macos-arm64.dmg">⬇ Download for macOS</a>
+      <a class="btn" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a>
+      <a class="btn" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/WELCOME_AND_SETUP.md">Setup guide</a>
+    </div>
+    <p class="note">Free. No account, no access code. Builds are currently unsigned — <a href="#downloads">verify the checksum</a> before running.</p>
+  </div>
+</header>
+
+<section id="overview">
+  <div class="wrap">
+    <h2>What it actually does</h2>
+    <p class="lead">Prospector Lite watches the game's on-screen cues — the dig bar, the capacity bar, the pan and shake prompts — and presses the same keys and mouse buttons you would. It is an <strong>external</strong> tool built on screen capture and OS-level input: no script injection, no reading Roblox's memory, no modified client, no drivers. Everything it learns and stores stays in local files on your machine.</p>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <div class="grid">
+      <div class="card"><h3>Guided setup wizard</h3><p>Welcome → permissions (with live status and one-click tests) → guided calibration → readiness check. Resumable, honest, skippable — skipping never weakens the safety checks.</p></div>
+      <div class="card"><h3>Auto-pan loop</h3><p>Detects the dig bar, capacity bar, and game prompts from pixels and drives the full pan/dig/shake cycle, with bounded recovery when the game misbehaves.</p></div>
+      <div class="card"><h3>Guided calibration</h3><p>An in-app Calibrate tab with sanitized example screenshots tunes every pixel position for your screen — including a one-click "test capacity calibration" with an annotated preview.</p></div>
+      <div class="card"><h3>Advanced Cue Matching</h3><p>Cue-mask calibration that matches the game's visual prompts robustly across lighting and UI shifts, required and verified during setup.</p></div>
+      <div class="card"><h3>Analytics &amp; HUD</h3><p>Live pans/hour, run history, and an optional overlay HUD. All statistics stay on your machine.</p></div>
+      <div class="card"><h3>Builds &amp; presets</h3><p>Save, switch, and share named setting presets as <code>.ppbuild</code> files.</p></div>
+      <div class="card"><h3>Safe Stop</h3><p><kbd>Esc</kbd> stops instantly and every stop path first releases all held keys and buttons. Independent watchdogs cap runaway behavior.</p></div>
+      <div class="card"><h3>Diagnostics &amp; recommendations</h3><p>Warning badges open a drawer that explains what was observed, the likely cause, and the exact setting to fix — with deep links, bounded one-click Apply/Undo, and a searchable local FAQ.</p></div>
+      <div class="card"><h3>Discord notifications (opt-in)</h3><p>Paste <em>your own</em> webhook URL for start/stop/stats alerts. Off by default; nothing is built in.</p></div>
+      <div class="card"><h3>Trust Center</h3><p>A permanent tab showing every capability the app uses, the exact build identity (version, commit, signing state), network behavior, and your local data files with open/export/delete actions.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="screens">
+  <div class="wrap">
+    <h2>What it watches</h2>
+    <p class="lead">The sanitized example screenshots that ship inside the setup wizard — tight crops of the game cues the detector is calibrated against.</p>
+    <div class="shots">
+      <figure><img src="./site/pan_prompt.png" alt="Cropped game screenshot of the pan prompt"><figcaption>Pan prompt</figcaption></figure>
+      <figure><img src="./site/shake_prompt.png" alt="Cropped game screenshot of the shake prompt"><figcaption>Shake prompt</figcaption></figure>
+      <figure><img src="./site/cap_bar.png" alt="Cropped game screenshot of the capacity bar"><figcaption>Capacity bar</figcaption></figure>
+      <figure><img src="./site/autopan_button.png" alt="Cropped game screenshot of the auto-pan button"><figcaption>Auto-pan button</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li><b>Download</b><span>Grab the build for your platform below and verify its SHA-256 checksum.</span></li>
+      <li><b>Set up</b><span>The wizard walks you through the OS permissions the app genuinely needs — each one explained, tested in-app, and revocable.</span></li>
+      <li><b>Calibrate</b><span>Guided calibration matches the detector to your screen, with example screenshots and instant feedback.</span></li>
+      <li><b>Run</b><span>Start the loop. Watch the HUD, get optional webhook alerts, and stop instantly with <kbd>Esc</kbd>.</span></li>
+    </ol>
+  </div>
+</section>
+
+<section id="downloads">
+  <div class="wrap">
+    <h2>Downloads — 5.0.0</h2>
+    <p class="lead">Official downloads exist in exactly one place: the <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0">GitHub release</a>. Verify every file against <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/SHA256SUMS.txt">SHA256SUMS.txt</a> (<a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/VERIFY_DOWNLOAD.md">how to verify</a>). Machine-readable metadata: <a href="./release.json">release.json</a>.</p>
+    <div class="dl">
+      <div class="card">
+        <h3>Windows (x64) <span class="pill">unsigned — SmartScreen will warn</span></h3>
+        <ul>
+          <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe">ProspectorLite-5.0.0-Windows-x64-Setup.exe</a><br><small>Installer — per-user by default, no administrator rights required.</small></li>
+          <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Portable.zip">ProspectorLite-5.0.0-Windows-x64-Portable.zip</a><br><small>Portable — unzip anywhere and run; nothing is installed.</small></li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>macOS (Apple Silicon) <span class="pill">unsigned — right-click → Open</span></h3>
+        <ul>
+          <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-macos-arm64.dmg">ProspectorLite-5.0.0-macos-arm64.dmg</a><br><small>Drag-to-install DMG. First launch: right-click the app → Open → Open.</small></li>
+        </ul>
+      </div>
+    </div>
+    <p class="note">No Apple Developer or Authenticode certificate is in place yet, so both platforms warn on first launch. The checksum is the integrity mechanism — never disable Gatekeeper, SmartScreen, or your antivirus for this or any app.</p>
+  </div>
+</section>
+
+<section id="trust">
+  <div class="wrap">
+    <h2>Trust &amp; security</h2>
+    <div class="grid">
+      <div class="card"><h3>External-only automation</h3><p>Screen capture + OS input synthesis. No injection, no process-memory reading, no client modification, no packet interception — <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/ROBLOX_SAFETY_BOUNDARY.md">verify it yourself</a>.</p></div>
+      <div class="card"><h3>Zero network by default</h3><p>No update checks, no analytics, no telemetry, no IP or location collection. The only network paths are opt-in and point at servers you choose (your webhook, your AI key). <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/NETWORK_BEHAVIOR.md">Full inventory</a>.</p></div>
+      <div class="card"><h3>Permissions explained</h3><p>macOS needs exactly three permissions (screen, input, hotkeys) — each shown with live status, an explanation, and an in-app test. Windows needs none beyond a normal user process.</p></div>
+      <div class="card"><h3>Source available</h3><p>The complete source is <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">public</a> and every build links the exact commit it was built from in its Trust Center. (No open-source license yet — the code is published for inspection.)</p></div>
+      <div class="card"><h3>Honest build identity</h3><p>Version, commit, and the unsigned status are stamped into each build and shown in-app; release notes and checksums live with the release.</p></div>
+      <div class="card"><h3>Your data stays local</h3><p>Settings, calibration, run history — plain local JSON files listed in the Trust Center with open, export, and delete actions. <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/PRIVACY.md">Privacy policy</a>.</p></div>
+    </div>
+    <div class="disclaimer"><strong>Not affiliated.</strong> Prospector Lite is not affiliated with, endorsed by, or supported by Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use and can put your account at risk. No macro is "safe" or "undetectable" — use it at your own discretion.</div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Installation</h2>
+    <table>
+      <tr><th>macOS</th><td>Download the DMG → verify the checksum (<code>shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code>) → drag the app to Applications → first launch: right-click → Open → Open → grant Screen Recording, Accessibility, and Input Monitoring when the wizard asks. <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/INSTALL_MACOS.md">Full walkthrough</a>.</td></tr>
+      <tr><th>Windows</th><td>Download the installer or portable ZIP → verify the checksum (<code>Get-FileHash -Algorithm SHA256</code>) → run it. If SmartScreen warns (unsigned build): More&nbsp;info → Run&nbsp;anyway — only after the checksum matches. <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/INSTALL_WINDOWS.md">Full walkthrough</a>.</td></tr>
+      <tr><th>From source</th><td>Python 3.11+ — clone the repo and follow <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/BUILDING.md">BUILDING.md</a>.</td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="wrap">
+    <h2>FAQ</h2>
+    <details><summary>Is it free?</summary><p>Yes — completely free, with no account, no access code, and no paid tier. The source is public.</p></details>
+    <details><summary>Does it inject into Roblox or read its memory?</summary><p>No. It captures your screen and sends ordinary OS input events, exactly like pressing the keys yourself. The safety boundary is documented with verification commands in <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/ROBLOX_SAFETY_BOUNDARY.md">ROBLOX_SAFETY_BOUNDARY.md</a>.</p></details>
+    <details><summary>Why does macOS ask for three permissions?</summary><p>Screen Recording reads the game pixels, Accessibility sends the clicks and keys, and Input Monitoring lets the Esc safe-stop hotkey work even while Roblox has focus. Each is explained and testable in the Trust Center; without them the relevant feature simply stays off.</p></details>
+    <details><summary>Why does Windows SmartScreen warn?</summary><p>The builds are not Authenticode-signed yet, so SmartScreen has no reputation for them. Verify the SHA-256 checksum against the release's <code>SHA256SUMS.txt</code>, then choose More info → Run anyway. Never disable SmartScreen itself.</p></details>
+    <details><summary>How do I recalibrate?</summary><p>Open the Calibrate tab any time (or re-run the wizard from the Tutorial menu). Game UI updates and resolution changes move pixels — recalibration takes a couple of minutes with guided screenshots.</p></details>
+    <details><summary>Where are my settings and builds stored?</summary><p>Local JSON files: <code>~/Library/Application Support/Prospector Lite</code> on macOS, <code>%APPDATA%\Prospector Lite</code> on Windows (next to the scripts when running from source). The Trust Center lists every file with open/export/delete actions.</p></details>
+    <details><summary>How do I inspect the source?</summary><p>It's all at <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">github.com/ProspectorsPlus/Prospecting-Auto-Pan</a>. Inside the app, Trust Center → View Code opens the exact file and line of each capability, pinned to the commit your build was made from.</p></details>
+    <details><summary>How do I report a bug?</summary><p>Open a <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues">GitHub issue</a> with your version (shown on the welcome screen), OS, what you expected, and what happened. Security problems: use <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new">private vulnerability reporting</a> instead.</p></details>
+    <details><summary>Can my account still get banned?</summary><p>Yes, possibly. External input can still look automated, and automation may violate the Roblox Terms of Use. The project makes no safety promises — that honesty is part of the design.</p></details>
+  </div>
+</section>
+
+<section id="release">
+  <div class="wrap">
+    <h2>Release — 5.0.0 <small style="color:var(--dim);font-weight:400">(2026-08-08)</small></h2>
+    <p class="lead">The first public stable release: guided setup with Skip Wizard, tutorial auto-open with honest opt-out, the local diagnostics &amp; recommendations system, validated capacity calibration, healed and guarded Windows parity, and the public source repository wired into every View Code button. Version numbering continues the repository's release lineage, so the audited 1.0.0-rc line ships as 5.0.0.</p>
+    <p><a class="btn" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0">Full release notes</a>
+       <a class="btn" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/CHANGELOG.md">Changelog</a></p>
+  </div>
+</section>
+
+<section id="support" style="border-bottom:none">
+  <div class="wrap">
+    <h2>Support</h2>
+    <p class="lead">Bugs and questions: <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues">GitHub Issues</a> (see <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/SUPPORT.md">SUPPORT.md</a> for what to include — and what never to post). Security vulnerabilities: <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new">report privately</a>. In-app: the tutorial, the FAQ browser, and the Trust Center answer most questions.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">Source</a>
+      <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/PRIVACY.md">Privacy</a>
+      <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/SECURITY.md">Security</a>
+      <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+      <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases">All releases</a>
+    </div>
+    <p>Prospector Lite 5.0.0 — source available for inspection (no open-source license chosen yet). Not affiliated with Roblox Corporation or the developers of <em>Prospecting</em>. This page is static: it sets no cookies, runs no analytics, and makes no network requests beyond loading its own files.</p>
+  </div>
+</footer>
+
+</body>
+</html>

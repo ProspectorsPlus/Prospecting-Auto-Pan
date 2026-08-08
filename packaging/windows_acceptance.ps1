@@ -307,12 +307,13 @@ try {
     # Patterns are assembled from fragments so this file never contains the
     # tokens the tracked-tree gate bans (it rejects them, it does not ship
     # them).
+    # The org slug and the project website host are sanctioned (official
+    # source URL in build_info.json + shipped docs); the spaced old-brand
+    # name and the removed endpoints stay banned.
     $bad = @(
         ('Prospectors' + ' Plus'),
-        ('Prospectors' + 'Plus'),
         ('PPLUS' + '-'),
         ('ip-api' + '.com'),
-        ('prospectorsplus' + '.github.io'),
         ('discord.com/api/' + 'webhooks/1')
     )
     $docs = @('README.md', 'PRIVACY.md', 'SECURITY.md', 'THIRD_PARTY_NOTICES.md')

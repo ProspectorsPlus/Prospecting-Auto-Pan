@@ -46,8 +46,8 @@ except Exception:        # diagnostics degrade to "no events", never a crash
 # update check, no analytics, no remote content fetch (see PRIVACY.md /
 # NETWORK_BEHAVIOR).
 APP_NAME    = "Prospector Lite"
-VERSION     = "1.0.0-rc.6"
-PROJECT_URL = ""   # e.g. "https://github.com/<owner>/<repo>" once published
+VERSION     = "5.0.0"
+PROJECT_URL = "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan"
 
 FROZEN = getattr(sys, "frozen", False)        # True when bundled by PyInstaller
 HERE = (os.path.dirname(sys.executable) if FROZEN

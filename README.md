@@ -1,10 +1,21 @@
 # Prospector Lite
 
-**Version 1.0.0-rc.6** (release candidate) — a free desktop macro for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
+**Version 5.0.0** — a free desktop automation companion for the Roblox game *Prospecting*, for macOS and Windows. The full source is available for inspection; no open-source license has been chosen yet (see [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md)).
 
 Prospector Lite automates the pan/dig/shake loop by **reading pixels from your screen and sending ordinary keyboard/mouse input through the operating system**. It is an *external* tool: it never touches the Roblox process, its memory, its files, or its network traffic.
 
 > **Not affiliated.** Prospector Lite is not affiliated with, endorsed by, or supported by Roblox Corporation or the developers of *Prospecting*. Using automation tools may violate the Roblox Terms of Use and can put your account at risk. Use it at your own discretion and risk.
+
+## Download
+
+| Platform | Download |
+|---|---|
+| **Windows (x64)** | [Installer](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe) · [Portable ZIP](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Portable.zip) |
+| **macOS (Apple Silicon)** | [DMG](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-macos-arm64.dmg) |
+
+All versions, release notes, and `SHA256SUMS.txt` live on the [Releases page](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases). Project website: <https://prospectorsplus.github.io/Prospecting-Auto-Pan/>.
+
+Both platforms ship **unsigned** for now (no Apple Developer or Authenticode certificate yet) — verify the SHA-256 checksum before running anything, see [VERIFY_DOWNLOAD.md](VERIFY_DOWNLOAD.md) and the Install section below.
 
 ## What it does
 
@@ -35,8 +46,8 @@ Prospector Lite makes **zero network requests by default**: no update checks, no
 
 | Platform | Notes |
 |---|---|
-| macOS | Packaged `.app`/DMG, or run from source. Needs Screen Recording + Accessibility + Input Monitoring permissions (below). The current build is **unsigned** — see Install. |
-| Windows | Installer or portable ZIP, or run from source. No administrator rights, drivers, or services required to run. |
+| macOS | Packaged `.app`/DMG (Apple Silicon), or run from source. Needs Screen Recording + Accessibility + Input Monitoring permissions (below). The current build is **unsigned** — see Install. |
+| Windows | Installer or portable ZIP (x64), or run from source. No administrator rights, drivers, or services required to run. |
 
 Running from source requires **Python 3.11+** (3.13 tested).
 
@@ -54,24 +65,26 @@ If a required permission is definitively not granted, only the **Start** button 
 
 - **Windows**: no special permissions. The app runs as a normal user process; the installer offers a per-user install, and the portable ZIP needs no installation at all.
 
-## Install from a release
+## Install
 
-> `<repository URL — to be filled in when published>` — releases are not published yet; this section describes the process once they are.
-
-1. Download the artifact for your platform from the release page (macOS DMG; Windows installer `.exe` or portable `.zip`).
+1. Download the artifact for your platform from the [Releases page](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases) (macOS DMG; Windows installer `.exe` or portable `.zip`).
 2. **Verify the checksum** against the `SHA256SUMS.txt` published with the release — step-by-step instructions in [VERIFY_DOWNLOAD.md](VERIFY_DOWNLOAD.md):
 
    ```sh
    # macOS
-   shasum -a 256 -c SHA256SUMS.txt
+   shasum -a 256 -c SHA256SUMS.txt --ignore-missing
    # Windows (PowerShell)
    Get-FileHash .\<file> -Algorithm SHA256
    ```
 
-3. **macOS**: the app is currently **unsigned** (no Apple Developer certificate yet), so the first launch requires right-click → Open → Open, or approval under System Settings → Privacy & Security. This is stated plainly so you know what to expect; if you prefer, build from source instead. Full walkthrough: [INSTALL_MACOS.md](INSTALL_MACOS.md).
-4. **Windows**: run the installer, or unzip the portable build anywhere and run the app. Full walkthrough: [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
+3. **macOS**: the app is currently **unsigned** (no Apple Developer certificate yet), so the first launch requires right-click → Open → Open, or approval under System Settings → Privacy & Security. Never disable Gatekeeper. Full walkthrough: [INSTALL_MACOS.md](INSTALL_MACOS.md).
+4. **Windows**: run the installer, or unzip the portable build anywhere and run the app. SmartScreen may warn because the build is unsigned — after the checksum matches, use More info → Run anyway. Never disable SmartScreen or your antivirus. Full walkthrough: [INSTALL_WINDOWS.md](INSTALL_WINDOWS.md).
 
 To build it yourself, see [BUILDING.md](BUILDING.md).
+
+## Setup
+
+First launch opens the **Welcome screen** and the five-step setup wizard: Welcome → Trust & Permissions (grant + test each one) → Guided Calibration (pixel positions for your screen, with example screenshots) → Readiness Check → the app, where the interactive tutorial takes over. Everything can be re-run later from the Tutorial menu or the Trust Center. See [WELCOME_AND_SETUP.md](WELCOME_AND_SETUP.md) and [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md).
 
 ## Configuration and data
 
@@ -105,13 +118,17 @@ More help: [SUPPORT.md](SUPPORT.md).
 ## Limitations
 
 - Detection is pixel-based: unusual resolutions, color filters, or game UI updates can break it until you recalibrate.
-- The macOS build is unsigned (see above).
+- Both platform builds are unsigned (see above); checksums are the integrity mechanism.
 - No macro is "safe" or "undetectable"; nobody can promise your account is risk-free.
 
 ## Security
 
-To report a vulnerability, see [SECURITY.md](SECURITY.md). For the full threat model and network inventory, see [docs/public-release/](docs/public-release/).
+To report a vulnerability privately, use [GitHub private vulnerability reporting](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new) — details in [SECURITY.md](SECURITY.md). For the full threat model and network inventory, see [docs/public-release/](docs/public-release/).
 
-## License
+## Support
 
-**This project does not have a license yet.** Until one is chosen, the code is not licensed for redistribution. See [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md) for status and options.
+Bugs and questions: [GitHub Issues](https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues). What to include (and what never to post): [SUPPORT.md](SUPPORT.md).
+
+## Source / License
+
+The complete source lives at <https://github.com/ProspectorsPlus/Prospecting-Auto-Pan> and every release links the exact commit it was built from (Trust Center → Build identity → View Code). **This project does not have a license yet** — the source is available for inspection, but until a license is chosen the code is not licensed for redistribution. See [LICENSE_CHOICE_REQUIRED.md](LICENSE_CHOICE_REQUIRED.md) for status and options.

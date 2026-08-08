@@ -63,7 +63,11 @@ def region(text, start, end):
 #    app (it must name the OLD directory to import from it).
 # --------------------------------------------------------------------------
 BRAND = ["Prospectors Plus", "Prospector's Plus", "Prospectors’ Plus",
-         "ProspectorsPlus", "PPLUS-", "PP Analytics", "Plus Macro"]
+         "PPLUS-", "PP Analytics", "Plus Macro"]
+# The GitHub org slug "ProspectorsPlus" is sanctioned ONLY as part of the
+# official repository URL (github.com/ProspectorsPlus/...). Anywhere else it
+# is old-brand residue and fails the scan.
+ORG_SLUG_STRAY = re.compile(r"(?<!github\.com/)ProspectorsPlus")
 BRAND_FILE_ALLOW = {
     "public_release_tests.py", ".gitignore", "PUBLIC_RELEASE_STATUS.md",
     "CHANGELOG.md",
@@ -71,7 +75,8 @@ BRAND_FILE_ALLOW = {
 # Reviewer/evidence documentation: these dirs exist to DESCRIBE the bans
 # (naming the removed endpoints, gate tokens and old brand as evidence), so
 # the scanners exempt them wholesale -- they contain no code.
-BRAND_DIR_ALLOW = ("docs/public-release/", "docs/trust-and-onboarding/")
+BRAND_DIR_ALLOW = ("docs/public-release/", "docs/trust-and-onboarding/",
+                   "docs/public-launch/")
 # The build workflows carry these tokens as their own package-content scan
 # patterns -- they exist to REJECT the strings, not to ship them.
 SCANNER_FILES = {".github/workflows/build-windows.yml",
@@ -88,6 +93,8 @@ def _context_ok(text, token, markers):
 def brand_ok(rel, text):
     if rel in BRAND_FILE_ALLOW or rel in SCANNER_FILES             or rel.startswith(BRAND_DIR_ALLOW):
         return True
+    if ORG_SLUG_STRAY.search(text):
+        return False    # org slug outside the official repository URL
     hits = [b for b in BRAND if b in text]
     if not hits:
         return True
@@ -118,10 +125,15 @@ def scan_branding(files):
 # --------------------------------------------------------------------------
 TRACKING = ["ip-api.com", "ipify", "ipinfo.io", "icanhazip", "ifconfig.me",
             "geoip", "IOPlatformUUID", "MachineGuid", "fonts.googleapis",
-            "fonts.gstatic", "discord.gg/", "prospectorsplus.github.io",
+            "fonts.gstatic", "discord.gg/",
             "SYNC_URL", "_machine_id", "_report_usage",
             "UPDATE_MANIFEST_URL", "TUTORIAL_CONTENT_URL", "do_update",
             "check_update"]
+# The project website is official (docs/ on the default branch serves it),
+# but CODE must never reference it: the app makes no request to it and no
+# update-check may return. Docs/site files may name it freely.
+PAGES_HOST = "prospectorsplus.github.io"
+CODE_EXTS = (".py", ".spec", ".command", ".bat", ".ps1", ".yml", ".js")
 # engine_contract_tests asserts the ABSENCE of SYNC_URL (a negative check),
 # so the token legitimately appears there.
 TRACK_FILE_ALLOW = {"public_release_tests.py", "PUBLIC_RELEASE_STATUS.md",
@@ -132,6 +144,8 @@ def track_ok(rel, text):
     if rel in TRACK_FILE_ALLOW or rel in SCANNER_FILES             or rel.startswith(BRAND_DIR_ALLOW):
         return True
     hits = [t for t in TRACKING if t in text]
+    if PAGES_HOST in text and rel.endswith(CODE_EXTS):
+        hits.append(PAGES_HOST)
     if not hits:
         return True
     if rel in ("prospecting_app.py", "windows/prospecting_app.py"):
@@ -371,7 +385,14 @@ def child_app_offline():
     assert r.get("ok"), r
     # doc opener is whitelisted
     assert api.open_doc("../etc/passwd") is False
-    assert api.open_external("") is False        # no PROJECT_URL -> no-op
+    # open_external with no URL falls back to the configured PROJECT_URL;
+    # stub the browser so the test never really opens one
+    import webbrowser
+    opened = []
+    webbrowser.open = lambda u: opened.append(u) or True
+    assert api.open_external("") is True
+    assert opened == [app.PROJECT_URL], opened
+    assert app.PROJECT_URL.startswith("https://github.com/"), app.PROJECT_URL
     # nothing was written outside the temp home; one positive welcome key
     cfg = json.load(open(os.path.join(home, "prospecting_config.json")))
     assert cfg.get("SHOW_WELCOME_EVERY_LAUNCH") is False, cfg

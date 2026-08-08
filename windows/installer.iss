@@ -1,9 +1,9 @@
 ; Inno Setup script for Prospector Lite
 ; Compile with:  ISCC installer.iss   (or via build.bat)
-; Produces:      Output\ProspectorLiteSetup.exe
+; Produces:      Output\ProspectorLite-<version>-Windows-x64-Setup.exe
 
 #define MyAppName "Prospector Lite"
-#define MyAppVersion "1.0.0-rc.6"
+#define MyAppVersion "5.0.0"
 #define MyAppPublisher "Prospector Lite project"
 #define MyAppExeName "Prospector Lite.exe"
 
@@ -16,7 +16,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=Output
-OutputBaseFilename=ProspectorLiteSetup
+OutputBaseFilename=ProspectorLite-{#MyAppVersion}-Windows-x64-Setup
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2

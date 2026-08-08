@@ -69,7 +69,7 @@ Add or extend tests when you change behavior. Engine changes must keep the golde
 
 ## Submitting changes
 
-The repository is not published yet (`<repository URL — to be filled in when published>`). Once it is:
+The repository lives at <https://github.com/ProspectorsPlus/Prospecting-Auto-Pan>:
 
 1. Fork and branch from `main`.
 2. Keep commits focused; describe *why* in the commit message.

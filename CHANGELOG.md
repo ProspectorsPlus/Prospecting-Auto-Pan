@@ -4,6 +4,23 @@ All notable changes to Prospector Lite are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] — 2026-08-08
+
+The first public stable release of Prospector Lite. Functionally this is the audited `1.0.0-rc.x` line: the version number continues the repository's existing release lineage instead of reusing `v1.0.0`, which an old pre-rebrand "Prospectors Plus" release already occupies — so the rc series ships as **5.0.0** and everything older than it is out of support.
+
+### Added
+- **Public source repository.** `PROJECT_URL` is set to <https://github.com/ProspectorsPlus/Prospecting-Auto-Pan>: the Welcome screen's View Source link is live, and every Trust Center View Code button opens the exact build commit on GitHub.
+- **Project website.** A new static site at <https://prospectorsplus.github.io/Prospecting-Auto-Pan/> (served from `docs/` on the default branch) with downloads, feature overview, trust explanations, installation steps, and FAQ. No external fonts, no analytics, no scripts beyond a few lines of inline navigation code; download links come from the static `docs/release.json`.
+- Launch evidence under `docs/public-launch/` (starting state, secret-gate verification, launch report).
+
+### Changed
+- **Versioned Windows artifact names.** The installer is now `ProspectorLite-<version>-Windows-x64-Setup.exe` and the portable build `ProspectorLite-<version>-Windows-x64-Portable.zip` (previously unversioned `ProspectorLiteSetup.exe` / `ProspectorLite-portable-win64.zip`), matching the macOS DMG convention.
+- Docs updated for the published state: real repository/issues/security URLs replace the `<to be filled in when published>` placeholders; `VERIFY_DOWNLOAD.md` describes the live release page.
+- The release gates now sanction the org slug `ProspectorsPlus` **only** inside the official repository URL and the project website host only in docs — the spaced old-brand name and all removed endpoints stay banned everywhere.
+
+### Fixed
+- `build-windows.yml` failed GitHub's workflow parser (`secrets` context is not allowed in step `if:` expressions); the certificate-presence check is hoisted into job `env`. This had made the Windows build undispatchable.
+
 ## [1.0.0-rc.6] — 2026-07
 
 The final pre-publish pass: onboarding routing gets one honest authority with a real Skip Wizard, the tutorial opens on every entry with an honest opt-out, warnings become a full diagnostic-and-recommendation system with exact-setting deep links, the pan-capacity right-end defect (a release blocker) is root-caused and killed, and the Windows mirror is healed and guarded. Every defect was first reproduced against the real code (docs/final-prepublish/REPRODUCTION_REPORT.md).

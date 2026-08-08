@@ -23,7 +23,7 @@ Exactly which build you are running (`lite_trust.py`, `build_identity`):
 
 | Row | Meaning |
 |---|---|
-| Version | The app version (e.g. `1.0.0-rc.6`). |
+| Version | The app version (e.g. `5.0.0`). |
 | Commit | The exact git commit this build was made from. "(built from modified source)" marks a development build whose tree did not match that commit. |
 | Built | Build timestamp from the stamped `build_info.json` (blank for source runs). |
 | Platform | OS and architecture the app is running on now. |

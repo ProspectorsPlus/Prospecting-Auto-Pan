@@ -6,18 +6,18 @@ turn that off.
 ## What it is
 
 A guided tour of the app: every page, the calibration surfaces, Safe
-Stop, the Trust Center, and (new in 1.0.0-rc.6) a card explaining the
-warning badges — what yellow vs red means, the Apply/Undo controls, and
-the FAQ. You can start it manually any time from the Tutorial menu; the
-per-tab mini-tours live there too.
+Stop, the Trust Center, and a card explaining the warning badges — what
+yellow vs red means, the Apply/Undo controls, and the FAQ. You can
+start it manually any time from the Tutorial menu; the per-tab
+mini-tours live there too.
 
 ## Auto-open: on every entry, by default
 
 The tutorial opens automatically **each time you enter the main app** —
 after a fresh launch, after finishing or skipping the setup wizard, and
 again after you revisit the wizard and come back. Having seen, finished,
-or dismissed it before does not suppress it (that was the old behavior;
-the product decision changed in rc.6).
+or dismissed it before does not suppress it (earlier pre-release builds
+showed it only once; that behavior is gone).
 
 It opens at most **once per entry**, and it never fires on top of the
 Welcome screen, the setup wizard, or an open modal.
