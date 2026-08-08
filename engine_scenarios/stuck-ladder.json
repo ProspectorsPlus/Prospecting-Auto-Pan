@@ -24,5 +24,9 @@
   0,
   1440,
   900
- ]
+ ],
+ "capabilities": {
+  "findsOcr": true,
+  "earningsOcr": true
+ }
 }
