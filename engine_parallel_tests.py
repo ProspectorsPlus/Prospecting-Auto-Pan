@@ -429,12 +429,25 @@ def test_practicals_in_branch():
 
 
 def main():
-    test_golden_determinism()
+    # The parallel goldens + v4 concurrency table live in the private
+    # Prospector Studio sibling checkout (same policy as
+    # studio_conformance.py): a public clone / public CI does not have
+    # them, so those two passes SKIP honestly while every self-contained
+    # behavioural test still runs.
+    have_goldens = os.path.isdir(GOLDENS)
+    if have_goldens:
+        test_golden_determinism()
+    else:
+        print("[1] parallel goldens: SKIPPED (private Studio goldens not "
+              "present -- expected on public checkouts)")
     test_whitelist()
     test_arbitration()
     test_stop_semantics()
     test_capabilities()
-    test_conc_table()
+    if have_goldens:
+        test_conc_table()
+    else:
+        print("[6] conc table: SKIPPED (private Studio goldens not present)")
     test_practicals_in_branch()
     print()
     print("PARALLEL:", "ALL PASS" if not FAILS

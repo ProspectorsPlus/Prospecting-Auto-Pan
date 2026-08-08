@@ -181,6 +181,13 @@ def _resource(name):
 
 
 DATA_DIR = _data_dir()
+# The engine module resolves its own home when imported (in-process for
+# fingerprints, and in spawned children): pin it to the SAME folder now.
+# Without this, a frozen import falls back to the per-user default dir and
+# creates it at import time even when PP_DATA_DIR points elsewhere -- a
+# data leak outside the documented single data folder. An explicitly
+# spawner-provided PPENGINE_HOME (Prospector Studio host) still wins.
+os.environ.setdefault("PPENGINE_HOME", DATA_DIR)
 CONFIG_FILE = os.path.join(DATA_DIR, "prospecting_config.json")
 BUILDS_FILE = os.path.join(DATA_DIR, "prospecting_builds.json")
 TUTORIAL_FILE = os.path.join(DATA_DIR, "tutorial_content.json")        # owner edits

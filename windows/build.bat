@@ -15,8 +15,8 @@ echo [2/5] Regenerating icon.ico from icon.png (always, never a stale reuse)...
 py -c "from PIL import Image;Image.open('icon.png').convert('RGBA').save('icon.ico',sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])" || goto :err
 
 echo [3/5] Stamping build identity + trust manifest...
-py -c "import json,subprocess,datetime,os,re;c=subprocess.run(['git','rev-parse','HEAD'],capture_output=True,text=True).stdout.strip();d=bool(subprocess.run(['git','status','--porcelain','--untracked-files=no'],capture_output=True,text=True).stdout.strip());v=re.search(r'VERSION\s*=\s*\"([^\"]+)\"',open('prospecting_app.py',encoding='utf-8').read()).group(1);json.dump({'commit':c,'date':datetime.date.today().isoformat(),'version':v,'dirty':d,'package':'windows','project_url':os.environ.get('PP_PROJECT_URL',''),'signed':False,'notarized':False},open('build_info.json','w'))"
-py ..\lite_trust.py --emit trust_manifest.json
+py ..\packaging\stamp_build_info.py || goto :err
+py ..\lite_trust.py --emit trust_manifest.json || goto :err
 
 echo [4/5] Building the app with PyInstaller...
 rmdir /s /q build dist 2>nul
