@@ -30,12 +30,12 @@
       <ul class="nav-links" id="navlinks">
         <li><a href="../">Home</a></li>
         <li><a href="./">Wiki</a></li>
-        <li><a href="../#downloads">Download</a></li>
+        <li><a href="../download/">Download</a></li>
         <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></li>
       </ul>
     </nav>
     <div class="nav-cta">
-      <a class="btn btn-sm btn-primary" href="../#downloads">Download</a>
+      <a class="btn btn-sm btn-primary" href="../download/">Download</a>
       <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
         <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
@@ -54,6 +54,7 @@
       <a href="./index.html">Wiki home</a>
       <a href="./getting-started.html">Getting started</a>
       <a href="./trust-and-permissions.html">Trust and permissions</a>
+      <a href="./verify-download.html">Verify a download</a>
       <span class="side-group">Guides</span>
       <a href="./calibration.html">Calibration</a>
       <a href="./modes-and-builds.html">Modes and builds</a>
@@ -191,6 +192,38 @@
       <figcaption>The app Settings page. Compact mode and Reduce animations live here; neither changes macro tuning or builds.</figcaption>
     </figure>
 
+    <h2 id="install-macos">Installing on macOS</h2>
+    <p>The step-by-step install walkthrough lives on the <a href="../download/macos/">macOS download page</a>; this section covers what goes wrong during and just after it. Install problems on macOS come down to two things: the download itself, which the checksum settles, and the timing of permission grants, which a restart settles. The checksum check runs in Terminal, from the folder that holds both the DMG and <code>SHA256SUMS.txt</code>:</p>
+    <div class="cmd"><div class="cmd-head"><span class="cmd-label">Terminal</span><button type="button" class="copybtn" data-copy="cd ~/Downloads&#10;shasum -a 256 -c SHA256SUMS.txt --ignore-missing" aria-label="Copy the checksum verification commands"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span class="cb-label">Copy</span></button></div><pre><code>cd ~/Downloads
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code></pre></div>
+    <div class="cmd"><div class="cmd-head"><span class="cmd-label">Expected output</span></div><pre><code class="ok">ProspectorLite-5.0.0-macos-arm64.dmg: OK</code></pre></div>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>Verification prints <code>shasum: SHA256SUMS.txt: No such file or directory</code></td><td>Terminal is not in the folder that holds the files, or the browser saved the list somewhere else or under another name</td><td>Run <code>cd ~/Downloads</code> again, then <code>ls</code> to list the folder. If <code>SHA256SUMS.txt</code> is missing from the listing, download it again from the release page. The <a href="../download/macos/#verify">download guide's verify step</a> walks through the whole check.</td></tr>
+      <tr><td>The checksum list saved as <code>SHA256SUMS (1).txt</code></td><td>Downloading it a second time saves a numbered copy instead of overwriting the first</td><td>Rename it back to <code>SHA256SUMS.txt</code> in Finder, or point the command at the renamed file: <code>shasum -a 256 -c "SHA256SUMS (1).txt" --ignore-missing</code>. The quotes keep the space and the parentheses as part of one filename.</td></tr>
+      <tr><td>The DMG will not open, or macOS reports the app "is damaged"</td><td>Almost always an incomplete or altered download, not anything on your Mac</td><td>Re-run the checksum check first. A <code>FAILED</code> line confirms a bad download: delete the DMG, download it again from the release page, and re-verify. A "damaged app" message is a checksum problem, never a reason to bypass Gatekeeper.</td></tr>
+      <tr><td>Gatekeeper warns about an unidentified developer, or the dialog offers no Open button at all</td><td>The build is unsigned and not notarized yet, so the warning is expected on a genuine copy</td><td>Right-click (or Control-click) the app in Applications and choose <b>Open</b>. On macOS 15 Sequoia and newer, click <b>Done</b> in the first dialog, then open <b>System Settings › Privacy &amp; Security</b> and click <b>Open Anyway</b> at the bottom. This is a one-time step; later launches open normally.</td></tr>
+      <tr><td>A permission was just granted, but the app does not recognize it</td><td>macOS applies Screen Recording, and sometimes Input Monitoring, on the app's next launch</td><td>Quit fully with Command + Q, reopen, and run the test again.</td></tr>
+      <tr><td>System Settings shows the permission enabled, but the tests still fail after a relaunch</td><td>The pane's entry can point at a previous copy of the app, for example after replacing the bundle during an update</td><td>Remove the app's entry from the pane with the minus button, then click <b>Request</b> again from the app's capability card so the fresh entry points at the installed copy. In stubborn cases, restarting the Mac clears stale permission caches.</td></tr>
+      <tr><td>Something permission-related is failing, but it is unclear which one</td><td>Each permission fails in its own way</td><td>Black or empty captures mean Screen Recording; keys and clicks that never reach the game mean Accessibility; Esc not stopping the macro while Roblox has focus means Input Monitoring. Each has a live test on its card; see <a href="./trust-and-permissions.html">Trust and permissions</a>.</td></tr>
+    </table></div>
+
+    <h2 id="install-windows">Installing on Windows</h2>
+    <p>The step-by-step walkthrough lives on the <a href="../download/windows/">Windows download page</a>. Windows has no permission prompts, so install problems concentrate in two places: the SmartScreen warning on first run and the checksum check in PowerShell. The check runs from the folder that holds the download; the hash prints in uppercase, and case does not matter when comparing:</p>
+    <div class="cmd"><div class="cmd-head"><span class="cmd-label">PowerShell</span><button type="button" class="copybtn" data-copy="cd &quot;$HOME\Downloads&quot;&#10;Get-FileHash &quot;.\ProspectorLite-5.0.0-Windows-x64-Setup.exe&quot; -Algorithm SHA256" aria-label="Copy the PowerShell checksum commands"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span class="cb-label">Copy</span></button></div><pre><code>cd "$HOME\Downloads"
+Get-FileHash ".\ProspectorLite-5.0.0-Windows-x64-Setup.exe" -Algorithm SHA256</code></pre></div>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>"Windows protected your PC" appears on first run</td><td>The build is not Authenticode-signed yet, so SmartScreen has no reputation for it; expected on an unsigned build, and a reputation warning, not a malware verdict</td><td>Verify the checksum first, then click <b>More info</b>, then <b>Run anyway</b>. Never disable SmartScreen. The <a href="../download/windows/#smartscreen">download guide</a> covers the dialog in detail.</td></tr>
+      <tr><td>Double-clicking the installer appears to do nothing</td><td>The SmartScreen dialog can open behind other windows, Defender quarantined the file, or the download is damaged</td><td>Check the taskbar for a dialog waiting behind other windows, then re-verify the checksum. A quarantined file whose checksum matches is a false positive to report; one whose checksum does not match is a bad download to delete and download again.</td></tr>
+      <tr><td>The portable build will not start, or starts and immediately fails</td><td>The exe was run from inside the zip preview window, so the rest of the app's files were never extracted</td><td>Right-click the ZIP and choose <b>Extract All</b> first, then run <code>Prospector Lite.exe</code> from the extracted folder.</td></tr>
+      <tr><td>The checksum command errors with "Cannot find path"</td><td>PowerShell is not in the folder that holds the files</td><td>Run <code>cd "$HOME\Downloads"</code> again, then <code>dir Prospector*, SHA256*</code> to see what is actually there.</td></tr>
+      <tr><td>The checksum list saved as <code>SHA256SUMS (1).txt</code></td><td>Downloading it a second time saves a numbered copy instead of overwriting the first</td><td>Rename it back with <code>Rename-Item ".\SHA256SUMS (1).txt" "SHA256SUMS.txt"</code>; the quotes keep the space and the parentheses as part of one filename. See the <a href="../download/windows/#verify">download guide's verify step</a>.</td></tr>
+      <tr><td><code>%APPDATA%\Prospector Lite</code> survives an uninstall</td><td>The uninstaller keeps the data folder on purpose, so a reinstall resumes with your settings, calibration, and history</td><td>Nothing, if you might reinstall. For complete removal, delete <code>%APPDATA%\Prospector Lite</code> by hand; everything the app stores lives in that one folder.</td></tr>
+      <tr><td>Setup showed no permission prompts, so nothing seems verified</td><td>Windows needs no permissions for screen capture or synthetic input, so there is nothing to grant</td><td>The Trust and Permissions wizard page offers real tests instead: a one-shot screen grab, a sandboxed keystroke and pointer wiggle, and a Safe Stop listen. Run them to prove each capability on your hardware.</td></tr>
+      <tr><td>The input tests pass, but Roblox ignores the macro</td><td>Roblox is likely running as administrator, so Windows drops synthetic input from a normal-level process</td><td>Run both programs at the normal level. Neither needs elevation, and never run the macro as administrator to compensate.</td></tr>
+    </table></div>
+
     <h2 id="faq">FAQ</h2>
     <div class="faq">
       <details>
@@ -254,6 +287,12 @@
         <div class="faq-a"><p>Yes, possibly. External input can still look automated, and automation may violate the Roblox Terms of Use. Prospector Lite makes no claim of undetectability and no account-safety promises; no macro is risk-free. Use it at your own discretion and risk.</p></div>
       </details>
     </div>
+
+    <div class="related"><h2 id="related">Related articles</h2><div class="related-grid">
+      <a href="./calibration.html"><span class="rel-k">Guide</span><b>Calibration</b></a>
+      <a href="./verify-download.html"><span class="rel-k">Trust</span><b>Verify a download</b></a>
+      <a href="./trust-and-permissions.html"><span class="rel-k">Trust</span><b>Trust and permissions</b></a>
+    </div></div>
 
     <nav class="docs-pager" aria-label="More documentation">
       <a class="prev" href="./settings.html"><span class="dir">Previous</span><b>Settings reference</b></a>

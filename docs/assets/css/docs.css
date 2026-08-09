@@ -168,3 +168,23 @@ h2:hover .anchor,h3:hover .anchor{opacity:.8}
 /* ---------- wiki landing hero ---------- */
 .docs-hero{padding:calc(84px + 44px) 0 10px}
 .docs-hero .lead{margin-top:14px}
+
+/* ---------- related articles ---------- */
+.related-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px}
+.related-grid a{
+  border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:var(--panel);
+  display:flex;flex-direction:column;gap:4px;color:var(--text);
+  transition:border-color .18s,background .18s;
+}
+.related-grid a:hover{border-color:var(--line-gold);background:var(--panel-strong);text-decoration:none}
+.related-grid .rel-k{font-size:.72rem;letter-spacing:.09em;text-transform:uppercase;color:var(--text-3)}
+.related-grid b{font-size:.92rem}
+@media (max-width:700px){.related-grid{grid-template-columns:1fr}}
+
+/* ---------- anchor target highlight ---------- */
+.docs-main h2:target,.docs-main h3:target{color:var(--gold-soft)}
+.docs-main h2:target{border-top-color:var(--line-gold)}
+
+/* docs pages can host the shared command blocks at full article width */
+.docs-main .cmd{max-width:var(--w-text)}
+.docs-main .callout{max-width:var(--w-text)}

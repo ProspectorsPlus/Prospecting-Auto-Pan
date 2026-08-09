@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Getting started · Prospector Lite wiki</title>
-<meta name="description" content="install, first launch, and the setup wizard for Prospector Lite 5.0.0 on Windows and macOS.">
+<meta name="description" content="Install, first launch, and the setup wizard for Prospector Lite 5.0.0 on Windows and macOS.">
 <link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/getting-started.html">
 <link rel="icon" href="../favicon.svg" type="image/svg+xml">
 <meta name="theme-color" content="#0a0806">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Getting started · Prospector Lite wiki">
-<meta property="og:description" content="install, first launch, and the setup wizard for Prospector Lite 5.0.0 on Windows and macOS.">
+<meta property="og:description" content="Install, first launch, and the setup wizard for Prospector Lite 5.0.0 on Windows and macOS.">
 <meta property="og:url" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/getting-started.html">
 <meta property="og:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
 <link rel="stylesheet" href="../assets/css/site.css">
@@ -30,12 +30,12 @@
       <ul class="nav-links" id="navlinks">
         <li><a href="../">Home</a></li>
         <li><a href="./">Wiki</a></li>
-        <li><a href="../#downloads">Download</a></li>
+        <li><a href="../download/">Download</a></li>
         <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></li>
       </ul>
     </nav>
     <div class="nav-cta">
-      <a class="btn btn-sm btn-primary" href="../#downloads">Download</a>
+      <a class="btn btn-sm btn-primary" href="../download/">Download</a>
       <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
         <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
       </button>
@@ -54,6 +54,7 @@
       <a href="./index.html">Wiki home</a>
       <a href="./getting-started.html" aria-current="page">Getting started</a>
       <a href="./trust-and-permissions.html">Trust and permissions</a>
+      <a href="./verify-download.html">Verify a download</a>
       <span class="side-group">Guides</span>
       <a href="./calibration.html">Calibration</a>
       <a href="./modes-and-builds.html">Modes and builds</a>
@@ -92,6 +93,7 @@
       <tr><td><code>ProspectorLite-5.0.0-Windows-x64-Portable.zip</code></td><td>Windows portable build; unzip anywhere, nothing is installed</td><td>about 33&nbsp;MB</td></tr>
       <tr><td><code>SHA256SUMS.txt</code></td><td>SHA-256 checksums for all three builds</td><td>text file</td></tr>
     </table></div>
+    <p>The platform pages at <a href="../download/windows/">Windows</a> and <a href="../download/macos/">macOS</a> walk every step with copy buttons, and <a href="./verify-download.html">Verify a download</a> goes deeper on checksums.</p>
 
     <h3 id="verify-sha256">Verify the SHA-256 checksum</h3>
     <p>Both builds currently ship unsigned (no Apple Developer or Authenticode certificate yet), so the checksum is the integrity mechanism. Download <code>SHA256SUMS.txt</code> into the same folder as your build, open a terminal in that folder, and run the command for your platform:</p>
@@ -298,6 +300,12 @@
       <li><b>Tune when you are ready.</b> The <a href="./settings.html">Settings reference</a> documents the tuning keys, and <a href="./modes-and-builds.html">Modes and builds</a> covers presets you can start from.</li>
       <li><b>Read the trust pages.</b> <a href="./trust-and-permissions.html">Trust and permissions</a> goes deep on what each permission can and cannot do, the in-app tests, and the Trust Center.</li>
     </ol>
+
+    <div class="related"><h2 id="related">Related articles</h2><div class="related-grid">
+      <a href="./verify-download.html"><span class="rel-k">Trust</span><b>Verify a download</b></a>
+      <a href="./calibration.html"><span class="rel-k">Guide</span><b>Calibration</b></a>
+      <a href="./troubleshooting.html"><span class="rel-k">Help</span><b>Troubleshooting and FAQ</b></a>
+    </div></div>
 
     <nav class="docs-pager" aria-label="More documentation">
       <a class="prev" href="./index.html"><span class="dir">Previous</span><b>Wiki home</b></a>
