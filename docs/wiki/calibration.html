@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Calibration · Prospector Lite wiki</title>
+<meta name="description" content="Every Prospector Lite calibration step with real screenshots, from the capacity bar to Advanced Cue Matching and OCR regions.">
+<link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/calibration.html">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0806">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Calibration · Prospector Lite wiki">
+<meta property="og:description" content="Every Prospector Lite calibration step with real screenshots, from the capacity bar to Advanced Cue Matching and OCR regions.">
+<meta property="og:url" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/calibration.html">
+<meta property="og:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>document.documentElement.classList.add('js')</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="../" aria-label="Prospector Lite home">
+      <svg viewBox="2 3.5 20 18" aria-hidden="true"><polygon points="6.5,4 17.5,4 15.4,9.2 8.6,9.2" fill="#f6e7c8"/><polygon points="6.5,4 8.6,9.2 2.5,9.2" fill="#e8cf8f"/><polygon points="17.5,4 21.5,9.2 15.4,9.2" fill="#c9a24f"/><polygon points="2.5,9.2 8.6,9.2 12,21" fill="#d9a441"/><polygon points="8.6,9.2 15.4,9.2 12,21" fill="#f0d9a0"/><polygon points="15.4,9.2 21.5,9.2 12,21" fill="#b8933f"/></svg>
+      Prospector Lite
+    </a>
+    <nav aria-label="Main">
+      <ul class="nav-links" id="navlinks">
+        <li><a href="../">Home</a></li>
+        <li><a href="./">Wiki</a></li>
+        <li><a href="../#downloads">Download</a></li>
+        <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></li>
+      </ul>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-sm btn-primary" href="../#downloads">Download</a>
+      <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
+        <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="docs-shell">
+  <aside class="docs-side">
+    <button class="docs-menu-btn" id="docsmenu" aria-expanded="false" aria-controls="sidenav">
+      Documentation menu
+      <svg width="12" height="8" viewBox="0 0 12 8" aria-hidden="true"><path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+    <nav class="docs-sidenav" id="sidenav" aria-label="Documentation" data-spy>
+      <span class="side-group">Start here</span>
+      <a href="./index.html">Wiki home</a>
+      <a href="./getting-started.html">Getting started</a>
+      <a href="./trust-and-permissions.html">Trust and permissions</a>
+      <span class="side-group">Guides</span>
+      <a href="./calibration.html" aria-current="page">Calibration</a>
+      <a href="./modes-and-builds.html">Modes and builds</a>
+      <a href="./analytics-and-hud.html">Analytics and HUD</a>
+      <a href="./interface.html">Interface reference</a>
+      <span class="side-group">Reference</span>
+      <a href="./settings.html">Settings reference</a>
+      <a href="./troubleshooting.html">Troubleshooting and FAQ</a>
+    </nav>
+  </aside>
+
+  <main class="docs-main" id="main">
+    <nav class="crumb" aria-label="Breadcrumb"><a href="../">Home</a><span class="sep">/</span><a href="./">Wiki</a><span class="sep">/</span><span>Calibration</span></nav>
+    <p class="eyebrow">Guides</p>
+    <h1 class="docs-title">The calibration guide</h1>
+    <p class="docs-intro">Prospector Lite reads the screen rather than game memory, so it has to learn where the game's UI sits on your setup. This page walks the calibration steps in the app's order, from the capacity bar through Advanced Cue Matching to the optional OCR regions, using the same sanitized screenshots that ship inside the app. It ends with the built-in test tools and a troubleshooting FAQ.</p>
+
+    <h2 id="before">Before you calibrate</h2>
+
+    <p>Calibration tells the macro where to look on your screen: the capacity bar, the three white prompt words, and any optional regions you enable. Do it once; you only redo a spot when your screen changes. If a spot is wrong, everything downstream misreads, which is why the setup wizard puts calibration right after permissions.</p>
+
+    <div class="metric-row">
+      <div class="metric"><b>One save file</b><span>the wizard and the Calibrate tab write the same values</span></div>
+      <div class="metric"><b>Frozen captures</b><span>the picker shows a screenshot, never live video</span></div>
+      <div class="metric"><b>Confirm to save</b><span>nothing writes until you confirm; Esc cancels</span></div>
+      <div class="metric"><b>Validated writes</b><span>a failed check keeps your previous values</span></div>
+    </div>
+
+    <p>There is one calibration store. The setup wizard's <b>Guided Calibration</b> page and the <b>Calibrate</b> tab drive the same engine and the same save file; the wizard itself says "there is exactly one set of values". The wizard walks the numbered steps in order with prep instructions and example screenshots; the Calibrate tab is the maintenance surface you come back to later, with the same captures plus live tests, manual per-pixel rows, and the Advanced cue matching section at the bottom. Each calibration card also has a <b>"View code"</b> button that opens the code responsible for that step, pinned to the commit your build was made from.</p>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-guided-calibration.webp" width="1600" height="1041" alt="The Guided Calibration checklist in the setup wizard: numbered required steps in order with status chips, a Detect Roblox window banner at the top, and an optional group below."></div>
+      <figcaption>The wizard's Guided Calibration checklist. Required steps run in order; the highlighted card is the one to do next.</figcaption>
+    </figure>
+
+    <h3 id="before-window">The Roblox window comes first</h3>
+
+    <p>Everything is stored relative to the Roblox window rectangle captured at calibration time. That is what lets the app place points automatically and detect when a calibration has gone stale. Before the numbered steps, the checklist shows a banner reading <b>"Before you calibrate:"</b> with a <b>"Detect Roblox window"</b> button; a successful detect prints the size and position it found, for example "✓ Found: 1800×1087 at (0, 39)". Open Roblox in <em>Prospecting</em> on your <b>primary display</b> before calibrating; on a multi-monitor setup, calibration always uses the primary monitor.</p>
+
+    <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Keep the window where it is once you start calibrating. The app compares the stored window size to the live one within 4 px, rechecking about every 8 seconds; on a mismatch, required items flip to <b>Stale</b>, a red banner reads <b>"Re-calibration needed."</b>, and Start stays disabled until you recalibrate or restore the window. A pure move (no resize) recovers on its own once the window is back.</span></div>
+
+    <h3 id="before-statuses">Status chips and the start gate</h3>
+
+    <p>Each item on the checklist carries a status chip:</p>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Chip</th><th>Meaning</th></tr>
+      <tr><td><b>Calibrated</b></td><td>You calibrated the item by hand and the Roblox window still matches the window it was calibrated against.</td></tr>
+      <tr><td><b>Auto</b></td><td>Auto-calibration is on and the item is placed from the built-in ratio profile at every run start. The macro is runnable out of the box this way; calibrating by hand makes the spot exact for your setup.</td></tr>
+      <tr><td><b>Stale</b></td><td>Calibrated, but the Roblox window has moved or resized since. Recalibrate, or restore the window.</td></tr>
+      <tr><td><b>Not set</b></td><td>A required value is missing with auto-calibration off, or an enabled optional feature is missing its calibration.</td></tr>
+      <tr><td><b>Needs review</b></td><td>Stored values look suspicious (for example a capacity pair with swapped tips), or they predate a requirement change. The app never modifies stored values on its own; the chip asks you to look.</td></tr>
+      <tr><td><b>Off</b></td><td>An optional item whose feature is disabled. Nothing to do unless you turn the feature on.</td></tr>
+    </table></div>
+
+    <p>A classic run can only start when all required items read <b>Auto</b> or <b>Calibrated</b>. One item can never be satisfied automatically: <a href="#cue-matching">Advanced Cue Matching</a> requires a real capture on this machine, because a letter-shape mask cannot come from a profile. If a required item needs attention when you press Start, the app refuses, explains which item is blocking, and opens the Calibrate tab. Studio scripts are the exception; a block script that uses no pixel detection can run without calibration.</p>
+
+    <p>One more behavior worth knowing: a manual save of any core point turns auto-calibration off for good and makes your screen authoritative. From then on the saved coordinates (and the ratios re-derived from your window) are what the engine uses.</p>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-calibrate-tab.webp" width="1600" height="1041" alt="The Calibrate tab: a Guided calibration button, live test buttons, and manual rows for the capacity bar ends and prompt pixels with x, y and color fields."></div>
+      <figcaption>The Calibrate tab. The same captures as the wizard, plus manual rows, tests, and the Advanced cue matching section.</figcaption>
+    </figure>
+
+    <h2 id="required-steps">Steps 1 to 4: the pixel spots</h2>
+
+    <p>The first four required steps each capture a single point. For each capture, the app first checks Roblox is visible, then opens a full-screen picker over a frozen screenshot of your game. In pixel mode a round loupe magnifies the area under your cursor at 9x; clicking shows a marker and a card with the captured color and position, and <b>Confirm</b> saves it. Where the app can auto-detect the spot, the picker opens with a red ✕ already placed on its proposal; you confirm it, or click the correct spot yourself. Esc cancels at any point with your previous values intact.</p>
+
+    <article class="step-card" id="step-capacity">
+      <div class="step-head"><span class="step-num">01</span><h3 id="capacity">Pan capacity bar (right and left ends)</h3><span class="tag req">Required</span></div>
+      <p>The yellow Pan Fill bar tells the macro when the pan is full, when it is empty, and when a dig registered. It is the heartbeat of the whole cycle, which is why it comes first. This step captures both tips of the bar in two captures.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li>In Roblox, dig until the capacity bar is <b>completely full</b>, all yellow. Leave it full and come back to the app.</li>
+          <li>Start the capture. The app looks for the widest run of solid gold in the lower part of the screen and opens the picker with a red ✕ on its proposal for the <b>right</b> tip.</li>
+          <li>Check the ✕ sits on the right tip, then <b>Confirm</b>; or click the correct spot yourself.</li>
+          <li>Repeat for the <b>left</b> tip. Keep the bar full; nothing else changes in the game.</li>
+        </ol>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/cap_bar.webp" width="1200" height="420" alt="The capacity bar completely full and yellow, with the picker's confirm card on the detected right tip showing its color value and coordinates."></div>
+          <figcaption>The picker's confirm card on the detected right tip of the full bar.</figcaption>
+        </figure>
+      </div>
+      <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>The pair is validated before it saves: the right tip must sit more than 20 px to the right of the left tip, the two tips must sit within 8 px of the same row, and the measured width must come out at least 24 px. A failed check writes nothing; the app reports <b>"Calibration NOT saved. Previous values kept."</b> with the reasons spelled out.</span></div>
+      <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Common mistake: calibrating with a half-full bar, or clicking the very edge pixel, which is a pale anti-aliased blend rather than solid gold. The picker guards against this: a manual click is walked up to 10 px inward to the first solid-gold pixel, and a click with no gold in reach is rejected with the color it actually read. The auto-proposal lands 6 px inside the solid fill for the same reason.</span></div>
+      <p class="set-meta"><b>Related:</b> <a href="#tests">Test capacity calibration</a> re-reads the screen with the runtime math after you save. <b>Watch for:</b> the macro walking forward and never digging usually means this pair is off.</p>
+    </article>
+
+    <article class="step-card" id="step-pan">
+      <div class="step-head"><span class="step-num">02</span><h3 id="pan">"Pan" prompt pixel</h3><span class="tag req">Required</span></div>
+      <p>Anchors the walk back to water: the macro knows it has reached the river when the white "Pan" prompt appears at the bottom of the screen.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li>Stand in the <b>water</b> so the white "Pan" prompt shows at the bottom of the screen, then come back to the app.</li>
+          <li>Start the capture. The picker opens over a frozen screenshot, with a proposal on the text when the app finds it.</li>
+          <li>Click the middle of the white <b>Pan</b> letters, check the card's color and position, then <b>Confirm</b>.</li>
+        </ol>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/pan_prompt.webp" width="1100" height="618" alt="Standing in the water with the white Pan prompt visible under the full capacity bar, and the picker's confirm card showing color ffffff."></div>
+          <figcaption>The white "Pan" prompt with the confirm card on the captured pixel.</figcaption>
+        </figure>
+      </div>
+      <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Click the letters, not the mouse icon beside them. At runtime the fallback detector samples a small box around this spot and needs at least 12% of it to read white, so the middle of the word is the safest target.</span></div>
+    </article>
+
+    <article class="step-card" id="step-deposit">
+      <div class="step-head"><span class="step-num">03</span><h3 id="deposit">"Collect Deposit" prompt pixel</h3><span class="tag req">Required</span></div>
+      <p>Tells the macro it has reached a deposit on land and can collect.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li>Step onto <b>land</b> at a deposit so the white "Collect Deposit" prompt shows, then come back.</li>
+          <li>Start the capture and click the middle of the white <b>Collect Deposit</b> text.</li>
+          <li><b>Confirm</b> the card.</li>
+        </ol>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/deposit_prompt.webp" width="1100" height="618" alt="Standing on land with the white Collect Deposit prompt visible and the empty gray capacity bar above, plus the picker's confirm card."></div>
+          <figcaption>"Collect Deposit" visible on land, capacity bar empty and ready to dig.</figcaption>
+        </figure>
+      </div>
+      <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Make sure only the prompt the app asks for is visible when you capture. The wide "Collect Deposit" text also serves as a guard at runtime, so the detector can tell it apart from "Pan" and "Shake".</span></div>
+    </article>
+
+    <article class="step-card" id="step-shake">
+      <div class="step-head"><span class="step-num">04</span><h3 id="shake">"Shake" prompt pixel</h3><span class="tag req">Required</span></div>
+      <p>Detects the shake phase, when the pan is being emptied into finds.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li>Fill the pan, walk to the water, and <b>begin a shake</b> so the white "Shake" prompt shows.</li>
+          <li>Come back quickly and start the capture. The capture snapshots the game the moment you press Start, so the prompt must still be on screen.</li>
+          <li>Click the middle of the white <b>Shake</b> text and <b>Confirm</b>.</li>
+        </ol>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/shake_prompt.webp" width="1100" height="618" alt="Mid shake with the colorful pan filling the background, the white Shake prompt visible, and the picker's confirm card on the captured pixel."></div>
+          <figcaption>Mid-shake, with the confirm card on the captured pixel.</figcaption>
+        </figure>
+      </div>
+    </article>
+
+    <h2 id="cue-matching">Step 5: Advanced Cue Matching</h2>
+
+    <p>Advanced Cue Matching is the primary prompt detector, and the fifth required step. Instead of checking a small white box, it captures the actual letter shapes of the "Pan", "Collect Deposit", and "Shake" prompts and matches those shapes at runtime. A player standing in white cannot reproduce the precise letter shape, and the mask tolerates minor visual variation better than a single pixel. The section lives at the bottom of the Calibrate tab under the heading <b>"Advanced cue matching"</b> with a badge reading <b>"required"</b>; all three captures are required for readiness, and the single-pixel checks from steps 2 to 4 remain only as a fallback while a mask is missing or disabled.</p>
+
+    <h3 id="cue-captures">Three captures, one per prompt</h3>
+
+    <p>Each mask is captured while its prompt is actually on screen, so you go back into the game between captures to stage the next one. The flow never chains captures automatically: after each confirmed capture you land on a stage card reading "Capture N of 3" with an explicit Start button, which gives you time to set up the next prompt. Capture them in order:</p>
+
+    <ol class="do-list">
+      <li><b>Pan.</b> Stand in the water so the white "Pan" prompt is visible, come back, and press Start. The capture snapshots the game at that moment.</li>
+      <li><b>Collect Deposit.</b> Step onto land at a deposit so "Collect Deposit" shows, come back, and capture it the same way.</li>
+      <li><b>Shake.</b> Begin a shake so "Shake" shows, then come back quickly and capture while it is still on screen.</li>
+    </ol>
+
+    <p>You can run the sequence from the setup wizard or from the <b>"✨ Guided cue capture"</b> button on the Calibrate tab; both drive the same engine. Below the button, a gallery shows one card per cue with its green letter-shape preview and kept-pixel count, or "not captured", with per-cue <b>"Capture"</b>, <b>"Re-do"</b>, and <b>"Clear"</b> buttons. Re-capturing one prompt replaces only that prompt's mask.</p>
+
+    <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Do not resize the Roblox window between the three captures. Masks are size-exact, and a size change partway through leaves you with masks that disagree about the window.</span></div>
+
+    <h3 id="cue-editor">The green kept-pixel editor</h3>
+
+    <p>Each capture is a two-stage edit over the frozen snapshot. First you <b>locate</b>: click on the cue word, and the app thresholds a box around your click to find the white text. If it finds fewer than 12 white pixels there, it tells you there is no white cue text and asks you to click on the word itself. Then the view switches to <b>edit</b> mode: the background dims and each kept pixel is painted bright green. The card below reads "Click each letter (and the mouse) to include or exclude it. Green = kept." with a live count of kept pixels.</p>
+
+    <div class="step-cols">
+      <ol class="do-list">
+        <li>Click the prompt word once. Every white letter lights up green.</li>
+        <li>Click any stray white blob to remove it. The most common one is the white mouse-cursor icon next to the word; each click toggles the whole connected blob, a letter or the cursor, in or out of the mask.</li>
+        <li><b>"Start over"</b> restores the untouched auto-selection if the edit goes wrong.</li>
+        <li>Press <b>Confirm</b>. A mask needs at least 8 kept pixels to save.</li>
+      </ol>
+      <figure>
+        <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/cue_masks.webp" width="1200" height="790" alt="The cue mask editor with the word Pan and the mouse icon magnified, kept pixels glowing green, and an instruction card reading Click each letter and the mouse to include or exclude it, green means kept."></div>
+        <figcaption>The mask editor after clicking the "Pan" word. Kept pixels glow green; the mouse icon should be clicked out.</figcaption>
+      </figure>
+    </div>
+
+    <h3 id="cue-runtime">What the masks do at runtime</h3>
+
+    <p>Each saved mask stores the letter-shape bitmap plus its position and size as fractions of the Roblox window. At every run start the engine re-places each mask onto the live window from those fractions. If the placed size differs from the stored size by more than 2 px, that mask is skipped, the single-pixel fallback takes over for that cue, and the app raises a recalibration warning telling you the window or resolution changed. While a mask is active, a prompt counts as visible only when at least <b>85%</b> of its letter pixels read white; the fallback box check needs at least 12% of its sample box white. In short: masks stand down loudly rather than misfire silently, and re-capturing after a resize brings them back.</p>
+
+    <h3 id="cue-controls">Controls in the Advanced cue matching section</h3>
+
+    <article class="setting" id="advanced-cues-toggle">
+      <div class="set-head"><h4>Use advanced cue matching</h4><span class="set-type">toggle</span><span class="set-default">default: on</span></div>
+      <p>The full label reads <b>"Use advanced cue matching (required; switching it off keeps readiness blocked)"</b>, and it means it: with the toggle off, the runtime skips mask matching entirely and falls back to the white-box checks, the cue item reports <b>Not set</b>, and readiness stays failed, which keeps Start disabled.</p>
+      <div class="set-effects">
+        <div class="up"><b>Leave it on</b> in all normal use; it has been the required primary detector since well before 5.0.0.</div>
+        <div class="down"><b>Turn it off only</b> as a short diagnostic step; expect the readiness check to flag it immediately.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#cue-masks-only">Masks only</a>, <a href="#cue-white-sensitivity">White sensitivity</a>. <b>Watch for:</b> a Readiness Check row noting that single-pixel values are kept as a fallback but do not count as ready.</p>
+    </article>
+
+    <article class="setting" id="cue-masks-only">
+      <div class="set-head"><h4>Masks only</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>The label continues "no pixel fallback (for testing)". With it on, the single-pixel fallback is removed, so a cue with no usable mask never fires at all.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> you want to prove that the masks alone drive detection, for example while testing a fresh capture.</div>
+        <div class="down"><b>Keep it off when</b> any mask is missing or the window has drifted; without the fallback, that cue simply goes blind.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#tests">Test existing calibration</a> shows per-cue match percentages. <b>Watch for:</b> a prompt on screen with no reaction while this is on; that points at a missing or stale mask.</p>
+    </article>
+
+    <article class="setting" id="cue-white-sensitivity">
+      <div class="set-head"><h4>White sensitivity (lower = more permissive)</h4><span class="set-type">number</span><span class="set-default">default: 160 (range 80 to 240)</span></div>
+      <p>The threshold the <em>capture</em> uses to decide which pixels count as white cue text: a pixel qualifies when all three color channels reach this value and they stay within a spread of 70 of each other. It applies to the next capture you take; the runtime matcher keeps using its own stored threshold (also 160 by default).</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> the auto-selection grabs background pixels around the letters, producing fat or smeared masks.</div>
+        <div class="down"><b>Lower it when</b> letters come out thin, broken, or partly missing in the green preview.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#cue-editor">the kept-pixel editor</a> lets you fix stray blobs by hand either way. <b>Watch for:</b> the editor warning that the background is mostly white too; that capture is worth redoing.</p>
+    </article>
+
+    <h2 id="optional-steps">Optional calibrations</h2>
+
+    <p>The wizard groups these under <b>"Optional - only for the features you turn on"</b>. Their status reads <b>Off</b> until the matching feature is enabled, they never block readiness, and skipping one only leaves its feature without data. See <a href="./modes-and-builds.html">Modes and builds</a> for what each feature does.</p>
+
+    <article class="step-card" id="step-dig">
+      <div class="step-head"><span class="step-num">opt</span><h3 id="dig">Green dig-bar pixel</h3><span class="tag">Optional</span></div>
+      <p>A single pixel inside the green target zone of the dig skill bar. It is read by Perfect dig and by the green-confirm options in the Shards and Geodes modes, which use it to tell a tap that landed from one that missed. Skipping it means plain digs; everything else works.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li>Start a dig on land so the dig bar with its green zone is on screen, then come back.</li>
+          <li>Start the capture and click <b>inside the green target zone</b>; the loupe magnifies the area under your cursor.</li>
+          <li><b>Confirm</b> the card.</li>
+        </ol>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/dig_green.webp" width="1000" height="800" alt="A dig in progress: the vertical dig bar with its green target zone, magnified by the picker's circular loupe."></div>
+          <figcaption>The picker's loupe magnifying the dig bar's green zone.</figcaption>
+        </figure>
+      </div>
+    </article>
+
+    <article class="step-card" id="step-regions">
+      <div class="step-head"><span class="step-num">opt</span><h3 id="regions">Money, shards, and finds boxes</h3><span class="tag">Optional</span></div>
+      <p>Three drag-a-box regions that feed the earnings statistics and the finds log (see <a href="./analytics-and-hud.html">Analytics and HUD</a>). Instead of clicking a point, you drag a box corner to corner around the on-screen element; one drag fills both stored corners, and the tab keeps a small preview thumbnail of what you boxed. The numbers are read with on-device OCR; nothing leaves your machine. The reader uses the macOS Vision framework, so on a machine without Vision the earnings and finds trackers report it in the log and stay off.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li><b>Money counter region.</b> Make sure the money total is visible in its usual corner, then drag a box around the number. Leave generous room to the <b>left</b>: the number grows longer as you earn.</li>
+          <li><b>Shards counter region.</b> Same for the shards number, next to the crystal icon, again with room to the left.</li>
+          <li><b>Find pop-up region.</b> Drag a box over the whole finds area. Finds stack vertically and fade, so make it tall enough for several cards and wide enough for the longest item name. Having a find on screen helps you aim but is not required.</li>
+          <li>A box must be at least <b>8 by 6 px</b>; anything smaller is rejected with "That box is too small. Drag a bigger one."</li>
+          <li>Before trusting the stats, run <b>"Test money/shards read"</b> and <b>"Test find pop-up read"</b> to see what the OCR actually got.</li>
+        </ol>
+        <div>
+          <figure>
+            <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/money_region.webp" width="670" height="338" alt="The money counter outlined by a dragged selection box, with the picker's box confirm card reading 281 by 26 pixel box, looks right? Confirm."></div>
+            <figcaption>A box around the money number, with the box-confirm card.</figcaption>
+          </figure>
+          <figure>
+            <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/shards_region.webp" width="770" height="430" alt="The shards counter outlined by a dragged selection box with the box confirm card above it."></div>
+            <figcaption>The shards counter boxed the same way.</figcaption>
+          </figure>
+        </div>
+      </div>
+      <figure style="max-width:420px">
+        <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/find_region.webp" width="1120" height="1938" alt="A tall dragged selection box over the finds area on the right side of the screen, sized for several stacked find cards."></div>
+        <figcaption>The find pop-up box: tall enough for several stacked cards.</figcaption>
+      </figure>
+      <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>A region only counts as calibrated when both corners exist, so a half-saved box from an old config can never pass as a working one. Skipping the money and shards boxes leaves the earnings stats empty; skipping the find box leaves the finds log empty. Nothing else changes.</span></div>
+    </article>
+
+    <article class="step-card" id="step-autopan">
+      <div class="step-head"><span class="step-num">opt</span><h3 id="autopan">Auto Pan button pixel</h3><span class="tag">Optional</span></div>
+      <p>Teaches the app to read the game's own Auto Pan toggle, used by Tracker mode and the relic automation to verify the button's state before clicking it. It takes two captures: the button in its ON color, then in its OFF color. You switch the toggle in the game between them, and the flow waits for you each time.</p>
+      <div class="step-cols">
+        <ol class="do-list">
+          <li>In Roblox, switch <b>Auto Pan ON</b> so the button shows its ON color, come back, and capture the middle of the button.</li>
+          <li>Switch <b>Auto Pan OFF</b> in the game, come back, and capture the same button again. The second capture saves only the OFF color.</li>
+        </ol>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/autopan_button.webp" width="1100" height="668" alt="The Auto Pan button in its green ON state with a red X marker on it, and the picker's confirm card showing the captured green color value."></div>
+          <figcaption>The Auto Pan button in its ON state, with the captured color confirmed.</figcaption>
+        </figure>
+      </div>
+    </article>
+
+    <h2 id="fortune-river">Fortune River recovery points</h2>
+
+    <p>One calibration group lives only on the Calibrate tab: the section labeled <b>"Fortune River recovery (optional, advanced)"</b>. It is deliberately excluded from the setup wizard and never blocks readiness. You only need it for the Fortune River recovery feature on the Smart tab, which finds its way back to the river through the game's Fast Travel menu. The section's own hint says it plainly: open the Fast Travel menu in-game first, then calibrate each spot. Each row has its own <b>Calibrate</b> button and a status that reads "not set" until captured.</p>
+
+    <div class="step-cols">
+      <div class="tablewrap"><table class="doc-table">
+        <tr><th>Row</th><th>What to do and what it saves</th></tr>
+        <tr><td><b>"Fortune River row (pink text)"</b></td><td>Click the pink Fortune River text in the travel list. Saves the scan column and the text color the recovery scans for.</td></tr>
+        <tr><td><b>"Starfall River row colour"</b></td><td>Click the Starfall River text. Saves only its color; the scan column and list box are shared with the Fortune River row above.</td></tr>
+        <tr><td><b>"Auto Pan button, ON state"</b></td><td>With the game's Auto Pan on (green), click the button. Saves its position and ON color, shared with the Tracker and relic features.</td></tr>
+        <tr><td><b>"Auto Pan button, OFF state"</b></td><td>Turn Auto Pan off in-game, then click the button again. Saves its OFF color.</td></tr>
+        <tr><td><b>"List - TOP edge"</b></td><td>Click just inside the top of the travel list box. Saves the top boundary of the scan.</td></tr>
+        <tr><td><b>"List - BOTTOM edge"</b></td><td>Click just inside the bottom of the list box. Saves the bottom boundary.</td></tr>
+        <tr><td><b>"Open Fast Travel (optional)"</b></td><td>A spot to click to open the menu. Leave it unset if 4 + Shift already opens Fast Travel on your setup.</td></tr>
+        <tr><td><b>"Screen centre / cursor home"</b></td><td>With shift-lock off, click where the cursor rests (the middle of the screen). All Fortune River mouse moves are measured from this point.</td></tr>
+      </table></div>
+      <figure style="max-width:420px">
+        <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/fortune_river.webp" width="1150" height="1250" alt="The Fast Travel panel open in the game with the travel list visible and the picker's confirm card on a calibrated spot."></div>
+        <figcaption>The Fast Travel panel open for calibration, with the picker's confirm card on a captured spot.</figcaption>
+      </figure>
+    </div>
+
+    <h2 id="tests">Testing your calibration</h2>
+
+    <p>Calibration is checkable at every level: live sampling, a capacity probe with the runtime math, OCR read tests, and per-item checks on the guided pages. None of these tools writes anything; they read the screen and show you what the engine would see.</p>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Tool</th><th>Where</th><th>What it shows</th></tr>
+      <tr><td><b>"Test detection (live)"</b></td><td>Calibrate tab</td><td>Samples the saved spots every 300 ms and lists each with a live color swatch: Capacity ("FULL ✓" or "not full"), the Pan, Shake, and Deposit cues ("visible" when detected), and Dig green. On a fresh install with nothing saved it explains that auto-calibration places the required points at each run start, so an empty list is normal.</td></tr>
+      <tr><td><b>"Test capacity calibration"</b></td><td>Calibrate tab, and the capacity step's guided page</td><td>In the app's words: "One fresh screenshot read with the exact runtime math: right-tip gold test, fill fraction over the bar band, endpoint-pair validation." Renders a PASS or FAIL card with both tips, how far apart they sit, the stored width, what color the right tip reads, the fill percentage, an annotated preview crop, and on failure a one-click <b>"Recalibrate right end"</b> button.</td></tr>
+      <tr><td><b>"Test money/shards read"</b></td><td>Calibrate tab</td><td>One OCR pass over the two counter boxes; prints the money and shards values it read so you can compare them against the game before trusting the earnings stats.</td></tr>
+      <tr><td><b>"Test find pop-up read"</b></td><td>Calibrate tab</td><td>One OCR pass over the find box; prints the raw text lines. An empty result shows "(nothing, widen/aim the region while a find is showing)".</td></tr>
+      <tr><td><b>"Test existing calibration"</b></td><td>Each guided step page</td><td>Runs the right check for the item. For Advanced Cue Matching it reports per cue either "match (NN% of letter pixels white)" or "no match right now (NN%; needs 85%)", warns when the background reads mostly white, and refuses to place a mask whose window has drifted more than 2 px. For the counter and find boxes it runs the OCR reads; for everything else, live pixel sampling.</td></tr>
+    </table></div>
+
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>A prompt only matches while it is on screen, so test each cue in its real situation: stand in the water to test "Pan", on land at a deposit for "Collect Deposit", and mid-shake for "Shake".</span></div>
+
+    <h2 id="troubleshooting">Calibration troubleshooting</h2>
+
+    <p>The most common calibration problems, with the fastest route to a fix. The app also diagnoses many of these itself: banners on the Run and Calibrate pages, red badges on the sidebar, and the warnings drawer all point at the item that needs attention, and each warning links a matching entry in the searchable local FAQ. For problems beyond calibration, see <a href="./troubleshooting.html">Troubleshooting and FAQ</a>.</p>
+
+    <div class="step-cols">
+      <div class="faq">
+        <details>
+          <summary>I clicked the wrong pixel</summary>
+          <div class="faq-a"><p>Open the step again and press <b>"Recalibrate"</b> (complete steps stay reopenable through <b>"Review / redo"</b>). Saves validate before they write, and a failed validation keeps your previous values; a bad value is never written silently.</p></div>
+        </details>
+        <details>
+          <summary>A prompt is on screen but nothing reacts</summary>
+          <div class="faq-a"><p>Run <b>"Test existing calibration"</b> on that cue. It reports the live match percentage (a mask needs 85% of its letter pixels white) and warns if the background itself reads white. A low match means the mask is stale or the capture caught the wrong thing: re-capture it while the prompt is clearly visible, and click the mouse icon out of the selection.</p></div>
+        </details>
+        <details>
+          <summary>I moved or resized the Roblox window</summary>
+          <div class="faq-a"><p>Calibrations go <b>Stale</b> and a banner explains why. For a pure move, put the window back and health recovers on its own; there is also a setting, <b>"Shift pixels when the Roblox window moves"</b>, that shifts calibrated pixels along with a moved window. A resize always needs recalibration, and cue masks are stricter than the rest: they stand down after more than 2 px of size drift and come back when you re-capture the three prompts.</p></div>
+        </details>
+        <details>
+          <summary>I changed monitor, resolution, or UI scale</summary>
+          <div class="faq-a"><p>Recalibrate; those changes move all the points at once. Guided calibration takes a couple of minutes end to end. Only trust an imported calibration file made at the same window size and resolution.</p></div>
+        </details>
+        <details>
+          <summary>Capacity readings look wrong</summary>
+          <div class="faq-a"><p>Run <b>"Test capacity calibration"</b> with the bar full; it verifies the live reading without saving anything and names the exact problem. The app also screens stored pairs on its own and flags suspicious ones as <b>Needs review</b>: swapped tips, tips at different heights, or a width under 24 px.</p></div>
+        </details>
+        <details>
+          <summary>It walks forward and never digs, or hard-stops repeatedly</summary>
+          <div class="faq-a"><p>Both usually point at capacity-bar calibration. Fill the bar, run <b>"Test capacity calibration"</b>, and redo the capacity step if it fails. Frequent recoveries during a run point the same way.</p></div>
+        </details>
+        <details>
+          <summary>It never goes back to the water</summary>
+          <div class="faq-a"><p>Re-capture the <b>"Pan"</b> and <b>"Collect Deposit"</b> spots, and make sure only the prompt the app asks for is visible when you capture. Overlapping prompts during capture are the usual cause.</p></div>
+        </details>
+        <details>
+          <summary>The picker shows a black screen (macOS)</summary>
+          <div class="faq-a"><p>Screen Recording is not granted, or was granted after this copy of the app started; macOS applies the grant on the next launch. Quit Prospector Lite fully, reopen it, and use the test button on the <a href="./trust-and-permissions.html">Trust and permissions</a> step to confirm. The capture buttons check this first and route you to the permission step rather than failing silently.</p></div>
+        </details>
+        <details>
+          <summary>Can I copy calibration to another PC?</summary>
+          <div class="faq-a"><p>Yes, if the other machine runs at the same resolution and window size. Use <b>"Export…"</b> on the Calibrate tab (default filename <code>prospectors_calibration.json</code>) and <b>"Import…"</b> on the other side. Imports are validated like any other save: a broken file or a bad capacity pair writes nothing and returns the reasons.</p></div>
+        </details>
+        <details>
+          <summary>I want to start over</summary>
+          <div class="faq-a"><p>Re-run the setup wizard any time from the Trust Center ("Re-run setup wizard"; it deletes nothing), or redo individual items from the Calibrate tab. The red badge on the Calibrate tab tells you when something needs attention, and calibration survives a settings reset unless you explicitly tick the box that clears it.</p></div>
+        </details>
+      </div>
+      <figure style="max-width:420px">
+        <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-diagnostics.webp" width="900" height="1563" alt="The warnings drawer showing an error card titled Required calibration is incomplete, with what the app observed, the most likely cause, a recommended first action, and Open calibration, Copy diagnostic details and Dismiss buttons."></div>
+        <figcaption>The warnings drawer names the blocking item and deep-links straight to the fix.</figcaption>
+      </figure>
+    </div>
+
+    <nav class="docs-pager" aria-label="More documentation">
+      <a class="prev" href="./trust-and-permissions.html"><span class="dir">Previous</span><b>Trust and permissions</b></a>
+      <a class="next" href="./modes-and-builds.html"><span class="dir">Next</span><b>Modes and builds</b></a>
+    </nav>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="foot-legal" style="border:0;margin:0;padding:0">Prospector Lite 5.0.0 · <a href="../">Home</a> · <a href="./">Wiki</a> · <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">Source code</a> · Not affiliated with Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use; use at your own risk.</p>
+  </div>
+</footer>
+
+<dialog class="lightbox" id="lightbox" aria-label="Enlarged screenshot">
+  <button class="lb-close" id="lbclose" aria-label="Close enlarged screenshot">✕</button>
+  <img id="lbimg" src="" alt="">
+  <p class="lb-cap" id="lbcap"></p>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+</body>
+</html>

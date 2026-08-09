@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interface reference · Prospector Lite wiki</title>
+<meta name="description" content="A tour of every Prospector Lite tab and window: the top bar, sidebar, Coach, Studio editor, keybinds, warnings and tutorial system.">
+<link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/interface.html">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0806">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Interface reference · Prospector Lite wiki">
+<meta property="og:description" content="A tour of every Prospector Lite tab and window: the top bar, sidebar, Coach, Studio editor, keybinds, warnings and tutorial system.">
+<meta property="og:url" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/interface.html">
+<meta property="og:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>document.documentElement.classList.add('js')</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="../" aria-label="Prospector Lite home">
+      <svg viewBox="2 3.5 20 18" aria-hidden="true"><polygon points="6.5,4 17.5,4 15.4,9.2 8.6,9.2" fill="#f6e7c8"/><polygon points="6.5,4 8.6,9.2 2.5,9.2" fill="#e8cf8f"/><polygon points="17.5,4 21.5,9.2 15.4,9.2" fill="#c9a24f"/><polygon points="2.5,9.2 8.6,9.2 12,21" fill="#d9a441"/><polygon points="8.6,9.2 15.4,9.2 12,21" fill="#f0d9a0"/><polygon points="15.4,9.2 21.5,9.2 12,21" fill="#b8933f"/></svg>
+      Prospector Lite
+    </a>
+    <nav aria-label="Main">
+      <ul class="nav-links" id="navlinks">
+        <li><a href="../">Home</a></li>
+        <li><a href="./">Wiki</a></li>
+        <li><a href="../#downloads">Download</a></li>
+        <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></li>
+      </ul>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-sm btn-primary" href="../#downloads">Download</a>
+      <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
+        <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="docs-shell">
+  <aside class="docs-side">
+    <button class="docs-menu-btn" id="docsmenu" aria-expanded="false" aria-controls="sidenav">
+      Documentation menu
+      <svg width="12" height="8" viewBox="0 0 12 8" aria-hidden="true"><path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+    <nav class="docs-sidenav" id="sidenav" aria-label="Documentation" data-spy>
+      <span class="side-group">Start here</span>
+      <a href="./index.html">Wiki home</a>
+      <a href="./getting-started.html">Getting started</a>
+      <a href="./trust-and-permissions.html">Trust and permissions</a>
+      <span class="side-group">Guides</span>
+      <a href="./calibration.html">Calibration</a>
+      <a href="./modes-and-builds.html">Modes and builds</a>
+      <a href="./analytics-and-hud.html">Analytics and HUD</a>
+      <a href="./interface.html" aria-current="page">Interface reference</a>
+      <span class="side-group">Reference</span>
+      <a href="./settings.html">Settings reference</a>
+      <a href="./troubleshooting.html">Troubleshooting and FAQ</a>
+    </nav>
+  </aside>
+
+  <main class="docs-main" id="main">
+    <nav class="crumb" aria-label="Breadcrumb"><a href="../">Home</a><span class="sep">/</span><a href="./">Wiki</a><span class="sep">/</span><span>Interface reference</span></nav>
+    <p class="eyebrow">Guides</p>
+    <h1 class="docs-title">The interface, screen by screen</h1>
+    <p class="docs-intro">Prospector Lite is one main window with ten pinned tabs, five collapsible groups of settings pages, and six auxiliary windows for monitoring and authoring. This page tours each screen in order: what is on it, what each control does, and which wiki page covers it in depth. Use it as a map; the linked pages carry the procedures and the setting-by-setting detail.</p>
+
+    <h2 id="layout">Overall layout</h2>
+    <div class="metric-row">
+      <div class="metric"><b>Main window</b><span>1340 × 900, minimum 600 × 560</span></div>
+      <div class="metric"><b>Pinned tabs</b><span>10, always visible</span></div>
+      <div class="metric"><b>Collapsible groups</b><span>5, holding the settings pages</span></div>
+      <div class="metric"><b>Settings</b><span>146 keys across 17 sections</span></div>
+      <div class="metric"><b>Auxiliary windows</b><span>6: pill, HUD, overlay picker, Coach, Analytics, Studio</span></div>
+    </div>
+    <p>The main window has three zones. The sidebar on the left holds navigation, the search box and the quick preset chips. The center shows the active page. The right side is shared by two panels: the <b>Preview</b> panel (hover help) and the <b>Coach</b> panel; opening the Coach hides Preview, and closing the Coach brings Preview back.</p>
+
+    <h3 id="sidebar">Sidebar: pinned tabs and groups</h3>
+    <p>Ten tabs are pinned at the top of the sidebar, in this order: <b>Run</b>, <b>Cycle</b>, <b>Builds</b>, <b>Calibrate</b>, <b>Relics</b>, <b>History</b>, <b>Studio</b>, <b>Keybinds</b>, <b>Trust Center</b>, <b>Settings</b>. Below them sit five collapsible groups holding the settings pages:</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Group</th><th>Pages inside</th></tr>
+      <tr><td><b>Modes</b></td><td>Treasure chest, Shards, Geodes</td></tr>
+      <tr><td><b>Tracking</b></td><td>Earnings, Tracker</td></tr>
+      <tr><td><b>Alerts and limits</b></td><td>Notifications, Auto-stop</td></tr>
+      <tr><td><b>Advanced</b></td><td>Advanced tuning</td></tr>
+      <tr><td><b>Setup</b></td><td>Window, "Relic behaviour"</td></tr>
+    </table></div>
+    <p>Any settings section without an assigned group falls into an automatic <b>Other</b> group, so nothing can disappear from navigation. All of these pages are documented key by key in the <a href="./settings.html">Settings reference</a>. Each sidebar tab also carries a small warning badge slot; see <a href="#warnings">warning badges</a> below.</p>
+    <p>The <b>"Search settings…"</b> box above the nav filters the sidebar as you type, matching both page names and individual setting labels, so you can jump to a setting without knowing which page owns it.</p>
+
+    <h3 id="quick-presets">Quick preset chips</h3>
+    <p>Under the heading <b>Quick presets</b> sit four chips. A preset changes the on-screen values only; the change persists when you press <b>Save settings</b> or <b>Start macro</b> (Start saves first), and Ctrl+Z undoes a preset load.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Chip</th><th>What it loads</th></tr>
+      <tr><td><b>"v1 · fast 1-dig"</b></td><td>Fast single-dig tuning: 15 ms dig click, one dig fills the pan.</td></tr>
+      <tr><td><b>"v2 · multi-dig"</b></td><td>Multi-dig tuning: 75 ms dig click, up to 8 digs per fill, with waits between digs.</td></tr>
+      <tr><td><b>"v3 · geode"</b></td><td>33 keys that turn on Geode mode with the long animation waits slow geode gear needs.</td></tr>
+      <tr><td><b>"Reset defaults"</b></td><td>All 146 settings back to shipped defaults. Builds and calibration are untouched.</td></tr>
+    </table></div>
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Presets only touch the keys they define; other settings keep their values. Save your current tuning as a build first if you might want it back.</span></div>
+
+    <h3 id="preview-panel">Preview panel</h3>
+    <p>The <b>"⧉ Preview"</b> panel is the hover-help surface: hover a sidebar tab to preview that page, or hover any setting, button or stat for a full explanation, often with a chart. The <b>"how it runs"</b> chip next to the Start controls opens the complete order of events for a cycle in this panel.</p>
+
+    <h3 id="compact-mode">Compact mode</h3>
+    <p>The app Settings page has a <b>"Compact mode (mini sidebar, opens on hover)"</b> toggle. It shrinks the native window to 740 × 820, collapses the sidebar to a hover-out rail, and hides the Preview panel, which is useful on a single monitor next to the game. See <a href="#settings-tab">the Settings page</a> below.</p>
+
+    <h2 id="topbar">The top bar</h2>
+    <p>From left to right the top bar holds the brand, a mode strip (Studio launches only, see below), a hamburger button that collapses the rest into a menu on narrow windows, and then these controls in order:</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Control</th><th>What it does</th></tr>
+      <tr><td><b>build name</b> field</td><td>Names the build you are about to save with the button next to it.</td></tr>
+      <tr><td><b>"Save build"</b></td><td>Snapshots all settings plus the relic rows into a named build. Requires a name; manage the result on the <a href="#builds">Builds tab</a>.</td></tr>
+      <tr><td><b>"✦ Coach"</b></td><td>Opens or closes the Coach side panel: describe a problem, get proposed setting changes. See <a href="#coach">the Coach</a>.</td></tr>
+      <tr><td><b>"⧉ Preview"</b></td><td>Shows or hides the hover-help Preview panel.</td></tr>
+      <tr><td><b>"☷ Analytics"</b></td><td>Opens the Analytics window: throughput, earnings, finds and reliability cards. Covered on <a href="./analytics-and-hud.html">Analytics and HUD</a>.</td></tr>
+      <tr><td><b>"⤢ Pop out"</b></td><td>Swaps the main window for the floating pill (below). Ctrl+P toggles it from anywhere.</td></tr>
+      <tr><td><b>"⬒ HUD"</b></td><td>Toggles the draggable HUD overlay beside the game. Covered on <a href="./analytics-and-hud.html">Analytics and HUD</a>.</td></tr>
+      <tr><td><b>"❓ Tutorial"</b></td><td>Opens the Tutorials menu: the full tour plus a walkthrough for each page. See <a href="#tutorial">the tutorial system</a>.</td></tr>
+      <tr><td><b>"Save settings"</b></td><td>Makes the current settings stick across restarts. Edits already apply live while the app is open; calibration and builds save separately, on their own buttons.</td></tr>
+    </table></div>
+    <figure style="max-width:420px"><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-pill.webp" width="544" height="356" alt="The pop-out pill: a small floating always on top card with a status dot, live stats and a large Start button."></div><figcaption>The pop-out pill opened by "⤢ Pop out": state text, pause and back-to-app buttons, live stats, relic countdowns and a big Start or Stop button.</figcaption></figure>
+    <h3 id="mode-strip">Mode strip (Studio launches only)</h3>
+    <p>When Prospector Lite is launched by the Prospector Studio desktop app, a three-button strip appears at the left of the top bar: <b>"Classic"</b> (the built-in cycle), <b>"Studio Build"</b> (run a build authored in Prospector Studio) and <b>"Studio Script"</b> (run a general-automation script through the same engine). Each mode shows only its own tab set. Switching while a run is active asks <b>"Stop the run and switch?"</b> and stops the run first, releasing all input safely. In a standalone launch the strip is not shown.</p>
+
+    <h2 id="run">Run tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-run-tab.webp" width="1600" height="1041" alt="The Run tab: Start, Pause and Stop buttons, a mode selector, a grid of thirteen live stats and the run log."></div><figcaption>The Run tab: controls, mode select, the 13-stat grid, relic countdowns and the live log.</figcaption></figure>
+    <p>The page hint sums it up: <b>"Start the macro, tab into Roblox. Ctrl+K also starts/stops; Esc quits."</b></p>
+    <h3 id="run-controls">Controls</h3>
+    <p><b>"Start macro"</b> saves your current settings and relic rows, then launches the engine; the toast <b>"Launched, Ctrl+K to start"</b> confirms it. <b>"Pause"</b> pauses mid-cycle and relabels to <b>"Resume"</b>; a pause keeps the session, its stats, relic timers and earnings. <b>"Stop"</b> ends the session for good and writes it to History with full stats and an event timeline. The state text beside them reads "stopped", "running" or "paused".</p>
+    <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Start can refuse. Missing OS permissions open the Trust Center; missing required calibration opens the Calibrate tab; a Studio mode mismatch names the tab to fix. Each refusal shows a toast explaining the block, so a dead Start button never goes unexplained.</span></div>
+    <p>A red <b>calibration banner</b> appears above the controls when a run needs attention before starting: <b>"Re-calibration needed."</b> with the reason, or <b>"Capacity calibration needs review."</b> Clicking it opens the Warnings drawer at the matching event.</p>
+    <h3 id="run-mode-select">Mode select</h3>
+    <p>The <b>Mode</b> selector chooses what Start runs: <b>"Built-in modes"</b> (the classic cycle, shaped by your Treasure, Shards and Geodes settings) or any saved Studio script, listed as "Script: name". While a script is active it supersedes the mode toggles, and a note beside the selector says so. A status card above the stats shows the active script or build name, its state badge, the current step and a free-text HUD line while it runs.</p>
+    <h3 id="run-stats">The 13-stat grid</h3>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Stat</th><th>What it counts</th></tr>
+      <tr><td><b>runtime</b></td><td>Session clock from Start, pauses included; the divisor behind the per-hour figures.</td></tr>
+      <tr><td><b>pans</b></td><td>Completed loops: dig, walk back, shake, land. The baseline number.</td></tr>
+      <tr><td><b>digs</b></td><td>Total digs, probe digs included. Far more digs than pans means it is probing or re-digging too much.</td></tr>
+      <tr><td><b>pans/hr</b></td><td>Pace at the current rate; give it a few minutes before trusting it.</td></tr>
+      <tr><td><b>clean %</b></td><td>Share of pans that ran with no nudges, retries or recoveries.</td></tr>
+      <tr><td><b>recoveries</b></td><td>Times the recovery ladder stepped in after the macro got stuck.</td></tr>
+      <tr><td><b>nudges</b></td><td>Small corrective movements while hunting for land after a shake.</td></tr>
+      <tr><td><b>shake misses</b></td><td>Shakes that did not empty the pan.</td></tr>
+      <tr><td><b>relics</b></td><td>Relics placed automatically this session by your timers.</td></tr>
+      <tr><td><b>$/hr</b></td><td>Money per hour, read off the game HUD; needs earnings tracking and the Money region calibrated. macOS only. Blank until the first gain.</td></tr>
+      <tr><td><b>shards/hr</b></td><td>Same as money per hour, for shards. Blank until the first gain.</td></tr>
+      <tr><td><b>safe-stops</b></td><td>Times the macro paused itself and retried instead of quitting.</td></tr>
+      <tr><td><b>hard-stops</b></td><td>Retries ran out, or something unrecoverable hit. History names the reason.</td></tr>
+    </table></div>
+    <p>After five pans these stats feed a tuning-health check: too many nudges, shake misses or recoveries per pan turns the matching Cycle stage badge yellow and raises a banner on the Cycle page naming the stages to look at. The counters are the input; the <a href="#cycle">Cycle page</a> is where you act on them.</p>
+    <h3 id="run-relics">Relic countdowns and the set-timer row</h3>
+    <p>When relic timers are enabled, a chip row shows each relic name with a live countdown. A "set timer" row lets you adjust one mid-run: pick the relic, type a time (accepted forms: "3m 4s", "3:04", or plain seconds like "184"), then press <b>"Set"</b> or <b>"Reset to full"</b>. In game, Ctrl+Shift+1 to 9 resets a single relic timer and Ctrl+U resets them all, for when you place something by hand. Rows are configured on the <a href="#relics">Relics tab</a>.</p>
+    <h3 id="run-log">Run log</h3>
+    <p>The log pane streams engine events, batched about every 250 ms so long runs stay smooth. The on-screen buffer is capped near 80,000 characters, but a complete copy of each run's log is written to disk and reachable from <a href="#history">History</a>. During geode waits a countdown chip with a progress bar (labeled "geode fill") appears above the stats.</p>
+
+    <h2 id="cycle">Cycle tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-cycle.webp" width="1600" height="1041" alt="The Cycle tab: a land and water loop diagram with live numbers above a horizontal timeline of the cycle phases."></div><figcaption>The Cycle tab: the clickable loop diagram, the cycle timeline, and the stage cards below them.</figcaption></figure>
+    <p>Cycle is the engine-tuning home. At the top, a clickable loop diagram (land, water, land) shows the cycle with live numbers, and below it the <b>Cycle timeline</b> renders each phase as a bar: hover a bar for the settings behind it, click to jump to them. Wide bars are where your seconds go, so the timeline doubles as a profiler.</p>
+    <p>The tuning itself lives in six stage cards: <b>"Dig"</b>, <b>"Walk back"</b>, <b>"Glide &amp; start"</b>, <b>"Shake &amp; drain"</b>, <b>"Land &amp; prove"</b> and <b>"Safety nets"</b>, plus an automatic <b>"Other tuning"</b> card that catches any key not assigned to a stage, so no setting is ever dropped. Numeric settings render as a slider paired with a number box; the slider bounds are the same known-safe ranges the Coach uses (94 of them), so dragging a slider cannot leave the tested envelope, while the number box accepts finer values.</p>
+    <p>When the Run tab's health check flags a stage, the banner <b>"Tuning may be off."</b> appears here with the observed numbers, and the flagged stage cards are marked yellow. Setting-by-setting documentation for this page lives in the <a href="./settings.html#cycle">Settings reference, Cycle section</a>.</p>
+
+    <h2 id="builds">Builds tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-builds.webp" width="1600" height="1041" alt="The Builds tab: a search bar, sort selector and a grid of build cards with Load and Overwrite buttons."></div><figcaption>The Builds tab: search, sort, save and import at the top; one card per saved build below.</figcaption></figure>
+    <p>The page hint states the model: <b>"Every build is a FULL settings profile (all tabs + relics). Load applies everything; Overwrite captures your current settings into that build; click a description to edit it."</b></p>
+    <p>The toolbar has a <b>"Search builds…"</b> box, a sort selector (newest, oldest, most used, recently used, or alphabetical), a name field with <b>"Save current"</b>, and <b>"Import build…"</b>. Each card offers <b>Load</b>, <b>Overwrite</b>, export and delete. The top bar's <b>build name</b> field and <b>"Save build"</b> button save to the same library, so you can snapshot without leaving the page you are tuning. Strategy for what to put in a build, and the shipped example builds, are covered in <a href="./modes-and-builds.html">Modes and builds</a>.</p>
+
+    <h2 id="calibrate">Calibrate tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-calibrate-tab.webp" width="1600" height="1041" alt="The Calibrate tab: guided calibration and test buttons above rows of pixel coordinates with color swatches and Calibrate buttons."></div><figcaption>The Calibrate tab: guided tools and live tests at the top, manual pixel and region rows below.</figcaption></figure>
+    <p>This tab holds everything the detector needs to see the game. The full procedure, with in-game example screenshots for each target, is on the <a href="./calibration.html">Calibration page</a>; here is what is on the screen.</p>
+    <ul>
+      <li><b>Guided tools and tests</b>: <b>"✨ Guided calibration (recommended)"</b> walks the core targets in a wizard; <b>"Test detection (live)"</b>, <b>"Test money/shards read"</b> and <b>"Test find pop-up read"</b> verify what the detector and OCR are getting right now, each printing its result inline.</li>
+      <li><b>Six pixel rows</b>: the two capacity-bar ends, the Pan, Collect Deposit and Shake prompts, and the dig-trigger green pixel. Each row shows x and y inputs, a hex color with a swatch, and a <b>"Calibrate"</b> button that opens the full-screen picker. A <b>"Test capacity calibration"</b> row sits after the capacity-bar rows.</li>
+      <li><b>Three region rows</b>: <b>"Money counter region"</b>, <b>"Shards counter region"</b> and <b>"Find pop-up region"</b>, each with a <b>"Draw box"</b> button for dragging a rectangle on screen.</li>
+      <li><b>"Fortune River recovery (optional, advanced)"</b>: eight extra rows covering the Fortune River and Starfall River row colors, the Auto Pan button in its ON and OFF states, the fast-travel list edges, the Open Fast Travel button, and a cursor home point.</li>
+      <li><b>Actions</b>: <b>"Save calibration"</b>, <b>"Export…"</b> and <b>"Import…"</b>. Calibration saves separately from settings and builds.</li>
+      <li><b>Advanced cue matching</b>: the required letter-shape detector. Its toggle is labeled <b>"Use advanced cue matching (required; switching it off keeps readiness blocked)"</b>; a second, testing-only toggle matches masks without the pixel fallback; <b>"White sensitivity (lower = more permissive)"</b> defaults to 160 (range 80 to 240). <b>"✨ Guided cue capture"</b> records the three prompt masks (Pan, Collect Deposit, Shake), shown afterward as captured-mask cards with per-cue Clear buttons.</li>
+    </ul>
+    <p>Any "Calibrate" or "Draw box" button opens a full-screen overlay picker: a crosshair over a screenshot with a magnifying loupe, Confirm, Redo and Cancel, a drag-a-box mode for regions, and a mask-edit mode for cues where you click letter cells to toggle them (Enter confirms, Esc cancels).</p>
+
+    <h2 id="relics">Relics tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-relics.webp" width="1600" height="1041" alt="The Relics tab: a master enable switch above four relic timer rows with name, minutes, slot and clicks fields."></div><figcaption>The Relics tab: the master toggle and four timer rows.</figcaption></figure>
+    <p>Relic timers automate item use on a schedule: every N minutes the macro pauses, switches to the item's hotbar slot, double-clicks to use it, switches back to slot 1 (the pan), and resumes. The <b>"Enable relic timer"</b> master toggle arms the system; below it sit four rows, each with:</p>
+    <ul>
+      <li>an enable switch for that row;</li>
+      <li>a <b>"Relic name"</b> field (the name shows on the Run tab countdown and the pill);</li>
+      <li><b>"every"</b>: the interval in minutes, minimum 1;</li>
+      <li><b>"slot"</b>: the hotbar slot, 0 to 9;</li>
+      <li>clicks: how many clicks place it, minimum 1.</li>
+    </ul>
+    <p><b>"Save relics"</b> stores the rows; Start also saves them. Timer behavior during pauses (relative timers) and the related engine settings live under the "Relic behaviour" page in the <a href="./settings.html">Settings reference</a>.</p>
+
+    <h2 id="history">History tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-history.webp" width="1600" height="1041" alt="The History tab showing its empty state message: no runs yet, finish a session and it shows up here."></div><figcaption>The History tab before the first run. Finished sessions appear here automatically.</figcaption></figure>
+    <p><b>"Past runs and their stats, kept across restarts."</b> Sessions save automatically when they end; <b>"Refresh"</b> pulls in one that just finished. Each run card shows, newest first:</p>
+    <ul>
+      <li>the ended timestamp, a runtime, and badges: <b>"Tracker"</b> for watch-only runs of the game's own Auto Pan, the script name when a Studio script ran, and a stop-reason badge;</li>
+      <li>eight stat cells: pans, pans/hr, digs, clean, recoveries, nudges, relics, finds;</li>
+      <li>an earnings line when money or shards were tracked, with per-hour and per-pan figures;</li>
+      <li>a phase-timing line: mean and p95 duration per cycle phase;</li>
+      <li>a "why" line grouping event reasons (safe-stops, hard-stops, nudges, recoveries and so on);</li>
+      <li>a collapsible <b>"Detailed timeline"</b> with the last 150 events, each timestamped and labeled;</li>
+      <li><b>"View full log"</b> when a saved log exists, opening the complete run log in a modal.</li>
+    </ul>
+    <p>The file keeps the last 100 runs; full logs are stored per run (up to 40,000 lines each, newest 120 files kept). Both live as plain files in the local data folder, listed in the <a href="#trust">Trust Center</a>.</p>
+
+    <h2 id="studio">Studio tab and the Studio editor</h2>
+    <h3 id="studio-tab">The Studio tab (script library)</h3>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-studio-tab.webp" width="1600" height="1041" alt="The Studio tab: Open Studio, New script and Import script buttons above a grid of saved script cards."></div><figcaption>The Studio tab: your script library, with per-card actions.</figcaption></figure>
+    <p>Studio lets you build a farming mode from Prospecting blocks, no code needed; a script runs through the same engine and counts pans like a built-in mode, and the safety nets stay on. The tab is the library: <b>"Open Studio"</b> opens the editor window, <b>"New script…"</b> opens it straight into the template picker, and <b>"Import script…"</b> loads a shared <code>.ppscript</code> file.</p>
+    <p>Each script card shows its name, an "active" chip when it is the mode Start runs, a "N to fix" chip when validation found problems, the description, a block count and last-edited date. Card buttons: <b>"Open"</b>, <b>"Set active"</b> (or <b>"Deactivate"</b>), <b>"Run"</b> (set active and start the macro in one step), <b>"Duplicate"</b>, <b>"Export"</b> (save as a .ppscript file to share) and delete, which asks "sure?" before acting. Only clean, runnable scripts can be set active.</p>
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Imported .ppscript files are treated as untrusted input: capped at 2 MB, sanitized, strictly re-validated, renamed on a name clash, and never executed on import.</span></div>
+    <p>When a script authored in Prospector Studio declares adjustable parameters, a <b>"Build settings from the graph"</b> panel appears with one row per parameter. Its badge says "applies at the next start", and the tooltip explains why: <b>"The engine reads its configuration when a run starts; a live run keeps what it started with."</b> A value that would break the script is rejected rather than applied.</p>
+
+    <h3 id="studio-editor">The Studio editor window</h3>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-studio-editor.webp" width="1400" height="901" alt="The Studio editor window: a block palette on the left, the script canvas in the middle and the inspector pane on the right."></div><figcaption>The Studio editor: palette, canvas and inspector, with validation and run controls in the top bar.</figcaption></figure>
+    <p>The editor is a three-pane window. Its top bar holds a script picker, <b>"New script"</b>, a validation dot with status text ("ready to run", "N error(s)", or "N to fix before it can run"), a worst-case lap estimate (tooltip: <b>"Worst case for one full lap, if every wait runs to its limit"</b>), Undo and Redo (a 100-snapshot stack), <b>"Validate"</b>, <b>"Save"</b>, <b>"▶ Run"</b> (save, set active and start the macro), <b>"■ Stop"</b>, and a walkthrough button. Below it, a metabar takes the script's Name and Notes. Saving keeps drafts even when problems remain; only schema errors block a save.</p>
+    <ul>
+      <li><b>Palette</b> (left): the block library in three groups: Actions, Sensing, Flow. Click a block to add it after the selected one, or drag it where it should go; drop onto an If, Repeat or Group to nest it inside. Press <b>/</b> anywhere to quick-add by name.</li>
+      <li><b>Canvas</b> (center): the script itself, which repeats forever while the macro runs. Each block card shows a live prose summary of its parameters; the currently executing block gets a green border during a run. Right-click for duplicate, copy, paste, move, nest and delete; arrow keys move the selection and Alt plus arrows move or nest blocks.</li>
+      <li><b>Inspector</b> (right): parameters for the selected block. Integers render as a slider with a synced number box, clamped to the schema range; below them a help box explains the hovered or selected block with raise-it, lower-it and pairs-with guidance.</li>
+      <li><b>Problems bar</b> (bottom): each validation error and warning as a row; clicking one selects and scrolls to the offending block.</li>
+    </ul>
+    <p>New scripts start from a template: <b>"Standard loop"</b> (the default cycle rebuilt from blocks), <b>"Treasure (Rubble Creek)"</b> (the two-spot Treasure pattern, no shaking), or <b>"Blank"</b>. Scripts are limited to 500 blocks and 16 nesting levels, waits are capped at 120,000 ms, and a script that completes 50 laps without sending input or waiting stops itself safely. Esc and Ctrl+K always stop a running script.</p>
+
+    <h3 id="studio-blocks">The 17 block types</h3>
+    <p>The palette generates from the same schema the validator and the engine enforce, so the editor can never drift from what actually runs. Keys are limited to a whitelist (W, A, S, D, 1 to 9, Shift, Space) that the engine enforces again at runtime, so a script can never press anything else.</p>
+    <div class="set-group" id="blocks-actions"><h3 id="blocks-actions-h">Actions</h3><span class="count">8 blocks</span></div>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Block</th><th>What it does</th><th>Key parameters (defaults)</th></tr>
+      <tr><td><b>Dig click</b></td><td>One dig: press and hold the mouse, then release; the same click the macro's own dig uses.</td><td>Dig hold 75 ms (5 to 600)</td></tr>
+      <tr><td><b>Shake clicks</b></td><td>Empties the pan with rapid clicks, either an exact count or until the calibrated capacity read says empty.</td><td>Exact clicks 0 (0 = until empty), click 18 ms, gap 14 ms, give up after 4000 ms, "Hold W while shaking" on</td></tr>
+      <tr><td><b>Hold key</b></td><td>Holds one movement key for a fixed time; the key is always released, even if you stop mid-hold.</td><td>Key S, hold 300 ms (20 to 10000)</td></tr>
+      <tr><td><b>Tap key</b></td><td>Presses and releases one whitelisted key: a hotbar number, a movement key, Shift or Space.</td><td>Key 1, hold 40 ms</td></tr>
+      <tr><td><b>Click mouse</b></td><td>One left click, held for the set time, optionally moving the cursor first.</td><td>Click length 40 ms; cursor: in place, screen center, or the calibrated Auto Pan button</td></tr>
+      <tr><td><b>Wait</b></td><td>Does nothing for the set time; the workhorse for slow animations. Esc, Ctrl+K and Pause interrupt it instantly.</td><td>500 ms (10 to 120000)</td></tr>
+      <tr><td><b>Use relic slot</b></td><td>Places a relic at a fixed point in the loop, identical to the timed relic path.</td><td>Slot 2, clicks 2</td></tr>
+      <tr><td><b>Notify</b></td><td>Sends a Discord message through your existing notification setup.</td><td>Message text, 200 characters max</td></tr>
+    </table></div>
+    <div class="set-group" id="blocks-sensing"><h3 id="blocks-sensing-h">Sensing</h3><span class="count">5 blocks</span></div>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Block</th><th>What it does</th><th>Key parameters (defaults)</th></tr>
+      <tr><td><b>Wait for cue</b></td><td>Watches a HUD prompt through the calibrated detector and moves on the moment it shows; hold a key while waiting to make it a walk-until move.</td><td>Cue Pan, hold none, "leave the current prompt first" off, timeout 3000 ms; on timeout: keep going or safe stop</td></tr>
+      <tr><td><b>Wait for capacity</b></td><td>Watches the calibrated capacity bar until the pan reads full or empty, using the same thresholds as the macro's own cycle.</td><td>State Full, timeout 5000 ms; on timeout: keep going or safe stop</td></tr>
+      <tr><td><b>If cue shows</b> (container)</td><td>Checks a HUD prompt once, right now; runs the steps inside if it is showing.</td><td>Cue Collect Deposit</td></tr>
+      <tr><td><b>If capacity</b> (container)</td><td>Checks the capacity bar once, right now.</td><td>State Full</td></tr>
+      <tr><td><b>If not</b> (container)</td><td>The inverse check: runs its steps when the chosen condition is not true.</td><td>Choices: a prompt showing, pan full, pan empty</td></tr>
+    </table></div>
+    <div class="set-group" id="blocks-flow"><h3 id="blocks-flow-h">Flow</h3><span class="count">4 blocks</span></div>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Block</th><th>What it does</th><th>Key parameters (defaults)</th></tr>
+      <tr><td><b>Repeat N times</b></td><td>Runs the steps inside N times. The whole script already repeats forever, so you never need a Repeat around everything.</td><td>Times 2 (1 to 1000)</td></tr>
+      <tr><td><b>Group</b> (container)</td><td>A named container that just runs its steps in order; purely for readability.</td><td>Label, "Steps" by default</td></tr>
+      <tr><td><b>Safe stop</b></td><td>Ends the run through the macro's normal safe-stop path: inputs released, stats saved, reason shown in the log and History.</td><td>Reason text</td></tr>
+      <tr><td><b>Comment</b></td><td>A note in the script that does nothing when it runs.</td><td>Text, 200 characters max</td></tr>
+    </table></div>
+
+    <h2 id="keybinds">Keybinds tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-keybinds.webp" width="1600" height="1041" alt="The Keybinds tab: six rows of global hotkeys, each with a capture box showing the current key combination."></div><figcaption>The Keybinds tab: click a box, press a combo, save, then stop and start the macro.</figcaption></figure>
+    <p>The page hint: <b>"Click a box, then press the key combo you want. They work globally while the macro is running. Stop &amp; Start the macro to apply."</b> Clicking a box arms it ("press keys…"); the next non-modifier keypress is recorded, shown as Ctrl, Alt, Shift plus the key.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Action (row label)</th><th>Default</th><th>Notes</th></tr>
+      <tr><td>"Start / Stop"</td><td><b>Ctrl+K</b></td><td>Flips the run; toggling out of a pause resumes; stopping releases all held input.</td></tr>
+      <tr><td>"Pause / Resume (keeps session)"</td><td><b>Ctrl+L</b></td><td>Session pause keeping stats, relic timers and earnings.</td></tr>
+      <tr><td>"Reset relic timers to full"</td><td><b>Ctrl+U</b></td><td>Resets all relic timers at once.</td></tr>
+      <tr><td>"Soft-stop (test)"</td><td><b>Ctrl+J</b></td><td>Triggers the safe-stop path (pause and retry) as a test.</td></tr>
+      <tr><td>"Quit macro"</td><td><b>Esc</b></td><td>Stops the engine and releases all keys and mouse buttons.</td></tr>
+      <tr><td>"Toggle pop-out pill"</td><td><b>Ctrl+P</b></td><td>Swaps between the pill and the main window.</td></tr>
+    </table></div>
+    <p><b>"Save keybinds"</b> writes the combos; the toast reminds you: <b>"Keybinds saved, Stop &amp; Start the macro to apply"</b>, because the engine reads its hotkeys when a run starts. One extra shortcut is fixed and not rebindable: Ctrl+Shift+1 to 9 resets a single relic timer. A "Reset Shared" on the app Settings page restores all six defaults.</p>
+
+    <h2 id="trust">Trust Center tab</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-trust-center.webp" width="1600" height="1041" alt="The Trust Center tab: permission capability cards with live status pills and Test buttons."></div><figcaption>The Trust Center: live permission status, capability tests and the data inventory.</figcaption></figure>
+    <p>The Trust Center is the app's self-audit page. It renders one card per capability from a registry (11 on macOS, 10 on Windows), each with a live OS status pill, a requirement badge, facts on what data it can access, what is kept on disk and what leaves this computer, and a real Test button; the screen test shows its capture once and does not save it, the input test types one harmless letter into the app's own box, and the Safe Stop test arms an 8-second window and reports whether it heard Esc or Ctrl+K.</p>
+    <p>Below the cards: <b>"Build identity"</b> (version, commit, platform, signing state), <b>"Source code"</b> (repository links pinned to the build's commit), <b>"Network behaviour"</b> (normal startup and macro use make zero network requests; the only outbound paths are the two optional, off-by-default features: your own Discord webhook and your own Coach AI key), <b>"Roblox safety boundary"</b> (no injection, no process-memory access, no game-file modification; pixels and ordinary key presses only), <b>"Local data"</b> (a table of the data-folder files with open, export and delete actions), setup wizard re-run controls, help buttons, and security reporting links. The same registry powers the setup wizard's permissions step, so the two screens can never disagree. The full walkthrough, including per-platform grant steps, is on <a href="./trust-and-permissions.html">Trust and permissions</a>.</p>
+
+    <h2 id="settings-tab">Settings page (app)</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-settings.webp" width="1600" height="1041" alt="The app Settings page: five appearance and behavior toggles above the settings ownership card with three reset buttons."></div><figcaption>The app Settings page: appearance toggles and the settings ownership card.</figcaption></figure>
+    <p>This page covers app appearance and behavior, saved on this computer; it does not change your macro tuning or your builds. The five toggles:</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Toggle (label)</th><th>Default</th><th>Effect</th></tr>
+      <tr><td>"Compact mode (mini sidebar, opens on hover)"</td><td>off</td><td>Resizes the window to 740 × 820 with a hover-out sidebar; hides Preview.</td></tr>
+      <tr><td>"Wood texture background"</td><td><b>on</b></td><td>Off switches to a plain background.</td></tr>
+      <tr><td>"Reduce animations"</td><td>off</td><td>Disables nonessential motion, including the splash fade.</td></tr>
+      <tr><td>"Skip the setup wizard automatically on launch"</td><td>off</td><td>Launches go straight to the app. The same preference is writable from the welcome screen and the Trust Center.</td></tr>
+      <tr><td>"Open tutorial whenever Prospector Lite opens"</td><td><b>on</b></td><td>The main tutorial auto-opens on entry; the tour's own footer checkbox controls the same preference.</td></tr>
+    </table></div>
+    <p>Below the toggles, a note reminds you that Ctrl+Z undoes a setting change and Ctrl+Y redoes it, covering slider, box and preset changes, next to an inline <b>"FAQ &amp; troubleshooting"</b> button.</p>
+    <h3 id="settings-ownership">Settings ownership and resets</h3>
+    <p>The <b>"Settings ownership"</b> card explains that each setting has one owner so the two macro modes never trample each other: <b>Classic</b> owns the built-in cycle tuning (modes, dig, shake and walk timing, recovery, relics); <b>Studio</b> owns which build is active and the editor flags, stored with the script library; <b>Shared</b> is used by every run (calibration, game window, notifications, auto-stop, earnings tracking, keybinds, appearance). Three buttons reset one owner at a time:</p>
+    <ul>
+      <li><b>"Reset Classic…"</b>: built-in cycle tuning back to shipped defaults; saved builds, Studio scripts, calibration and history are untouched.</li>
+      <li><b>"Reset Studio…"</b>: clears which build is active and the mode switch; scripts themselves are not deleted.</li>
+      <li><b>"Reset Shared…"</b>: notifications, auto-stop, window tracking, earnings tracking, keybinds and appearance back to defaults. Calibration is cleared only when the checkbox <b>"Reset Shared also clears calibration (you would have to calibrate again)"</b> is ticked.</li>
+    </ul>
+    <p>Each reset confirms first, reports how many keys changed, and reloads the page.</p>
+
+    <h2 id="coach">The Coach</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-coach.webp" width="1200" height="1056" alt="The Coach window: a chat conversation about macro tuning with suggested setting changes shown as cards."></div><figcaption>The Coach window. The in-app side panel is the same assistant with the same history.</figcaption></figure>
+    <p>The Coach is a tuning assistant with two surfaces sharing one backend and one transcript: the side panel opened by <b>"✦ Coach"</b>, and a separate window opened from the panel's expand button. Describe a problem in plain words (the input hints: <b>"Describe a problem… e.g. it shakes late"</b>) and it answers with proposed changes rendered as cards: each row names the setting, shows the old and new value with a reason, and <b>"Implement"</b> applies them in one click. Applied changes show "✓ Applied, press Save settings to keep". Only validated settings keys from a whitelist can be applied, never code. A stats form (capacity, dig strength, dig speed, shake strength, shake speed, luck, walk speed) lets it tailor advice to your gear.</p>
+    <h3 id="coach-engines">Engines and keys</h3>
+    <p>The engine selector in the Coach's settings offers: <b>"Offline brain, free, instant"</b> (the default; a local rules engine, no network), <b>"Claude (Anthropic)"</b>, <b>"OpenAI (GPT)"</b>, <b>"Google Gemini"</b>, <b>"DeepSeek"</b> and <b>"Custom / local"</b>. Cloud engines are bring-your-own-key: each provider shows a short model menu plus an "Other model id…" escape hatch, and the key field says it plainly: <b>"paste key, stays on this PC"</b>. The footer note sums up the cost model: offline is free and needs nothing; cloud engines use your own key and cost a fraction of a cent per message.</p>
+    <p>The key is stored in a separate restricted local secrets file, never in the main config, and is never echoed back to the UI once saved. Base URLs must be https; plain http is allowed only for localhost (the local Ollama case). If an API call fails for any reason, the Coach falls back to the offline brain rather than failing the chat. The transcript persists locally, capped at the last 120 messages.</p>
+
+    <h2 id="warnings">Warning badges and the Warnings drawer</h2>
+    <figure style="max-width:420px"><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-diagnostics.webp" width="900" height="1563" alt="The Warnings drawer: an event list with severity chips and a detail view showing observed evidence, likely cause and a recommended action."></div><figcaption>The Warnings drawer: evidence, likely cause, and one-click Apply with Undo.</figcaption></figure>
+    <p>The diagnostics layer watches runs and calibration and surfaces problems as badges on the sidebar tabs: red for errors, yellow for warnings, with a count. Clicking a badge opens the <b>Warnings</b> drawer at that tab's top event without switching tabs; the Run tab's calibration banner and the Cycle page's tuning banner open the same drawer.</p>
+    <p>Each event's detail view is structured: <b>"What happened"</b>, <b>"What Prospector Lite observed"</b> with evidence bullets, <b>"Most likely cause"</b> (labeled "High confidence", "Medium confidence" or "Possible cause"), <b>"Recommended first action"</b>, and then the actionable lists: <b>"Exact settings to review"</b> shows each setting's current and suggested value with a reason and buttons <b>"Open setting"</b>, <b>"Apply suggested value"</b> and, after applying, <b>"Undo"</b>; calibration and permission items get their own "Open" deep links. The view closes with expected effect, tradeoff, how to verify, and a related FAQ link.</p>
+    <p>Footer actions: <b>"Copy diagnostic details"</b> (the raw event data), <b>"Dismiss"</b>, and <b>"Don't show again for this code"</b>, which is hidden for critical events. After an "Open setting" deep link, a floating recommendation chip appears next to the target row with the suggested value, the reason, and its own Apply button. When nothing is active the drawer says so: "No active warnings. Everything the diagnostics layer watches looks fine right now."</p>
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Suppressed a warning and want it back? The Trust Center's help section has a "Show suppressed warnings again" button.</span></div>
+
+    <h2 id="tutorial">The tutorial system</h2>
+    <figure><div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-welcome.webp" width="1600" height="1041" alt="The Prospector Lite welcome screen with a Continue button and links including Start tutorial and Trust Center."></div><figcaption>The welcome screen offers "Start tutorial" alongside the setup links; the tour is replayable any time from the top bar.</figcaption></figure>
+    <p>Three layers of built-in help share one registry, and the content is local only: Prospector Lite never fetches remote tutorial text.</p>
+    <h3 id="tutorials-menu">The full tour and page walkthroughs</h3>
+    <p>The <b>"❓ Tutorial"</b> button opens the Tutorials menu: <b>"The full tour"</b> plus focused walkthroughs for Calibration, Cycle tuning, Recovery and safety nets, the Modes pages, Tracking, Builds, Relics, Notifications and auto-stop, and Studio. Tours you have finished get a "seen" chip; all are replayable. A second group of entries opens the FAQ, the welcome and privacy screen, the Trust Center, and a full re-run of the setup wizard.</p>
+    <p>A tour runs as a spotlight overlay with a step-by-step popover: <b>"Skip tour"</b>, <b>"Back"</b> and <b>"Next"</b> buttons (the last step reads <b>"Finish"</b>), progress dots, and arrow-key navigation; steps can switch tabs and highlight the control they describe. The first time you visit a tab that has its own walkthrough, the app offers it once; each such page header also has a <b>"✨ Explain this page"</b> button. The main tour auto-opens on launch while <b>"Open tutorial whenever Prospector Lite opens"</b> is on (the default); the tour's footer checkbox <b>"Do not open automatically in future"</b> flips the same preference.</p>
+    <h3 id="faq-modal">The FAQ modal</h3>
+    <p>The <b>"FAQ and troubleshooting"</b> modal is searchable by symptom as well as by question (the search field hints: <b>"Search questions and symptoms…"</b>). Each entry is structured as Symptoms, Likely causes, First thing to try, Steps, How to verify, and Applies to, and ends with deep-link buttons ("Open setting", "Open calibration", "Open permission") that close the modal and take you to the exact surface. It opens from the Settings page, the Calibrate tab, the Trust Center, the wizard's readiness page, the Tutorials menu, and from related-FAQ links inside the Warnings drawer. The wiki's own <a href="./troubleshooting.html">Troubleshooting and FAQ</a> page covers the same ground for reading outside the app.</p>
+
+    <nav class="docs-pager" aria-label="More documentation">
+      <a class="prev" href="./analytics-and-hud.html"><span class="dir">Previous</span><b>Analytics and HUD</b></a>
+      <a class="next" href="./settings.html"><span class="dir">Next</span><b>Settings reference</b></a>
+    </nav>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="foot-legal" style="border:0;margin:0;padding:0">Prospector Lite 5.0.0 · <a href="../">Home</a> · <a href="./">Wiki</a> · <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">Source code</a> · Not affiliated with Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use; use at your own risk.</p>
+  </div>
+</footer>
+
+<dialog class="lightbox" id="lightbox" aria-label="Enlarged screenshot">
+  <button class="lb-close" id="lbclose" aria-label="Close enlarged screenshot">✕</button>
+  <img id="lbimg" src="" alt="">
+  <p class="lb-cap" id="lbcap"></p>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+</body>
+</html>

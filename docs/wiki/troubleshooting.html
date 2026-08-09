@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Troubleshooting and FAQ · Prospector Lite wiki</title>
+<meta name="description" content="Symptoms matched to causes and fixes for Prospector Lite, plus the full FAQ.">
+<link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/troubleshooting.html">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0806">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Troubleshooting and FAQ · Prospector Lite wiki">
+<meta property="og:description" content="Symptoms matched to causes and fixes for Prospector Lite, plus the full FAQ.">
+<meta property="og:url" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/troubleshooting.html">
+<meta property="og:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>document.documentElement.classList.add('js')</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="../" aria-label="Prospector Lite home">
+      <svg viewBox="2 3.5 20 18" aria-hidden="true"><polygon points="6.5,4 17.5,4 15.4,9.2 8.6,9.2" fill="#f6e7c8"/><polygon points="6.5,4 8.6,9.2 2.5,9.2" fill="#e8cf8f"/><polygon points="17.5,4 21.5,9.2 15.4,9.2" fill="#c9a24f"/><polygon points="2.5,9.2 8.6,9.2 12,21" fill="#d9a441"/><polygon points="8.6,9.2 15.4,9.2 12,21" fill="#f0d9a0"/><polygon points="15.4,9.2 21.5,9.2 12,21" fill="#b8933f"/></svg>
+      Prospector Lite
+    </a>
+    <nav aria-label="Main">
+      <ul class="nav-links" id="navlinks">
+        <li><a href="../">Home</a></li>
+        <li><a href="./">Wiki</a></li>
+        <li><a href="../#downloads">Download</a></li>
+        <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></li>
+      </ul>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-sm btn-primary" href="../#downloads">Download</a>
+      <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
+        <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="docs-shell">
+  <aside class="docs-side">
+    <button class="docs-menu-btn" id="docsmenu" aria-expanded="false" aria-controls="sidenav">
+      Documentation menu
+      <svg width="12" height="8" viewBox="0 0 12 8" aria-hidden="true"><path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+    <nav class="docs-sidenav" id="sidenav" aria-label="Documentation" data-spy>
+      <span class="side-group">Start here</span>
+      <a href="./index.html">Wiki home</a>
+      <a href="./getting-started.html">Getting started</a>
+      <a href="./trust-and-permissions.html">Trust and permissions</a>
+      <span class="side-group">Guides</span>
+      <a href="./calibration.html">Calibration</a>
+      <a href="./modes-and-builds.html">Modes and builds</a>
+      <a href="./analytics-and-hud.html">Analytics and HUD</a>
+      <a href="./interface.html">Interface reference</a>
+      <span class="side-group">Reference</span>
+      <a href="./settings.html">Settings reference</a>
+      <a href="./troubleshooting.html" aria-current="page">Troubleshooting and FAQ</a>
+    </nav>
+  </aside>
+
+  <main class="docs-main" id="main">
+    <nav class="crumb" aria-label="Breadcrumb"><a href="../">Home</a><span class="sep">/</span><a href="./">Wiki</a><span class="sep">/</span><span>Troubleshooting and FAQ</span></nav>
+    <p class="eyebrow">Reference</p>
+    <h1 class="docs-title">Troubleshooting and FAQ</h1>
+    <p class="docs-intro">When something misbehaves, the app usually names the cause itself: badges, banners, and the warning drawer point at the setting or calibration involved. This page collects the common symptoms, their likely causes, and the fixes, grouped by problem area. The FAQ at the bottom answers the questions that come up before and after installation.</p>
+
+    <h2 id="first-checks">First checks</h2>
+    <p>Four in-app surfaces resolve most problems before you need this page. Work through them in order; each one is faster than reading a matrix of symptoms.</p>
+    <ol>
+      <li><b>Open the warning drawer.</b> A red badge on a sidebar tab means an error, a yellow badge means a warning; clicking the badge opens the drawer at that tab's top issue without switching tabs. Each entry shows <b>What happened</b>, the numeric evidence with its thresholds (for example "nudges: 9 in 12 cycles (0.75/cycle, threshold 0.6)"), the most likely cause with a confidence label (<b>High confidence</b>, <b>Medium confidence</b>, or <b>Possible cause</b>), and the settings to review with <b>Open setting</b>, <b>Apply suggested value</b>, and <b>Undo</b> buttons.</li>
+      <li><b>Search the built-in FAQ.</b> The <b>FAQ &amp; troubleshooting</b> browser is reachable from the Help menu, the warning drawer, the Calibrate tab, Settings, the wizard's Readiness Check, and the Trust Center. It holds 20 entries, works fully offline, is searchable across questions and symptoms, and each entry ends with buttons that open the relevant setting, calibration step, or permission card.</li>
+      <li><b>Run the test tools.</b> The Trust Center has a live test for each permission. The Calibrate tab has <b>Test detection (live)</b>, <b>Test capacity calibration</b>, <b>Test money/shards read</b>, and <b>Test find pop-up read</b>; the guided cue page has a per-prompt match check under <b>Test existing calibration</b>. Each test reports what it read, so you can tell a detection problem from a calibration problem in seconds.</li>
+      <li><b>Check the logs.</b> <b>Export diagnostics</b> (on the wizard's Readiness page or in the Trust Center) produces a secret-free JSON summary. <code>run_history.json</code> keeps the last 100 runs with stats, event counts, and stop reasons; <code>run_logs/</code> holds the full per-run engine log; <code>onboarding.log</code> records wizard and diagnostics actions (it rotates at 256&nbsp;KB and contains no secrets).</li>
+    </ol>
+    <div class="metric-row">
+      <div class="metric"><b>20</b><span>entries in the built-in FAQ</span></div>
+      <div class="metric"><b>16</b><span>diagnostic rule families</span></div>
+      <div class="metric"><b>85%</b><span>white fraction a cue mask must clear</span></div>
+      <div class="metric"><b>2 px</b><span>window drift that disables cue masks</span></div>
+      <div class="metric"><b>4 px</b><span>window drift the health check tolerates</span></div>
+    </div>
+    <figure style="max-width:420px">
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-diagnostics.webp" width="900" height="1563" alt="The Warnings drawer open on the right side of the app, showing a diagnostic entry with its severity chip, observed evidence, likely cause, and suggested setting changes with Apply and Undo buttons."></div>
+      <figcaption>The warning drawer: evidence, cause, and a one-click suggested fix with Undo.</figcaption>
+    </figure>
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>The drawer never changes anything on its own. Nothing is applied unless you click <b>Apply suggested value</b>, and <b>Undo</b> restores the value from a stored snapshot.</span></div>
+
+    <h2 id="detection">Detection problems</h2>
+    <p>Prompt detection runs on Advanced Cue Matching: a size-exact letter-shape mask captured from your own screen for each of the "Pan", "Collect Deposit", and "Shake" prompts. At runtime a prompt counts as visible only when at least 85% of its mask's letter pixels read white. Masks stand down when the Roblox window size drifts more than 2&nbsp;px from the size they were captured at; the single-pixel checks then act as a fallback, which needs at least 12% white pixels in a small box around the calibrated spot. Most detection failures trace back to one of those two rules.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>A prompt is visibly on screen but the macro does not react (no_progress events in the log)</td><td>Masks or pixels are stale: the window moved or resized since capture, or a capture was taken on the wrong prompt or included the mouse cursor</td><td>Run the cue check on the Calibrate tab, then re-capture the affected prompt at your playing size. After a size change, expect masks to have disabled themselves; that is the 2&nbsp;px guard working, not a fault.</td></tr>
+      <tr><td>Prompts stopped being detected right after a window resize; <b>cue_masks</b> shows stale or needs review</td><td>Masks are size-exact bitmaps and disable themselves past 2&nbsp;px of window-size drift</td><td>Re-capture the three prompts at the new size. The drift disable is deliberate; re-capture rather than fighting it. See the <a href="./calibration.html#cue-matching">cue matching guide</a>.</td></tr>
+      <tr><td>The cue check reports "no match right now" with a low percentage</td><td>The prompt was not on screen during the test, or the mask is stale</td><td>A prompt only matches while it is on screen, so test each cue in its real situation: standing in water for "Pan", on land at a deposit for "Collect Deposit", mid-shake for "Shake". The check reports the live percentage against the 85% requirement.</td></tr>
+      <tr><td>The cue check warns that the background is mostly white too</td><td>The capture area sits over a bright background, which makes white-fraction reads unreliable</td><td>Angle the camera so the prompt sits over darker ground and re-capture. In the mask editor, click the white mouse cursor to exclude it; green pixels are the ones kept.</td></tr>
+      <tr><td>Capture reports no white cue text where you clicked</td><td>The click landed off the word, or the white threshold is too strict for your display</td><td>Click directly on the cue word. If letters still are not picked up, lower <b>"White sensitivity (lower = more permissive)"</b> on the Calibrate tab (default 160, range 80 to 240) and capture again.</td></tr>
+      <tr><td>The macro reacts when no prompt is on screen</td><td>A mask is missing or disabled, so the single-pixel fallback is active, and a white object near the calibrated spot trips it</td><td>Capture the missing mask. A mask matches the letter shape itself, so a player or texture that happens to be white cannot reproduce it.</td></tr>
+      <tr><td>Nothing is detected at all, or captures come back black (macOS)</td><td>Screen Recording is not granted, or was granted after this copy of the app started</td><td>See <a href="#permissions">permission problems</a> below; grants apply on the next launch.</td></tr>
+      <tr><td>The app cannot find the Roblox window; runs stall immediately</td><td>Roblox is on a secondary display, minimized, or not running</td><td>Put Roblox on the primary display (the one with the menu bar on macOS), restore it, and press <b>Detect Roblox window</b> on the Calibrate tab. Detection reads the live window list each time and never gives up permanently; success prints the size and position, for example "Found: 1800x1087 at (0, 39)".</td></tr>
+      <tr><td>Detection stopped working after a game update</td><td>Pixel positions move when the game UI changes</td><td>Re-run the Calibrate tab. Calibration is the fix for almost all detection regressions.</td></tr>
+    </table></div>
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/cue_masks.webp" width="1200" height="790" alt="The cue mask editor magnifying the word Pan and the mouse icon, with kept pixels glowing green and an instruction card explaining that clicking a letter includes or excludes it."></div>
+      <figcaption>The mask editor. Kept pixels are green; clicking the mouse icon excludes it from the mask.</figcaption>
+    </figure>
+
+    <h2 id="timing">Timing problems</h2>
+    <p>Timing faults show up as counters, not crashes. Watch <b>nudges</b>, <b>shake misses</b>, and <b>recoveries</b> on the Run tab (the <a href="./analytics-and-hud.html#run-stats">Analytics guide</a> explains each one). The diagnostics layer warns at 0.6 nudges per cycle, a 0.4 shake-miss rate, and 0.5 recoveries per cycle, each judged over at least 5 cycles; use the same bar when judging your own changes. The settings named below all live on the Cycle page; see the <a href="./settings.html#cycle">settings reference</a> for defaults and ranges.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>Shakes start too early and retry (shake_start_retry events)</td><td>The shake click lands before the game is ready to accept it</td><td>Raise <a href="./settings.html#shake-start-delay-ms">"Delay before shake starts (ms)"</a> one step, or enable the confirmation window <a href="./settings.html#shake-start-confirm-ms">"Confirm shake started within (ms, 0 = off)"</a>.</td></tr>
+      <tr><td>Shakes get marked missed even though a start delay is set</td><td>The shake now starts after the detection window</td><td>Reduce <a href="./settings.html#shake-start-delay-ms">"Delay before shake starts (ms)"</a> one step and re-check the Shake cue capture.</td></tr>
+      <tr><td>Shake misses keep climbing across a session</td><td>The pan is not emptying; persistent misses often mean the capacity bar ends need recalibrating</td><td>Run <b>Test capacity calibration</b> first. Then review <a href="./settings.html#shake-clicks">"Exact shake clicks (0 = auto until empty)"</a> and <a href="./settings.html#cap-empty-frac">"Pan-empty threshold (lower = wait emptier)"</a>.</td></tr>
+      <tr><td>You land in the water after shakes</td><td>The shake starts before enough momentum builds; this is the number one cause of water landings</td><td>Raise <a href="./settings.html#shake-w-lead-ms">"Walk forward before shaking (ms)"</a>. Fix the momentum first, not the probing.</td></tr>
+      <tr><td>The walk back carries past the stop point; frequent nudges on land afterward</td><td>The extra walk back overshoots, then the shake starts while movement is still settling</td><td>Reduce <a href="./settings.html#water-extra-back-ms">"Extra S after Pan cue / go deeper (ms)"</a> first; then raise <a href="./settings.html#shake-start-delay-ms">"Delay before shake starts (ms)"</a>. For nudges that happen after landing, raise <a href="./settings.html#land-settle-ms">"Hold W after land cue (ms)"</a>. Target: under 0.6 nudges per cycle over 5 or more cycles.</td></tr>
+      <tr><td>The walk back stops short and shakes clip the shore</td><td>Not deep enough in the water when the shake starts</td><td>Raise <a href="./settings.html#water-extra-back-ms">"Extra S after Pan cue / go deeper (ms)"</a> one step at a time.</td></tr>
+      <tr><td>It walks backwards for a long time and never shakes</td><td>The Pan cue never appears, so only the walk-back cap stops it</td><td>Recalibrate the Pan prompt. <a href="./settings.html#pan-back-max-ms">"Max S walk-back (ms)"</a> is the safety cap, not the cure.</td></tr>
+      <tr><td>Digs miss or double</td><td>The dig hold does not match your in-game dig-speed stat</td><td>Set <a href="./settings.html#dig-speed">"Dig speed (%), scales the hold"</a> to the value on your stat panel; the hold is derived as 55000 divided by the speed, so 100% gives 550&nbsp;ms and 200% gives 275&nbsp;ms.</td></tr>
+      <tr><td>It re-digs while the fill bar is still rising</td><td>The wait after each dig is shorter than the bar's fill animation</td><td>Raise <a href="./settings.html#dig-fill-ms">"Wait for FULL after each dig (ms)"</a>, or turn on <a href="./settings.html#dig-fill-smart">"Smart fill wait (watch bar motion, 0 downtime)"</a>, which handles the timing automatically.</td></tr>
+      <tr><td>It keeps "recovering" over and over instead of panning (0.5 per cycle or more)</td><td>The watchdog fires on healthy-but-slow cycles, the nudges are too small to free the character, or the walk back parks short of water</td><td>Lower <a href="./settings.html#recover-limit">"Recoveries before break-out"</a> one step to escalate sooner; raise <a href="./settings.html#no-progress-sec">"Seconds of no progress before click-to-empty"</a> if genuinely slow cycles are being interrupted; raise <a href="./settings.html#recover-back-ms">"Recovery nudge budget (ms)"</a> for harder wedges. If it is always stuck at the water edge, re-check the Pan prompt calibration.</td></tr>
+      <tr><td>Auto Pan keeps turning off, or the tracker keeps kicking it (autopan_guard and autopan_kick events)</td><td>The button pixel is re-read before the game reacts, the color tolerance is too tight, or the calibrated pixel is stale</td><td>Raise <a href="./settings.html#autopan-settle-ms">"Wait after clicking Auto Pan (ms)"</a> one step; widen the color tolerance; enable the idle kick <a href="./settings.html#autopan-stall-sec">"Restart Auto Pan if idle this long"</a>; re-calibrate the button pixel. Verify by toggling Auto Pan in the game: the tracker should follow and the events should stop.</td></tr>
+    </table></div>
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-cycle.webp" width="1600" height="1041" alt="The Cycle page with the pan loop diagram and timeline, showing the dig, walk, glide, shake, and land stages as colored blocks with their timing settings below."></div>
+      <figcaption>The Cycle page. Each stage card owns the settings named in the table above; a yellow badge marks the stage the diagnostics flagged.</figcaption>
+    </figure>
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Change one setting at a time and give it at least 5 cycles before judging. The warning drawer applies the same rule: its thresholds only fire once enough cycles have accumulated.</span></div>
+
+    <h2 id="permissions">Permission problems</h2>
+    <p>macOS needs three permissions (Screen Recording, Accessibility, Input Monitoring); Windows needs none. Status detection uses OS preflight APIs and never triggers a prompt by itself; a system prompt can only appear after you click a Request button. A definitively missing permission blocks only the <b>Start</b> button, never the rest of the app. The <a href="./trust-and-permissions.html">Trust and permissions</a> page walks through granting each one; the table below covers what goes wrong afterward.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>System Settings shows the permission enabled, but the in-app test fails (macOS)</td><td>macOS applies Screen Recording (and sometimes Input Monitoring) grants only on the app's next launch</td><td>Quit fully (Cmd+Q) and reopen, then run the Trust Center test again. The status pill tells you when a grant is waiting on a restart, and a <b>Restart Prospector Lite</b> button appears on the card.</td></tr>
+      <tr><td>Start is blocked naming a permission you already granted (macOS)</td><td>The restart rule above, or a stale grant entry pointing at a previous copy after you replaced the app bundle</td><td>Quit and reopen first. If it still fails, remove the app's entry in System Settings with the minus button, then click <b>Request access…</b> on the capability card and grant it fresh.</td></tr>
+      <tr><td>The screen test shows a black frame (macOS)</td><td>Screen Recording is not granted, or was granted after this copy started</td><td>Trust Center: click Request on the Screen Detection card, quit, and reopen. The test captures one small patch, shows it once in-app, and discards it; a non-blank capture means you are set.</td></tr>
+      <tr><td>Nothing gets pressed in the game (macOS)</td><td>Accessibility is not granted; it is the output permission that posts keys and clicks, and it cannot read your input</td><td>Grant Accessibility from the capability card, then run the input test. It posts one keystroke into the app's own test field and passes only when both key-down and key-up are observed.</td></tr>
+      <tr><td>The Safe Stop hotkey does nothing while Roblox has focus</td><td>Input Monitoring is not granted (macOS), or another app owns the chord (code PP-HOTKEY-BUSY in the wizard log)</td><td>Run the hotkey test in the Trust Center; grant Input Monitoring and restart, or pick a different chord on the Keys tab. Defaults: Esc quits, Ctrl+K start/stop, Ctrl+J soft stop, Ctrl+L pause.</td></tr>
+      <tr><td>A card reads "Not requested yet"</td><td>macOS has simply never been asked; nothing is wrong</td><td>Click <b>Request access…</b> to register the app with macOS, then flip its switch in System Settings.</td></tr>
+      <tr><td>"Windows protected your PC" appears on first run (Windows)</td><td>The build is not Authenticode-signed yet, so SmartScreen has no reputation for it; this is a reputation warning, not a malware verdict</td><td>Verify the SHA-256 checksum against the release's <code>SHA256SUMS.txt</code> first, then choose <b>More info</b>, then <b>Run anyway</b>.</td></tr>
+      <tr><td>Clicks and keys silently do nothing in Roblox (Windows)</td><td>Roblox runs as administrator while Prospector Lite does not, so Windows drops the synthetic input</td><td>Run both at the same normal level. Neither needs admin, and running the app as administrator is not recommended.</td></tr>
+    </table></div>
+    <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Never disable Gatekeeper, SmartScreen, SIP, or your antivirus, and never trust software that tells you to. Prospector Lite never asks for that; any instruction to do so, from anyone, is a red flag.</span></div>
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-trust-permissions.webp" width="1600" height="1041" alt="The wizard's Trust and Permissions page with three capability cards, each showing a status pill, a description of what it accesses, and Request and Test buttons."></div>
+      <figcaption>The Trust and Permissions step. Each card has a live status and a real test; the same cards live permanently in the Trust Center.</figcaption>
+    </figure>
+
+    <h2 id="calibration-issues">Calibration problems</h2>
+    <p>All calibration is stored relative to the Roblox window rectangle captured at calibration time. A health check compares the stored size against the live window and flags anything more than 4&nbsp;px off; cue masks are stricter and stand down past 2&nbsp;px. That is why display changes break everything at once, and why the fix is almost always either "restore the window" or "redo the affected step". The <a href="./calibration.html">Calibration guide</a> covers each step in detail.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>A red banner reads "Re-calibration needed."</td><td>The live window size differs from the stored one by more than 4&nbsp;px, so required items flip to stale and Start is blocked</td><td>Restore the previous window size and position, or redo the Capacity and prompt steps at the new geometry. The banner clears on its own once the sizes match again.</td></tr>
+      <tr><td>The banner says "The Roblox window is WxH now but you calibrated at WxH." after a move</td><td>A pure move can be compensated when <b>"Shift pixels when the Roblox window moves"</b> is on; a resize cannot be compensated</td><td>Put the window back (health recovers on its own), or recalibrate at the new geometry.</td></tr>
+      <tr><td>Changed display scaling, resolution, or monitor arrangement, and everything broke at once</td><td>Those changes move all calibrated points at the same time</td><td>Restore the previous display setup, or re-run the Capacity and prompt steps at the new one. Only trust an imported calibration made at the same window size and resolution.</td></tr>
+      <tr><td>"Capacity calibration needs review." appears</td><td>The stored endpoint pair fails the suspicion check: tips swapped or under 20&nbsp;px apart, tips more than 8&nbsp;px apart vertically, a bar width under 24&nbsp;px, or a stored width more than 2&nbsp;px off the tips' distance</td><td>Recalibrate the Capacity step (right tip, then left tip, with the bar completely full). Stored values are never modified automatically; the app only flags them.</td></tr>
+      <tr><td>Capacity calibration saved, but runs misread the pan or hard-stop</td><td>A manual right-tip click landed on the pale anti-aliased edge pixel; the auto-detector walks about 6&nbsp;px inward to solid gold, and manual picks are walked up to 10&nbsp;px, but a pick with no solid gold in reach is the usual culprit</td><td>Run <b>Test capacity calibration</b>: one fresh screenshot read with the same math the runtime uses, saving nothing. It names the failing check; redo the Capacity step if it fails.</td></tr>
+      <tr><td>A save is rejected: "Calibration NOT saved. Previous values kept."</td><td>Save-time validation caught a bad endpoint pair or point; nothing was written</td><td>Read the listed reasons and redo the capture. A rejected save is atomic; your previous working values stay intact.</td></tr>
+      <tr><td>Earnings tracking is empty or frozen with tracking on</td><td>The money and shards boxes were never drawn, are stale, or the read interval is very long</td><td>Re-draw tight boxes around the two numbers on the Calibrate tab, then run <b>Test money/shards read</b>. Earnings are credited as the difference between reads, at the <a href="./settings.html#earn-ocr-sec">"Read the totals every (seconds)"</a> cadence (default 10), so totals should move within one interval.</td></tr>
+      <tr><td>The finds log misses finds, or shows ghost and duplicate entries</td><td>The finds pop-up box is off the cards, the OCR confidence gate rejects faint cards, or the card-lifetime timing splits one animated card in two</td><td>Re-draw the finds pop-up box tall enough for several stacked cards. For missing finds, lower the confidence gate one step; for ghost or duplicate spam, widen the card lifetime and quiet window one step each. Verify that each triggered find appears once.</td></tr>
+      <tr><td>OCR reads return wrong or truncated numbers</td><td>A loose box catches neighboring UI, or the number outgrew the box</td><td>Draw tight boxes with generous room to the left; the totals grow longer as you earn.</td></tr>
+    </table></div>
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/cap_bar.webp" width="1200" height="420" alt="The capacity bar completely full and yellow, with the picker's confirm card on the detected right tip showing its color value and coordinates."></div>
+      <figcaption>A correct Capacity capture: bar completely full, right tip detected on solid gold, confirm card showing the color it read.</figcaption>
+    </figure>
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Once a setup is dialed in, use <b>Export…</b> on the Calibrate tab to save it as a file. An import made at the same window size and resolution restores a working calibration in seconds, and a rejected import writes nothing.</span></div>
+
+    <h2 id="performance">Performance</h2>
+    <p>Prospector Lite is a screen reader and an input sender, so its main sensitivity is timing: if the system is busy, input sleeps wake late and clicks drift. The HUD's <b>lag</b> cell surfaces this directly. It counts timed input sleeps that woke more than 2&nbsp;ms late, and when the worst case tops 20&nbsp;ms in a 2&nbsp;second window the run log prints a warning that background load is fighting the input thread.</p>
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>The HUD lag cell shows a high millisecond value, or lag warnings appear in the run log</td><td>Background load is delaying the input thread</td><td>Close heavy background apps. The lag cell reads "ok" when no late wakes were recorded; treat anything above 20&nbsp;ms worst case as a real problem.</td></tr>
+      <tr><td>You want less background OCR work during runs</td><td>Earnings OCR reads the money and shards regions on a timer</td><td>Raise <a href="./settings.html#earn-ocr-sec">"Read the totals every (seconds)"</a> (default 10), or turn off earnings and finds tracking when you are not comparing builds. A value is only credited when two reads 250&nbsp;ms apart agree, so a longer interval loses no accuracy, only granularity.</td></tr>
+      <tr><td>The app window takes too much space next to the game</td><td>The full window is 1340 by 900</td><td>Turn on <b>"Compact mode (mini sidebar, opens on hover)"</b> on the app Settings page; it resizes the window to 740 by 820 and hides the Preview panel. For less than that, use the pop-out pill.</td></tr>
+      <tr><td>UI animations distract or cost frames</td><td>Interface animations are on by default</td><td>Turn on <b>"Reduce animations"</b> on the app Settings page.</td></tr>
+      <tr><td>Overlay windows you are not using</td><td>The HUD and Analytics windows receive updates while visible</td><td>Hide the HUD with the <b>⬒ HUD</b> button when you are not watching it, and close the Analytics window between comparisons; closing only hides it, so it reopens instantly.</td></tr>
+    </table></div>
+    <figure style="max-width:420px">
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-hud.webp" width="768" height="940" alt="The HUD overlay card showing the current stage word, live counters for pans, rate, clean percentage, finds, lag, and misses, the live cycle diagram, and the events feed."></div>
+      <figcaption>The HUD. The lag cell in the stats row is the quickest read on whether background load is interfering with input timing.</figcaption>
+    </figure>
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-settings.webp" width="1600" height="1041" alt="The app Settings page with the appearance toggles, including Compact mode and Reduce animations, above the Settings ownership card."></div>
+      <figcaption>The app Settings page. Compact mode and Reduce animations live here; neither changes macro tuning or builds.</figcaption>
+    </figure>
+
+    <h2 id="faq">FAQ</h2>
+    <div class="faq">
+      <details>
+        <summary>Is Prospector Lite free?</summary>
+        <div class="faq-a"><p>Yes, completely free. There is no account, no access code, no paid tier, and no ads. The full source is available to read on GitHub.</p></div>
+      </details>
+      <details>
+        <summary>Does it inject into Roblox or read its memory?</summary>
+        <div class="faq-a"><p>No. It captures your screen and sends ordinary OS input events, the same way a person at the keyboard would. It never injects into Roblox, never reads or writes another process's memory, never modifies game files, and never intercepts network traffic. The Trust Center states this boundary in-app, and the build's own source scans fail if any process-memory API appears in the code.</p></div>
+      </details>
+      <details>
+        <summary>Why does macOS ask for three permissions?</summary>
+        <div class="faq-a"><p>Screen Recording reads the game pixels, Accessibility sends the keys and clicks, and Input Monitoring lets the Safe Stop hotkeys work even while Roblox has focus. Each one is explained and testable in the Trust Center, a system prompt can only appear after you click a Request button, and a missing permission blocks only the Start button, never the app. Recent macOS versions label the first one "Screen &amp; System Audio Recording"; the app captures pixels only and contains no audio code. Windows needs no special permissions.</p></div>
+      </details>
+      <details>
+        <summary>Why does Windows SmartScreen warn about the download?</summary>
+        <div class="faq-a"><p>The builds are not Authenticode-signed yet, so SmartScreen has no reputation for them; the warning means "unsigned and uncommon", not "malicious". Verify the SHA-256 checksum against the release's <code>SHA256SUMS.txt</code>, then choose More info, then Run anyway. Never disable SmartScreen or Defender.</p></div>
+      </details>
+      <details>
+        <summary>Does it collect my IP address or location?</summary>
+        <div class="faq-a"><p>No. Default network activity is zero requests: no update checks, no analytics, no telemetry, no IP or location collection, no remote content. The only two network-capable paths are opt-in and point at servers you choose yourself: your own Discord webhook, and the Coach's optional AI mode with your own API key. Both enforce TLS certificate verification with no insecure fallback.</p></div>
+      </details>
+      <details>
+        <summary>Where are my settings and data stored?</summary>
+        <div class="faq-a"><p>Plain local JSON files: <code>~/Library/Application Support/Prospector Lite</code> on macOS, <code>%APPDATA%\Prospector Lite</code> on Windows, or next to the scripts when running from source. The Trust Center lists each file with open, export, and delete actions, including a double-confirmed "Delete ALL local data…" scoped to known files only. Deleting the folder removes the entire data footprint; nothing exists anywhere else.</p></div>
+      </details>
+      <details>
+        <summary>When should I recalibrate?</summary>
+        <div class="faq-a"><p>After anything that moves pixels: a Roblox window move or resize, a resolution or UI-scale change, a different monitor or display arrangement, or a game UI update. You rarely need to guess; calibrations go stale on their own, a banner explains why, and the red badge on the Calibrate tab points at what needs attention. A pure window move can recover by itself once the window is restored.</p></div>
+      </details>
+      <details>
+        <summary>How does Advanced Cue Matching work?</summary>
+        <div class="faq-a"><p>During calibration you click each prompt word once; the connected white letters light up green and become a size-exact pixel mask you can edit. At runtime a prompt counts as visible only when at least 85% of the mask's letter pixels read white, and masks stand down when the window size drifts more than 2&nbsp;px from the capture. It is the primary detector for the "Pan", "Collect Deposit", and "Shake" prompts; the single-pixel checks remain as a fallback. The <a href="./calibration.html#cue-matching">calibration guide</a> walks through all three captures.</p></div>
+      </details>
+      <details>
+        <summary>How do I stop it instantly?</summary>
+        <div class="faq-a"><p>Esc quits the macro, Ctrl+K toggles start and stop, Ctrl+J is a soft stop, and Ctrl+L pauses. All stop paths first release all held keys and mouse buttons, so input can never stay stuck down. The chords are rebindable on the Keys tab, and the Safe Stop listener works even while Roblox has focus (that is what Input Monitoring is for on macOS).</p></div>
+      </details>
+      <details>
+        <summary>Can I inspect the source code?</summary>
+        <div class="faq-a"><p>Yes. The complete source is at <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">github.com/ProspectorsPlus/Prospecting-Auto-Pan</a>, and inside the app each Trust Center capability and calibration step has a View code button that opens the file and line pinned to the commit your build was made from. Note the licensing state: the source is available for inspection, but no open-source license has been chosen yet, so the code is not licensed for redistribution.</p></div>
+      </details>
+      <details>
+        <summary>How do I verify my download?</summary>
+        <div class="faq-a"><p>Compare the file's SHA-256 hash with <code>SHA256SUMS.txt</code> from the official release page: <code>shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code> on macOS, or <code>Get-FileHash -Algorithm SHA256</code> in PowerShell. A mismatch means the file is not the released build; do not run it. Then cross-check the version and commit in the app's Trust Center under Build identity.</p></div>
+      </details>
+      <details>
+        <summary>Does Prospector Lite work with Prospector Studio?</summary>
+        <div class="faq-a"><p>Yes. Prospector Lite ships with a Studio tab that runs <code>.ppscript</code> block scripts. Scripts are validated JSON walked as data; they are never executed as program code, and they run under a hard-coded action whitelist with strict step and time budgets. Note the mode rule: Studio Build and Studio Script modes each need an active entry of their own kind, and Classic must have none; the app refuses to start rather than silently running the wrong program.</p></div>
+      </details>
+      <details>
+        <summary>How do I report a bug?</summary>
+        <div class="faq-a"><p>Open an issue at <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues">GitHub Issues</a> with your version (5.0.0, shown on the welcome screen and in the Trust Center), your OS, whether you run the packaged app or from source, what you expected, what happened, and the tail of the newest file in <code>run_logs/</code>. Never post your Discord webhook URL, webhook secret, or Coach API key, and check a config file before attaching it: the config contains your webhook URL. Security vulnerabilities go through <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new">private vulnerability reporting</a>, never a public issue.</p></div>
+      </details>
+      <details>
+        <summary>What survives an update?</summary>
+        <div class="faq-a"><p>Your data folder (settings, calibration, builds, scripts, history) lives outside the app and persists, so a reinstall picks up where you left off. Verify the new download's checksum first, then replace the app. If a permission fails after a macOS update, quit fully and reopen; re-grant it from the Trust Center if needed.</p></div>
+      </details>
+      <details>
+        <summary>Can my account still get banned?</summary>
+        <div class="faq-a"><p>Yes, possibly. External input can still look automated, and automation may violate the Roblox Terms of Use. Prospector Lite makes no claim of undetectability and no account-safety promises; no macro is risk-free. Use it at your own discretion and risk.</p></div>
+      </details>
+    </div>
+
+    <nav class="docs-pager" aria-label="More documentation">
+      <a class="prev" href="./settings.html"><span class="dir">Previous</span><b>Settings reference</b></a>
+      <a class="next" href="./index.html"><span class="dir">Next</span><b>Wiki home</b></a>
+    </nav>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="foot-legal" style="border:0;margin:0;padding:0">Prospector Lite 5.0.0 · <a href="../">Home</a> · <a href="./">Wiki</a> · <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">Source code</a> · Not affiliated with Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use; use at your own risk.</p>
+  </div>
+</footer>
+
+<dialog class="lightbox" id="lightbox" aria-label="Enlarged screenshot">
+  <button class="lb-close" id="lbclose" aria-label="Close enlarged screenshot">✕</button>
+  <img id="lbimg" src="" alt="">
+  <p class="lb-cap" id="lbcap"></p>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+</body>
+</html>

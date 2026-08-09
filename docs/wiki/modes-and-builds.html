@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Modes and builds · Prospector Lite wiki</title>
+<meta name="description" content="The Treasure chest, Shards and Geodes modes, the quick presets, and how build profiles are saved, loaded and shared.">
+<link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/modes-and-builds.html">
+<link rel="icon" href="../favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#0a0806">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Modes and builds · Prospector Lite wiki">
+<meta property="og:description" content="The Treasure chest, Shards and Geodes modes, the quick presets, and how build profiles are saved, loaded and shared.">
+<meta property="og:url" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/wiki/modes-and-builds.html">
+<meta property="og:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
+<link rel="stylesheet" href="../assets/css/site.css">
+<link rel="stylesheet" href="../assets/css/docs.css">
+<script>document.documentElement.classList.add('js')</script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav" id="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="../" aria-label="Prospector Lite home">
+      <svg viewBox="2 3.5 20 18" aria-hidden="true"><polygon points="6.5,4 17.5,4 15.4,9.2 8.6,9.2" fill="#f6e7c8"/><polygon points="6.5,4 8.6,9.2 2.5,9.2" fill="#e8cf8f"/><polygon points="17.5,4 21.5,9.2 15.4,9.2" fill="#c9a24f"/><polygon points="2.5,9.2 8.6,9.2 12,21" fill="#d9a441"/><polygon points="8.6,9.2 15.4,9.2 12,21" fill="#f0d9a0"/><polygon points="15.4,9.2 21.5,9.2 12,21" fill="#b8933f"/></svg>
+      Prospector Lite
+    </a>
+    <nav aria-label="Main">
+      <ul class="nav-links" id="navlinks">
+        <li><a href="../">Home</a></li>
+        <li><a href="./">Wiki</a></li>
+        <li><a href="../#downloads">Download</a></li>
+        <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></li>
+      </ul>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-sm btn-primary" href="../#downloads">Download</a>
+      <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
+        <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="docs-shell">
+  <aside class="docs-side">
+    <button class="docs-menu-btn" id="docsmenu" aria-expanded="false" aria-controls="sidenav">
+      Documentation menu
+      <svg width="12" height="8" viewBox="0 0 12 8" aria-hidden="true"><path d="M1 1l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+    </button>
+    <nav class="docs-sidenav" id="sidenav" aria-label="Documentation" data-spy>
+      <span class="side-group">Start here</span>
+      <a href="./index.html">Wiki home</a>
+      <a href="./getting-started.html">Getting started</a>
+      <a href="./trust-and-permissions.html">Trust and permissions</a>
+      <span class="side-group">Guides</span>
+      <a href="./calibration.html">Calibration</a>
+      <a href="./modes-and-builds.html" aria-current="page">Modes and builds</a>
+      <a href="./analytics-and-hud.html">Analytics and HUD</a>
+      <a href="./interface.html">Interface reference</a>
+      <span class="side-group">Reference</span>
+      <a href="./settings.html">Settings reference</a>
+      <a href="./troubleshooting.html">Troubleshooting and FAQ</a>
+    </nav>
+  </aside>
+
+  <main class="docs-main" id="main">
+    <nav class="crumb" aria-label="Breadcrumb"><a href="../">Home</a><span class="sep">/</span><a href="./">Wiki</a><span class="sep">/</span><span>Modes and builds</span></nav>
+    <p class="eyebrow">Guides</p>
+    <h1 class="docs-title">Modes, presets and builds</h1>
+    <p class="docs-intro">Prospector Lite runs a Standard loop by default, plus three farm modes (Treasure Chest, Shards, Geodes) that rewire the loop for one specific farm and a watch-only Tracker for benchmarking. Quick presets load a tuned starting point in one click, and the Builds tab saves your whole setup, relics included, under one name. This page covers how the modes interact, what each mode setting does, and how builds are saved, shared and imported as .ppbuild files.</p>
+
+    <h2 id="modes">How the modes fit together</h2>
+
+    <p>Most builds run <b>Standard</b>, which is no mode toggled at all: the full dig, walk, shake, land loop. A mode rewires that loop for one specific farm. Each mode is a settings tab with a master switch at the top; turn the switch on and that tab's settings start to matter. The three farm modes live in the sidebar under the collapsible <b>Modes</b> group as the tabs <b>"Treasure chest"</b>, <b>"Shards"</b> and <b>"Geodes"</b>. The watch-only <b>Tracker</b> sits under the <b>Tracking</b> group next to Earnings.</p>
+
+    <div class="metric-row">
+      <div class="metric"><b>Default</b><span>Standard, no toggle at all</span></div>
+      <div class="metric"><b>Farm modes</b><span>Treasure Chest, Shards, Geodes</span></div>
+      <div class="metric"><b>Benchmark</b><span>Tracker, sends no input</span></div>
+      <div class="metric"><b>Rule of thumb</b><span>run one mode at a time</span></div>
+    </div>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Mode</th><th>Turned on by</th><th>What it changes</th><th>History label</th></tr>
+      <tr><td><b>Standard</b></td><td>Nothing; it is the default when no mode switch is on</td><td>The full dig, walk back, shake, land loop, tuned on the Cycle page</td><td><code>standard</code></td></tr>
+      <tr><td><b>Treasure Chest</b></td><td>"Treasure Chest mode (no shake, strafe L/R)" on the Treasure chest tab</td><td>Replaces the whole loop: dig, strafe sideways, dig, strafe back; no shaking at all</td><td><code>treasure</code></td></tr>
+      <tr><td><b>Shards</b></td><td>"Exact dig clicks (0 = off)" set above zero on the Shards tab; there is no separate toggle</td><td>Replaces only the dig phase with a fixed click count; walk, shake and land stay Standard</td><td><code>shards</code></td></tr>
+      <tr><td><b>Geodes</b></td><td>"Geode mode (slow-animation dig, normal shake)" on the Geodes tab</td><td>Replaces the dig phase with tap-and-wait digging for very slow fill animations; the shake stays the normal momentum shake</td><td><code>geode</code></td></tr>
+      <tr><td><b>Tracker</b></td><td>"Tracker: watch-only, count the game's auto-pan" on the Tracker tab</td><td>Sends no input at all; watches the capacity bar and counts the game's own Auto Pan so you can benchmark it</td><td><code>tracker</code></td></tr>
+      <tr><td><b>Studio script</b></td><td>Picking a script in the Run tab <b>Mode</b> picker (or activating it from the Studio tab)</td><td>Replaces the built-in cycle with a Prospector Studio program; see <a href="#studio-modes">the last section</a></td><td><code>script</code></td></tr>
+    </table></div>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-cycle.webp" width="1600" height="1041" alt="The Cycle page in Prospector Lite showing the Standard loop as a diagram of stages with a timeline underneath."></div>
+      <figcaption>Standard has no master switch of its own; you tune it on the Cycle page, stage by stage. The modes on this page replace parts of that loop.</figcaption>
+    </figure>
+
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span><b>"Perfect dig (release on green), off = timed hold"</b> is a dig style inside Standard, not a mode. It has no interaction with the mode switches described here.</span></div>
+
+    <h3 id="mode-precedence">What happens if more than one mode is on</h3>
+
+    <p>The tabs do not lock each other out, so it is possible to leave two mode switches on at once. The app's own guidance is simple: run only one mode at a time, and each mode's help text tells you which switches to turn off (Treasure says to turn Shards and Geodes off; Geodes says to turn Shards and Treasure off). If several are left on anyway, the engine resolves the overlap by a fixed order: Tracker wins over an active Studio script, a script wins over Treasure, and Treasure wins over the normal cycle. Geode and Shards behavior lives inside the normal cycle's dig phase, so either of them yields to Tracker, a script, or Treasure. The run's History entry is labeled by the mode that actually ran.</p>
+
+    <p>While a Studio script is active, the Run tab says so in plain terms: the note under the picker reads that the script <i>"runs instead of the built-in mode toggles."</i> One exception hides behind the scenes: because Tracker outranks scripts inside the engine, the app parks your Tracker toggle while a Studio program is active and restores it when you switch back to Classic. You do not have to manage that yourself.</p>
+
+    <h3 id="mode-settings-map">Which settings act in which mode</h3>
+
+    <p>Mode settings are dormant outside their mode. That means you can keep a tuned Geodes tab and a tuned Shards tab side by side; only the one whose master switch is on has any effect. Everything not listed below is shared by all modes: calibration, the Standard cycle timings, recovery and safe-stop policy, relics, notifications, auto-stop and earnings tracking.</p>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Settings</th><th>Act only when</th></tr>
+      <tr><td>The five <code>TREASURE_*</code> keys (Treasure chest tab)</td><td>Treasure Chest mode is on</td></tr>
+      <tr><td>The five <code>SHARDS_*</code> keys (Shards tab)</td><td>"Exact dig clicks (0 = off)" is above zero</td></tr>
+      <tr><td>The nine <code>GEODE_*</code> keys (Geodes tab)</td><td>Geode mode is on; "Max shake time (ms)" also caps the shake in this mode</td></tr>
+      <tr><td>The Tracker and Auto Pan keys (Tracker tab)</td><td>Tracker mode is on</td></tr>
+      <tr><td>Everything else</td><td>Shared across all runs; see the <a href="./settings.html">settings reference</a></td></tr>
+    </table></div>
+
+    <h2 id="treasure">Treasure Chest mode</h2>
+
+    <p>The app introduces it as <i>"A no-shake mode for farming the two spots at Rubble Creek: stand on the deposit, it digs, strafes across to the sands, digs, then strafes back, over and over. Calibrate the Deposit pixel on the Collect prompt."</i> Mechanically it is a separate, much simpler loop: dig briefly, then strafe sideways (right, then left, alternating) until the Collect Deposit cue shows again, then dig. There is no walk-back, no shake and no landing phase; the Cycle preview panel shows the chain as dig deposit, strafe to sands, dig, strafe back.</p>
+
+    <p>Use it when you are farming the two-spot Rubble Creek layout, where the normal shake loop has nothing to do. It navigates entirely by the Collect Deposit cue, so the <b>Collect Deposit</b> pixel must be calibrated on the Collect prompt first; see the <a href="./calibration.html">calibration guide</a>. To start: stand on the Rubble Creek deposit, calibrate the cue, turn the mode on and press Start.</p>
+
+    <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>The in-app help is explicit: <i>"turn Shards and Geodes OFF when using this."</i> Treasure outranks both in the engine, but leaving them on invites confusion when you later switch back.</span></div>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/settings/treasure-chest.webp" width="1600" height="1041" alt="The Treasure chest settings tab in Prospector Lite with the mode toggle and its four timing settings."></div>
+      <figcaption>The "Treasure chest" tab: the master switch plus four timing settings, with the page hint describing the Rubble Creek loop.</figcaption>
+    </figure>
+
+    <div class="set-group" id="group-treasure"><h3>Treasure chest settings</h3><span class="count">5 settings</span></div>
+
+    <article class="setting" id="treasure-mode">
+      <div class="set-head"><h4>Treasure Chest mode (no shake, strafe L/R)</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>The master switch. The in-app help calls it "The Rubble Creek two-step": no shaking, just dig, strafe across, dig, strafe back. All other settings on this tab are inert until this is on.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> you are standing on the Rubble Creek deposit with the Collect Deposit pixel calibrated, and you want the two-spot farm instead of the shake loop.</div>
+        <div class="down"><b>Keep it off when</b> you run any normal water farm; the Standard loop handles those.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#treasure-dig-gap-ms">Delay between dig clicks</a>, <a href="#treasure-move-max-ms">Max strafe before moving on</a>. <b>Watch for:</b> the shake loop doing nothing useful on the two-spot farm; that is the symptom this mode exists for.</p>
+    </article>
+
+    <article class="setting" id="treasure-digs">
+      <div class="set-head"><h4>Digs per spot before strafing</h4><span class="set-type">number</span><span class="set-default">default: 1</span></div>
+      <p>How many digs it performs at each spot before strafing to the other one. Usually 1: dig once and move on.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> a single dig does not finish before it starts moving.</div>
+        <div class="down"><b>Lower it when</b> you raised it experimentally and the extra digs add nothing; 1 is the normal value.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 1 to 10. <b>Related:</b> <a href="#treasure-dig-ms">Quick dig click</a>, <a href="#treasure-dig-gap-ms">Delay between dig clicks</a>.</p>
+    </article>
+
+    <article class="setting" id="treasure-dig-ms">
+      <div class="set-head"><h4>Quick dig click (ms)</h4><span class="set-type">number</span><span class="set-default">default: 8 ms</span></div>
+      <p>The length of the dig click in this mode. Per the in-app help, 5 to 10 ms is the working zone: the click only needs to register, the dig animation does the rest.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> treasure digs are not registering at all.</div>
+        <div class="down"><b>Lower it when</b> you have headroom and want the click as short as possible; below about 3 ms there is nothing to gain.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 3 to 30 ms. <b>Related:</b> <a href="#treasure-dig-gap-ms">Delay between dig clicks</a>.</p>
+    </article>
+
+    <article class="setting" id="treasure-dig-gap-ms">
+      <div class="set-head"><h4>Delay between dig clicks (ms)</h4><span class="set-type">number</span><span class="set-default">default: 12000 ms</span></div>
+      <p>The wait between dig clicks while the slow chest-style animation plays out, so clicks do not stack. This is a hard wait per dig, so it directly sets the pace of the whole loop.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> digs overlap on slow gear; the in-app help suggests about 12000 ms as a good start.</div>
+        <div class="down"><b>Lower it when</b> fast gear wastes time waiting between digs.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 1000 to 30000 ms. <b>Related:</b> <a href="#treasure-digs">Digs per spot before strafing</a>. <b>Watch for:</b> digs landing on top of each other; that means this value is too low for your gear.</p>
+    </article>
+
+    <article class="setting" id="treasure-move-max-ms">
+      <div class="set-head"><h4>Max strafe before moving on (ms)</h4><span class="set-type">number</span><span class="set-default">default: 2500 ms</span></div>
+      <p>The strafe cap: stop strafing after this long even if the Collect cue never appears, so it cannot run sideways forever. The cap applies on each leg of the strafe, so a value that is too low stops the character short of the second spot.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> the two spots are far apart and it gives up before arriving.</div>
+        <div class="down"><b>Lower it when</b> you want a missed cue to waste less walking.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 800 to 6000 ms. <b>Related:</b> the Collect Deposit pixel on the <a href="./calibration.html">Calibrate tab</a>. <b>Watch for:</b> the character stopping between the spots and digging thin air.</p>
+    </article>
+
+    <h2 id="shards">Shards mode</h2>
+
+    <p>Shards mode is exact-click digging for builds where a known number of clicks fills the pan; on a shards farm that number is usually one. The page hint reads: <i>"Exact-click digging for shard farming: a known number of dig clicks (usually ONE), a registration check instead of probe re-digs, and optionally move on the moment the fill starts."</i> There is no separate on/off toggle: setting <b>"Exact dig clicks (0 = off)"</b> above zero is what turns the mode on.</p>
+
+    <p>Mechanically, the mode replaces the dig phase only. It clicks the dig the set number of times per land visit, with no probe re-digs and no double clicks from bar-detection races: the first click must prove it landed (the capacity bar must leave empty within the confirm window), and only a provably dead click is retried. The rest of the cycle, walk back, shake and land, is the Standard loop. The tour sums up the point of it: this is the cure for fast builds double-digging.</p>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/settings/shards.webp" width="1600" height="1041" alt="The Shards settings tab in Prospector Lite with the exact dig clicks field and the confirmation settings."></div>
+      <figcaption>The "Shards" tab: the click count doubles as the master switch, followed by the proof and retry settings.</figcaption>
+    </figure>
+
+    <div class="set-group" id="group-shards"><h3>Shards settings</h3><span class="count">5 settings</span></div>
+
+    <article class="setting" id="shards-dig-clicks">
+      <div class="set-head"><h4>Exact dig clicks (0 = off)</h4><span class="set-type">number</span><span class="set-default">default: 0 (off)</span></div>
+      <p>The mode's master switch. The in-app help: click the dig exactly this many times per land visit, no probe re-digs, no double clicks from bar-detection races. At 0 the mode is off and the normal dig logic runs.</p>
+      <div class="set-effects">
+        <div class="up"><b>Set it when</b> a fixed number of clicks (often one) fills your pan and fast gear keeps digging 2 to 3 times before the bar moves.</div>
+        <div class="down"><b>Keep it at 0 when</b> your fill count varies; the Standard dig logic reads the bar and adapts.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 0 to 8. <b>Related:</b> <a href="#shards-green-confirm">Green dig-bar confirms the click</a>, <a href="#shards-assume-full">Assume full once the bar moves</a>. <b>Watch for:</b> double-digging on very fast builds; that symptom is what this mode removes.</p>
+    </article>
+
+    <article class="setting" id="shards-click-confirm-ms">
+      <div class="set-head"><h4>Bar must leave empty within (ms)</h4><span class="set-type">number</span><span class="set-default">default: 100 ms</span></div>
+      <p>The proof window per click: the capacity bar must leave empty within this long, or the click is declared dead and retried. Only a provably dead click is retried, so a slow animation can never cause a double dig. The engine keeps a floor of 30 ms under whatever you enter.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> good clicks are being retried because your bar reacts slowly.</div>
+        <div class="down"><b>Lower it when</b> you want dead clicks detected sooner on a build with a fast-reacting bar.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 40 to 400 ms. <b>Related:</b> <a href="#shards-click-retries">Max clicks if the bar never moves</a>. <b>Watch for:</b> retries appearing in the log on clicks that clearly landed.</p>
+    </article>
+
+    <article class="setting" id="shards-click-retries">
+      <div class="set-head"><h4>Max clicks if the bar never moves</h4><span class="set-type">number</span><span class="set-default">default: 3</span></div>
+      <p>The dead-click budget: if the bar never moves, how many total clicks to try before deciding you are off land and nudging forward.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> good digs are abandoned too early.</div>
+        <div class="down"><b>Lower it when</b> it wastes clicks on empty air.</div>
+      </div>
+      <p class="set-meta"><b>Coach range:</b> 1 to 6. <b>Related:</b> <a href="#shards-click-confirm-ms">Bar must leave empty within</a>.</p>
+    </article>
+
+    <article class="setting" id="shards-assume-full">
+      <div class="set-head"><h4>Assume full once the bar moves</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>Skips the full read. The instant the bar starts filling, the pan is treated as full and the loop moves on; the walk to water happens during the fill animation, so the animation time is spent traveling instead of waiting. The shake clears the assumption automatically.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> you run a one-click-fill build and want to remove the dead time waiting out the fill animation.</div>
+        <div class="down"><b>Keep it off when</b> more than one click fills your pan; the assumption is only safe on one-click fills.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#shards-dig-clicks">Exact dig clicks</a>. <b>Watch for:</b> arriving at the water with a pan that is not actually full.</p>
+    </article>
+
+    <article class="setting" id="shards-green-confirm">
+      <div class="set-head"><h4>Green dig-bar confirms the click</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>Green-bar proof: uses the dig skill-bar popping up as proof that the click registered, frames before the capacity bar moves, which per the in-app help can lag by 2 to 3 whole animations. Requires the <b>Green dig pixel</b> calibrated on the Calibrate page. Perfect mode itself can stay off. The check auto-disarms for the visit on green terrain, where the pixel test would be meaningless.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> you run a very fast build where the capacity bar lags behind reality and good clicks keep getting retried.</div>
+        <div class="down"><b>Keep it off when</b> the Green dig pixel is not calibrated, or the capacity-bar proof alone is already reliable on your build.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> the Green dig pixel step in the <a href="./calibration.html">calibration guide</a>; the geode counterpart is <a href="#geode-green-confirm">Green dig-bar confirms the dig</a>. <b>Watch for:</b> retries on clicks that visibly landed; that lag is what this proof removes.</p>
+    </article>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/calibration/dig_green.webp" width="1000" height="800" alt="A sanitized in-game example of the green dig skill bar used as the calibration target for the green dig pixel."></div>
+      <figcaption>The green dig skill-bar. Both Shards and Geodes can use a calibrated pixel on it as near-instant proof that a dig registered.</figcaption>
+    </figure>
+
+    <h2 id="geodes">Geodes mode</h2>
+
+    <p>Geode gear can slow the dig so much (10 percent dig-speed shovels and similar) that the capacity bar lags the dig by a long beat. The Standard probe would time out mid-animation and issue a false "dig failed" nudge while the fill is merely still catching up. Geode mode taps the dig, then waits out the animation between taps: each per-dig wait ends early the instant the bar moves, and it nudges only when the first dig of a land round shows no movement at all after the whole wait. It then hands back to the normal cycle: walk to water and the momentum shake, not Treasure's sideways strafe.</p>
+
+    <p>The page hint adds one strong recommendation: <i>"Turn on the green dig-bar confirm so a tap that MISSED nudges straight away instead of costing that whole animation."</i> While the mode waits out an animation, the Run tab and the HUD show a live countdown labeled "geode fill" with the remaining seconds.</p>
+
+    <div class="tipbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>You rarely need to tune this tab by hand. The Builds page ships <b>Geode Farm</b> and <b>Geode Farm 1-Tap</b>, and the <a href="#presets">v3 preset</a> loads full geode timings. Start from those.</span></div>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/settings/geodes.webp" width="1600" height="1041" alt="The Geodes settings tab in Prospector Lite with the mode toggle and its eight tuning settings."></div>
+      <figcaption>The "Geodes" tab. Unlike the other mode tabs, these number fields have no slider ranges; they are plain number inputs.</figcaption>
+    </figure>
+
+    <div class="set-group" id="group-geodes"><h3>Geodes settings</h3><span class="count">9 settings</span></div>
+
+    <article class="setting" id="geode-mode">
+      <div class="set-head"><h4>Geode mode (slow-animation dig, normal shake)</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>The master switch. Built for very slow fills: it taps the dig, waits out the animation, then runs the normal walk-back and momentum shake. The in-app help notes that the HUD shows the animation countdown while it waits.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> you run 10 percent dig-speed geode shovels or similar and see false nudges mid-fill.</div>
+        <div class="down"><b>Keep it off when</b> your fill animation is normal speed; the Standard probe handles that fine.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-delay-ms">Animation delay per dig</a>, <a href="#geode-digs-to-fill">Digs to fill</a>. <b>Watch for:</b> the in-app note "turn Shards and Treasure OFF."</p>
+    </article>
+
+    <article class="setting" id="geode-digs-to-fill">
+      <div class="set-head"><h4>Digs to fill (0 = auto until full)</h4><span class="set-type">number</span><span class="set-default">default: 0 (auto)</span></div>
+      <p>How many taps fill the pan on this build, waiting out each slow animation. At 0 it keeps digging until the bar actually reads full, which the in-app help recommends.</p>
+      <div class="set-effects">
+        <div class="up"><b>Set a number when</b> the bar reads unreliably on your build and you would rather trust a fixed count.</div>
+        <div class="down"><b>Keep it at 0 when</b> the bar reads correctly; auto is the recommended setting.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-delay-ms">Animation delay per dig</a>, <a href="#geode-confirm-full">Wait for the bar to read full first</a>.</p>
+    </article>
+
+    <article class="setting" id="geode-dig-ms">
+      <div class="set-head"><h4>Quick dig hold (ms)</h4><span class="set-type">number</span><span class="set-default">default: 5 ms</span></div>
+      <p>The quick tap length; 5 to 10 ms per the in-app help. It only needs to register, "Animation delay per dig" does the waiting. The shipped Geode Farm 1-Tap build raises this to 15 ms.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> geode digs are not registering at all.</div>
+        <div class="down"><b>Lower it when</b> taps register reliably and you want them as short as possible.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-delay-ms">Animation delay per dig</a>.</p>
+    </article>
+
+    <article class="setting" id="geode-delay-ms">
+      <div class="set-head"><h4>Animation delay per dig (ms)</h4><span class="set-type">number</span><span class="set-default">default: 1500 ms</span></div>
+      <p>The in-app help calls this "The big one": how long to wait for the slow geode fill after each tap before deciding it failed. The wait ends early the moment the bar moves, so a generous value costs little on a healthy dig. This is the setting that stops the false nudges.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> you still see nudging mid-animation and ruined fills; set it as high as your slowest geode animation. The in-app help suggests 1500 to 3000 ms; the shipped geode builds and the v3 preset use 12000 ms for the very slowest gear.</div>
+        <div class="down"><b>Lower it when</b> your animation is quicker and a failed tap should be detected sooner (green confirm is the better fix for that).</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-start-ms">Wait for the dig to start</a>, <a href="#geode-green-confirm">Green dig-bar confirms the dig</a>. <b>Watch for:</b> nudges landing while the bar is visibly still filling.</p>
+    </article>
+
+    <article class="setting" id="geode-start-ms">
+      <div class="set-head"><h4>Wait for the dig to start (ms)</h4><span class="set-type">number</span><span class="set-default">default: 800 ms</span></div>
+      <p>The dig-start proof window: after clicking, how long to wait for the dig to actually start (green bar or capacity movement) before re-clicking. The animation timer only begins once a dig is confirmed running.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> your game is laggy to start digs.</div>
+        <div class="down"><b>Lower it when</b> digs start promptly and you want failed taps re-tried sooner.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-delay-ms">Animation delay per dig</a>, <a href="#geode-start-tries">Re-taps if a dig won't start</a>.</p>
+    </article>
+
+    <article class="setting" id="geode-green-confirm">
+      <div class="set-head"><h4>Green dig-bar confirms the dig</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>Green-bar proof, the geode version. Normally a tap that missed still costs the whole animation delay before the macro can tell, so a dig off the edge of the land burns roughly 12 seconds doing nothing before it nudges. The green dig-bar shows within frames; with this on, a tap with no green is re-tapped immediately, and an exhausted tap budget nudges straight away instead of waiting the animation out. It will not count green that was already showing before the tap, and if a dig ever registers with no green it disarms itself for the run and asks you to re-calibrate.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> you run slow geode gear where one tap fills the pan and a missed tap wastes a whole cycle; both shipped geode builds and the v3 preset turn it on.</div>
+        <div class="down"><b>Keep it off when</b> the Green dig pixel is not calibrated yet.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> the Green dig pixel step in the <a href="./calibration.html">calibration guide</a>, <a href="#geode-start-tries">Re-taps if a dig won't start</a>. <b>Watch for:</b> a 12 second pause before it nudges, or the run getting stuck clicking off land; both are the symptoms this fixes.</p>
+    </article>
+
+    <article class="setting" id="geode-start-tries">
+      <div class="set-head"><h4>Re-taps if a dig won't start</h4><span class="set-type">number</span><span class="set-default">default: 3</span></div>
+      <p>The re-tap budget when the green confirm is on: how many taps to try before deciding the spot is not land and nudging forward. Each try costs one "Wait for the dig to start". The in-app note is important: this is ignored unless "Green dig-bar confirms the dig" is on, because without that proof a re-tap can double-dig.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> taps genuinely miss a lot on your build.</div>
+        <div class="down"><b>Lower it when</b> you want it to give up and nudge faster.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-green-confirm">Green dig-bar confirms the dig</a>, <a href="#geode-start-ms">Wait for the dig to start</a>.</p>
+    </article>
+
+    <article class="setting" id="geode-confirm-full">
+      <div class="set-head"><h4>Wait for the bar to read full first</h4><span class="set-type">toggle</span><span class="set-default">default: off</span></div>
+      <p>Double-checks the fill: after the set number of digs, also wait for the bar to actually read full before walking back.</p>
+      <div class="set-effects">
+        <div class="up"><b>Turn it on when</b> your bar reads reliably and an early shake costs more than a moment of waiting; the shipped geode builds turn it on.</div>
+        <div class="down"><b>Keep it off when</b> the bar is very laggy and you would rather trust the dig count.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> <a href="#geode-digs-to-fill">Digs to fill</a>.</p>
+    </article>
+
+    <article class="setting" id="geode-shake-hold-ms">
+      <div class="set-head"><h4>Max shake time (ms)</h4><span class="set-type">number</span><span class="set-default">default: 8000 ms</span></div>
+      <p>The geode shake cap. The shovel slows the shake too, so this is the maximum time to keep shaking; it still stops the instant the pan reads empty. In geode mode the usual bail-if-still-full check is off, so a slow shake is never abandoned mid-drain.</p>
+      <div class="set-effects">
+        <div class="up"><b>Raise it when</b> shakes are cut short with capacity left on slow gear; the shipped geode builds use 10000 ms.</div>
+        <div class="down"><b>Lower it when</b> your shake drains well inside the cap and you want a stuck shake abandoned sooner.</div>
+      </div>
+      <p class="set-meta"><b>Related:</b> the shake stage on the Cycle page; see the <a href="./settings.html">settings reference</a>. <b>Watch for:</b> the pan still holding capacity when the walk to land begins.</p>
+    </article>
+
+    <h2 id="presets">Quick presets</h2>
+
+    <p>The sidebar carries a <b>Quick presets</b> block with four chips: <b>"v1 · fast 1-dig"</b>, <b>"v2 · multi-dig"</b>, <b>"v3 · geode"</b> and <b>"Reset defaults"</b>. A preset is a partial settings patch, not a profile: clicking a chip writes only the keys that preset carries into the matching settings fields and confirms with a splash (for example "v1 fast 1-dig loaded"). Everything the preset does not mention keeps its current value. The tour's advice: <i>"Not sure? Try v1, or load a saved Build."</i></p>
+
+    <h3 id="preset-v1v2">v1 and v2: two dig profiles</h3>
+
+    <p>The first two chips are small and surgical. Each touches three keys on the Standard dig stage and nothing else:</p>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Key</th><th>v1 · fast 1-dig</th><th>v2 · multi-dig</th></tr>
+      <tr><td><code>PERFECT</code> (Perfect dig)</td><td>off</td><td>off</td></tr>
+      <tr><td><code>DIG_CLICK_MS</code></td><td>15</td><td>75</td></tr>
+      <tr><td><code>MAX_DIGS_TO_FILL</code></td><td>1</td><td>8</td></tr>
+    </table></div>
+
+    <p>v1 assumes a fast build where one dig fills the pan; v2 assumes slower gear that needs several digs. Neither touches any mode switch, so whatever mode you have on stays on.</p>
+
+    <h3 id="preset-v3">v3: a full geode tuning</h3>
+
+    <p>The v3 chip is a different animal: it loads a complete geode tuning across the Geodes tab, the shake stage and the dig and walk stages, and it flips modes for you (Geode mode on, Shards clicks to 0). It carries these keys:</p>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Area</th><th>Keys set by v3 · geode</th></tr>
+      <tr><td>Geodes tab</td><td><code>GEODE_MODE</code> on · <code>GEODE_DIGS_TO_FILL</code> 0 · <code>GEODE_DIG_MS</code> 5 · <code>GEODE_DELAY_MS</code> 12000 · <code>GEODE_START_MS</code> 800 · <code>GEODE_GREEN_CONFIRM</code> on · <code>GEODE_START_TRIES</code> 3 · <code>GEODE_CONFIRM_FULL</code> on · <code>GEODE_SHAKE_HOLD_MS</code> 10000</td></tr>
+      <tr><td>Shake stage</td><td><code>SHAKE_MOMENTUM_W</code> on · <code>SHAKE_CLICKS</code> 0 · <code>SHAKE_CLICK_MS</code> 60 · <code>SHAKE_CLICK_GAP_MS</code> 0 · <code>SHAKE_HOLD_MS</code> 6000 · <code>SHAKE_BAIL_MS</code> 500 · <code>SHAKE_START_CONFIRM_MS</code> 300 · <code>SHAKE_START_RETRIES</code> 1 · <code>SHAKE_RETRY_DEEPER_MS</code> 180 · <code>SHAKE_STALL_MS</code> 0 · <code>SHAKE_START_DELAY_MS</code> 0 · <code>SHAKE_W_LEAD_MS</code> 50 · <code>POST_SHAKE_SETTLE_MS</code> 150</td></tr>
+      <tr><td>Dig and walk stages</td><td><code>PERFECT</code> off · <code>DIG_CLICK_MS</code> 5 · <code>DIG_SPEED</code> 1474 · <code>MAX_DIGS_TO_FILL</code> 1 · <code>DIG_FILL_MS</code> 2050 · <code>PRE_DIG_SETTLE_MS</code> 600 · <code>PAN_BACK_MAX_MS</code> 100 · <code>WATER_EXTRA_BACK_MS</code> 0 · <code>LAND_SETTLE_MS</code> 0 · <code>EASY_WATER_RETURN_DELAY_MS</code> 0</td></tr>
+      <tr><td>Modes</td><td><code>SHARDS_DIG_CLICKS</code> 0 (Shards off, so the modes cannot overlap)</td></tr>
+    </table></div>
+
+    <p>Because v3 turns the green confirm on, it expects the <b>Green dig pixel</b> to be calibrated; do that first on the <a href="./calibration.html">Calibrate tab</a>.</p>
+
+    <h3 id="preset-reset">Reset defaults</h3>
+
+    <p><b>"Reset defaults"</b> writes the schema default into each settings field, returning the form to the values documented as defaults throughout this wiki. Like the other chips it fills the form; review the result and save it if that is what you want. Settings edits, a preset included, can be stepped back with Ctrl+Z.</p>
+
+    <p>Presets and builds solve different problems. A preset is a tuned starting point that patches a few fields; a build is your own full profile stored on disk under a name. Start from a preset, tune, then save a build.</p>
+
+    <h2 id="builds">The Builds tab</h2>
+
+    <p>The Builds page states its own contract at the top: <i>"Every build is a FULL settings profile (all tabs + relics). Load applies everything; Overwrite captures your current settings into that build; click a description to edit it."</i></p>
+
+    <div class="metric-row">
+      <div class="metric"><b>Scope</b><span>all settings tabs plus relic rows</span></div>
+      <div class="metric"><b>Never included</b><span>calibration, webhook URL and secret, window settings</span></div>
+      <div class="metric"><b>Shipped builds</b><span>Geode Farm, Geode Farm 1-Tap</span></div>
+      <div class="metric"><b>Share format</b><span>.ppbuild file, parsed as data</span></div>
+    </div>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-builds.webp" width="1600" height="1041" alt="The Builds tab in Prospector Lite showing the search and sort toolbar and the grid of build cards with Load, Overwrite, Export and Attach doc buttons."></div>
+      <figcaption>The Builds tab: toolbar with search, sort, save-as and import, above the card grid. The two shipped geode builds are always present.</figcaption>
+    </figure>
+
+    <h3 id="build-contents">What a build stores</h3>
+
+    <p>A saved build contains all of your settings values from the schema, plus the relic rows (name, minutes, slot, clicks) and the <b>"Enable relic timer"</b> master switch, plus metadata: the description, created and updated dates, a use counter and the last-used date, and optionally an attached document. Three things are deliberately not in a build: calibrated pixels, the webhook URL and secret, and window settings. Loading merges the build over your active configuration, so those keep their current values. Compatibility works the same way; the tour puts it as: <i>"Loading a build made on an older version keeps your current values for any settings it does not know about. Nothing gets zeroed."</i></p>
+
+    <h3 id="build-save-load">Saving and loading</h3>
+
+    <ol class="do-list">
+      <li>Quick save from anywhere: the topbar has a field with the placeholder <b>"build name"</b> next to the <b>"Save build"</b> button. Saving toasts: Build "name" saved (all settings).</li>
+      <li>On the Builds page, the toolbar's <b>"save current as…"</b> field with the <b>"Save current"</b> button does the same; an empty name is refused with "Enter a build name".</li>
+      <li><b>"Load"</b> on a card applies the whole profile at once, settings and relics, and shows a splash with the build's name. Loading also bumps the build's use counter and last-used date.</li>
+      <li><b>"Overwrite"</b> re-captures your current settings and relics into that build; its tooltip reads "Overwrite this build with the CURRENT settings".</li>
+      <li>A load is a normal settings edit, so Ctrl+Z steps it back if you loaded the wrong one.</li>
+    </ol>
+
+    <h3 id="build-toolbar">Search and sort</h3>
+
+    <p>The search field (<b>"Search builds…"</b>) filters by name and description as you type. The sort menu offers <b>"Newest"</b> (the default), <b>"Oldest"</b>, <b>"Most used"</b>, <b>"Recently used"</b> and an alphabetical option; ties in the other sorts break alphabetically. The usage sorts are powered by the use counter and last-used date that Load maintains, so your daily driver floats to the top on its own. With no builds saved the grid says "No builds yet, save your current settings above."; a search with no hits says "No builds match that search."</p>
+
+    <h3 id="build-cards">The build cards</h3>
+
+    <p>Each card shows the build's name, its description, a stats line (settings count, relic count, times used, created date, last used date), and the four buttons: <b>"Load"</b>, <b>"Overwrite"</b>, <b>"Export"</b> and <b>"Attach doc"</b>. Click the description text (or the "Add a description…" placeholder) to edit it inline; descriptions are capped at 500 characters. Deleting is a two-step confirm: the delete button arms itself as "sure?" for 2.5 seconds, and only a second click deletes.</p>
+
+    <h3 id="shipped-builds">The shipped builds</h3>
+
+    <p>Two ready-tuned geode builds ship with the app, so a fresh install has a working geode setup on the Builds page from the first launch:</p>
+
+    <div class="tablewrap"><table class="doc-table">
+      <tr><th>Build</th><th>What it is</th></tr>
+      <tr><td><b>Geode Farm</b></td><td>Geode farming with the slow-animation dig and the normal momentum shake. The same tuning the v3 preset loads, plus explicit safeguards: Treasure mode off, an empty-bar threshold, and an empty relic list. Its description asks you to match "Animation delay per dig" to your geode's fill animation (about 12 s) and to calibrate the Green dig pixel.</td></tr>
+      <tr><td><b>Geode Farm 1-Tap</b></td><td>The one-tap variant: identical except <code>GEODE_DIG_MS</code> is 15 ms instead of 5 ms, for gear where one quick dig fills the pan.</td></tr>
+    </table></div>
+
+    <p>Built-in cards behave slightly differently: they have no Delete button, and a user build with the same name overrides the bundled one. Loading a built-in build, or editing its description, seeds a personal copy into your builds file first, so your edits are always yours.</p>
+
+    <h3 id="build-storage">Where builds live on disk</h3>
+
+    <p>Builds are one JSON file, <code>prospecting_builds.json</code>, in your data folder: <code>~/Library/Application Support/Prospector Lite</code> on macOS, <code>%APPDATA%\Prospector Lite</code> on Windows (running from source keeps it next to the scripts). The Trust Center's local data listing labels it "Saved builds". Reinstalling or updating the app leaves the data folder in place, so builds survive updates; a one-time migration from an old "Prospectors Plus" install copies the file into the new location without touching the old folder.</p>
+
+    <h2 id="sharing">Sharing builds as .ppbuild files</h2>
+
+    <p>Since version 4.2.0 a build can travel as a single file. <b>"Export"</b> on a card writes that one build (settings, description and any attached document) to a <b>.ppbuild</b> file through the normal OS save dialog; the file is JSON with a format marker, and the dialog also offers a plain .json filter. Send the file to a friend however you like.</p>
+
+    <p><b>"Import build…"</b> in the toolbar opens a native file picker (it accepts .ppbuild and .json). The import path is deliberately conservative:</p>
+
+    <ol class="do-list">
+      <li>The payload is parsed as data and checked against the settings schema; each known key is coerced to its declared type. A build file is never executed. A file that does not parse is refused with "That isn't a valid build file."; a valid file with nothing usable inside is refused with "No build data in that file."</li>
+      <li>A name clash gets a numeric suffix, so an import never overwrites one of your own builds.</li>
+      <li>The imported build's usage metadata is reset, and it arrives as a regular user build: editable, deletable, yours.</li>
+    </ol>
+
+    <h3 id="attachments">Doc attachments</h3>
+
+    <p><b>"Attach doc"</b> attaches one document to a build: the picker accepts Word, PDF, text, Markdown and image files, plus Studio .ppscript files, up to 8 MB ("File too large (max 8 MB)." past that). The attachment is stored inside the build entry itself, so it travels inside the single .ppbuild file on export and import. A card with an attachment shows the filename with a <b>"Download Roblox build"</b> button that writes the document back out, and a remove button. The intended use, per the app's tour: attach an equipment doc so the person receiving your build knows what gear to make.</p>
+
+    <div class="warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>An exported build cannot leak your private setup: builds never contain calibrated pixels, your webhook URL or secret, or window settings, so none of those are in the file you share. The attachment you add is the only free-form content inside.</span></div>
+
+    <h3 id="sharing-faq">Common questions</h3>
+
+    <div class="faq">
+      <details><summary>Can a .ppbuild file run code on my machine?</summary><div class="faq-a"><p>No. A build file is parsed as data and strictly validated: known settings keys are coerced to their declared types and everything else is handled as inert content. Nothing in the file is executed as program code.</p></div></details>
+      <details><summary>Will importing a friend's build overwrite mine?</summary><div class="faq-a"><p>No. If the incoming name matches one of yours, the import is renamed with a numeric suffix. Your builds are only ever changed by your own Load, Overwrite and Delete actions.</p></div></details>
+      <details><summary>Does an exported build include my calibration or webhook?</summary><div class="faq-a"><p>No. Builds never carry calibrated pixels, the webhook URL or secret, or window settings, so an export cannot contain them. The receiver calibrates on their own screen, which is also why a shared build works across different machines.</p></div></details>
+      <details><summary>I loaded a build made on an older version. Are my newer settings gone?</summary><div class="faq-a"><p>No. Loading merges the build over your current configuration, so any setting the old build does not know about keeps its current value. Nothing gets zeroed.</p></div></details>
+    </div>
+
+    <h2 id="studio-modes">Classic, Studio Build and Studio Script</h2>
+
+    <p>Everything above lives in the <b>Classic</b> world: the built-in cycle, its modes, and .ppbuild profiles. Prospector Studio programs are a separate system. The app's Settings page describes the ownership split on its "Settings ownership" card: Classic owns the built-in cycle tuning (modes, dig, shake and walk timing, recovery, relics); Studio owns which Studio entry is active; and Shared settings are used by both kinds of run (calibration, game window, notifications, auto-stop, earnings tracking, keybinds and appearance). Studio builds and scripts are stored in their own library file, <code>prospecting_scripts.json</code>, not in your builds file.</p>
+
+    <p>In standalone Prospector Lite you meet Studio programs through the Run tab's <b>Mode</b> picker: the first option is <b>"Built-in modes"</b>, and your Studio entries follow as "Script: name". While one is active it runs instead of the built-in mode toggles, as described <a href="#mode-precedence">above</a>.</p>
+
+    <h3 id="launch-strip">The launch mode strip</h3>
+
+    <p>When Prospector Studio launches the app, a three-tab strip labeled <b>Macro mode</b> appears in the topbar in place of the picker: <b>"Classic"</b> (the proven built-in cycle: modes, routes, relics, recovery), <b>"Studio Build"</b> (tooltip: "Run a prospecting build authored in Prospector Studio") and <b>"Studio Script"</b> (tooltip: "Run a general-automation Studio Script through the same engine"). The strip is hidden in standalone Lite.</p>
+
+    <p>The strip enforces a strict invariant rather than guessing: Classic means no Studio entry is active; Studio Build requires an active build-kind entry; Studio Script requires an active script-kind entry. Switching mid-run is refused ("Stop the run first, then switch."), and Start refuses on a mismatch, naming the problem ("no build selected", "A Studio entry is still active", or "The active entry does not match the selected mode") instead of silently running the wrong program. The quickest fix is usually the one the in-app FAQ suggests: run the entry from its own tab, which flips the mode for you.</p>
+
+    <figure>
+      <div class="imgframe"><img class="zoomable" loading="lazy" src="../assets/img/app-studio-tab.webp" width="1600" height="1041" alt="The Studio library tab in Prospector Lite listing saved Studio builds and scripts."></div>
+      <figcaption>The Studio library tab. Studio entries live in their own library, separate from .ppbuild profiles.</figcaption>
+    </figure>
+
+    <p>For the full Studio surface (the block editor, script kinds and the recorder), see the <a href="./interface.html#studio">Studio section of the interface reference</a>.</p>
+
+    <nav class="docs-pager" aria-label="More documentation">
+      <a class="prev" href="./calibration.html"><span class="dir">Previous</span><b>Calibration</b></a>
+      <a class="next" href="./analytics-and-hud.html"><span class="dir">Next</span><b>Analytics and HUD</b></a>
+    </nav>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">
+    <p class="foot-legal" style="border:0;margin:0;padding:0">Prospector Lite 5.0.0 · <a href="../">Home</a> · <a href="./">Wiki</a> · <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">Source code</a> · Not affiliated with Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use; use at your own risk.</p>
+  </div>
+</footer>
+
+<dialog class="lightbox" id="lightbox" aria-label="Enlarged screenshot">
+  <button class="lb-close" id="lbclose" aria-label="Close enlarged screenshot">✕</button>
+  <img id="lbimg" src="" alt="">
+  <p class="lb-cap" id="lbcap"></p>
+</dialog>
+
+<script src="../assets/js/site.js" defer></script>
+</body>
+</html>

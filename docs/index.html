@@ -3,25 +3,38 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Prospector Lite — visual automation for Roblox Prospecting</title>
-<meta name="description" content="Prospector Lite automates the pan–dig–shake loop in Roblox Prospecting with calibrated visual detection and ordinary keyboard and mouse input. External-only, zero network by default, free, source available for inspection.">
+<title>Prospector Lite: visual automation for Roblox Prospecting</title>
+<meta name="description" content="Prospector Lite automates the pan, dig, and shake loop in Roblox Prospecting with calibrated visual detection and normal keyboard and mouse input. Free, no account, zero network requests by default, source available for inspection.">
 <link rel="canonical" href="https://prospectorsplus.github.io/Prospecting-Auto-Pan/">
 <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-<meta name="theme-color" content="#070b14">
+<meta name="theme-color" content="#0a0806">
 <meta property="og:type" content="website">
-<meta property="og:title" content="Prospector Lite — automation that sees the game">
-<meta property="og:description" content="Calibrated visual detection and ordinary keyboard input for Roblox Prospecting. External-only, zero network by default, free. Version 5.0.0 for Windows x64 and macOS Apple Silicon.">
+<meta property="og:title" content="Prospector Lite: visual automation for Roblox Prospecting">
+<meta property="og:description" content="Calibrated visual detection and normal keyboard and mouse input for the Prospecting loop. Free, version 5.0.0 for Windows x64 and macOS Apple Silicon.">
 <meta property="og:url" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/">
 <meta property="og:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Prospector Lite — automation that sees the game">
-<meta name="twitter:description" content="Calibrated visual detection and ordinary keyboard input for Roblox Prospecting. Free, external-only, version 5.0.0.">
+<meta name="twitter:title" content="Prospector Lite: visual automation for Roblox Prospecting">
+<meta name="twitter:description" content="Calibrated visual detection and normal keyboard input for the Prospecting loop. Free, version 5.0.0.">
 <meta name="twitter:image" content="https://prospectorsplus.github.io/Prospecting-Auto-Pan/assets/img/og-card.png">
-<link rel="preload" as="image" href="./assets/img/app-welcome.webp" type="image/webp">
+<link rel="preload" as="image" href="./assets/img/app-cycle.webp" type="image/webp">
 <link rel="stylesheet" href="./assets/css/site.css">
 <script>document.documentElement.classList.add('js')</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Prospector Lite",
+  "operatingSystem": "Windows 10, Windows 11, macOS",
+  "applicationCategory": "UtilitiesApplication",
+  "softwareVersion": "5.0.0",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "url": "https://prospectorsplus.github.io/Prospecting-Auto-Pan/",
+  "downloadUrl": "https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0"
+}
+</script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -29,21 +42,21 @@
 <!-- ================= Navigation ================= -->
 <header class="nav" id="nav">
   <div class="nav-inner">
-    <a class="nav-brand" href="#top" aria-label="Prospector Lite — back to top">
+    <a class="nav-brand" href="#top" aria-label="Prospector Lite, back to top">
       <svg viewBox="2 3.5 20 18" aria-hidden="true"><polygon points="6.5,4 17.5,4 15.4,9.2 8.6,9.2" fill="#f6e7c8"/><polygon points="6.5,4 8.6,9.2 2.5,9.2" fill="#e8cf8f"/><polygon points="17.5,4 21.5,9.2 15.4,9.2" fill="#c9a24f"/><polygon points="2.5,9.2 8.6,9.2 12,21" fill="#d9a441"/><polygon points="8.6,9.2 15.4,9.2 12,21" fill="#f0d9a0"/><polygon points="15.4,9.2 21.5,9.2 12,21" fill="#b8933f"/></svg>
       Prospector Lite
     </a>
     <nav aria-label="Main">
       <ul class="nav-links" id="navlinks">
-        <li><a href="#features">Features</a></li>
-        <li><a href="#setup">Setup</a></li>
-        <li><a href="#calibration">Calibration</a></li>
+        <li><a href="#product">Product</a></li>
+        <li><a href="#how">How it works</a></li>
         <li><a href="#trust">Trust</a></li>
-        <li><a href="#faq">FAQ</a></li>
+        <li><a href="#setup">Setup</a></li>
+        <li><a href="./wiki/">Wiki</a></li>
       </ul>
     </nav>
     <div class="nav-cta">
-      <a class="btn btn-sm btn-ghost-sm" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a>
+      <a class="btn btn-sm btn-ghost nav-ghost-desktop" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a>
       <a class="btn btn-sm btn-primary" href="#downloads">Download</a>
       <button class="nav-toggle" id="navtoggle" aria-expanded="false" aria-controls="navlinks" aria-label="Open menu">
         <svg width="18" height="14" viewBox="0 0 18 14" aria-hidden="true"><path d="M1 1h16M1 7h16M1 13h16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -56,15 +69,16 @@
 <!-- ================= Hero ================= -->
 <section class="hero" id="top">
   <div class="hero-bg" aria-hidden="true">
-    <div class="aurora"></div>
-    <div class="grid"></div>
+    <div class="ember"></div>
+    <div class="ember2"></div>
+    <div class="gridlines"></div>
     <div class="noise"></div>
   </div>
   <div class="wrap hero-grid">
     <div class="hero-copy">
       <p class="eyebrow">Prospector Lite 5.0</p>
-      <h1>Automation that <span class="accent">sees the game</span> the way you do.</h1>
-      <p class="hero-sub">Prospector Lite watches the visible Prospecting screen through calibrated visual detection and plays the pan–dig–shake loop with ordinary keyboard and mouse input. No injection, no memory reading, no client modification — and nothing leaves your machine.</p>
+      <h1>A Prospecting macro that <span class="accent">plays by sight</span>.</h1>
+      <p class="hero-sub">Prospector Lite reads the visible game screen through calibrated cues and runs the pan, dig, and shake loop with normal keyboard and mouse input. It never touches the Roblox client, and nothing about your session leaves your computer.</p>
       <div class="hero-ctas">
         <a class="btn btn-primary btn-lg" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe">
           <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1v9m0 0L4.5 6.5M8 10l3.5-3.5M2 13.5h12" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -75,176 +89,202 @@
           Download for macOS
         </a>
       </div>
-      <p class="hero-meta">Version 5.0.0<span class="sep">·</span>Windows x64<span class="sep">·</span>macOS Apple Silicon<span class="sep">·</span><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">View source</a></p>
+      <p class="hero-meta">Version 5.0.0<span class="sep">·</span>Windows x64<span class="sep">·</span>macOS Apple Silicon<span class="sep">·</span><a href="./wiki/getting-started.html">Setup guide</a></p>
       <div class="hero-trust" role="list">
         <span class="chip" role="listitem">Free</span>
         <span class="chip" role="listitem">No account, no access code</span>
-        <span class="chip" role="listitem">Zero network by default</span>
+        <span class="chip" role="listitem">Zero network requests by default</span>
         <span class="chip chip-gold" role="listitem">Source available for inspection</span>
       </div>
     </div>
     <div class="stage reveal">
       <div class="stage-glow" aria-hidden="true"></div>
-      <div class="laptop">
-        <div class="laptop-screen">
-          <div class="laptop-display">
-            <img src="./assets/img/app-welcome.webp" width="1600" height="1041" alt="The Prospector Lite welcome screen: a dark gold-on-graphite desktop app with the diamond mark, trust summary and a Continue button." fetchpriority="high">
+      <div class="laptop3">
+        <div class="lp-screen">
+          <span class="lp-cam" aria-hidden="true"></span>
+          <div class="lp-display">
+            <img src="./assets/img/app-cycle.webp" width="1600" height="1041" alt="The Cycle page of Prospector Lite on a laptop: a land to water loop diagram with live stage timings, and a cycle timeline estimating 4.83 seconds per pan, about 745 pans per hour." fetchpriority="high">
           </div>
         </div>
-        <div class="laptop-base"></div>
+        <div class="lp-hinge" aria-hidden="true"></div>
+        <div class="lp-deck" aria-hidden="true">
+          <div class="lp-keys"></div>
+          <div class="lp-space"></div>
+          <div class="lp-trackpad"></div>
+        </div>
+        <div class="lp-foot" aria-hidden="true"></div>
       </div>
-      <div class="float-chip fc1"><span class="dot gold"></span><span><b>Advanced Cue Matching</b> · Pan · Deposit · Shake</span></div>
+      <div class="float-chip fc1"><span class="dot gold"></span><span><b>Cycle timeline</b> · every stage modelled live</span></div>
       <div class="float-chip fc2"><span class="dot ok"></span><span><b>Safe Stop</b> · Esc releases every input</span></div>
     </div>
   </div>
 </section>
 
-<!-- ================= Product proof ================= -->
-<section class="section" id="proof">
+<!-- ================= Product showcase ================= -->
+<section class="section" id="product">
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="eyebrow">The product</p>
-      <h2>Built for the full Prospecting loop.</h2>
-      <p class="lead">Real screenshots from Prospector Lite 5.0.0 — the same build you download below.</p>
+      <h2>Real screenshots from the build you download.</h2>
+      <p class="lead">Everything below is captured from Prospector Lite 5.0.0. Click any image to enlarge it.</p>
     </div>
-    <div class="showcase">
-      <figure class="showcase-item reveal">
+    <div class="showcase-grid">
+      <figure class="sc-item sc-8 reveal">
         <div class="appwin">
-          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite — Run</span></div>
-          <img class="zoomable" loading="lazy" src="./assets/img/app-run.webp" width="1600" height="687" alt="The Run tab: Start macro, Pause and Stop controls above live tiles for runtime, pans, digs, pans per hour, recoveries, nudges and safe-stops.">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite · Run</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/app-run-tab-crop.webp" width="1600" height="690" alt="The Run tab: Start macro, Pause and Stop buttons, a mode selector, and thirteen live tiles for runtime, pans, digs, pans per hour, clean percentage, recoveries, nudges, shake misses, relics, money per hour, shards per hour, safe stops and hard stops.">
         </div>
-        <figcaption><b>The control room</b><span>Start, pause and stop the loop; live counters track every pan, dig, recovery and safe-stop.</span></figcaption>
+        <figcaption><b>The control room</b><span>Start, pause and stop the loop. Thirteen live counters track the session, and warning badges point at whatever needs attention.</span></figcaption>
       </figure>
-      <figure class="showcase-item reveal">
+      <figure class="sc-item sc-4 reveal">
         <div class="appwin">
-          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospectors Analytics</span></div>
-          <img class="zoomable" loading="lazy" src="./assets/img/app-analytics.webp" width="1600" height="939" alt="The Analytics window: throughput, earnings and reliability tiles — pans, pans per hour, cycle time with p50 and p95, money and shards, clean cycles and recoveries.">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">HUD</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/app-hud-crop.webp" width="768" height="590" alt="The compact HUD overlay: state line, pans and per hour counters, a live cycle strip, and an events feed.">
         </div>
-        <figcaption><b>Analytics</b><span>Throughput, earnings and reliability — computed locally, stored locally.</span></figcaption>
+        <figcaption><b>The HUD</b><span>A small always-on-top overlay with the state, core counters, a live cycle strip and recent events.</span></figcaption>
       </figure>
-      <figure class="showcase-item reveal">
+      <figure class="sc-item sc-6 reveal">
         <div class="appwin">
-          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite setup — Guided Calibration</span></div>
-          <img class="zoomable" loading="lazy" src="./assets/img/app-guided-calibration.webp" width="1600" height="1041" alt="The Guided Calibration checklist: numbered required steps in order, each with Open this step and View code buttons, and a Detect Roblox window banner.">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Analytics</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/app-analytics-win.webp" width="1400" height="1189" alt="The Analytics window with Throughput, Earnings, Finds and Reliability sections and a find log table.">
         </div>
-        <figcaption><b>Guided Calibration</b><span>Numbered steps in order, one highlighted card at a time — with a View&nbsp;code button on every step.</span></figcaption>
+        <figcaption><b>Analytics</b><span>Throughput, earnings, finds and reliability in one window, plus a find log. Computed locally, stored locally.</span></figcaption>
       </figure>
-      <figure class="showcase-item reveal">
+      <figure class="sc-item sc-6 reveal">
         <div class="appwin">
-          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite — Trust Center</span></div>
-          <img class="zoomable" loading="lazy" src="./assets/img/app-trust-center.webp" width="1600" height="1041" alt="The Trust Center: permission cards with live OS status, what data each capability can access, what is kept on disk, what leaves the computer, and Test buttons.">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Builds</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/app-builds.webp" width="1600" height="1041" alt="The Builds tab: search and sort controls, Save current and Import build buttons, and a card for the shipped Geode Farm build with Load and Overwrite actions.">
         </div>
-        <figcaption><b>Trust Center</b><span>Every permission and byte stored, with live status and a real test behind each claim.</span></figcaption>
+        <figcaption><b>Builds</b><span>Every build is a complete settings profile. Save, load, overwrite, and share builds as .ppbuild files.</span></figcaption>
       </figure>
     </div>
   </div>
 </section>
 
-<!-- ================= What it does ================= -->
+<!-- ================= How it works ================= -->
 <section class="section" id="how">
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="eyebrow">How it works</p>
-      <h2>Pixels in. Keystrokes out. Nothing else.</h2>
-      <p class="lead">Prospector Lite runs beside the game, not inside it. It reads the cues you can see — the capacity bar, the dig bar, the white Pan / Collect&nbsp;Deposit / Shake prompts — decides what a player would do next, and presses the same keys and mouse buttons you would. The same boundary a human at the keyboard has.</p>
+      <h2>From pixels to keystrokes.</h2>
+      <p class="lead">Prospector Lite runs beside the game as an ordinary desktop app. It samples the cues you can see on screen, decides what a player would do next, and presses the same keys and mouse buttons you would. That input boundary is the whole story: there is no injection, no memory reading, and no client modification.</p>
     </div>
-    <div class="flow reveal" role="img" aria-label="Flow diagram: screen capture, then calibrated visual detection, then run logic, then ordinary keyboard and mouse input.">
+    <div class="flow reveal" role="img" aria-label="Flow diagram: screen capture, then calibrated visual detection, then run logic, then normal keyboard and mouse input.">
       <div class="flow-node">
         <div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M9 20h6M12 16v4"/></svg></div>
         <b>Screen</b><span>Reads visible pixels of the display Roblox is on</span>
       </div>
       <div class="flow-node">
         <div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><circle cx="12" cy="12" r="3.2"/></svg></div>
-        <b>Visual detection</b><span>Calibrated cues and letter-shape masks</span>
+        <b>Detection</b><span>Calibrated points, regions and letter-shape cue masks</span>
       </div>
       <div class="flow-node">
         <div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg></div>
-        <b>Run logic</b><span>Builds, pacing, bounded recovery, watchdogs</span>
+        <b>Run logic</b><span>Modes, builds, pacing, bounded recovery, watchdogs</span>
       </div>
       <div class="flow-node">
         <div class="ico"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="2.5" y="7" width="19" height="10" rx="2"/><path d="M6 10.5h.01M9.5 10.5h.01M13 10.5h.01M16.5 10.5h.01M7 13.8h10"/></svg></div>
-        <b>Input</b><span>Ordinary keyboard and mouse events</span>
+        <b>Input</b><span>Normal keyboard and mouse events, like your own</span>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= Features ================= -->
+<!-- ================= Capabilities ================= -->
 <section class="section" id="features">
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="eyebrow">Capabilities</p>
-      <h2>Detection you can trust, tools you can check.</h2>
+      <h2>Built around the loop, tuned from one page.</h2>
     </div>
 
     <div class="feature-row reveal">
       <div class="feature-copy">
-        <p class="eyebrow">Advanced Cue Matching</p>
-        <h3>It matches the shape of the prompt, not one fragile pixel.</h3>
-        <p>Instead of trusting a single white dot, Prospector Lite captures the actual letter shapes of the Pan, Collect&nbsp;Deposit and Shake prompts. Click the word once during calibration; every white letter lights up green and becomes the mask the detector matches at runtime.</p>
+        <p class="eyebrow">The Cycle page</p>
+        <h3>The whole pan loop on one screen, with live numbers.</h3>
+        <p>The Cycle page draws your loop as a diagram: dig on land, walk back, glide, shake, land again. Every stage shows its current timing, and the timeline below models a full pan from your settings, down to an estimated cycle time and pans per hour.</p>
         <ul class="feature-points">
-          <li>A prompt counts as visible only when at least 85% of its mask pixels read white — robust against background noise.</li>
-          <li>Masks are size-exact: if the Roblox window drifts more than 2&nbsp;pixels, they stand down and ask for a re-capture instead of guessing.</li>
-          <li>The old single-pixel checks stay on as a supported fallback.</li>
+          <li>Click any stage in the diagram to jump to its settings.</li>
+          <li>Hover a timeline bar to see the settings behind it.</li>
+          <li>Sliders are bounded to known-safe ranges, so tuning cannot wander into broken territory.</li>
+          <li>Six stage cards group all 54 loop settings; each one has a written explanation.</li>
         </ul>
       </div>
       <div class="feature-media">
-        <figure class="calib-fig">
-          <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/cue_masks.webp" width="1200" height="790" alt="The cue-mask editor: the word Pan and the mouse icon magnified, with kept pixels glowing green and an instruction card reading Click each letter (and the mouse) to include or exclude it. Green = kept."></div>
-          <figcaption>The in-app mask editor — green pixels are the ones the detector keeps.</figcaption>
-        </figure>
+        <div class="appwin">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite · Cycle</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/app-cycle.webp" width="1600" height="1041" alt="The Cycle page: a loop diagram from land to water and back with live stage timings, and a cycle timeline graph with an estimated pans per hour readout.">
+        </div>
       </div>
     </div>
 
     <div class="feature-row flip reveal">
       <div class="feature-copy">
-        <p class="eyebrow">Guided calibration</p>
-        <h3>Guided when you want it, manual when you don't.</h3>
-        <p>The Calibrate tab drives the same calibration engine as the setup wizard — there is exactly one set of values. Run <em>Guided calibration</em> for the walkthrough with example screenshots, or click Calibrate on any row and pick the exact pixel yourself.</p>
+        <p class="eyebrow">Advanced Cue Matching</p>
+        <h3>Detection that matches letter shapes, not lone pixels.</h3>
+        <p>During calibration you click each white prompt word once. Every letter lights up green and becomes a pixel mask. At runtime a prompt counts as visible only when at least 85% of its mask reads white, which holds up against busy backgrounds far better than a single point.</p>
         <ul class="feature-points">
-          <li>Auto-calibration places every required item from a built-in profile, so the macro works before you fine-tune anything.</li>
-          <li><em>Test capacity calibration</em> re-reads the screen with the exact runtime math and shows an annotated preview.</li>
-          <li><em>Test detection (live)</em> shows what the macro sees, while it sees it.</li>
+          <li>Three masks cover the Pan, Collect Deposit and Shake prompts.</li>
+          <li>Masks are size exact: if the Roblox window drifts more than 2 pixels, they stand down and ask for a re-capture instead of guessing.</li>
+          <li>The single-pixel checks stay available as a fallback.</li>
         </ul>
       </div>
       <div class="feature-media">
-        <div class="appwin">
-          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite — Calibrate</span></div>
-          <img class="zoomable" loading="lazy" src="./assets/img/app-calibrate-tab.webp" width="1600" height="1041" alt="The Calibrate tab: a Guided calibration button, live test buttons, and manual rows for capacity bar ends and prompt pixels with x, y and colour fields.">
-        </div>
+        <figure>
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/cue_masks.webp" width="1200" height="790" alt="The cue mask editor: the word Pan magnified with kept pixels glowing green, and an instruction card explaining that clicking a letter includes or excludes it."></div>
+          <figcaption class="small muted" style="margin-top:9px">The in-app mask editor. Green pixels are the ones the detector keeps.</figcaption>
+        </figure>
+      </div>
+    </div>
+
+    <div class="feature-row reveal">
+      <div class="feature-copy">
+        <p class="eyebrow">Diagnostics</p>
+        <h3>When a run drifts, the app names the fix.</h3>
+        <p>Sixteen rule families watch every run. Problems surface as red or yellow badges on the tab that owns the fix, and the Warnings drawer shows what happened, what was observed, the most likely cause, and the exact setting to change.</p>
+        <ul class="feature-points">
+          <li>Recommendations show current value and suggested value, with one-click Apply and Undo.</li>
+          <li>Deep links jump straight to the calibration row or permission card involved.</li>
+          <li>Everything is computed on your machine; none of it is transmitted anywhere.</li>
+        </ul>
+      </div>
+      <div class="feature-media">
+        <figure style="max-width:400px;margin-inline:auto">
+          <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/img/app-diagnostics.webp" width="900" height="1563" alt="The Warnings drawer showing a real error card: required calibration is incomplete, what Prospector Lite observed, the most likely cause, and buttons to open calibration, copy details or dismiss."></div>
+        </figure>
       </div>
     </div>
 
     <div class="cap-grid">
       <div class="cap-card reveal">
-        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg></div>
-        <h4>Auto Pan loop</h4>
-        <p>Drives the full pan–dig–shake cycle from pixels, with bounded recovery when the game misbehaves.</p>
-      </div>
-      <div class="cap-card reveal">
         <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 3v5c0 4.4-2.9 8.2-7 9.5C7.9 19.2 5 15.4 5 11V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg></div>
         <h4>Safe Stop</h4>
-        <p>Esc stops instantly; every stop path first releases all held keys and buttons. Independent watchdogs cap runaway behaviour.</p>
-      </div>
-      <div class="cap-card reveal">
-        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8"/></svg></div>
-        <h4>Builds &amp; presets</h4>
-        <p>Save, switch and share named setting presets as <code>.ppbuild</code> files — parsed as data, strictly validated, never executed.</p>
-      </div>
-      <div class="cap-card reveal">
-        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>
-        <h4>Analytics &amp; HUD</h4>
-        <p>Live pans/hour, cycle times, earnings and run history, plus an optional overlay HUD. All statistics stay on your machine.</p>
-      </div>
-      <div class="cap-card reveal">
-        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10.5 21a2 2 0 0 0 3 0"/></svg></div>
-        <h4>Notifications, opt-in</h4>
-        <p>Paste <em>your own</em> Discord webhook for start/stop/stats alerts. Off by default; the preview shows exactly what would be sent.</p>
+        <p>Esc stops the macro instantly, and every stop path releases all held keys and buttons first. Independent watchdogs cap runaway behaviour.</p>
       </div>
       <div class="cap-card reveal">
         <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v4l2.5 2.5"/></svg></div>
-        <h4>Trust Center</h4>
-        <p>A permanent tab listing every capability, the exact build identity, network behaviour and your local data files — with real tests.</p>
+        <h4>Relic timers</h4>
+        <p>Up to four timed items: every N minutes the macro pauses, switches slots, uses the item, and resumes. Live countdowns show on the Run tab.</p>
+      </div>
+      <div class="cap-card reveal">
+        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8"/></svg></div>
+        <h4>Modes and builds</h4>
+        <p>Treasure chest, Shards and Geodes modes, quick presets, and complete build profiles you can save, switch and share as .ppbuild files.</p>
+      </div>
+      <div class="cap-card reveal">
+        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>
+        <h4>Analytics and history</h4>
+        <p>Live pans per hour, cycle times, earnings and reliability, plus a run history that keeps your last 100 sessions. All of it stays on your machine.</p>
+      </div>
+      <div class="cap-card reveal">
+        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10.5 21a2 2 0 0 0 3 0"/></svg></div>
+        <h4>Notifications, opt in</h4>
+        <p>Paste your own Discord webhook for start, stop and stats alerts. Off by default, and the preview shows exactly what would be sent.</p>
+      </div>
+      <div class="cap-card reveal">
+        <div class="ico"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="13.5" width="8" height="6.5" rx="1.5"/><rect x="13" y="13.5" width="8" height="6.5" rx="1.5"/><rect x="8" y="4" width="8" height="6.5" rx="1.5"/></svg></div>
+        <h4>Studio block scripts</h4>
+        <p>Build custom farming routines from validated blocks and run them from the same Run tab. Scripts are data, never executed as code.</p>
       </div>
     </div>
   </div>
@@ -254,9 +294,9 @@
 <section class="section" id="trust">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="eyebrow">Trust &amp; security</p>
-      <h2>Powerful automation. Clear boundaries.</h2>
-      <p class="lead">The boundary is simple and verifiable: pixels in, ordinary keystrokes and clicks out, plus a listen-only stop hotkey. Every claim below is backed by public source and an in-app test you can run.</p>
+      <p class="eyebrow">Trust and security</p>
+      <h2>Clear boundaries you can verify.</h2>
+      <p class="lead">The boundary is simple: pixels in, normal keystrokes and clicks out, plus a listen-only stop hotkey. Each claim below is backed by public source code and an in-app test in the Trust Center.</p>
     </div>
     <div class="trust-panel reveal">
       <div class="trust-cols">
@@ -264,25 +304,25 @@
           <h3><svg class="tick" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg> What it uses</h3>
           <ul>
             <li><svg class="tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span><b>Visible screen pixels</b> of the display Roblox is on, sampled at calibrated points and small user-drawn regions.</span></li>
-            <li><svg class="tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span><b>Ordinary keyboard and mouse input</b>, exactly like pressing the keys yourself.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span><b>Normal keyboard and mouse input</b>, the same events your own hands would produce.</span></li>
             <li><svg class="tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span><b>A listen-only stop hotkey</b>, so Esc works even while Roblox has focus. It does not log what you type.</span></li>
-            <li><svg class="tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span><b>Local files only</b> — settings, calibration and run history are plain JSON on your disk, listed in the Trust Center with open, export and delete actions.</span></li>
+            <li><svg class="tick" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M20 6L9 17l-5-5"/></svg><span><b>Local files only.</b> Settings, calibration and run history are plain JSON on your disk, listed in the Trust Center with open, export and delete actions.</span></li>
           </ul>
         </div>
         <div class="trust-col">
           <h3><svg class="cross" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg> What it never does</h3>
           <ul>
-            <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Inject scripts into Roblox or read or write another process's memory.</span></li>
-            <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Modify the Roblox client, its files, or intercept its network traffic.</span></li>
+            <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Inject scripts into Roblox, or read or write another process's memory.</span></li>
+            <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Modify the Roblox client or its files, or intercept its network traffic.</span></li>
             <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Install drivers, services or launch agents, or ask for administrator rights.</span></li>
-            <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Phone home. Zero network requests by default — no update checks, no analytics, no telemetry, no IP or location collection. The only network paths are opt-in and point at servers you choose.</span></li>
+            <li><svg class="cross" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg><span>Phone home. Zero network requests by default: no update checks, no analytics, no telemetry, no IP or location collection. The only network paths are opt in and point at servers you choose.</span></li>
           </ul>
         </div>
       </div>
       <div class="trust-verify">
         <span class="mono">Prospector Lite 5.0.0</span>
         <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/SHA256SUMS.txt">SHA-256 checksums</a>
-        <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/ROBLOX_SAFETY_BOUNDARY.md">Safety boundary, with verification commands</a>
+        <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/ROBLOX_SAFETY_BOUNDARY.md">Safety boundary with verification commands</a>
         <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/NETWORK_BEHAVIOR.md">Network behaviour inventory</a>
         <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/PRIVACY.md">Privacy</a>
         <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/SECURITY.md">Security</a>
@@ -298,7 +338,7 @@
     <div class="sec-head reveal">
       <p class="eyebrow">Downloads</p>
       <h2>Prospector Lite 5.0.0</h2>
-      <p class="lead">Official downloads exist in exactly one place: the <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0">GitHub release</a>. Builds are currently unsigned on both platforms — the SHA-256 checksum is the integrity mechanism, so <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/VERIFY_DOWNLOAD.md">verify before you run</a>.</p>
+      <p class="lead">Official downloads live in one place: the <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0">GitHub release</a>. Builds are currently unsigned on both platforms, so the SHA-256 checksum is the integrity mechanism. <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/VERIFY_DOWNLOAD.md">Verify before you run.</a></p>
     </div>
     <div class="dl-grid">
       <div class="dl-card reveal">
@@ -307,18 +347,18 @@
           <div><h3>Windows</h3><div class="sub">Windows x64 · installer or portable</div></div>
         </div>
         <div class="dl-body">
-          <a class="btn btn-primary dl-primary" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe">Download installer <span class="small">(~26&nbsp;MB)</span></a>
+          <a class="btn btn-primary dl-primary" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Setup.exe">Download installer <span class="small">(about 26 MB)</span></a>
           <div class="dl-alt">
-            <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Portable.zip">Portable ZIP (~33&nbsp;MB)</a>
+            <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-Windows-x64-Portable.zip">Portable ZIP (about 33 MB)</a>
             <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/SHA256SUMS.txt">Checksums</a>
           </div>
           <ul class="dl-facts">
             <li><span>Version</span><span>5.0.0 · 2026-08-08</span></li>
-            <li><span>Installer</span><span>Per-user, no administrator rights</span></li>
+            <li><span>Installer</span><span>Per user, no administrator rights</span></li>
             <li><span>Portable</span><span>Unzip anywhere; nothing is installed</span></li>
-            <li><span>Signing</span><span>Unsigned — SmartScreen will warn</span></li>
+            <li><span>Signing</span><span>Unsigned; SmartScreen will warn</span></li>
           </ul>
-          <p class="dl-note"><span class="pill">unsigned</span>Verify the checksum first, then SmartScreen → More&nbsp;info → Run&nbsp;anyway. Never disable SmartScreen itself.</p>
+          <p class="dl-note"><span class="pill pill-warn">unsigned</span>Verify the checksum first, then choose More info and Run anyway in SmartScreen. Never disable SmartScreen itself.</p>
         </div>
       </div>
       <div class="dl-card reveal">
@@ -327,18 +367,18 @@
           <div><h3>macOS</h3><div class="sub">Apple Silicon · drag-to-install DMG</div></div>
         </div>
         <div class="dl-body">
-          <a class="btn btn-primary dl-primary" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-macos-arm64.dmg">Download DMG <span class="small">(~30&nbsp;MB)</span></a>
+          <a class="btn btn-primary dl-primary" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/ProspectorLite-5.0.0-macos-arm64.dmg">Download DMG <span class="small">(about 30 MB)</span></a>
           <div class="dl-alt">
             <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/download/v5.0.0/SHA256SUMS.txt">Checksums</a>
-            <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/INSTALL_MACOS.md">Install walkthrough</a>
+            <a href="./wiki/getting-started.html#macos-first-launch">Install walkthrough</a>
           </div>
           <ul class="dl-facts">
             <li><span>Version</span><span>5.0.0 · 2026-08-08</span></li>
             <li><span>Architecture</span><span>Apple Silicon (arm64)</span></li>
             <li><span>Permissions</span><span>Screen Recording, Accessibility, Input Monitoring</span></li>
-            <li><span>Signing</span><span>Unsigned — not notarized yet</span></li>
+            <li><span>Signing</span><span>Unsigned; not notarized yet</span></li>
           </ul>
-          <p class="dl-note"><span class="pill">unsigned</span>Verify the checksum first; on first launch right-click the app → Open → Open. Never disable Gatekeeper.</p>
+          <p class="dl-note"><span class="pill pill-warn">unsigned</span>Verify the checksum first. On first launch, right-click the app, choose Open, then Open again. Never disable Gatekeeper.</p>
         </div>
       </div>
     </div>
@@ -356,387 +396,99 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <p class="eyebrow">Setup</p>
-      <h2>From download to running, in four honest steps.</h2>
-      <p class="lead">A five-page wizard — Welcome, Trust &amp; Permissions, Guided Calibration, Readiness Check, then the app. It is resumable and skippable, and skipping never weakens a safety check: Start&nbsp;Macro simply stays disabled until the required items pass.</p>
+      <h2>Four steps from download to first run.</h2>
+      <p class="lead">A five-page wizard walks you through it: Welcome, Trust and Permissions, Guided Calibration, Readiness Check, then the app itself. The wizard is resumable and skippable, and skipping never weakens a safety check. Start Macro simply stays disabled until the required items pass.</p>
     </div>
     <ol class="steps reveal">
-      <li><b>Download &amp; verify</b><span>Grab the build for your platform and check its SHA-256 against the release's <code>SHA256SUMS.txt</code>.</span></li>
-      <li><b>Permissions</b><span>macOS needs exactly three permissions — each explained, tested in-app, and requested only when <em>you</em> click. Windows has nothing to grant.</span></li>
-      <li><b>Guided Calibration</b><span>Five required steps in order, with example screenshots. Auto-calibration covers the basics; the guide makes them exact.</span></li>
-      <li><b>Readiness Check</b><span>Verifies permissions, calibration, your data folder and the build identity — and deep-links straight to anything that needs fixing.</span></li>
+      <li><b>Download and verify</b><span>Get the build for your platform and check its SHA-256 hash against the release's SHA256SUMS.txt.</span></li>
+      <li><b>Permissions</b><span>macOS needs three permissions, each explained and tested in the app. Windows has nothing to grant.</span></li>
+      <li><b>Guided Calibration</b><span>Required steps in order, with example screenshots. Auto-calibration covers the basics; the guide makes them exact.</span></li>
+      <li><b>Readiness Check</b><span>Verifies permissions, calibration, your data folder and the build identity, and links straight to anything that needs fixing.</span></li>
     </ol>
     <div class="feature-row reveal" style="border:0">
       <div class="feature-copy">
-        <p class="eyebrow">Trust &amp; Permissions</p>
-        <h3>Permissions that explain themselves.</h3>
-        <p>Each permission card shows what the capability can access, what is kept on disk, what leaves your computer — <em>none</em> — and the exact System Settings pane it lives in. Checking status never triggers an OS prompt; a prompt can only appear when you click a clearly-labelled Request button.</p>
+        <p class="eyebrow">Trust and Permissions</p>
+        <h3>Each permission explains itself before you grant it.</h3>
+        <p>Every permission card shows what the capability can access, what is kept on disk, and what leaves your computer, which is nothing. Checking status never triggers an OS prompt; a prompt can only appear after you click a clearly labelled button.</p>
         <ul class="feature-points">
-          <li><b>Screen Detection</b> — reads game pixels. Calibration stores coordinates and reference colours, not images.</li>
-          <li><b>Keyboard &amp; Mouse Control</b> — output only; it does not observe your input.</li>
-          <li><b>Safe Stop &amp; Global Hotkeys</b> — a listen-only tap so Esc always works. Required for your safety.</li>
+          <li><b>Screen Detection</b> reads game pixels. Calibration stores coordinates and reference colours, not images.</li>
+          <li><b>Keyboard and Mouse Control</b> is output only; it does not observe your input.</li>
+          <li><b>Safe Stop and Global Hotkeys</b> is a listen-only tap so Esc always works.</li>
         </ul>
       </div>
       <div class="feature-media">
         <div class="appwin">
-          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite setup — Trust &amp; Permissions</span></div>
-          <img class="zoomable" loading="lazy" src="./assets/img/app-trust-permissions.webp" width="1600" height="1041" alt="The Trust and Permissions wizard page: Screen Detection and Keyboard and Mouse Control cards marked Required and Complete, with columns for data access, disk storage and what leaves the computer.">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Lite setup · Trust and Permissions</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/app-trust-permissions.webp" width="1600" height="1041" alt="The Trust and Permissions wizard page: numbered permission cards with Required and Complete badges, and columns for data access, disk storage and what leaves the computer.">
         </div>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ================= Calibration guide ================= -->
-<section class="section" id="calibration">
+<!-- ================= Wiki ================= -->
+<section class="section" id="wiki">
   <div class="wrap">
     <div class="sec-head reveal">
-      <p class="eyebrow">Calibration guide</p>
-      <h2>Calibration, explained visually.</h2>
-      <p class="lead">Prospector Lite learns where the game's UI sits on <em>your</em> screen, so detection stays accurate across resolutions, window sizes and layouts. Everything is calibrated relative to the Roblox window, and there is exactly one set of values — the wizard and the Calibrate tab share the same engine and save file. The screenshots below are the sanitized examples that ship inside the app.</p>
+      <p class="eyebrow">Documentation</p>
+      <h2>The wiki covers every setting and every screen.</h2>
+      <p class="lead">Full guides for installation, calibration, tuning, analytics and troubleshooting, written against the shipping app. If a setting exists in Prospector Lite, it is documented here.</p>
     </div>
-
-    <div class="calib-layout">
-      <nav class="calib-rail" id="calibrail" aria-label="Calibration steps">
-        <span class="rail-group">Before you start</span>
-        <a href="#cal-window">Roblox window</a>
-        <span class="rail-group">Required — in order</span>
-        <a href="#cal-capacity">1 · Pan capacity bar</a>
-        <a href="#cal-pan">2 · 'Pan' prompt</a>
-        <a href="#cal-deposit">3 · 'Collect Deposit' prompt</a>
-        <a href="#cal-shake">4 · 'Shake' prompt</a>
-        <a href="#cal-cues">5 · Advanced Cue Matching</a>
-        <span class="rail-group">Optional</span>
-        <a href="#cal-dig">Green dig-bar pixel</a>
-        <a href="#cal-regions">Money, shards &amp; finds boxes</a>
-        <a href="#cal-autopan">Auto Pan button</a>
-        <span class="rail-group">Help</span>
-        <a href="#cal-trouble">Troubleshooting</a>
-      </nav>
-
-      <div class="calib-steps">
-        <article class="calib-step" id="cal-window">
-          <div class="calib-step-head"><span class="num">00</span><h4>Detect the Roblox window</h4><span class="tag">Prerequisite</span></div>
-          <p class="what">Everything is calibrated relative to where the Roblox window sits, so the app first confirms the game is visible on your primary display. It records the window's position and size only — no screenshot is taken.</p>
-          <div class="calib-cols solo">
-            <ul class="calib-do">
-              <li>Open Roblox and join <em>Prospecting</em> on your main display — windowed or full screen both work.</li>
-              <li>Press <b>Detect Roblox window</b> at the top of the Guided Calibration page.</li>
-              <li>If Roblox isn't open yet, that's fine to continue — detect it before your first run.</li>
-            </ul>
-          </div>
-          <div class="calib-tip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Keep the window where it is once you start calibrating — moving or resizing it later marks calibrations as stale until you recalibrate or restore the window.</span></div>
-        </article>
-
-        <article class="calib-step" id="cal-capacity">
-          <div class="calib-step-head"><span class="num">01</span><h4>Pan capacity bar — right and left ends</h4><span class="tag req">Required</span></div>
-          <p class="what">The yellow Pan&nbsp;Fill bar tells the macro when the pan is full, when it's empty, and when a dig registered — the heartbeat of every cycle.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>In Roblox, dig until the capacity bar is <b>completely full</b> — all yellow. Leave it full and come back.</li>
-              <li>Press <b>Start</b>: the app auto-detects the widest solid-gold segment and opens a full-screen view with a red&nbsp;✕ on its proposal for the <b>right</b> tip.</li>
-              <li>Check the ✕ sits on the right tip, then <b>Confirm</b> — or click the correct spot yourself.</li>
-              <li>Repeat for the <b>left</b> tip. Keep the bar full; nothing else changes in the game.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/cap_bar.webp" width="1200" height="420" alt="The capacity bar completely full and yellow, with the picker's confirm card on the detected right tip showing its colour value and coordinates."></div>
-              <figcaption>The picker's confirm card on the detected right tip of the full bar.</figcaption>
-            </figure>
-          </div>
-          <div class="calib-tip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>The app verifies the pair: the derived width must exceed 20&nbsp;pixels, and a failed check keeps your previous values instead of saving a bad pair. Afterwards, <b>Test capacity calibration</b> re-reads the screen with the exact runtime math and shows an annotated preview.</span></div>
-          <div class="calib-warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Common mistake: clicking inside the bar instead of on its very tips, or calibrating with a half-full bar. Fill it first — the tips must read gold.</span></div>
-        </article>
-
-        <article class="calib-step" id="cal-pan">
-          <div class="calib-step-head"><span class="num">02</span><h4>'Pan' prompt pixel</h4><span class="tag req">Required</span></div>
-          <p class="what">Anchors the walk-back to water: the macro knows it has reached the river when this white prompt appears.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>Stand in the <b>water</b> so the white "Pan" prompt shows at the bottom of the screen, then come back.</li>
-              <li>Press <b>Start</b> and click the centre of the white <b>Pan</b> text.</li>
-              <li>Confirm the picker's card — it shows the captured colour and position.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/pan_prompt.webp" width="1100" height="618" alt="Standing in the water with the white Pan prompt visible under the full capacity bar, and the picker's confirm card showing colour ffffff."></div>
-              <figcaption>The white "Pan" prompt with the confirm card on the captured pixel.</figcaption>
-            </figure>
-          </div>
-          <div class="calib-tip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>The app validates the click — the sample box around it must actually read white. Click the letters, not the mouse icon.</span></div>
-        </article>
-
-        <article class="calib-step" id="cal-deposit">
-          <div class="calib-step-head"><span class="num">03</span><h4>'Collect Deposit' prompt pixel</h4><span class="tag req">Required</span></div>
-          <p class="what">Tells the macro it has reached a deposit on land and can collect.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>Step onto <b>land</b> at a deposit so the white "Collect Deposit" prompt shows, then come back.</li>
-              <li>Press <b>Start</b> and click the centre of the white <b>Collect Deposit</b> text.</li>
-              <li>Confirm the card.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/deposit_prompt.webp" width="1100" height="618" alt="Standing on land with the white Collect Deposit prompt visible and the empty grey capacity bar above, plus the picker's confirm card."></div>
-              <figcaption>"Collect Deposit" visible on land — capacity bar empty, ready to dig.</figcaption>
-            </figure>
-          </div>
-        </article>
-
-        <article class="calib-step" id="cal-shake">
-          <div class="calib-step-head"><span class="num">04</span><h4>'Shake' prompt pixel</h4><span class="tag req">Required</span></div>
-          <p class="what">Detects the shake phase, when the pan is being emptied into finds.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>Fill the pan, walk to the water and <b>begin a shake</b> so the white "Shake" prompt shows.</li>
-              <li>Come back quickly and press <b>Start</b> — the capture snapshots the game the moment you press it.</li>
-              <li>Click the centre of the white <b>Shake</b> text and confirm.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/shake_prompt.webp" width="1100" height="618" alt="Mid-shake with the colourful pan filling the background, the white Shake prompt visible, and the picker's confirm card on the captured pixel."></div>
-              <figcaption>Mid-shake — the colourful pan fills the background.</figcaption>
-            </figure>
-          </div>
-        </article>
-
-        <article class="calib-step" id="cal-cues">
-          <div class="calib-step-head"><span class="num">05</span><h4>Advanced Cue Matching</h4><span class="tag req">Required</span></div>
-          <p class="what">The primary prompt detector. Instead of one pixel, it captures the exact letter shapes of all three prompts and matches them at runtime; the single-pixel checks from steps 02–04 remain as a supported fallback. Capture the three prompts in order: <b>Pan → Collect Deposit → Shake</b>.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>Stand in the water so <b>"Pan"</b> is visible, come back, and press <b>Capture</b> — a full-screen view opens over a frozen snapshot of the game.</li>
-              <li>Click the prompt word. Every white letter lights up <b>green</b> — green means kept.</li>
-              <li>Click any stray white blob, like the mouse-cursor icon, to remove it from the selection. Then <b>Confirm</b>.</li>
-              <li>Step onto land so <b>"Collect Deposit"</b> shows, and capture it the same way.</li>
-              <li>Begin a shake so <b>"Shake"</b> shows, come back quickly, and capture the third mask.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/cue_masks.webp" width="1200" height="790" alt="The cue-mask editor with the Pan prompt magnified: kept letter pixels glow green, and the card below reads Click each letter (and the mouse) to include or exclude it. Green = kept."></div>
-              <figcaption>The mask editor after clicking the "Pan" word — kept pixels glow green.</figcaption>
-              <div class="mask-legend">
-                <span><span class="sw sw-kept"></span>Kept — these pixels are the mask</span>
-                <span><span class="sw sw-drop"></span>Excluded — ignored at runtime</span>
-              </div>
-            </figure>
-          </div>
-          <div class="calib-tip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>At runtime a prompt counts as visible only when at least <b>85%</b> of its mask pixels read white — far more robust than a single point. <b>Test existing calibration</b> reports the live match percentage per cue.</span></div>
-          <div class="calib-warnbox"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5h.01"/></svg><span>Masks are size-exact: they disable themselves if the Roblox window size drifts more than 2&nbsp;pixels. Re-capture all three after any resize — the app will tell you when.</span></div>
-        </article>
-
-        <article class="calib-step" id="cal-dig">
-          <div class="calib-step-head"><span class="num">06</span><h4>Green dig-bar pixel</h4><span class="tag">Optional</span></div>
-          <p class="what">Used by Perfect mode and green-confirm nudges to hit the dig bar's green target zone. Skipping it just means plain digs — everything else works.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>Start a dig so the dig bar is on screen.</li>
-              <li>Press <b>Start</b> and click <b>inside the green target zone</b> — the picker's loupe magnifies the area under your cursor.</li>
-              <li>Confirm the card.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/dig_green.webp" width="1000" height="800" alt="A dig in progress: the vertical dig bar with its green target zone, magnified by the picker's circular loupe."></div>
-              <figcaption>The picker's loupe magnifying the dig bar's green zone.</figcaption>
-            </figure>
-          </div>
-        </article>
-
-        <article class="calib-step" id="cal-regions">
-          <div class="calib-step-head"><span class="num">07</span><h4>Money, shards &amp; finds boxes</h4><span class="tag">Optional</span></div>
-          <p class="what">Power the earnings statistics and the finds log. For each one you drag a box, corner to corner, around the on-screen element; the numbers are read locally with on-device OCR. Skipping them just leaves those stats empty.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li><b>Money box</b> — make sure the money counter is visible in its usual corner, then drag a tight box around the number.</li>
-              <li><b>Shards box</b> — same for the shards counter.</li>
-              <li><b>Finds box</b> — drag a box over the area where find pop-ups appear. Having one on screen helps you aim, but isn't required.</li>
-              <li>A box needs to be at least 8×6&nbsp;pixels — the app rejects anything smaller with "That box is too small."</li>
-              <li>Use <b>Test money/shards read</b> and <b>Test find pop-up read</b> to see exactly what the OCR got before trusting the $/hr figures.</li>
-            </ul>
-            <div>
-              <figure class="calib-fig">
-                <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/money_region.webp" width="670" height="338" alt="The money counter outlined by a dragged selection box, with the picker's box-confirm card reading 281 by 26 pixel box, looks right? Confirm."></div>
-                <figcaption>A tight box around the money number, with the box-confirm card.</figcaption>
-              </figure>
-              <figure class="calib-fig" style="margin-top:14px">
-                <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/shards_region.webp" width="770" height="430" alt="The shards counter outlined by a dragged selection box with the box-confirm card above it."></div>
-                <figcaption>The shards counter boxed the same way.</figcaption>
-              </figure>
-            </div>
-          </div>
-          <div class="calib-tip"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg><span>Draw with a little room to the <b>left</b> of the number — totals grow as you earn, and a tight-right box clips new digits.</span></div>
-        </article>
-
-        <article class="calib-step" id="cal-autopan">
-          <div class="calib-step-head"><span class="num">08</span><h4>Auto Pan button pixel</h4><span class="tag">Optional</span></div>
-          <p class="what">Lets the tracker read the game's own Auto&nbsp;Pan toggle. Captured in two stages: the button's ON colour, then its OFF colour. If skipped, the tracker degrades gracefully.</p>
-          <div class="calib-cols">
-            <ul class="calib-do">
-              <li>In Roblox, switch <b>Auto Pan ON</b> so the button shows its ON colour, come back, and capture the centre of the button.</li>
-              <li>Switch <b>Auto Pan OFF</b> in the game, come back, and capture the OFF state the same way.</li>
-            </ul>
-            <figure class="calib-fig">
-              <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/calibration/autopan_button.webp" width="1100" height="668" alt="The Auto Pan button in its green ON state with a red X marker on it, and the picker's confirm card showing the captured green colour value."></div>
-              <figcaption>The Auto Pan button in its ON state, with the captured colour confirmed.</figcaption>
-            </figure>
-          </div>
-          <p class="what small muted" style="margin-top:16px">Beyond the wizard: <b>Fortune River recovery points</b> are an advanced, optional calibration available in the Calibrate tab's Fortune River section — they are not part of setup and never block readiness.</p>
-        </article>
-
-        <article class="calib-step" id="cal-trouble">
-          <div class="calib-step-head"><span class="num">?</span><h4>Calibration troubleshooting</h4></div>
-          <div class="faq" style="margin-top:12px">
-            <details>
-              <summary>I clicked the wrong pixel</summary>
-              <div class="faq-a"><p>Open the step again and press <b>Recalibrate</b> — each save validates before it writes, and a failed validation keeps your previous values. Nothing is ever silently overwritten with a bad value.</p></div>
-            </details>
-            <details>
-              <summary>A prompt isn't being detected</summary>
-              <div class="faq-a"><p>Run <b>Test existing calibration</b> on the cue: it reports the live match percentage (a cue needs ≥85% of mask pixels white) and warns if the background itself reads white. If the match is low, re-capture the mask while the prompt is clearly visible.</p></div>
-            </details>
-            <details>
-              <summary>I moved or resized the Roblox window</summary>
-              <div class="faq-a"><p>Calibrations go <b>stale</b> and a banner tells you: recalibrate, or put the window back where it was. Advanced cue masks are stricter — they stand down if the window size drifts more than 2&nbsp;pixels, and re-enable after you re-capture the three prompts.</p></div>
-            </details>
-            <details>
-              <summary>I changed monitor, resolution or UI scale</summary>
-              <div class="faq-a"><p>Recalibrate — pixel positions no longer line up. Only trust an imported calibration made at the same window size and resolution; otherwise run Guided calibration again. It takes a couple of minutes.</p></div>
-            </details>
-            <details>
-              <summary>Capacity readings look wrong</summary>
-              <div class="faq-a"><p>Run <b>Test capacity calibration</b>: one fresh screenshot read with the exact runtime math — right-tip gold test, fill fraction over the bar band, endpoint-pair validation — plus an annotated preview. The app also flags suspicious pairs on its own: swapped tips, tips at different heights, or a bar width under 24&nbsp;pixels.</p></div>
-            </details>
-            <details>
-              <summary>Permission is granted but capture still fails (macOS)</summary>
-              <div class="faq-a"><p>macOS applies Screen Recording (and sometimes Input Monitoring) grants on the app's <em>next</em> launch. Quit Prospector Lite fully and reopen it, then use the Trust Center's Test button to confirm.</p></div>
-            </details>
-            <details>
-              <summary>I want to start over</summary>
-              <div class="faq-a"><p>Re-run the wizard any time from the Trust Center ("Re-run setup wizard" — it deletes nothing), or recalibrate individual items from the Calibrate tab. The red badge on the Calibrate tab tells you when something needs attention.</p></div>
-            </details>
-          </div>
-        </article>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ================= Diagnostics ================= -->
-<section class="section" id="diagnostics">
-  <div class="wrap">
-    <div class="feature-row" style="border:0;padding-top:0">
-      <div class="feature-copy reveal">
-        <p class="eyebrow">Diagnostics</p>
-        <h2 style="font-size:clamp(1.5rem,2.8vw,2.1rem)">When something drifts, it tells you exactly what to fix.</h2>
-        <p style="margin-top:14px">Sixteen rule families watch every run. Issues surface as small yellow or red badges on the tab that owns the fix — red means something is broken or about to break runs; yellow means something looks off and is worth reviewing.</p>
-        <ul class="feature-points">
-          <li>The warning drawer shows what happened, what was observed — real numbers against real thresholds — and the most likely cause with honest confidence wording.</li>
-          <li>Recommendations name the exact setting, current value → suggested value, with one-click <b>Apply</b> (bounded and clamped) and <b>Undo</b>.</li>
-          <li>Deep links jump to the exact calibration row or permission card; every issue links a matching entry in the searchable local FAQ.</li>
-          <li>Not telemetry: everything is computed on your machine and nothing about it is transmitted anywhere.</li>
-        </ul>
-      </div>
-      <div class="feature-media reveal">
-        <figure class="calib-fig" style="max-width:430px;margin-inline:auto">
-          <div class="imgframe"><img class="zoomable" loading="lazy" src="./assets/img/app-diagnostics.webp" width="900" height="1563" alt="The warning drawer showing a real error card: Required calibration is incomplete, what Prospector Lite observed, most likely cause at high confidence, a recommended first action, and Open calibration, Copy diagnostic details and Dismiss buttons."></div>
-          <figcaption>The real warning drawer: evidence, cause, confidence, and a one-click path to the fix.</figcaption>
-        </figure>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ================= Platforms ================= -->
-<section class="section" id="platforms">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <p class="eyebrow">Platforms</p>
-      <h2>Two platforms, one honest story.</h2>
-    </div>
-    <div class="plat-grid">
-      <div class="plat-card reveal">
-        <h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/></svg> Windows</h3>
-        <dl>
-          <dt>Builds</dt>
-          <dd>x64 installer (per-user, no administrator rights) and a portable ZIP that installs nothing.</dd>
-          <dt>Permissions</dt>
-          <dd>Windows has no permission model for screen capture or synthetic input from desktop apps — there is nothing to grant and no prompt will appear. The same real in-app capability tests are available so you can prove everything works on your hardware.</dd>
-          <dt>SmartScreen</dt>
-          <dd>Builds are not Authenticode-signed yet, so SmartScreen has no reputation for them. Verify the SHA-256 checksum, then More&nbsp;info → Run&nbsp;anyway. Never disable SmartScreen itself.</dd>
-          <dt>Honesty note</dt>
-          <dd>The Windows build is produced and tested in CI but has not yet been runtime-verified by the developers on a physical Windows machine — the in-app tests exist so you can verify on yours.</dd>
-        </dl>
-      </div>
-      <div class="plat-card reveal">
-        <h3><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 17V6.5A1.5 1.5 0 0 1 5.5 5h13A1.5 1.5 0 0 1 20 6.5V17M2 17h20l-1.2 2.4a1 1 0 0 1-.9.6H4.1a1 1 0 0 1-.9-.6L2 17z"/></svg> macOS</h3>
-        <dl>
-          <dt>Builds</dt>
-          <dd>Apple Silicon (arm64) DMG — drag to Applications. Intel Macs are not supported.</dd>
-          <dt>Permissions</dt>
-          <dd>Exactly three: Screen Recording (reads game pixels), Accessibility (sends keys and clicks), Input Monitoring (the listen-only Esc hotkey). Each has live status, an explanation and an in-app test; checking status never triggers a prompt.</dd>
-          <dt>Gatekeeper</dt>
-          <dd>No Apple Developer certificate yet, so first launch is right-click&nbsp;→ Open&nbsp;→ Open — after the checksum matches. Never disable Gatekeeper.</dd>
-          <dt>Uninstall</dt>
-          <dd>Delete the app and, optionally, the data folder. No launch agents, kernel extensions or privileged helpers are ever installed.</dd>
-        </dl>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ================= FAQ ================= -->
-<section class="section" id="faq">
-  <div class="wrap">
-    <div class="sec-head reveal">
-      <p class="eyebrow">FAQ</p>
-      <h2>Fair questions, straight answers.</h2>
-    </div>
-    <div class="faq reveal">
-      <details>
-        <summary>Is Prospector Lite free?</summary>
-        <div class="faq-a"><p>Yes — completely free. No account, no access code, no paid tier, no ads. The source code is public.</p></div>
-      </details>
-      <details>
-        <summary>Does it inject scripts into Roblox or read its memory?</summary>
-        <div class="faq-a"><p>No. It captures your screen and sends ordinary OS input events, exactly like pressing the keys yourself. It never injects into Roblox, never reads or writes another process's memory, never modifies game files, and never intercepts network traffic. The boundary is documented with verification commands you can run yourself in <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/ROBLOX_SAFETY_BOUNDARY.md">ROBLOX_SAFETY_BOUNDARY.md</a>.</p></div>
-      </details>
-      <details>
-        <summary>Why does macOS ask for three permissions?</summary>
-        <div class="faq-a"><p>Screen Recording reads the game pixels, Accessibility sends the clicks and keys, and Input Monitoring lets the Esc safe-stop work even while Roblox has focus. Each is explained and testable in the Trust Center; a system prompt can only appear when you click a Request button, and a missing permission only ever blocks Start&nbsp;Macro — never the app.</p></div>
-      </details>
-      <details>
-        <summary>Why does Windows SmartScreen warn?</summary>
-        <div class="faq-a"><p>The builds are not Authenticode-signed yet, so SmartScreen has no reputation for them. Verify the SHA-256 checksum against the release's <code>SHA256SUMS.txt</code>, then choose More info → Run anyway. Never disable SmartScreen — and never trust software that tells you to.</p></div>
-      </details>
-      <details>
-        <summary>Does it collect my IP address or location?</summary>
-        <div class="faq-a"><p>No. Default network activity is zero requests — no update checks, no analytics, no telemetry, no IP or location collection. The only network-capable paths are opt-in and point at servers you choose: your own Discord webhook, and the Coach's optional bring-your-own-key AI mode. The complete inventory is in <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/docs/public-release/NETWORK_BEHAVIOR.md">NETWORK_BEHAVIOR.md</a>.</p></div>
-      </details>
-      <details>
-        <summary>Where are my settings and calibration stored?</summary>
-        <div class="faq-a"><p>Plain local JSON files: <code>~/Library/Application Support/Prospector Lite</code> on macOS, <code>%APPDATA%\Prospector Lite</code> on Windows, or next to the scripts when running from source. The Trust Center lists every file with open, export and delete actions. Deleting the folder removes the entire data footprint.</p></div>
-      </details>
-      <details>
-        <summary>When should I recalibrate?</summary>
-        <div class="faq-a"><p>After anything that moves pixels: a Roblox window move or resize, a resolution or UI-scale change, a different monitor, or a game UI update. You rarely have to guess — calibrations go stale, a banner explains why, and the red badge on the Calibrate tab points at exactly what needs attention.</p></div>
-      </details>
-      <details>
-        <summary>How does Advanced Cue Matching work?</summary>
-        <div class="faq-a"><p>During calibration you click each prompt word once; every white letter lights up green and becomes a pixel mask. At runtime a prompt counts as visible only when at least 85% of its mask pixels read white. It's the primary detector for the Pan, Collect&nbsp;Deposit and Shake prompts — the <a href="#cal-cues">calibration guide</a> walks through all three captures.</p></div>
-      </details>
-      <details>
-        <summary>Can I inspect the source code?</summary>
-        <div class="faq-a"><p>Yes — the complete source is at <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan">github.com/ProspectorsPlus/Prospecting-Auto-Pan</a>. Inside the app, every Trust Center capability and every calibration step has a View&nbsp;code button that opens the exact file and line, pinned to the commit your build was made from. Note it is source-available for inspection; no open-source license has been chosen yet.</p></div>
-      </details>
-      <details>
-        <summary>How do I verify my download?</summary>
-        <div class="faq-a"><p>Compare the file's SHA-256 hash with <code>SHA256SUMS.txt</code> from the official release page: <code>shasum -a 256 -c SHA256SUMS.txt --ignore-missing</code> on macOS, or <code>Get-FileHash -Algorithm SHA256</code> in PowerShell. Every character must match. Then cross-check the version and commit in the app's Trust Center. Full walkthrough: <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/VERIFY_DOWNLOAD.md">VERIFY_DOWNLOAD.md</a>.</p></div>
-      </details>
-      <details>
-        <summary>Does Prospector Lite work with Prospector Studio?</summary>
-        <div class="faq-a"><p>Prospector Lite ships with a Studio tab that runs <code>.ppscript</code> block scripts. Scripts are validated JSON walked as data — they are never executed as program code, and they run under a hard-coded action whitelist with strict step and time budgets.</p></div>
-      </details>
-      <details>
-        <summary>How do I report a bug?</summary>
-        <div class="faq-a"><p>Open a <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues">GitHub issue</a> with your version (shown on the welcome screen and in the Trust Center), your OS, what you expected and what happened. Security vulnerabilities: use <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new">private vulnerability reporting</a> instead of a public issue.</p></div>
-      </details>
-      <details>
-        <summary>Can my account still get banned?</summary>
-        <div class="faq-a"><p>Yes, possibly. External input can still look automated, and automation may violate the Roblox Terms of Use. Prospector Lite makes no claim of undetectability and no safety promises — that honesty is part of the design. Use it at your own discretion and risk.</p></div>
-      </details>
+    <div class="wiki-grid">
+      <a class="wiki-card reveal" href="./wiki/getting-started.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M5 3l14 9-14 9V3z"/></svg></div>
+        <h3>Getting started</h3>
+        <p>Install, first launch, permissions on macOS and Windows, and what the setup wizard does at each step.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/calibration.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg></div>
+        <h3>Calibration</h3>
+        <p>Every calibration step with real screenshots, from the capacity bar to Advanced Cue Matching and OCR regions.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/settings.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg></div>
+        <h3>Settings reference</h3>
+        <p>Every setting explained one by one: what each does, when to raise or lower it, and what it trades off.</p>
+        <span class="go">Open the reference</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/modes-and-builds.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8"/></svg></div>
+        <h3>Modes and builds</h3>
+        <p>Treasure chest, Shards and Geodes modes, the quick presets, and how build profiles are saved and shared.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/analytics-and-hud.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>
+        <h3>Analytics and HUD</h3>
+        <p>What every counter means, how the Analytics window computes its numbers, and how to read the HUD and pop-out pill.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/interface.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11"/></svg></div>
+        <h3>Interface reference</h3>
+        <p>A tour of every tab and window: the Run and Cycle pages, the Coach, the Studio editor, keybinds and the Trust Center.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/trust-and-permissions.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 3v5c0 4.4-2.9 8.2-7 9.5C7.9 19.2 5 15.4 5 11V6l7-3z"/></svg></div>
+        <h3>Trust and permissions</h3>
+        <p>What each OS permission is for, how to verify a download, where your data lives, and what the app never does.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/troubleshooting.html">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.2 9a2.8 2.8 0 0 1 5.5.7c0 1.8-2.7 2.3-2.7 3.8M12 17h.01"/></svg></div>
+        <h3>Troubleshooting and FAQ</h3>
+        <p>Symptom by symptom: detection misses, timing problems, permission failures, and the questions everyone asks.</p>
+        <span class="go">Read the guide</span>
+      </a>
+      <a class="wiki-card reveal" href="./wiki/">
+        <div class="ico"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M4 19.5A2.5 2.5 0 0 0 6.5 22H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15z"/></svg></div>
+        <h3>Wiki home</h3>
+        <p>The full documentation index, including the Cycle page walkthrough and the Studio scripting overview.</p>
+        <span class="go">Browse everything</span>
+      </a>
     </div>
   </div>
 </section>
@@ -746,14 +498,14 @@
   <div class="wrap">
     <div class="release-strip reveal">
       <span class="ver">v5.0.0</span>
-      <p class="desc">The first public stable release — guided setup with an honest Skip, the diagnostics &amp; recommendations system, validated capacity calibration, Advanced Cue Matching, and the public source repository wired into every View&nbsp;Code button. Released 2026-08-08.</p>
+      <p class="desc">The first public stable release: guided setup with a real Skip, the diagnostics and recommendations system, validated capacity calibration, Advanced Cue Matching, and a public source repository wired into every View Code button. Released 2026-08-08.</p>
       <div class="actions">
         <a class="btn btn-sm" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0">Release notes</a>
         <a class="btn btn-sm" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/CHANGELOG.md">Changelog</a>
         <a class="btn btn-sm" href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases">All releases</a>
       </div>
     </div>
-    <p class="small muted reveal" style="margin-top:18px">Support: bugs and questions go to <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues">GitHub Issues</a> (see <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/SUPPORT.md">SUPPORT.md</a> for what to include — and what never to post). Security vulnerabilities: <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new">report privately</a>. In-app, the tutorial, FAQ browser and Trust Center answer most questions.</p>
+    <p class="small muted reveal" style="margin-top:18px">Bugs and questions go to <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/issues">GitHub Issues</a>; see <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/blob/v5.0.0/SUPPORT.md">SUPPORT.md</a> for what to include and what never to post. Security vulnerabilities: <a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/security/advisories/new">report privately</a>. In the app, the tutorial, FAQ browser and Trust Center answer most questions.</p>
   </div>
 </section>
 </main>
@@ -767,16 +519,16 @@
           <svg viewBox="2 3.5 20 18" width="22" height="20" aria-hidden="true"><polygon points="6.5,4 17.5,4 15.4,9.2 8.6,9.2" fill="#f6e7c8"/><polygon points="6.5,4 8.6,9.2 2.5,9.2" fill="#e8cf8f"/><polygon points="17.5,4 21.5,9.2 15.4,9.2" fill="#c9a24f"/><polygon points="2.5,9.2 8.6,9.2 12,21" fill="#d9a441"/><polygon points="8.6,9.2 15.4,9.2 12,21" fill="#f0d9a0"/><polygon points="15.4,9.2 21.5,9.2 12,21" fill="#b8933f"/></svg>
           Prospector Lite
         </a>
-        <p>Version 5.0.0 · Free visual automation for Roblox <em>Prospecting</em>. This page is static: it sets no cookies, runs no analytics, and makes no network requests beyond loading its own files.</p>
+        <p>Version 5.0.0 · free visual automation for Roblox <em>Prospecting</em>. This page is static: it sets no cookies, runs no analytics, and makes no network requests beyond loading its own files.</p>
       </div>
       <div class="foot-cols">
         <div class="foot-col">
           <b>Product</b>
           <ul>
-            <li><a href="#features">Features</a></li>
+            <li><a href="#product">Showcase</a></li>
             <li><a href="#downloads">Downloads</a></li>
-            <li><a href="#calibration">Calibration guide</a></li>
-            <li><a href="#faq">FAQ</a></li>
+            <li><a href="./wiki/">Wiki</a></li>
+            <li><a href="https://github.com/ProspectorsPlus/Prospecting-Auto-Pan/releases/tag/v5.0.0">Release notes</a></li>
           </ul>
         </div>
         <div class="foot-col">
@@ -799,7 +551,7 @@
         </div>
       </div>
     </div>
-    <p class="foot-legal">Prospector Lite 5.0.0 — source available for inspection; no open-source license has been chosen yet. Not affiliated with, endorsed by, or supported by Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use and can put your account at risk; no macro is "safe" or "undetectable".</p>
+    <p class="foot-legal">Prospector Lite 5.0.0. Source available for inspection; no open-source license has been chosen yet. Not affiliated with, endorsed by, or supported by Roblox Corporation or the developers of <em>Prospecting</em>. Automation may violate the Roblox Terms of Use and can put your account at risk; no macro is "safe" or "undetectable".</p>
   </div>
 </footer>
 
