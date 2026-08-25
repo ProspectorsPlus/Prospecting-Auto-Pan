@@ -1,7 +1,0 @@
-{"data": {"capabilities": {"earningsOcr": true, "fastTravelRecovery": true, "findsOcr": true, "inputLagProbe": true, "recorder": true, "scriptV3": true, "simulated": true, "vision": true}, "engine": {"platform": "<os>", "sourceFingerprint": "<fp>", "version": "<v>"}, "home": "<home>", "pid": 0, "protocol": {"major": 1, "minor": "<m>"}, "state": "idle"}, "ev": "engine.hello", "seq": 1}
-{"data": {"kind": "resetAll", "origin": "hotkey"}, "ev": "relic.changed", "seq": 2}
-{"data": {"level": "info", "text": "=== RELIC 'Relic B' timer RESET to full ==="}, "ev": "engine.log", "seq": 3}
-{"data": {"index": 1, "kind": "resetOne", "origin": "hotkey"}, "ev": "relic.changed", "seq": 4}
-{"data": {"level": "info", "text": "[QUIT]"}, "ev": "engine.log", "seq": 5}
-{"data": {"level": "info", "text": "Stopped, all inputs released."}, "ev": "engine.log", "seq": 6}
-{"data": {"message": "engine main loop ended", "reason": "shutdown"}, "ev": "engine.bye", "seq": 7}

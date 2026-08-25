@@ -15,11 +15,13 @@ try:
     import numpy as np
     import mss
     import Quartz
+    import ApplicationServices as _AS
 except ImportError as e:
     sys.exit(
         f"Missing dependency: {e}\n"
         "Install with:\n"
-        "  pip3 install pyobjc-framework-Quartz mss numpy pynput --break-system-packages"
+        "  pip3 install pyobjc-framework-Quartz pyobjc-framework-ApplicationServices "
+        "mss numpy pynput --break-system-packages"
     )
 # [C8] pynput is needed only by the ENGINE's hotkey listener. A host app
 # embedding the calibration sensing library must not die at import time
@@ -79,90 +81,110 @@ def get_scale(sct):
 
 
 # ---- Window-relative capture (opt-in) ---------------------------------------
-def find_window_origin():
-    """(x, y) of the Roblox game viewport's top-left in PHYSICAL pixels, or None.
-    macOS best-effort via the window list; returns None if not found."""
+def _scan_roblox():
+    """Shared window scan: largest on-screen window whose owner is 'Roblox'
+    (not Studio). Returns (pid, x, y, w, h) in PHYSICAL pixels, or None."""
     try:
         opt = (Quartz.kCGWindowListOptionOnScreenOnly
                | Quartz.kCGWindowListExcludeDesktopElements)
         wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
         with _MSS() as sct:
             scale = get_scale(sct)
-        best, area = None, 0
-        for w in wins or []:
-            owner = str(w.get("kCGWindowOwnerName", ""))
-            if _eng.ROBLOX_TITLE.lower() in owner.lower():
-                b = w.get("kCGWindowBounds", {})
-                a = b.get("Width", 0) * b.get("Height", 0)
-                if a > area:
-                    area, best = a, b
-        if best:
-            return (int(best["X"] * scale), int(best["Y"] * scale))
-    except Exception as e:
-        print(f"[window] lookup failed: {e}")
-    return None
-
-
-def find_roblox_window():
-    """[C8] The calibration sensing window lookup (protocol 4.15
-    calibration.detectWindow): the Roblox GAME window in PHYSICAL pixels,
-    as the legacy host dict {found:True,x,y,w,h,title} or
-    {found:False,error:...}. Moved verbatim from the mac app's
-    _roblox_rect (prospecting_app.py:1629); same owner-match semantics as
-    find_roblox_rect below, plus the window title and error text."""
-    try:
-        opt = (Quartz.kCGWindowListOptionOnScreenOnly
-               | Quartz.kCGWindowListExcludeDesktopElements)
-        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
-        with _MSS() as sct:
-            mainw = sct.monitors[1]["width"]
-        b = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
-        scale = mainw / b.size.width if b.size.width else 1.0
-        best, area, title = None, 0, ""
-        for w in wins or []:
-            owner = str(w.get("kCGWindowOwnerName", ""))
-            if "roblox" in owner.lower() and "studio" not in owner.lower():
-                bb = w.get("kCGWindowBounds", {})
-                ww, hh = bb.get("Width", 0), bb.get("Height", 0)
-                if ww * hh > area and ww >= 320 and hh >= 240:
-                    area, best, title = ww * hh, bb, owner
-        if best:
-            return {"found": True,
-                    "x": int(best["X"] * scale),
-                    "y": int(best["Y"] * scale),
-                    "w": int(best["Width"] * scale),
-                    "h": int(best["Height"] * scale),
-                    "title": title}
-        return {"found": False,
-                "error": "Roblox window not found. Open Prospecting in "
-                         "Roblox (not minimized) and try again."}
-    except Exception as e:
-        return {"found": False, "error": "Detection failed: %s" % e}
-
-
-def find_roblox_rect():
-    """Roblox game client area as (x, y, w, h) in PHYSICAL pixels, or None.
-    macOS: largest on-screen window whose owner is 'Roblox' (not Studio)."""
-    try:
-        opt = (Quartz.kCGWindowListOptionOnScreenOnly
-               | Quartz.kCGWindowListExcludeDesktopElements)
-        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
-        with _MSS() as sct:
-            scale = get_scale(sct)
-        best, area = None, 0
+        best, area, pid = None, 0, None
         for w in wins or []:
             owner = str(w.get("kCGWindowOwnerName", ""))
             if "roblox" in owner.lower() and "studio" not in owner.lower():
                 b = w.get("kCGWindowBounds", {})
                 ww, hh = b.get("Width", 0), b.get("Height", 0)
                 if ww * hh > area and ww >= 320 and hh >= 240:
-                    area, best = ww * hh, b
+                    area, best, pid = ww * hh, b, w.get("kCGWindowOwnerPID")
         if best:
-            return (int(best["X"] * scale), int(best["Y"] * scale),
+            return (pid, int(best["X"] * scale), int(best["Y"] * scale),
                     int(best["Width"] * scale), int(best["Height"] * scale))
     except Exception as e:
         print(f"[window] lookup failed: {e}")
     return None
+
+
+def find_window_origin():
+    """(x, y) of the Roblox game viewport's top-left in PHYSICAL pixels, or
+    None if not found."""
+    r = _scan_roblox()
+    return (r[1], r[2]) if r else None
+
+
+def find_roblox_rect():
+    """Roblox game client area as (x, y, w, h) in PHYSICAL pixels, or None."""
+    r = _scan_roblox()
+    return r[1:5] if r else None
+
+
+def _roblox_on_another_space():
+    """True if a Roblox window exists SOMEWHERE (any Space) but _scan_roblox()
+    (on-screen-only) couldn't see it -- the signature of native fullscreen,
+    which runs the app on its own Space and hides its window from on-screen
+    enumeration entirely."""
+    try:
+        wins = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID)
+        for w in wins or []:
+            owner = str(w.get("kCGWindowOwnerName", ""))
+            if "roblox" in owner.lower() and "studio" not in owner.lower():
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def pin_window(w=1280, h=720):
+    """Move + resize the Roblox window so it's exactly w x h PHYSICAL pixels
+    at the top-left of the primary screen. Returns (ok: bool, message: str).
+    Uses the Accessibility API (AXUIElementSetAttributeValue) -- the same
+    mechanism window-management tools like Rectangle/Moom use to move
+    third-party windows. Requires the calling process to be Accessibility-
+    trusted (System Settings > Privacy & Security > Accessibility)."""
+    if not _AS.AXIsProcessTrusted():
+        return False, ("Accessibility permission not granted. System Settings > "
+                       "Privacy & Security > Accessibility -- enable it for this "
+                       "app/terminal, then try again.")
+    found = _scan_roblox()
+    if not found or found[0] is None:
+        if _roblox_on_another_space():
+            return False, ("Roblox is running but its window isn't on this "
+                           "screen/Space -- if it's in native fullscreen (the "
+                           "green button, not just maximized), exit fullscreen "
+                           "and try again. Window detection and resizing can't "
+                           "reach a window on a different fullscreen Space.")
+        return False, ("Roblox window not found. Open Roblox (not minimized) "
+                       "and try again.")
+    pid = found[0]
+
+    app = _AS.AXUIElementCreateApplication(int(pid))
+    err, axwins = _AS.AXUIElementCopyAttributeValue(app, _AS.kAXWindowsAttribute, None)
+    if err != _AS.kAXErrorSuccess or not axwins:
+        return False, ("Could not access Roblox's window via Accessibility -- "
+                       "make sure Roblox isn't minimized and try again.")
+    win = axwins[0]
+
+    ferr, is_fs = _AS.AXUIElementCopyAttributeValue(win, "AXFullScreen", None)
+    if ferr == _AS.kAXErrorSuccess and bool(is_fs):
+        return False, ("Roblox is in native fullscreen -- exit fullscreen (the "
+                       "green-button kind, not just maximized) and try again.")
+
+    try:
+        with _MSS() as sct:
+            scale = get_scale(sct)
+    except Exception:
+        scale = 1.0
+    # AX position/size are in POINTS, not physical pixels.
+    pw, ph = w / scale, h / scale
+    pos_val = _AS.AXValueCreate(_AS.kAXValueCGPointType, Quartz.CGPoint(0.0, 0.0))
+    size_val = _AS.AXValueCreate(_AS.kAXValueCGSizeType, Quartz.CGSize(pw, ph))
+    e1 = _AS.AXUIElementSetAttributeValue(win, _AS.kAXPositionAttribute, pos_val)
+    e2 = _AS.AXUIElementSetAttributeValue(win, _AS.kAXSizeAttribute, size_val)
+    if e1 != _AS.kAXErrorSuccess or e2 != _AS.kAXErrorSuccess:
+        return False, f"Failed to move/resize the Roblox window (AX error {e1}/{e2})."
+    return True, f"Roblox window pinned to {w}x{h} at (0,0)."
 
 
 # ---- Input engine (Quartz CGEvent, HID level) -------------------------------
@@ -341,25 +363,20 @@ def fr_move_to(x, y):
 
 
 # ---- Hotkey listener --------------------------------------------------------
-_MAC_DIGIT_IDX = {18: 0, 19: 1, 20: 2, 21: 3, 23: 4, 22: 5, 26: 6, 28: 7,
-                  25: 8}          # macOS vk for 1..9 -> relic index
-
-
 def make_listener():
     if keyboard is None:
         sys.exit(
             f"Missing dependency: {_PYNPUT_ERR}\n"
             "Install with:\n"
-            "  pip3 install pyobjc-framework-Quartz mss numpy pynput "
-            "--break-system-packages"
+            "  pip3 install pyobjc-framework-Quartz pyobjc-framework-ApplicationServices "
+            "mss numpy pynput --break-system-packages"
         )
     mods = {"ctrl": False, "alt": False, "shift": False}
     CTRL = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
     ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
     SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
-    binds = [("toggle", _eng.HOTKEY_TOGGLE), ("soft", _eng.HOTKEY_SOFTSTOP),
-             ("quit", _eng.HOTKEY_QUIT), ("popout", _eng.HOTKEY_POPOUT),
-             ("pause", _eng.HOTKEY_PAUSE), ("rreset", _eng.HOTKEY_RELIC_RESET)]
+    binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
+             ("quit", _eng.HOTKEY_QUIT)]
 
     def on_press(key):
         if key in CTRL:
@@ -374,12 +391,6 @@ def make_listener():
         vk = getattr(key, "vk", None)
         if key == keyboard.Key.esc and vk is None:
             vk = 53
-        # Ctrl+Shift+1..9 -> reset THAT relic's timer alone
-        if mods["ctrl"] and mods["shift"] and vk in _MAC_DIGIT_IDX:
-            if _eng.State.relics_ref is not None:
-                _eng.State.relics_ref.reset_one(_MAC_DIGIT_IDX[vk])
-                _eng.EMIT.relic_one(_MAC_DIGIT_IDX[vk], "hotkey")
-            return
         for name, spec in binds:
             tv = _eng._code_to_vk((spec or {}).get("code", ""))
             if tv is None or vk != tv:
@@ -391,18 +402,10 @@ def make_listener():
             if name == "quit":
                 _eng.request_quit()
                 return False
-            if name == "toggle":
-                _eng.request_toggle()
-            elif name == "pause":
-                _eng.request_pause_toggle()
-            elif name == "rreset":
-                if _eng.State.relics_ref is not None:
-                    _eng.State.relics_ref.reset()
-                _eng.EMIT.relic_reset(False)
-            elif name == "soft":
-                _eng.request_soft()
-            elif name == "popout":
-                _eng.EMIT.popout()
+            if name == "start":
+                _eng.request_start()
+            elif name == "stop":
+                _eng.request_stop()
             return
 
     def on_release(key):

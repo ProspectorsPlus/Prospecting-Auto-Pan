@@ -75,66 +75,25 @@ def get_scale(sct):
 
 
 # ---- Window-relative capture (opt-in) ---------------------------------------
-def find_roblox_window():
-    """[C8] The calibration sensing window lookup (protocol 4.15
-    calibration.detectWindow): the Roblox client area in screen pixels,
-    as the legacy host dict {found:True,x,y,w,h,title} or
-    {found:False,error:...}. Moved verbatim from the windows app's
-    _roblox_rect (windows/prospecting_app.py:1629): scans all visible
-    top-level windows (class WINDOWSCLIENT, or title containing 'Roblox'
-    but not 'Studio') and picks the largest."""
-    try:
-        u = ctypes.windll.user32
-        candidates = []
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        def _cb(hwnd, _lp):
-            try:
-                if not u.IsWindowVisible(hwnd):
-                    return True
-                n = u.GetWindowTextLengthW(hwnd)
-                tbuf = ctypes.create_unicode_buffer(n + 1)
-                u.GetWindowTextW(hwnd, tbuf, n + 1)
-                title = tbuf.value or ""
-                cbuf = ctypes.create_unicode_buffer(256)
-                u.GetClassNameW(hwnd, cbuf, 256)
-                cls = cbuf.value or ""
-                is_rbx = (cls == "WINDOWSCLIENT" or
-                          ("Roblox" in title and "Studio" not in title))
-                if not is_rbx:
-                    return True
-                rc = wintypes.RECT()
-                if not u.GetClientRect(hwnd, ctypes.byref(rc)):
-                    return True
-                w, h = rc.right - rc.left, rc.bottom - rc.top
-                if w < 320 or h < 240:           # skip tiny/loading windows
-                    return True
-                pt = wintypes.POINT(0, 0)
-                u.ClientToScreen(hwnd, ctypes.byref(pt))
-                candidates.append((w * h, {"found": True, "x": int(pt.x),
-                                   "y": int(pt.y), "w": int(w), "h": int(h),
-                                   "title": title or cls}))
-            except Exception:
-                pass
-            return True
-
-        u.EnumWindows(_cb, 0)
-        if candidates:
-            candidates.sort(key=lambda c: c[0], reverse=True)
-            return candidates[0][1]
-        return {"found": False,
-                "error": "Roblox window not found. Open Prospecting in "
-                         "Roblox (not minimized) and try again."}
-    except Exception as e:
-        return {"found": False, "error": "Detection failed: %s" % e}
-
-
 def find_roblox_rect():
     """Roblox game client area as (x, y, w, h) in physical px, or None. Scans all
     visible top-level windows (class WINDOWSCLIENT, or title containing 'Roblox'
     but not Studio) and picks the largest -- robust to title variations."""
+    r = _scan_roblox()
+    return r[1:5] if r else None
+
+
+def find_window_origin():
+    """(x, y) of the Roblox client top-left, or None. (Back-compat wrapper.)"""
+    r = find_roblox_rect()
+    return (r[0], r[1]) if r else None
+
+
+def _scan_roblox():
+    """Shared EnumWindows scan: largest visible window whose class is
+    WINDOWSCLIENT, or whose title contains 'Roblox' but not 'Studio'. Returns
+    (hwnd, x, y, w, h) in physical px (client area, screen coords), or None."""
     try:
-        from ctypes import wintypes
         u = ctypes.windll.user32
         best = []
 
@@ -161,14 +120,14 @@ def find_roblox_rect():
                     return True
                 pt = wintypes.POINT(0, 0)
                 u.ClientToScreen(hwnd, ctypes.byref(pt))
-                best.append((w * h, int(pt.x), int(pt.y), int(w), int(h)))
+                best.append((w * h, hwnd, int(pt.x), int(pt.y), int(w), int(h)))
             except Exception:
                 pass
             return True
 
         u.EnumWindows(_cb, 0)
         if best:
-            best.sort(reverse=True)
+            best.sort(key=lambda t: t[0], reverse=True)
             return best[0][1:]
         return None
     except Exception as e:
@@ -176,10 +135,41 @@ def find_roblox_rect():
         return None
 
 
-def find_window_origin():
-    """(x, y) of the Roblox client top-left, or None. (Back-compat wrapper.)"""
-    r = find_roblox_rect()
-    return (r[0], r[1]) if r else None
+GWL_STYLE      = -16
+GWL_EXSTYLE    = -20
+SW_RESTORE     = 9
+SWP_NOZORDER   = 0x0004
+SWP_NOACTIVATE = 0x0010
+
+
+def pin_window(w=1280, h=720):
+    """Move + resize the Roblox window so its CLIENT area is exactly w x h
+    physical pixels at the top-left of the primary screen. Returns
+    (ok: bool, message: str)."""
+    found = _scan_roblox()
+    if not found:
+        return False, ("Roblox window not found. Open Roblox (not minimized) "
+                       "and try again.")
+    hwnd = found[0]
+    u = ctypes.windll.user32
+    if u.IsIconic(hwnd):
+        u.ShowWindow(hwnd, SW_RESTORE)
+    style = u.GetWindowLongW(hwnd, GWL_STYLE)
+    exstyle = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    # Convert the desired CLIENT rect into the OUTER window rect SetWindowPos
+    # needs -- the client area (what find_roblox_rect()/pixel coords use) then
+    # ends up at exactly (0,0) with size w x h regardless of border/title-bar
+    # thickness.
+    rc = wintypes.RECT(0, 0, w, h)
+    if not u.AdjustWindowRectEx(ctypes.byref(rc), style, False, exstyle):
+        return False, "AdjustWindowRectEx failed."
+    outer_w = rc.right - rc.left
+    outer_h = rc.bottom - rc.top
+    ok = u.SetWindowPos(hwnd, 0, rc.left, rc.top, outer_w, outer_h,
+                        SWP_NOZORDER | SWP_NOACTIVATE)
+    if not ok:
+        return False, "SetWindowPos failed."
+    return True, f"Roblox window pinned to {w}x{h} client area at (0,0)."
 
 
 # ---- Input engine (Windows SendInput) ---------------------------------------
@@ -433,24 +423,13 @@ class _HotkeyPoller:
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
-        binds = [("toggle", _eng.HOTKEY_TOGGLE), ("soft", _eng.HOTKEY_SOFTSTOP),
-             ("quit", _eng.HOTKEY_QUIT), ("popout", _eng.HOTKEY_POPOUT),
-             ("pause", _eng.HOTKEY_PAUSE), ("rreset", _eng.HOTKEY_RELIC_RESET)]
-        prev = {"toggle": False, "soft": False, "quit": False, "pause": False,
-                "rreset": False}
+        binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
+                 ("quit", _eng.HOTKEY_QUIT)]
+        prev = {"start": False, "stop": False, "quit": False}
         while _eng.State.alive:
             ctrl = _eng._key_pressed(0x11)
             alt = _eng._key_pressed(0x12)
             shift = _eng._key_pressed(0x10)
-            # Ctrl+Shift+1..9 -> reset THAT relic's timer alone
-            for _d in range(1, 10):
-                _k = "d%d" % _d
-                _dn = ctrl and shift and _eng._key_pressed(0x30 + _d)
-                if _dn and not prev.get(_k):
-                    if _eng.State.relics_ref is not None:
-                        _eng.State.relics_ref.reset_one(_d - 1)
-                        _eng.EMIT.relic_one(_d - 1, "hotkey")
-                prev[_k] = _dn
             for name, spec in binds:
                 vk = _eng._code_to_vk_win((spec or {}).get("code", ""))
                 if vk is None:
@@ -464,18 +443,10 @@ class _HotkeyPoller:
                     if name == "quit":
                         _eng.request_quit()
                         return
-                    if name == "toggle":
-                        _eng.request_toggle()
-                    elif name == "pause":
-                        _eng.request_pause_toggle()
-                    elif name == "rreset":
-                        if _eng.State.relics_ref is not None:
-                            _eng.State.relics_ref.reset()
-                        _eng.EMIT.relic_reset(False)
-                    elif name == "soft":
-                        _eng.request_soft()
-                    elif name == "popout":
-                        _eng.EMIT.popout()
+                    elif name == "start":
+                        _eng.request_start()
+                    elif name == "stop":
+                        _eng.request_stop()
                 prev[name] = down
             time.sleep(0.03)
 
