@@ -339,6 +339,23 @@ def set_clipboard(text):
     p.communicate(str(text).encode("utf-8"), timeout=5)
 
 
+def _applescript_str(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def show_popup(title, message):
+    """Native Notification Center bubble -- non-blocking, safe to call from
+    the hotkey listener thread (a fresh subprocess, no UI thread involved)."""
+    import subprocess
+    script = (f"display notification {_applescript_str(message)} "
+              f"with title {_applescript_str(title)}")
+    try:
+        subprocess.run(["osascript", "-e", script], check=False,
+                        timeout=5, capture_output=True)
+    except Exception as e:
+        print(f"[popup] failed: {e}")
+
+
 def fr_move_to(x, y):
     """Move the cursor toward (x, y) from the calibrated home (screen centre
     where the cursor rests with shift-lock off), in small steps."""
@@ -376,7 +393,7 @@ def make_listener():
     ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
     SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
     binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
-             ("quit", _eng.HOTKEY_QUIT)]
+             ("pixel_info", _eng.HOTKEY_PIXEL_INFO), ("quit", _eng.HOTKEY_QUIT)]
 
     def on_press(key):
         if key in CTRL:
@@ -388,9 +405,12 @@ def make_listener():
         if key in SHIFT:
             mods["shift"] = True
             return
+        # Character keys arrive as KeyCode (has .vk directly). Special keys
+        # (F1, Esc, arrows, ...) arrive as a Key enum member, which has no
+        # .vk of its own -- the real vk lives on Key.xxx.value instead.
         vk = getattr(key, "vk", None)
-        if key == keyboard.Key.esc and vk is None:
-            vk = 53
+        if vk is None:
+            vk = getattr(getattr(key, "value", None), "vk", None)
         for name, spec in binds:
             tv = _eng._code_to_vk((spec or {}).get("code", ""))
             if tv is None or vk != tv:
@@ -406,6 +426,8 @@ def make_listener():
                 _eng.request_start()
             elif name == "stop":
                 _eng.request_stop()
+            elif name == "pixel_info":
+                _eng.request_pixel_info()
             return
 
     def on_release(key):

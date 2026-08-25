@@ -424,8 +424,9 @@ class _HotkeyPoller:
 
     def _loop(self):
         binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
+                 ("pixel_info", _eng.HOTKEY_PIXEL_INFO),
                  ("quit", _eng.HOTKEY_QUIT)]
-        prev = {"start": False, "stop": False, "quit": False}
+        prev = {"start": False, "stop": False, "pixel_info": False, "quit": False}
         while _eng.State.alive:
             ctrl = _eng._key_pressed(0x11)
             alt = _eng._key_pressed(0x12)
@@ -447,12 +448,29 @@ class _HotkeyPoller:
                         _eng.request_start()
                     elif name == "stop":
                         _eng.request_stop()
+                    elif name == "pixel_info":
+                        _eng.request_pixel_info()
                 prev[name] = down
             time.sleep(0.03)
 
 
 def make_listener():
     return _HotkeyPoller()
+
+
+def show_popup(title, message):
+    """Auto-dismissing topmost message box. Runs in its own thread so the
+    hotkey poller stays responsive while it's up (MessageBoxTimeoutW still
+    blocks whatever thread calls it until dismissed/timed out)."""
+    def _show():
+        try:
+            MB_OK = 0x0
+            MB_TOPMOST = 0x00040000
+            _user32.MessageBoxTimeoutW(0, str(message), str(title),
+                                        MB_OK | MB_TOPMOST, 0, 2500)
+        except Exception as e:
+            print(f"[popup] failed: {e}")
+    threading.Thread(target=_show, daemon=True).start()
 
 
 def calib_key_labeler(label, stop):
