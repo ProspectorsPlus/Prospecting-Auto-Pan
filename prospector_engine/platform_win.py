@@ -263,6 +263,13 @@ def move_cursor(x, y):
     _user32.SetCursorPos(int(x), int(y))
 
 
+def move_relative(dx, dy):
+    """Nudge the cursor by (dx, dy) pixels from wherever it currently sits --
+    screen-position independent, unlike move_cursor(). For free-look camera
+    drags."""
+    _eng._rel_move(dx, dy)
+
+
 def scroll_down(steps=3):
     data = (-120 * abs(int(steps))) & 0xFFFFFFFF
     inp = _INPUT(type=INPUT_MOUSE,
@@ -425,8 +432,9 @@ class _HotkeyPoller:
     def _loop(self):
         binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
                  ("pixel_info", _eng.HOTKEY_PIXEL_INFO),
-                 ("quit", _eng.HOTKEY_QUIT)]
-        prev = {"start": False, "stop": False, "pixel_info": False, "quit": False}
+                 ("reset_character", _eng.HOTKEY_RESET_CHARACTER)]
+        prev = {"start": False, "stop": False, "pixel_info": False,
+                "reset_character": False}
         while _eng.State.alive:
             ctrl = _eng._key_pressed(0x11)
             alt = _eng._key_pressed(0x12)
@@ -441,15 +449,14 @@ class _HotkeyPoller:
                         and bool(spec.get("alt")) == alt
                         and bool(spec.get("shift")) == shift)
                 if down and not prev[name]:
-                    if name == "quit":
-                        _eng.request_quit()
-                        return
-                    elif name == "start":
+                    if name == "start":
                         _eng.request_start()
                     elif name == "stop":
                         _eng.request_stop()
                     elif name == "pixel_info":
                         _eng.request_pixel_info()
+                    elif name == "reset_character":
+                        _eng.request_reset_character()
                 prev[name] = down
             time.sleep(0.03)
 

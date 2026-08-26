@@ -244,6 +244,20 @@ def move_cursor(x, y):
         pass
 
 
+def move_relative(dx, dy):
+    """Nudge the cursor by (dx, dy) points from wherever it currently sits --
+    screen-position independent, unlike move_cursor() (which targets a
+    calibrated absolute pixel). For free-look camera drags."""
+    p = _eng._cursor_point()
+    x, y = p.x + dx, p.y + dy
+    try:
+        Quartz.CGWarpMouseCursorPosition((x, y))
+        _eng._post(Quartz.CGEventCreateMouseEvent(
+            None, Quartz.kCGEventMouseMoved, (x, y), Quartz.kCGMouseButtonLeft))
+    except Exception:
+        pass
+
+
 def scroll_down(steps=3):
     try:
         _eng._post(Quartz.CGEventCreateScrollWheelEvent(
@@ -393,7 +407,8 @@ def make_listener():
     ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
     SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
     binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
-             ("pixel_info", _eng.HOTKEY_PIXEL_INFO), ("quit", _eng.HOTKEY_QUIT)]
+             ("pixel_info", _eng.HOTKEY_PIXEL_INFO),
+             ("reset_character", _eng.HOTKEY_RESET_CHARACTER)]
 
     def on_press(key):
         if key in CTRL:
@@ -419,15 +434,14 @@ def make_listener():
                     or bool(spec.get("alt")) != mods["alt"]
                     or bool(spec.get("shift")) != mods["shift"]):
                 continue
-            if name == "quit":
-                _eng.request_quit()
-                return False
             if name == "start":
                 _eng.request_start()
             elif name == "stop":
                 _eng.request_stop()
             elif name == "pixel_info":
                 _eng.request_pixel_info()
+            elif name == "reset_character":
+                _eng.request_reset_character()
             return
 
     def on_release(key):

@@ -42,7 +42,7 @@ class App:
         tk.Label(root, textvariable=self.run_status,
                  font=("Helvetica", 11, "bold")).pack(pady=(10, 2))
         tk.Label(root, text="In-game: F1 find+pin+start, F2 stop, "
-                             "F3 pixel/color popup, Esc quit.",
+                             "F3 pixel/color popup, F4 reset character.",
                  fg="#888").pack(pady=(0, 14))
 
         threading.Thread(target=engine.run, kwargs={"on_status": _on_status},

@@ -25,7 +25,12 @@ Hotkeys:
     F1  -> find/pin the Roblox window and start the loop
     F2  -> stop the loop
     F3  -> pop up the pixel + color under the cursor right now
-    Esc -> quit (always releases the mouse button first)
+    F4  -> reset-character test sequence (see request_reset_character)
+
+There is deliberately no quit hotkey: the F4 sequence taps Escape as its
+first step, and Escape going through the same OS-level input pipe the
+hotkey listener watches would stop the listener mid-sequence. Quit via
+the GUI's close button, or Ctrl+C in the CLI.
 
 SETUP
     macOS:   pip3 install pyobjc-framework-Quartz pyobjc-framework-ApplicationServices mss numpy pynput --break-system-packages
@@ -44,6 +49,9 @@ detection are shared here; window lookup/pin, mouse input, and the hotkey
 listener live in prospector_engine/platform_mac.py or platform_win.py.
 """
 import sys
+import threading
+import pyautogui
+import Quartz
 import time
 
 if sys.platform == "win32":
@@ -63,6 +71,10 @@ find_window_origin = _plat.find_window_origin
 find_roblox_rect = _plat.find_roblox_rect
 mouse_down = _plat.mouse_down
 mouse_up = _plat.mouse_up
+move_relative = _plat.move_relative
+key_down = _plat.key_down
+key_up = _plat.key_up
+v3_keycode = _plat.v3_keycode
 make_listener = _plat.make_listener
 pin_window = _plat.pin_window
 show_popup = _plat.show_popup
@@ -109,9 +121,16 @@ CALIB_WINDOW_ORIGIN = [0, 0]        # where pin_window() places the window
 HOTKEY_START      = {"ctrl": False, "alt": False, "shift": False, "code": "F1"}
 HOTKEY_STOP       = {"ctrl": False, "alt": False, "shift": False, "code": "F2"}
 HOTKEY_PIXEL_INFO = {"ctrl": False, "alt": False, "shift": False, "code": "F3"}
-HOTKEY_QUIT       = {"ctrl": False, "alt": False, "shift": False, "code": "Escape"}
+HOTKEY_RESET_CHARACTER = {"ctrl": False, "alt": False, "shift": False, "code": "F4"}
 
 LOOP_POLL_S = 0.01   # how often the run loop re-checks the screen when idle
+
+# --- Reset-character test sequence (F4) --------------------------------------
+One_K_Ms   = 1000     # wait after Esc, before R
+RESET_POST_ENTER_MS = 8000    # wait after Enter, before the right-click drag
+RESET_DRAG_MS       = 1000    # total duration of the straight-down drag
+RESET_DRAG_STEP_MS  = 16      # ~60Hz step rate while dragging
+RESET_DRAG_STEP_PX  = 12      # px per step -- "decent speed" (~750px/s)
 
 
 # ============================================================================
@@ -190,14 +209,69 @@ class Detector:
 
 
 # ============================================================================
+# Quartz-level right-click-drag (macOS)
+#
+# Games read raw HID motion *deltas*, not the cursor's absolute position, for
+# mouselook-style camera dragging -- posting a plain move/absolute-position
+# event does nothing in Roblox even while the button is genuinely held down.
+# kCGMouseEventDeltaX/Y is the field that actually drives it.
+# ============================================================================
+def _get_mouse_location():
+    return Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+
+
+def _right_click_down():
+    loc = _get_mouse_location()
+    event = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventRightMouseDown, loc, Quartz.kCGMouseButtonRight)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _right_click_up():
+    loc = _get_mouse_location()
+    event = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventRightMouseUp, loc, Quartz.kCGMouseButtonRight)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _right_drag_step(dx, dy):
+    loc = _get_mouse_location()
+    event = Quartz.CGEventCreateMouseEvent(
+        None, Quartz.kCGEventRightMouseDragged, loc, Quartz.kCGMouseButtonRight)
+    Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, dx)
+    Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, dy)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
+
+def _right_drag_relative(dx, dy, steps, step_delay):
+    """Split a total (dx, dy) motion into `steps` posted delta events,
+    `step_delay` apart -- mirrors RESET_DRAG_MS/RESET_DRAG_STEP_MS/PX."""
+    step_dx = dx / steps
+    step_dy = dy / steps
+    for _ in range(steps):
+        _right_drag_step(step_dx, step_dy)
+        time.sleep(step_delay)
+
+
+# ======
+# Helpers for mouse actions
+# ======
+
+def move_absolute(x, y):
+    pyautogui.moveTo(x, y)
+
+
+# ============================================================================
 # Run state + hotkeys
 # ============================================================================
 class State:
     running = False
     alive = True
+    resetting = False
 
 
 _MOUSE_DOWN = False
+_HELD_KEYS = set()
 
 
 def request_start(origin="hotkey"):
@@ -246,6 +320,62 @@ def request_pixel_info(origin="hotkey"):
     except Exception as e:
         print(f"[{origin}] clipboard copy failed: {e}")
         show_popup("Pixel Info", msg)
+
+
+def _tap_key(name):
+    """Press-and-release one V3-named key (platform-correct code looked up
+    via v3_keycode)."""
+    code = v3_keycode(name)
+    key_down(code)
+    key_up(code)
+
+
+def _reset_character_sequence(origin):
+    try:
+        _tap_key("escape")
+        time.sleep(One_K_Ms / 1000.0)
+        _tap_key("r")
+        time.sleep(One_K_Ms / 1000.0)
+        _tap_key("enter")
+        time.sleep(RESET_POST_ENTER_MS / 1000.0)
+
+        # 0) Recenter mouse before grabbing the camera
+        move_absolute(1280 // 2, 720 // 2)
+        time.sleep(0.4)
+
+        # 1) Hold down right click (Quartz -- registers as a real HID hold)
+        _right_click_down()
+        time.sleep(0.2)  # let the button-down register before drag events start
+
+        # 2) Drag straight down via relative HID deltas, same timing as before
+        steps = max(1, RESET_DRAG_MS // RESET_DRAG_STEP_MS)
+        _right_drag_relative(
+            0, RESET_DRAG_STEP_PX * steps,
+            steps=steps, step_delay=RESET_DRAG_STEP_MS / 1000.0)
+
+        # 3) Stop holding down right click
+        _right_click_up()
+        time.sleep(0.5)
+
+        # 4) Move mouse to center of the 1280x720 window
+        move_absolute(1280 // 2, 720 // 2)
+
+        print(f"[{origin}] reset character: done")
+    finally:
+        State.resetting = False
+
+
+def request_reset_character(origin="hotkey"):
+    """Test sequence: Esc (wait 1s) -> R (wait 1s) -> Enter (wait 8s) ->
+    recenter -> right-click-drag straight down (Quartz HID deltas) ->
+    release -> recenter. Runs on a background thread so the hotkey listener
+    (Esc/F1-3) stays responsive while it plays out. Bound to F4."""
+    if State.resetting:
+        print(f"[{origin}] reset character: already running, ignored")
+        return
+    State.resetting = True
+    threading.Thread(target=_reset_character_sequence, args=(origin,),
+                      daemon=True).start()
 
 
 def request_stop(origin="hotkey"):
@@ -340,7 +470,8 @@ def calibrate():
 def _cli_main():
     listener = make_listener()
     listener.start()
-    print(f"F1 to find/pin window + start, F2 to stop, Esc to quit.")
+    print(f"F1 to find/pin window + start, F2 to stop, F3 pixel info, "
+          f"F4 reset character. Ctrl+C to quit.")
     try:
         run(on_status=print)
     except KeyboardInterrupt:
