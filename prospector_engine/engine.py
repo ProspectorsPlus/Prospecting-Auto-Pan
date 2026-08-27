@@ -186,8 +186,7 @@ HOTKEY_PAN_SWAP_TEST = {"ctrl": False, "alt": False, "shift": False, "code": "F5
 LOOP_POLL_S = 0.01   # how often the run loop re-checks the screen when idle
 
 # --- Reset-character test sequence (F4) --------------------------------------
-One_K_Ms   = 1000     # wait after Esc, before R
-RESET_POST_ENTER_MS = 8000    # wait after Enter, before the right-click drag
+RESET_POST_ENTER_MS = 8000    # wait after the click sequence, before the right-click drag
 RESET_DRAG_MS       = 1000    # total duration of the straight-down drag
 RESET_DRAG_STEP_MS  = 16      # ~60Hz step rate while dragging
 RESET_DRAG_STEP_PX  = 12      # px per step -- "decent speed" (~750px/s)
@@ -544,12 +543,13 @@ def _tap_key(name):
 
 def _reset_character_sequence(origin):
     right_click_held = False
+    dequip_pan()
+    
     try:
         _tap_key("escape")
-        _interruptible_sleep(One_K_Ms / 1000.0)
-        _tap_key("r")
-        _interruptible_sleep(One_K_Ms / 1000.0)
-        _tap_key("enter")
+        _interruptible_sleep(500 / 1000.0)
+        click_buffered(641, 630, 200, 200)
+        click_buffered(530, 380, 500, 0)
         _interruptible_sleep(RESET_POST_ENTER_MS / 1000.0)
 
         # 0) Recenter mouse before grabbing the camera
@@ -585,10 +585,11 @@ def _reset_character_sequence(origin):
 
 
 def request_reset_character(origin="hotkey"):
-    """Test sequence: Esc (wait 1s) -> R (wait 1s) -> Enter (wait 8s) ->
-    recenter -> right-click-drag straight down (Quartz HID deltas) ->
-    release -> recenter. Runs on a background thread so the hotkey listener
-    (Esc/F1-3) stays responsive while it plays out. Bound to F4."""
+    """Test sequence: Esc (wait 500ms) -> click_buffered(641, 630) ->
+    click_buffered(530, 380) -> (wait 8s) -> recenter -> right-click-drag
+    straight down (Quartz HID deltas) -> release -> recenter. Runs on a
+    background thread so the hotkey listener (Esc/F1-3) stays responsive
+    while it plays out. Bound to F4."""
     if State.resetting:
         print(f"[{origin}] reset character: already running, ignored")
         return
@@ -627,6 +628,24 @@ def request_quit(origin="hotkey"):
 # ============================================================================
 # Phase 3: pan swap
 # ============================================================================
+def dequip_pan():
+    """Press 1 repeatedly, sampling PAN_SWAP_START_CHECK_PIXEL after each
+    press, until it no longer matches PAN_SWAP_START_CHECK_COLOR (within
+    PAN_SWAP_START_CHECK_TOL_PCT) -- i.e. until the pan-swap prompt clears."""
+    while True:
+        _raise_if_aborted()
+        _tap_key("1")
+        _interruptible_sleep(PAN_SWAP_START_POLL_S)
+        start_rgb = _sample_rgb(PAN_SWAP_START_CHECK_PIXEL)
+        sr, sg, sb = (int(round(c)) for c in start_rgb)
+        print(f"start-gate pixel {PAN_SWAP_START_CHECK_PIXEL} "
+              f"(screen {_screen_point(*PAN_SWAP_START_CHECK_PIXEL)}) "
+              f"RGB=({sr},{sg},{sb})  target={PAN_SWAP_START_CHECK_COLOR} "
+              f"(tol {PAN_SWAP_START_CHECK_TOL_PCT}%)  window_origin={State.window_origin}")
+        if not color_close(start_rgb, PAN_SWAP_START_CHECK_COLOR, PAN_SWAP_START_CHECK_TOL_PCT):
+            break
+
+
 def pan_swap(on_status=None, _attempt=1):
     """Swap a full pan for an empty one, then confirm the pan actually
     equipped back out. Re-resolves State.window_origin itself on entry (same
@@ -675,18 +694,7 @@ def pan_swap(on_status=None, _attempt=1):
         status("couldn't re-find the Roblox window -- using last known origin")
 
     status("waiting for pan swap prompt to clear")
-    while True:
-        _raise_if_aborted()
-        _tap_key("1")
-        _interruptible_sleep(PAN_SWAP_START_POLL_S)
-        start_rgb = _sample_rgb(PAN_SWAP_START_CHECK_PIXEL)
-        sr, sg, sb = (int(round(c)) for c in start_rgb)
-        print(f"start-gate pixel {PAN_SWAP_START_CHECK_PIXEL} "
-              f"(screen {_screen_point(*PAN_SWAP_START_CHECK_PIXEL)}) "
-              f"RGB=({sr},{sg},{sb})  target={PAN_SWAP_START_CHECK_COLOR} "
-              f"(tol {PAN_SWAP_START_CHECK_TOL_PCT}%)  window_origin={State.window_origin}")
-        if not color_close(start_rgb, PAN_SWAP_START_CHECK_COLOR, PAN_SWAP_START_CHECK_TOL_PCT):
-            break
+    dequip_pan()
 
     status("press 2")
     _tap_key("2")
