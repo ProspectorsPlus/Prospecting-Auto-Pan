@@ -50,6 +50,7 @@
       <ul class="nav-links" id="navlinks">
         <li><a href="#product">Product</a></li>
         <li><a href="#how">How it works</a></li>
+        <li><a href="#studio">Studio</a></li>
         <li><a href="#trust">Trust</a></li>
         <li><a href="#setup">Setup</a></li>
         <li><a href="./wiki/">Wiki</a></li>
@@ -284,6 +285,73 @@
         <h4>Studio block scripts</h4>
         <p>Build custom farming routines from validated blocks and run them from the same Run tab. Scripts are data, never executed as code.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= Prospector Studio ================= -->
+<section class="section" id="studio">
+  <div class="wrap">
+    <div class="sec-head reveal">
+      <p class="eyebrow">Companion app</p>
+      <h2>When you want to build the loop yourself, there's Prospector&nbsp;Studio.</h2>
+      <p class="lead">Prospector Lite is the macro: install it, calibrate, press start. <b>Studio is the workshop behind it</b> &mdash; a visual editor where a run is a graph you can read, change, simulate and publish back into Lite. Same engine, same behaviour, nothing new to trust.</p>
+    </div>
+
+    <div class="showcase-grid">
+      <figure class="sc-item sc-12 reveal">
+        <div class="appwin">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Studio &middot; Advanced graph</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/studio-graph.webp" width="2400" height="723" alt="The Prospector Studio node canvas showing a Fortune River recovery program: a main execution chain of Dig click, Wait for capacity, Wait for cue, Shake clicks and Wait for cue, an On stuck hook branching into Set variable, Log and Detect pixel, dashed expression sub-graphs computing add and concat over a recoveries variable, and a lower chain of Hold key, Move mouse, Click mouse and Wait nodes wired back into the loop.">
+        </div>
+        <figcaption><b>Every run is a graph</b><span>This is a real recovery program: the pan loop across the top, an <i>on stuck</i> hook that fast-travels and walks back in, and expression sub-graphs computing the counter and the log line. Wires carry execution; the dashed groups carry data.</span></figcaption>
+      </figure>
+    </div>
+
+    <div class="feature-row reveal">
+      <div class="feature-copy">
+        <p class="eyebrow">Readable first</p>
+        <h3>The graph has a plain-English side.</h3>
+        <p>The same program reads as ordered stages with real sentences and the settings that matter inline &mdash; so you can follow a cycle without touching a single wire. The node canvas is there when you need the precision, not as the price of entry.</p>
+        <ul class="feature-points">
+          <li>Colour-coded stages: dig, confirm, travel, shake, return.</li>
+          <li>An estimated cycle shape across the top, from your own timings.</li>
+          <li>A problems panel that tells you the program is valid before you run it.</li>
+          <li>Background routines fire on their own schedule alongside the loop.</li>
+        </ul>
+      </div>
+      <div class="feature-media">
+        <div class="appwin">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Studio &middot; Build</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/studio-build.webp" width="1700" height="1209" alt="The Studio Build view: five numbered stage cards titled Dig, Confirm, Travel to water, Shake and Return to land, each with a plain-English description and inline settings, an estimated cycle shape bar above, and a problems panel reading No problems, the program is valid and ready to run.">
+        </div>
+      </div>
+    </div>
+
+    <div class="feature-row flip reveal">
+      <div class="feature-copy">
+        <p class="eyebrow">It compiles to a real program</p>
+        <h3>Nodes, text and engine are the same thing.</h3>
+        <p>The canvas compiles to <b>PPScript</b> &mdash; a versioned, validated program format the engine executes directly. Edit the text and the graph rebuilds from it; edit the graph and the text follows. There is no separate &ldquo;export&rdquo; step that can drift.</p>
+        <ul class="feature-points">
+          <li><b>67 executable operations</b>, from a single dig click to true parallel branches.</li>
+          <li>Variables, expressions and the full set of boolean gates.</li>
+          <li>Simulate a run with <b>no input posted at all</b>, then compare it against the real thing.</li>
+          <li>Publish straight back into Prospector Lite as a build it can run.</li>
+        </ul>
+      </div>
+      <div class="feature-media">
+        <div class="appwin">
+          <div class="appwin-bar"><span class="wdot"></span><span class="wdot"></span><span class="wdot"></span><span class="wtitle">Prospector Studio &middot; Program text</span></div>
+          <img class="zoomable" loading="lazy" src="./assets/img/studio-script.webp" width="1700" height="701" alt="The Studio Program text view showing the compiled PPScript v2 source for the Fortune River recovery: a main block with dig, wait_cap, wait_cue, shake and wait_cue statements, and an on_stuck block with set_var, log, detect_pixel, move_mouse, click and hold_key statements.">
+        </div>
+      </div>
+    </div>
+
+    <div class="sec-head reveal" style="margin-top:2.75rem">
+      <p class="eyebrow">Availability</p>
+      <h3 style="margin-bottom:.5rem">macOS, signed and notarized.</h3>
+      <p class="lead">Studio 1.0.0 is built for Apple&nbsp;Silicon, signed with a Developer&nbsp;ID certificate and notarized by Apple, so it opens with no warnings. A Windows build is not available yet. <b>You do not need Studio to use Prospector&nbsp;Lite</b> &mdash; Lite ships with its own builds and runs on Windows and macOS.</p>
     </div>
   </div>
 </section>
