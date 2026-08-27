@@ -55,8 +55,6 @@ class App:
     def pin_window(self):
         ok, msg = engine.pin_window(engine.WINDOW_W, engine.WINDOW_H)
         self.window_status.set(msg)
-        if ok:
-            engine.CALIB_WINDOW_ORIGIN = [0, 0]
 
     def start(self):
         engine.request_start("gui")
