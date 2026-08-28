@@ -97,7 +97,8 @@ no input, but they do need Screen Recording permission.
    hotkey press while Roblox is focused. An agent may not simulate, bypass,
    pre-authorize, or persist that arming, and may not add a code path that
    would let it.
-2. **Never press a game hotkey to test it.** F1–F6 drive real input into
+2. **Never press a game hotkey to test it.** The Ctrl+Option chords (and
+   their legacy F1–F6 aliases) drive real input into
    Roblox. Their handlers are covered by tests that use fakes; an agent must
    never fire them on the real machine.
 3. **Never fabricate native evidence.** macOS and Windows gates are tracked

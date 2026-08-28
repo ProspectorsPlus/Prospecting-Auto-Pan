@@ -17,10 +17,11 @@ they are gone.
 
 **Clicking Tk removes focus from Roblox.** So there is no actionable Start
 Live, Reset, or Pan Test button. Those are guidance ("focus Roblox, then press
-F1"), and the real hotkeys submit their intents only while Roblox is positively
+Ctrl+Option+N"), and the real hotkeys submit their intents only while Roblox is
+positively
 focused (plan 11.2).
 
-**Stop is always reachable.** *Stop & Release (F2)* is pinned in the header at
+**Stop is always reachable.** *Stop & Release* is pinned in the header at
 a fixed size, outside every resizable region, so no window size, UI scale or
 layout state can push it off screen.
 
@@ -51,6 +52,7 @@ from typing import Any
 
 from prospector_engine import __version__
 from prospector_engine.application import Application, build_application
+from prospector_engine.bindings import BINDINGS, chord_label
 from prospector_engine.contracts import (
     CadenceMode,
     CaptureMetrics,
@@ -104,6 +106,49 @@ MODE_BADGES: dict[RunMode, tuple[str, str]] = {
     RunMode.SERVICE: ("SERVICE - bounded task", JADE),
     RunMode.SAFE_STOP: ("STOPPING - releasing input", WARN),
 }
+
+
+#: Spelled for the running OS - Option on a Mac, Alt on Windows - and read
+#: from the one binding registry, so a rebinding cannot leave the window
+#: telling people to press a key that no longer does anything.
+_OS_NAME = sys.platform
+_CHORD_START = chord_label(IntentType.START_LIVE, _OS_NAME)
+_CHORD_STOP = chord_label(IntentType.STOP, _OS_NAME)
+
+
+#: Two or three words per binding. The full sentence lives in the registry's
+#: ``description`` and in the tooltip; the legend is a reminder, not a manual.
+_LEGEND_VERBS: dict[IntentType, str] = {
+    IntentType.START_LIVE: "navigate",
+    IntentType.START_SHADOW: "observe",
+    IntentType.STOP: "stop",
+    IntentType.RESET_CHARACTER: "reset",
+    IntentType.PAN_SWAP_TEST: "pan",
+    IntentType.DIG_LOOP: "dig",
+    IntentType.PIXEL_INFO: "pixel",
+}
+
+
+def _hotkey_legend() -> str:
+    """The header legend, generated from the registry rather than typed out.
+
+    Kept short on purpose: this label spans the header and a long one widens
+    the whole window, which is the geometry rule the dashboard is built on
+    (D-041). The chord prefix is written once and the keys listed after it.
+    """
+    prefix = _CHORD_START.rsplit("+", 1)[0]
+    parts = [
+        f"{b.chord.key.upper()} {_LEGEND_VERBS.get(b.intent, '')}".strip() for b in BINDINGS
+    ]
+    return f"{prefix}+  " + " · ".join(parts)
+
+
+def _hotkey_help() -> str:
+    """The long form, for the tooltip, where length costs nothing."""
+    lines = [f"{b.label(_OS_NAME)} - {b.description}" for b in BINDINGS]
+    lines.append("")
+    lines.append("Stop works whether or not Roblox is focused.")
+    return "\n".join(lines)
 
 
 def _font_family() -> str:
@@ -358,7 +403,7 @@ class Dashboard:
         self.mode_label.grid(row=0, column=1, sticky="e", padx=(0, 14))
         self.stop_button = ttk.Button(
             header,
-            text="Stop & Release All Input  (F2)",
+            text=f"Stop & Release All Input  ({_CHORD_STOP})",
             style="Stop.TButton",
             command=self._stop,
         )
@@ -403,7 +448,8 @@ class Dashboard:
         Tooltip(
             self.arm_button,
             "Authorizes keyboard and camera output for thirty seconds. It does not "
-            "begin movement: after arming, focus Roblox and press F1. Stop & Release "
+            f"begin movement: after arming, focus Roblox and press {_CHORD_START}. "
+            "Stop & Release "
             "cancels it at any time.",
         )
         self.guide = MessageBox(row, self.fonts, height_px=40, width_px=440)
@@ -625,15 +671,19 @@ class Dashboard:
             "turn. Full Diagnostics adds contours, notches and rejected candidates.",
         )
 
-        tk.Label(
+        legend = tk.Label(
             body,
-            text="Focus Roblox -> F1 navigate  |  F2 stop  |  F3 pixel  |  "
-            "F4 reset  |  F5 pan test  |  F6 dig",
+            text=_hotkey_legend(),
             bg=SURFACE,
             fg=MUTED,
             font=self.f_small,
             anchor="w",
-        ).grid(row=2, column=0, columnspan=4, sticky="ew", padx=4, pady=(0, 4))
+        )
+        # Requested width fixed in characters: the legend is generated, and a
+        # generated string must never be able to decide how wide the window is.
+        legend.configure(width=68)
+        legend.grid(row=2, column=0, columnspan=4, sticky="ew", padx=4, pady=(0, 4))
+        Tooltip(legend, _hotkey_help())
 
     def _build_profile_selector(self, parent: tk.Misc) -> None:
         """Manual override only. Automatic selection is the normal path.
@@ -835,8 +885,8 @@ class Dashboard:
             self.message.set("Navigating. Press Stop at any time.", OK)
         elif progress.ok:
             self.message.set(
-                "Ready. Focus Roblox and press F1 to let the navigator move your "
-                "character; press F2 to stop.",
+                f"Ready. Focus Roblox and press {_CHORD_START} to let the navigator move "
+                f"your character; press {_CHORD_STOP} to stop.",
                 OK,
             )
         else:
@@ -867,7 +917,7 @@ class Dashboard:
         text, colour = MODE_BADGES[snapshot.mode]
         armed = snapshot.arm_state not in ("none", "-")
         if snapshot.mode is RunMode.IDLE and armed:
-            text, colour = "ARMED - press F1", GOLD
+            text, colour = f"ARMED - press {_CHORD_START}", GOLD
         if self.app.authority.release_uncertain:
             text, colour = "FAULT - input released", BAD
         self.mode_var.set(text)
@@ -889,7 +939,7 @@ class Dashboard:
             "Navigating - Stop is always available."
             if snapshot.mode is RunMode.LIVE
             else (
-                "Armed. Focus Roblox and press F1."
+                f"Armed. Focus Roblox and press {_CHORD_START}."
                 if armed
                 else "Open Roblox windowed with a map equipped, then press Start Navigator."
             ),
@@ -1051,9 +1101,9 @@ class Dashboard:
                 live_head = f"Blocked - {len(real)}"
                 live_detail = f"{real[0].code}: {real[0].summary}"
             elif snapshot.arm_state not in ("none", "-"):
-                live_head, live_detail = "Armed", "focus Roblox, press F1"
+                live_head, live_detail = "Armed", f"focus Roblox, press {_CHORD_START}"
             else:
-                live_head, live_detail = "Ready", "press F1 in Roblox to navigate"
+                live_head, live_detail = "Ready", f"press {_CHORD_START} in Roblox to navigate"
         self._set_summary("live", live_head, live_detail)
 
     def _set_summary(self, key: str, headline: str, detail: str) -> None:

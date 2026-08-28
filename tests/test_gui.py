@@ -129,11 +129,26 @@ def test_there_is_no_second_window_for_setup(dashboard: Any) -> None:
     assert before == after == []
 
 
-def test_live_and_service_hotkeys_are_shown_as_guidance(dashboard: Any) -> None:
+def test_the_chords_are_shown_as_guidance(dashboard: Any) -> None:
     labels = [str(label.cget("text")) for label in _widgets(dashboard.root, ("Label",))]
     joined = " ".join(labels)
-    assert "F1" in joined
-    assert "F6" in joined and "F4" in joined and "F5" in joined
+    assert "Ctrl+Option+" in joined or "Ctrl+Alt+" in joined
+    for key in ("N navigate", "X stop", "R reset", "P pan", "D dig"):
+        assert key in joined, f"the legend does not mention {key}"
+
+
+def test_no_primary_instruction_mentions_a_function_key(dashboard: Any) -> None:
+    """F1-F6 still work; they are aliases, and nothing tells a user to use one.
+
+    Function keys were the wrong primary binding: F1 is Help almost
+    everywhere, the row is brightness and volume by default on a Mac, and one
+    unmodified keypress starting a character walking is a slip away.
+    """
+    import re
+
+    texts = [str(w.cget("text")) for w in _widgets(dashboard.root, ("Label", "Button"))]
+    for text in texts:
+        assert not re.search(r"\bF[1-6]\b", text), f"primary UI still says: {text!r}"
 
 
 # ---------------------------------------------------------------------------

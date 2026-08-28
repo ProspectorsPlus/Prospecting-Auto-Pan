@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
@@ -43,6 +43,7 @@ except ImportError as exc:  # pragma: no cover - install-time failure
         f"({exc}). Install with: pip install -e '.[dev]'"
     ) from exc
 
+from prospector_engine.bindings import BINDINGS, ChordRecognizer, legacy_bindings
 from prospector_engine.capture import normalize_into_canonical
 from prospector_engine.contracts import (
     FocusState,
@@ -135,19 +136,18 @@ TITLE_BAR_PROVENANCE = Provenance(
     note="measured 28.0 pt on the dev Mac; E-VIEW on macOS is PENDING",
 )
 
-MAC_HOTKEY_BINDINGS: dict[str, IntentType] = {
-    "f1": IntentType.START_LIVE,
-    "f2": IntentType.STOP,
-    "f3": IntentType.PIXEL_INFO,
-    "f4": IntentType.RESET_CHARACTER,
-    "f5": IntentType.PAN_SWAP_TEST,
-    "f6": IntentType.DIG_LOOP,
-}
-"""F1-F6, all actually bound (bug B4: F5 was advertised but bound nowhere).
+MAC_HOTKEY_BINDINGS: dict[str, IntentType] = legacy_bindings()
+"""The legacy F-key aliases, kept working and no longer advertised.
 
-F6 is the standalone dig loop (DECISIONS.md D-015).
+The primary bindings are the Ctrl+Option chords in
+``prospector_engine.bindings``; this table is derived from the same registry
+(``legacy_bindings()``) so the two can never drift, and exists only so an
+existing muscle-memory workflow survives the change.
 """
 
+#: Apple virtual key codes. Letters are here because with Ctrl+Option held,
+#: macOS reports a control character - or nothing at all - for ``char``, so the
+#: keycode is the only reliable identity for the second half of a chord.
 _MAC_HOTKEY_VK: dict[str, int] = {
     "f1": 122,
     "f2": 120,
@@ -155,6 +155,13 @@ _MAC_HOTKEY_VK: dict[str, int] = {
     "f4": 118,
     "f5": 96,
     "f6": 97,
+    "n": 45,
+    "o": 31,
+    "x": 7,
+    "r": 15,
+    "p": 35,
+    "d": 2,
+    "i": 34,
 }
 
 
@@ -1260,15 +1267,34 @@ class MacPlatformPort:
 
 
 class MacHotkeySource:
-    """Global F1-F5 listener that submits intents and nothing else.
+    """Global Ctrl+Option chord listener that submits intents and nothing else.
 
     Input-emitting intents are submitted only while Roblox is positively
     focused (plan 11.2). ``STOP`` is always accepted - a stop that needed
     focus would be useless exactly when it matters.
+
+    The chord state machine lives in ``prospector_engine.bindings`` and is
+    shared with Windows; this class is only the pynput adapter that turns
+    macOS key events into normalized names.
     """
 
-    #: Intents that never require focus.
-    ALWAYS_ALLOWED = frozenset({IntentType.STOP, IntentType.SHUTDOWN, IntentType.PIXEL_INFO})
+    #: Intents that never require focus. Derived from the registry so a new
+    #: binding cannot forget to declare which one it is.
+    ALWAYS_ALLOWED = frozenset(
+        {IntentType.SHUTDOWN, *(b.intent for b in BINDINGS if not b.requires_focus)}
+    )
+
+    #: pynput key -> normalized modifier name. Both sides, because both are
+    #: real keys and a chord held with the right-hand Option must work.
+    _MODIFIER_NAMES: ClassVar[dict[str, str]] = {
+        "ctrl_l": "ctrl_l",
+        "ctrl_r": "ctrl_r",
+        "ctrl": "ctrl_l",
+        "alt_l": "alt_l",
+        "alt_r": "alt_r",
+        "alt": "alt_l",
+        "alt_gr": "alt_r",
+    }
 
     def __init__(
         self,
@@ -1281,6 +1307,39 @@ class MacHotkeySource:
         self._listener: Any | None = None
         self._sequence = 0
         self._lock = threading.Lock()
+        self._recognizer = ChordRecognizer()
+        self._vk_names = {vk: name for name, vk in _MAC_HOTKEY_VK.items()}
+
+    def _name_for(self, key: Any) -> str | None:
+        """Normalize a pynput key to a recognizer name, or ``None``."""
+        pynput_name = getattr(key, "name", None)
+        if isinstance(pynput_name, str) and pynput_name in self._MODIFIER_NAMES:
+            return self._MODIFIER_NAMES[pynput_name]
+        vk = getattr(key, "vk", None)
+        if vk is None:
+            vk = getattr(getattr(key, "value", None), "vk", None)
+        if isinstance(vk, int) and vk in self._vk_names:
+            return self._vk_names[vk]
+        return None
+
+    def on_press(self, key: Any) -> bool:
+        """Feed one key-down. Public so tests can drive real key sequences."""
+        name = self._name_for(key)
+        if name is None:
+            return False
+        binding = self._recognizer.key_down(name)
+        if binding is None:
+            return False
+        return self.fire(binding.intent)
+
+    def on_release(self, key: Any) -> None:
+        name = self._name_for(key)
+        if name is not None:
+            self._recognizer.key_up(name)
+
+    def clear_held_keys(self, reason: str = "focus-change") -> None:
+        """Forget held modifiers. A key-up lost to another app is not a hold."""
+        self._recognizer.clear(reason)
 
     def start(self) -> None:
         try:
@@ -1288,22 +1347,7 @@ class MacHotkeySource:
         except ImportError as exc:  # pragma: no cover - install-time failure
             raise ImportError(f"Global hotkeys need pynput ({exc}).") from exc
 
-        vk_to_intent = {
-            _MAC_HOTKEY_VK[name]: intent for name, intent in MAC_HOTKEY_BINDINGS.items()
-        }
-
-        def on_press(key: Any) -> None:
-            vk = getattr(key, "vk", None)
-            if vk is None:
-                vk = getattr(getattr(key, "value", None), "vk", None)
-            if not isinstance(vk, int):
-                return
-            intent_type = vk_to_intent.get(vk)
-            if intent_type is None:
-                return
-            self.fire(intent_type)
-
-        listener = keyboard.Listener(on_press=on_press)
+        listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
         listener.daemon = True
         listener.name = "treasure-hotkeys"
         listener.start()
@@ -1327,6 +1371,7 @@ class MacHotkeySource:
         return True
 
     def stop(self) -> None:
+        self._recognizer.clear("listener-stopped")
         listener = self._listener
         self._listener = None
         if listener is not None:

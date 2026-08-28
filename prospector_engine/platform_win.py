@@ -41,6 +41,7 @@ if sys.platform != "win32" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM
 
 import numpy as np
 
+from prospector_engine.bindings import BINDINGS, ChordRecognizer, legacy_bindings
 from prospector_engine.capture import normalize_into_canonical
 from prospector_engine.contracts import (
     FocusState,
@@ -115,14 +116,13 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 
-WIN_HOTKEY_BINDINGS: dict[str, IntentType] = {
-    "f1": IntentType.START_LIVE,
-    "f2": IntentType.STOP,
-    "f3": IntentType.PIXEL_INFO,
-    "f4": IntentType.RESET_CHARACTER,
-    "f5": IntentType.PAN_SWAP_TEST,
-    "f6": IntentType.DIG_LOOP,
-}
+#: The legacy F-key aliases, derived from the one registry so macOS and
+#: Windows cannot drift apart. The primary bindings are Ctrl+Alt chords.
+WIN_HOTKEY_BINDINGS: dict[str, IntentType] = legacy_bindings()
+
+#: Windows virtual key codes for everything the recognizer names. The modifier
+#: entries are the *side-specific* ones: VK_CONTROL and VK_MENU are the merged
+#: codes and cannot tell left from right, which the recognizer wants to know.
 _WIN_HOTKEY_VK: dict[str, int] = {
     "f1": 0x70,
     "f2": 0x71,
@@ -130,6 +130,19 @@ _WIN_HOTKEY_VK: dict[str, int] = {
     "f4": 0x73,
     "f5": 0x74,
     "f6": 0x75,
+    "n": 0x4E,
+    "o": 0x4F,
+    "x": 0x58,
+    "r": 0x52,
+    "p": 0x50,
+    "d": 0x44,
+    "i": 0x49,
+}
+_WIN_MODIFIER_VK: dict[str, int] = {
+    "ctrl_l": 0xA2,
+    "ctrl_r": 0xA3,
+    "alt_l": 0xA4,
+    "alt_r": 0xA5,
 }
 
 ULONG_PTR = wintypes.WPARAM
@@ -587,13 +600,21 @@ class WindowsPlatformPort:
 
 
 class WindowsHotkeySource:
-    """``GetAsyncKeyState`` edge-detecting poller for F1-F5 (bug B4).
+    """``GetAsyncKeyState`` poller feeding the shared chord recognizer.
 
     Polling avoids conflicting with our own synthetic input and needs no third
     party library. It submits intents only; it never touches engine state.
+
+    The poll turns level into edges: a key newly down is a key-down event, a
+    key newly up is a key-up. That is exactly the vocabulary
+    ``ChordRecognizer`` wants, so the rising-edge, autorepeat and
+    both-modifier-sides rules are the same code macOS runs rather than a second
+    implementation that has to agree with it.
     """
 
-    ALWAYS_ALLOWED = frozenset({IntentType.STOP, IntentType.SHUTDOWN, IntentType.PIXEL_INFO})
+    ALWAYS_ALLOWED = frozenset(
+        {IntentType.SHUTDOWN, *(b.intent for b in BINDINGS if not b.requires_focus)}
+    )
     POLL_INTERVAL_S = 0.03
 
     def __init__(
@@ -608,6 +629,32 @@ class WindowsHotkeySource:
         self._stop = threading.Event()
         self._sequence = 0
         self._lock = threading.Lock()
+        self._recognizer = ChordRecognizer()
+        self._down: dict[str, bool] = dict.fromkeys((*_WIN_HOTKEY_VK, *_WIN_MODIFIER_VK), False)
+
+    def poll_once(self, is_down: Callable[[int], bool]) -> list[IntentType]:
+        """One poll pass. ``is_down`` is injected so tests can drive it."""
+        fired: list[IntentType] = []
+        # Modifiers first, so a chord pressed within a single poll interval
+        # sees its modifiers already held rather than arriving a tick late.
+        for name in (*_WIN_MODIFIER_VK, *_WIN_HOTKEY_VK):
+            code = _WIN_MODIFIER_VK.get(name, _WIN_HOTKEY_VK.get(name, 0))
+            pressed = is_down(code)
+            if pressed == self._down[name]:
+                continue
+            self._down[name] = pressed
+            if not pressed:
+                self._recognizer.key_up(name)
+                continue
+            binding = self._recognizer.key_down(name)
+            if binding is not None and self.fire(binding.intent):
+                fired.append(binding.intent)
+        return fired
+
+    def clear_held_keys(self, reason: str = "focus-change") -> None:
+        self._recognizer.clear(reason)
+        for name in self._down:
+            self._down[name] = False
 
     def start(self) -> None:
         if self._thread is not None:
@@ -618,13 +665,12 @@ class WindowsHotkeySource:
 
     def _loop(self) -> None:
         user32 = ctypes.windll.user32
-        previous = dict.fromkeys(WIN_HOTKEY_BINDINGS, False)
+
+        def is_down(code: int) -> bool:
+            return bool(user32.GetAsyncKeyState(code) & 0x8000)
+
         while not self._stop.wait(self.POLL_INTERVAL_S):
-            for name, intent_type in WIN_HOTKEY_BINDINGS.items():
-                pressed = bool(user32.GetAsyncKeyState(_WIN_HOTKEY_VK[name]) & 0x8000)
-                if pressed and not previous[name]:
-                    self.fire(intent_type)
-                previous[name] = pressed
+            self.poll_once(is_down)
 
     def fire(self, intent_type: IntentType) -> bool:
         if intent_type not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
