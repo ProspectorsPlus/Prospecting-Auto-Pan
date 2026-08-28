@@ -125,3 +125,6 @@ evaluation_runs/
 # Build output for the packaged app.
 packaging/build/
 packaging/dist/
+
+# ---- local real-frame corpus extractions (regenerated from the private recording) ----
+tests/corpus/local/

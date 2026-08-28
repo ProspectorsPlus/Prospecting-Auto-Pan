@@ -590,7 +590,7 @@ def test_source_reported_duplicates_never_reach_a_consumer() -> None:
     assert service.start()
     try:
         _await_frames(service, 2)
-        before = service.metrics().duplicate_frames
+        before = service.metrics().duplicate_frames.session_total
         # Freeze the content id: every later poll is the same surface.
         source._content = 7
         source._content_ids = True
@@ -606,7 +606,7 @@ def test_source_reported_duplicates_never_reach_a_consumer() -> None:
         source.poll = repeating  # type: ignore[method-assign]
         time.sleep(0.3)
         after = service.metrics()
-        assert after.duplicate_frames > before
+        assert after.duplicate_frames.session_total > before
     finally:
         service.stop()
 
@@ -671,7 +671,7 @@ def test_pooled_buffers_return_when_their_frame_is_released() -> None:
     try:
         _await_frames(service, 20)
         # Far more frames than the pool holds, yet nothing was exhausted.
-        assert service.metrics().duplicate_frames >= 0
+        assert service.metrics().duplicate_frames.session_total >= 0
         assert service._pool.exhausted == 0
         assert service._pool.live <= service._pool.capacity
     finally:

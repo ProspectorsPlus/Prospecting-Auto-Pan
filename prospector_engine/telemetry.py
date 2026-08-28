@@ -37,6 +37,7 @@ __all__ = [
     "EventLog",
     "EvidenceRecorder",
     "LatestSlot",
+    "LoggedEvent",
     "RecordedFrame",
     "RecorderConfig",
     "RecorderStats",
@@ -194,25 +195,70 @@ class LatestSlot[T]:
             return self._dropped
 
 
+@dataclass(frozen=True)
+class LoggedEvent:
+    """One event, or one *run* of identical events collapsed into a transition.
+
+    The observed failure: six identical "ALIGN: steering disabled" lines filled
+    the whole event panel while the interesting history scrolled off the top.
+    Repetition is information about duration, not about six separate things
+    happening, so a repeat increments a count and moves the last-seen time
+    rather than pushing a new line.
+    """
+
+    name: str
+    detail: str
+    count: int
+    first_at_s: float
+    last_at_s: float
+
+    def describe(self) -> str:
+        head = f"{self.name}: {self.detail}" if self.detail else self.name
+        if self.count <= 1:
+            return head
+        span = self.last_at_s - self.first_at_s
+        return f"{head}   (x{self.count} over {span:.1f}s)"
+
+
 class EventLog:
-    """A bounded ring of stable-named events for the UI and the crash record."""
+    """A bounded ring of stable-named events, with identical runs coalesced."""
 
     def __init__(self, capacity: int = 200) -> None:
-        self._events: deque[tuple[float, str, str]] = deque(maxlen=capacity)
+        self._events: deque[LoggedEvent] = deque(maxlen=capacity)
         self._lock = threading.Lock()
+        self._verbatim: deque[tuple[float, str, str]] = deque(maxlen=capacity * 4)
 
     def add(self, name: str, detail: str = "") -> None:
+        now = monotonic_s()
         with self._lock:
-            self._events.append((monotonic_s(), name, detail))
+            # The raw stream is kept verbatim for the Raw Log tab; only the
+            # readable view coalesces.
+            self._verbatim.append((now, name, detail))
+            if self._events:
+                last = self._events[-1]
+                if last.name == name and last.detail == detail:
+                    self._events[-1] = replace(last, count=last.count + 1, last_at_s=now)
+                    return
+            self._events.append(LoggedEvent(name, detail, 1, now, now))
 
     def recent(self, limit: int = 20) -> tuple[tuple[float, str, str], ...]:
         with self._lock:
+            return tuple(
+                (event.last_at_s, event.name, event.detail)
+                for event in list(self._events)[-limit:]
+            )
+
+    def events(self, limit: int = 20) -> tuple[LoggedEvent, ...]:
+        with self._lock:
             return tuple(list(self._events)[-limit:])
 
+    def verbatim(self, limit: int = 200) -> tuple[tuple[float, str, str], ...]:
+        """The uncoalesced stream, for the Raw Log tab."""
+        with self._lock:
+            return tuple(list(self._verbatim)[-limit:])
+
     def as_lines(self, limit: int = 20) -> tuple[str, ...]:
-        return tuple(
-            f"{name}: {detail}" if detail else name for _, name, detail in self.recent(limit)
-        )
+        return tuple(event.describe() for event in self.events(limit))
 
 
 class TelemetryHub:

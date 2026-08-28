@@ -7,7 +7,6 @@ saw, and a tier is only held while it is genuinely being sustained.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from prospector_engine.capture import CadenceGovernor, CaptureConfig, LatencyTracker
@@ -19,7 +18,8 @@ from tests.fakes import make_geometry
 PROFILES = load_profiles()
 YELLOW = PROFILES.get("yellow_map_v0")
 GENERIC = PROFILES.get("generic_saturated_v0")
-assert YELLOW is not None and GENERIC is not None
+GREEN = PROFILES.get("green_arrow_v1")
+assert YELLOW is not None and GENERIC is not None and GREEN is not None
 
 
 # ---------------------------------------------------------------------------
@@ -38,9 +38,10 @@ def test_a_sustained_shortfall_downshifts_one_tier() -> None:
 
     governor.update(unique_fps=40.0, frame_age_ms=5.0, now_s=1.0)
     assert governor.tier is PerformanceTier.MAXIMUM, "one bad poll must not downshift"
-    governor.update(unique_fps=40.0, frame_age_ms=5.0, now_s=1.5)
+    for step in range(1, 4):
+        governor.update(unique_fps=40.0, frame_age_ms=5.0, now_s=1.0 + step * 0.25)
 
-    assert governor.tier is PerformanceTier.HIGH
+    assert governor.tier is PerformanceTier.HIGH, "a full second of shortfall does"
 
 
 def test_a_single_transient_does_not_knock_a_healthy_pipeline_down() -> None:
@@ -64,8 +65,8 @@ def test_an_empty_measurement_window_is_not_a_verdict() -> None:
 def test_stale_frames_downshift_even_when_throughput_looks_fine() -> None:
     """A high rate of old frames is worse than a lower rate of fresh ones."""
     governor = _governor(start_tier=PerformanceTier.MAXIMUM, max_frame_age_ms=100)
-    governor.update(unique_fps=120.0, frame_age_ms=500.0, now_s=1.0)
-    governor.update(unique_fps=120.0, frame_age_ms=500.0, now_s=1.5)
+    for step in range(4):
+        governor.update(unique_fps=120.0, frame_age_ms=500.0, now_s=1.0 + step * 0.25)
 
     assert governor.tier is PerformanceTier.HIGH
 
@@ -100,8 +101,8 @@ def test_the_governor_respects_its_ceiling() -> None:
 def test_falling_below_the_minimum_is_reported_as_degraded() -> None:
     """Below 30 unique fps the application says so instead of looking healthy."""
     governor = _governor(start_tier=PerformanceTier.MINIMUM)
-    governor.update(unique_fps=5.0, frame_age_ms=5.0, now_s=1.0)
-    governor.update(unique_fps=5.0, frame_age_ms=5.0, now_s=1.5)
+    for step in range(4):
+        governor.update(unique_fps=5.0, frame_age_ms=5.0, now_s=1.0 + step * 0.25)
 
     assert governor.tier is PerformanceTier.DEGRADED
     assert not governor.tier.acceptable
@@ -151,25 +152,36 @@ def test_an_empty_tracker_reports_zeroes_rather_than_failing() -> None:
 
 
 def _frame_with_blob(sequence: int, centre: tuple[int, int]) -> object:
-    from prospector_engine.contracts import CapturedFrame, freeze_array
+    """A real arrow, rendered where the test wants it.
 
-    geometry = make_geometry(size=(1280.0, 720.0))
-    image = np.zeros((720, 1280, 3), dtype=np.uint8)
-    image[:, :] = (20, 20, 20)
-    x, y = centre
-    image[y - 45 : y + 45, x - 30 : x + 30] = (40, 220, 230)  # BGR yellow
+    A painted rectangle used to be enough, because the detector ranked
+    candidates by area. It is not enough now, and that is the point: the
+    production detector requires the arrowhead topology it was built to find,
+    so a fixture without it would be testing nothing.
+    """
+    from prospector_engine.contracts import CapturedFrame, freeze_array
+    from tests.arrow_fixtures import render_scene
+
+    scene = render_scene(
+        heading_deg=35.0,
+        centre_px=(float(centre[0]), float(centre[1])),
+        scale_px=70.0,
+        terrain="dirt",
+        seed=sequence,
+    )
+    # Fifty milliseconds apart: the identity is earned on the second frame.
     return CapturedFrame(
         sequence=sequence,
-        captured_at_s=float(sequence) * 0.01,
-        completed_at_s=float(sequence) * 0.01 + 0.002,
+        captured_at_s=float(sequence) * 0.05,
+        completed_at_s=float(sequence) * 0.05 + 0.002,
         duration_ms=2.0,
-        geometry=geometry,
-        bgr=freeze_array(image),
+        geometry=make_geometry(size=(1280.0, 720.0)),
+        bgr=freeze_array(scene.bgr),
     )
 
 
 def _pipeline(**overrides: object) -> PerceptionPipeline:
-    return PerceptionPipeline(segmenter=ArrowSegmenter(YELLOW), **overrides)  # type: ignore[arg-type]
+    return PerceptionPipeline(segmenter=ArrowSegmenter(GREEN), **overrides)  # type: ignore[arg-type]
 
 
 def test_the_first_frame_always_uses_a_full_pass() -> None:
@@ -208,9 +220,19 @@ def test_the_roi_result_matches_the_full_frame_result() -> None:
             approach_valid=False,
         )
     assert roi_result.inputs.arrow.valid == full_result.inputs.arrow.valid
-    assert roi_result.inputs.arrow.bbox_px == full_result.inputs.arrow.bbox_px
+    # The local-background estimate is computed over the pass's own pixels,
+    # so a region pass may differ from the full pass by a pixel at the mask
+    # edge. What must not differ is which object was found and where.
+    assert (
+        roi_result.inputs.arrow.bbox_px is not None
+        and full_result.inputs.arrow.bbox_px is not None
+    )
+    for mine, theirs in zip(
+        roi_result.inputs.arrow.bbox_px, full_result.inputs.arrow.bbox_px, strict=True
+    ):
+        assert abs(mine - theirs) <= 2
     assert roi_result.inputs.arrow.centroid_px == pytest.approx(
-        full_result.inputs.arrow.centroid_px
+        full_result.inputs.arrow.centroid_px, abs=2.0
     )
 
 
@@ -231,21 +253,49 @@ def test_a_full_frame_pass_happens_periodically_even_while_tracking() -> None:
     assert pipeline.roi_hits + pipeline.full_passes == 12
 
 
-def test_an_roi_miss_falls_back_to_the_full_frame_immediately() -> None:
-    """A tracker-induced miss must not be reported as an arrow loss."""
+def test_an_roi_miss_schedules_a_global_search_on_the_next_frame() -> None:
+    """A region miss is one transaction; the full frame runs on the next one.
+
+    The previous pipeline ran the full pass synchronously on the same
+    screenshot, aging the track and the global-scan cadence twice per frame.
+    """
     pipeline = _pipeline(roi_padding_px=60)
-    pipeline.analyze(_frame_with_blob(1, (200, 200)), map_id="t", approach_valid=False)  # type: ignore[arg-type]
+    for sequence in (1, 2, 3):
+        pipeline.analyze(
+            _frame_with_blob(sequence, (200, 200)), map_id="t", approach_valid=False
+        )  # type: ignore[arg-type]
+    assert pipeline.roi_hits >= 1
 
-    # The arrow jumps far outside any ROI around the old position.
-    result = pipeline.analyze(
-        _frame_with_blob(2, (1000, 500)),  # type: ignore[arg-type]
-        map_id="t",
-        approach_valid=False,
+    # The arrow jumps far outside any region around the old position.
+    jumped = pipeline.analyze(
+        _frame_with_blob(4, (1000, 500)), map_id="t", approach_valid=False
+    )  # type: ignore[arg-type]
+    assert jumped.timing is not None
+    assert jumped.timing.roi_used and jumped.timing.full_detector_ms == 0.0, (
+        "no second pass on this frame"
     )
+    assert not jumped.inputs.arrow.valid, "a region miss is reported as a hold, not as a lock"
 
-    assert result.inputs.arrow.valid
-    assert result.inputs.arrow.centroid_px is not None
-    assert result.inputs.arrow.centroid_px[0] == pytest.approx(999.5, abs=3.0)
+    # The held identity is protected for ``max_track_age_s``; only then does
+    # the arrow at its new place earn a new identity, over consistent frames.
+    reported = None
+    for sequence in range(5, 22):
+        result = pipeline.analyze(
+            _frame_with_blob(sequence, (1000, 500)), map_id="t", approach_valid=False
+        )  # type: ignore[arg-type]
+        assert result.timing is not None
+        assert not (result.timing.roi_used and result.timing.full_detector_ms > 0.0)
+        if result.inputs.arrow.valid:
+            reported = result
+            break
+    assert reported is not None, "the arrow at its new place was never reported"
+    assert (
+        reported.inputs.arrow.track_id != jumped.inputs.arrow.track_id
+        or jumped.inputs.arrow.track_id is None
+    )
+    assert reported.inputs.arrow.centroid_px is not None
+    assert reported.inputs.arrow.centroid_px[0] == pytest.approx(999.5, abs=3.0)
+    assert pipeline.fallbacks >= 1
 
 
 def test_changing_the_profile_forces_a_full_pass_and_drops_the_track() -> None:
@@ -270,18 +320,24 @@ def test_changing_the_profile_forces_a_full_pass_and_drops_the_track() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_every_direction_cue_is_evaluated_not_only_the_selected_one() -> None:
-    """A fusion abstention is only useful next to the cues that disagreed."""
+def test_every_direction_cue_is_reported_with_the_weight_consensus_gave_it() -> None:
+    """A consensus abstention is only useful next to the cues that disagreed."""
     pipeline = _pipeline()
-    result = pipeline.analyze(
-        _frame_with_blob(1, (900, 250)),  # type: ignore[arg-type]
-        map_id="t",
-        approach_valid=False,
-    )
+    for sequence in (1, 2):
+        result = pipeline.analyze(
+            _frame_with_blob(sequence, (900, 250)),  # type: ignore[arg-type]
+            map_id="t",
+            approach_valid=False,
+        )
 
-    names = {name for name, _cue in result.cues}
-    assert names == {"centroid_ray", "tip_ray", "pca_axis", "fusion"}
-    assert dict(result.cues)["fusion"] is result.inputs.direction
+    names = {reading.cue_id for reading in result.cues}
+    assert "notch_axis" in names or "pca_axis" in names
+    assert any(name.startswith("sign:") for name in names), "the polarity votes are reported"
+    assert "player_to_arrow" in names, "position is reported, and kept distinct from pose"
+    # Every cue carries the weight consensus gave it, so a rejected outlier is
+    # visible at weight zero rather than silently missing.
+    assert all(reading.weight >= 0.0 for reading in result.cues)
+    assert result.inputs.direction.cues == result.cues
 
 
 def test_the_reference_frame_is_configuration_and_says_so() -> None:
@@ -293,17 +349,20 @@ def test_the_reference_frame_is_configuration_and_says_so() -> None:
 
 def test_the_candidate_record_keeps_rejections_with_reasons() -> None:
     pipeline = _pipeline()
-    result = pipeline.analyze(
-        _frame_with_blob(1, (640, 360)),  # type: ignore[arg-type]
-        map_id="t",
-        approach_valid=False,
-    )
+    for sequence in (1, 2):
+        result = pipeline.analyze(
+            _frame_with_blob(sequence, (640, 360)),  # type: ignore[arg-type]
+            map_id="t",
+            approach_valid=False,
+        )
     assert result.candidates
-    accepted = [c for c in result.candidates if c.accepted]
-    assert len(accepted) <= 1
+    selected = [c for c in result.candidates if c.state == "selected"]
+    assert len(selected) == 1, "exactly one candidate is selected per observation"
+    assert [c for c in result.candidates if c.accepted] == selected
     for candidate in result.candidates:
         if not candidate.accepted:
             assert candidate.rejected_reason
+            assert candidate.state in ("proposed", "viable", "challenger", "rejected")
 
 
 # ---------------------------------------------------------------------------
@@ -412,13 +471,13 @@ def test_frames_are_not_counted_as_dropped_before_anyone_consumes() -> None:
     try:
         time.sleep(0.4)  # frames flowing, nobody consuming
         assert service.latest() is not None
-        assert service.metrics().dropped_frames == 0
+        assert service.metrics().superseded_frames.session_total == 0
 
-        # Once a consumer exists, real drops are counted again.
+        # Once a consumer exists, real supersedes are counted again.
         first = service.wait_for_new(0, 1.0)
         assert first is not None
         time.sleep(0.3)
-        assert service.metrics().dropped_frames >= 1
+        assert service.metrics().superseded_frames.session_total >= 1
     finally:
         service.stop()
 

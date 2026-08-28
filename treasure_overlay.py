@@ -26,13 +26,33 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 import tkinter as tk
+from enum import Enum
 from typing import Any
 
 import numpy as np
 
-from prospector_engine.contracts import DiagnosticObservation, RunMode
+from prospector_engine.contracts import DiagnosticObservation, PacketKind, RunMode
 from prospector_engine.geometry import Affine2D
+
+
+class OverlayMode(Enum):
+    """How much of the reasoning to draw over the frame.
+
+    Two modes rather than a checkbox per element, because the two audiences are
+    different: someone watching a route wants the turn, and someone diagnosing
+    a detector wants everything that produced it. A single crowded overlay
+    serves neither.
+    """
+
+    MINIMAL = "Minimal"
+    FULL = "Full Diagnostics"
+
+    @property
+    def draws_candidates(self) -> bool:
+        return self is OverlayMode.FULL
+
 
 # --- Palette ---------------------------------------------------------------
 BG = "#14171a"
@@ -95,8 +115,15 @@ class DiagnosticCanvas:
 
     ARM_LENGTH_PX = 190.0
 
-    def __init__(self, canvas: tk.Canvas) -> None:
+    #: Full Diagnostics redraws its overlay at most this often. The image
+    #: still pastes at the preview cadence; the candidate polygons, cue arms
+    #: and captions - the expensive part - run at a separately capped rate so
+    #: they can never slow the frame.
+    FULL_OVERLAY_INTERVAL_S = 0.05
+
+    def __init__(self, canvas: tk.Canvas, mode: OverlayMode = OverlayMode.MINIMAL) -> None:
         self.canvas = canvas
+        self.mode = mode
         self._photo: Any = None
         self._photo_size: tuple[int, int] = (0, 0)
         self._scaled: Any = None
@@ -105,6 +132,18 @@ class DiagnosticCanvas:
         self._items: dict[str, int] = {}
         self._reject_items: list[int] = []
         self._last_sequence = -1
+        self._last_key: Any = None
+        self._last_overlay_at_s = 0.0
+        #: Timings of the most recent render, for the preview trace.
+        self.last_paste_ms = 0.0
+        self.last_overlay_ms = 0.0
+        self.last_overlay_skipped = False
+
+    def set_mode(self, mode: OverlayMode) -> None:
+        """Switch modes and force a redraw, so the change is visible at once."""
+        self.mode = mode
+        self._last_sequence = -1
+        self._last_key = None
 
     # -- item helpers -----------------------------------------------------
     def _line(self, name: str, **options: Any) -> int:
@@ -139,16 +178,38 @@ class DiagnosticCanvas:
 
     # -- rendering --------------------------------------------------------
     def render(self, observation: DiagnosticObservation) -> bool:
-        """Draw one observation. Returns False if it was already drawn."""
-        if observation.frame_sequence == self._last_sequence:
+        """Draw one packet, refusing anything an older world produced.
+
+        The key comparison - not the frame number - is what makes it impossible
+        to draw observation N over frame N+1, or to draw a cancelled worker's
+        straggler over the session that replaced it.
+        """
+        if not observation.key.supersedes(self._last_key):
             return False
+        self._last_key = observation.key
         self._last_sequence = observation.frame_sequence
 
         width = max(64, self.canvas.winfo_width())
         height = max(64, self.canvas.winfo_height())
         transform = observation.geometry.preview_from_canonical((width, height))
+        started = time.perf_counter()
         self._draw_image(observation, (width, height), transform)
+        pasted = time.perf_counter()
+        self.last_paste_ms = (pasted - started) * 1000.0
+        now = time.monotonic()
+        if (
+            self.mode is OverlayMode.FULL
+            and now - self._last_overlay_at_s < self.FULL_OVERLAY_INTERVAL_S
+        ):
+            # Latest-only at a capped cadence: the picture is current and the
+            # diagnostics catch up on the next tick; nothing queues.
+            self.last_overlay_skipped = True
+            self.last_overlay_ms = 0.0
+            return True
+        self.last_overlay_skipped = False
         self._draw_overlay(observation, transform)
+        self._last_overlay_at_s = now
+        self.last_overlay_ms = (time.perf_counter() - pasted) * 1000.0
         return True
 
     def render_frame_only(self, frame: Any) -> bool:
@@ -303,9 +364,21 @@ class DiagnosticCanvas:
                 self._show("desired_arm")
                 self._draw_arc(observation, anchor, transform)
 
+        # -- notches, the geometry the signed direction came from -----------
+        notches = observation.arrow.notch_px if self.mode.draws_candidates else None
+        for index in (0, 1):
+            key = f"notch_{index}"
+            if notches is None or index >= len(notches):
+                self._hide(key)
+                continue
+            nx, ny = transform.apply_point(notches[index])
+            marker = self._line(key, fill=GOLD, width=2)
+            self.canvas.coords(marker, nx - 5, ny - 5, nx + 5, ny + 5)
+            self._show(key)
+
         # -- arrow geometry ------------------------------------------------
         arrow = observation.arrow
-        if arrow.valid and observation.contour_px:
+        if arrow.valid and observation.contour_px and self.mode.draws_candidates:
             points: list[float] = []
             for x, y in observation.contour_px:
                 view_x, view_y = transform.apply(float(x), float(y))
@@ -371,7 +444,13 @@ class DiagnosticCanvas:
             self._hide("tip2")
 
         # -- rejected candidates -------------------------------------------
-        rejected = [c for c in observation.candidates if not c.accepted]
+        # Minimal mode draws none of these on purpose: someone watching a route
+        # wants the turn, not the eight blobs the detector considered.
+        rejected = (
+            [c for c in observation.candidates if not c.accepted]
+            if self.mode.draws_candidates
+            else []
+        )
         while len(self._reject_items) < len(rejected):
             self._reject_items.append(
                 self.canvas.create_rectangle(
@@ -397,10 +476,11 @@ class DiagnosticCanvas:
                 0, 0, 0, 0, fill=BG, outline="", stipple="gray75"
             )
             self._items["caption_bg"] = backdrop
+        frozen = observation.packet_kind is not PacketKind.FRAME
         caption = self._text(
             "caption",
             anchor="nw",
-            fill=MUTED if stale else BONE,
+            fill=MUTED if (stale or frozen) else BONE,
             font=("Menlo" if sys.platform == "darwin" else "Consolas", 10),
             justify="left",
         )
@@ -452,14 +532,23 @@ class DiagnosticCanvas:
         what shows *how* they disagree - which is the difference between a
         useful diagnostic and a blank screen.
         """
-        for index, (name, cue) in enumerate(observation.cues):
+        for index, cue in enumerate(observation.cues):
             key = f"cue_{index}"
-            if not cue.valid or cue.error_deg is None or name == observation.strategy_id:
+            if cue.heading_deg is None:
                 self._hide(key)
                 self._hide(f"{key}_label")
                 continue
-            item = self._line(key, fill=self.CUE_COLOUR, width=1, arrow="last", dash=(2, 3))
-            heading = (observation.forward_deg or 0.0) + cue.error_deg
+            # A cue consensus rejected is drawn faintly rather than hidden: the
+            # whole point of showing the components is to see the disagreement.
+            rejected = cue.weight <= 0.0
+            item = self._line(
+                key,
+                fill=self.REJECT_COLOUR if rejected else self.CUE_COLOUR,
+                width=1,
+                arrow="last",
+                dash=(2, 6) if rejected else (2, 3),
+            )
+            name, heading = cue.cue_id, cue.heading_deg
             self._set_arm(item, anchor, heading, transform, length=self.ARM_LENGTH_PX * 0.72)
             radians = math.radians(heading)
             label_point = (
@@ -472,7 +561,9 @@ class DiagnosticCanvas:
             )
             self.canvas.coords(label, view[0], view[1])
             self.canvas.itemconfigure(
-                label, text=f"{name} {cue.error_deg:+.0f}°", state="normal"
+                label,
+                text=f"{name} {heading:+.0f}°" + ("  (outlier)" if rejected else ""),
+                state="normal",
             )
 
     def _draw_arc(
@@ -514,10 +605,21 @@ class DiagnosticCanvas:
         self.canvas.itemconfigure(text, text=f"{error:+.1f}°")
         self._show("angle_text")
 
-    @staticmethod
-    def _caption(observation: DiagnosticObservation) -> str:
+    def _caption(self, observation: DiagnosticObservation) -> str:
         arrow = observation.arrow
         direction = observation.direction
+        if observation.packet_kind is not PacketKind.FRAME:
+            # A frozen picture may stay on screen. It must say so, carry its
+            # age, and never look like a live reading (mission section 6).
+            return (
+                f"FROZEN - {observation.plain_summary}\n"
+                f"last frame #{observation.frame_sequence}, "
+                f"{observation.age_s:.1f} s old\n"
+                "no command is in effect"
+            )
+        if self.mode is OverlayMode.MINIMAL:
+            summary = observation.plain_summary or "no reading"
+            return f"{summary}\nframe #{observation.frame_sequence}  {self.mode.value}"
         lines = [
             f"frame #{observation.frame_sequence}  age {observation.age_s * 1000:5.1f} ms"
             f"  {observation.geometry.state.value}",
@@ -541,11 +643,16 @@ class DiagnosticCanvas:
         else:
             lines.append(f"direction ABSTAIN: {direction.abstain_reason}")
         agreeing = [
-            f"{name} {cue.error_deg:+.0f}"
-            for name, cue in observation.cues
-            if cue.valid and cue.error_deg is not None
+            f"{cue.cue_id} {cue.heading_deg:+.0f}"
+            for cue in observation.cues
+            if cue.valid and cue.heading_deg is not None
         ]
         lines.append("cues: " + (", ".join(agreeing) if agreeing else "all abstained"))
+        if direction.valid and direction.sign_margin_deg:
+            lines.append(
+                f"polarity margin {direction.sign_margin_deg:.0f}°"
+                f"  anisotropy {direction.anisotropy:.2f}"
+            )
         lines.append(f"forward ref: {observation.forward_source}")
         if observation.candidates:
             rejected = sum(1 for c in observation.candidates if not c.accepted)

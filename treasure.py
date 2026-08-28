@@ -8,16 +8,32 @@
     python treasure.py --calibrate    read client-relative pixels under the cursor
     python treasure.py --capture-probe  measure capture cost, read-only
     python treasure.py --replay DIR   replay a recorded session, emits no input
+    python treasure.py --detector-report [PROFILE] [--corpus DIR] [--json PATH]
+                                      detector metrics on rendered stress frames,
+                                      or on a real-frame corpus; no input
+    python treasure.py --soak MINUTES bounded pipeline soak, no input
+    python treasure.py --shadow-bench SECONDS [--json PATH]
+                                      native capture and headless perception
+                                      against the real Roblox window; no input
 
-``--deadman`` is dispatched **before** Tk, OpenCV, capture, or engine code is
-imported (plan 4.5), so the helper stays small and starts even if the heavy
-graphics stack is broken. Everything else imports normally.
+Every offline mode is **mutually exclusive and bounded**: it never builds the
+dashboard, never starts the input authority or the deadman helper, writes
+its report, and exits with a meaningful status. ``--deadman`` is dispatched
+**before** Tk, OpenCV, capture, or engine code is imported (plan 4.5), so the
+helper stays small and starts even if the heavy graphics stack is broken.
+Everything else imports normally.
+
+Set ``TREASURE_LIFECYCLE_PROBE=1`` to print, on exit, which GUI modules were
+loaded, how many threads survive, and how many child processes exist - the
+subprocess tests assert on that line.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
+from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -263,6 +279,530 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
     return 0
 
 
+def _run_soak(minutes: float = 10.0) -> int:
+    """Run the full pipeline against a synthetic source and watch what grows.
+
+    Emits no OS input and needs no Roblox: the point is to hold the capture,
+    perception and telemetry machinery under load long enough that a leak
+    becomes visible, which a unit test cannot do.
+    """
+    import gc
+    import threading
+    import time
+
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+        _ProcessUsage,
+    )
+    from prospector_engine.contracts import PerformanceTier
+    from prospector_engine.navigation import NavigationGates, Navigator, PerceptionPipeline
+    from prospector_engine.vision import ArrowSegmenter, load_profiles
+
+    sys.path.insert(0, _HERE)
+    try:
+        from tests.arrow_fixtures import render_scene
+        from tests.fakes import FakeCaptureSource, FakePlatformPort, VirtualClock, make_geometry
+    except ImportError:
+        print("The soak needs the test fixtures; run from a source checkout.")
+        return 2
+
+    profile = load_profiles().get("green_arrow_v1")
+    if profile is None:
+        return 2
+    port = FakePlatformPort(VirtualClock(), geometry=make_geometry(size=(1280.0, 720.0)))
+    guard = ViewportGuard(port)
+    guard.connect()
+
+    frames = [
+        render_scene(heading_deg=float(angle), terrain="grass", scale_px=100.0, seed=angle).bgr
+        for angle in range(0, 360, 30)
+    ]
+    source = FakeCaptureSource(frames=frames)
+    service = CaptureService(
+        guard,
+        EvidenceRegistry("soak"),
+        config=CaptureConfig(start_tier=PerformanceTier.STANDARD),
+        source_factory=lambda: source,
+    )
+    pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+    navigator = Navigator(gates=NavigationGates(os_name=sys.platform, profile_id="soak"))
+    usage = _ProcessUsage()
+
+    threads_before = threading.active_count()
+    if not service.start():
+        print(f"capture failed to start: {service.last_error()}")
+        return 1
+
+    print(f"Soaking for {minutes:g} minutes. No OS input is emitted; no window is touched.")
+    header = f"{'elapsed':>8} {'unique':>7} {'processed':>10} {'rss MB':>8}"
+    print(f"{header} {'peak':>7} {'cpu%':>6}")
+    started = time.monotonic()
+    deadline = started + minutes * 60.0
+    interval = min(30.0, max(2.0, minutes * 60.0 / 8.0))
+    next_report = started + interval
+    baseline_rss = 0.0
+    samples: list[tuple[float, float]] = []
+    last_sequence = 0
+    processed = 0
+    try:
+        while time.monotonic() < deadline:
+            envelope = service.wait_for_new(last_sequence, 0.25)
+            if envelope is None:
+                continue
+            last_sequence = envelope.frame.sequence
+            result = pipeline.analyze(envelope.frame, map_id="soak", approach_valid=False)
+            navigator.decide(result.inputs, generation=1, now_s=time.monotonic())
+            service.note_perception_ms(result.perception_ms)
+            service.note_decision_ms(0.05)
+            processed += 1
+            now = time.monotonic()
+            if now >= next_report:
+                next_report = now + interval
+                gc.collect()
+                sample = usage.sample()
+                metrics = service.metrics()
+                elapsed = now - started
+                if baseline_rss == 0.0 and elapsed >= interval:
+                    baseline_rss = sample.rss_current_mb
+                if baseline_rss:
+                    samples.append((elapsed, sample.rss_current_mb))
+                print(
+                    f"{elapsed:7.0f}s {metrics.unique_fps:7.1f} {metrics.processed_fps:10.1f} "
+                    f"{sample.rss_current_mb:8.1f} {sample.rss_peak_mb:7.1f} "
+                    f"{sample.cpu_percent:6.0f}"
+                )
+    finally:
+        stopped = service.stop(3.0)
+
+    gc.collect()
+    threads_after = threading.active_count()
+    slope = 0.0
+    if len(samples) >= 2:
+        span_minutes = (samples[-1][0] - samples[0][0]) / 60.0
+        slope = (samples[-1][1] - samples[0][1]) / max(span_minutes, 1e-6)
+
+    print()
+    print(f"  frames processed   {processed}")
+    print(f"  threads            {threads_before} before, {threads_after} after")
+    print(f"  capture shutdown   {'clean' if stopped else 'SURVIVOR'}")
+    print(f"  buffer pool live   {service._pool.live} of {service._pool.capacity}")
+    print(f"  RSS slope          {slope:+.2f} MB/min (provisional target: under 1.0)")
+    ok = stopped and threads_after <= threads_before + 1 and slope < 1.0
+    print(f"\n  {'PASS' if ok else 'FAIL'} - this is a local soak, not E-PERF.")
+    return 0 if ok else 1
+
+
+def _run_corpus_report(corpus_dir: str, json_path: str | None) -> int:
+    """Measure the detector on a labelled real-frame corpus. Emits no input.
+
+    Both splits are reported; ``tune`` is what the detector was chosen on and
+    ``eval`` was only ever read. The JSON carries every count next to every
+    rate, the corpus provenance and the detector configuration, so a number
+    can always be traced back to the frames that produced it.
+    """
+    import json
+    import time
+    from dataclasses import asdict
+
+    from prospector_engine.arrow import ArrowDetector, DetectorConfig
+    from prospector_engine.contracts import CapturedFrame
+    from prospector_engine.corpus import (
+        FramePrediction,
+        by_stratum,
+        describe,
+        evaluate_corpus,
+        heading_from_axis,
+        load_corpus,
+    )
+    from prospector_engine.navigation import PerceptionPipeline
+    from prospector_engine.vision import ArrowSegmenter, load_profiles
+
+    try:
+        corpus = load_corpus(corpus_dir)
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"Cannot load corpus {corpus_dir!r}: {exc}")
+        return 2
+    profile = load_profiles().get(corpus.profile_id)
+    if profile is None:
+        print(f"The corpus names profile {corpus.profile_id!r}, which is not bundled.")
+        return 2
+    config = DetectorConfig()
+    holder: dict[str, PerceptionPipeline] = {}
+    costs: list[float] = []
+
+    def reset() -> None:
+        holder["pipeline"] = PerceptionPipeline(
+            segmenter=ArrowSegmenter(profile), detector=ArrowDetector(profile, config)
+        )
+
+    def predict(frame: CapturedFrame) -> FramePrediction:
+        started = time.perf_counter()
+        result = holder["pipeline"].analyze(frame, map_id="corpus", approach_valid=False)
+        costs.append((time.perf_counter() - started) * 1000.0)
+        arrow = result.inputs.arrow
+        decision = result.timing.tracking_decision if result.timing is not None else ""
+        return FramePrediction(
+            accepted=arrow.valid,
+            bbox_px=arrow.bbox_px,
+            heading_deg=heading_from_axis(arrow.tip_px, arrow.tail_px) if arrow.valid else None,
+            track_id=arrow.track_id,
+            decision=decision,
+        )
+
+    document: dict[str, object] = {
+        "corpus": str(corpus.root),
+        "profile_id": corpus.profile_id,
+        "provenance": corpus.provenance,
+        "detector_config": {key: str(value) for key, value in asdict(config).items()},
+        "splits": {},
+    }
+    print(f"Real-frame corpus report: {corpus.root} (profile {corpus.profile_id})\n")
+    for split in ("tune", "eval"):
+        costs.clear()
+        results = evaluate_corpus(corpus, predict, split=split, reset=reset)  # type: ignore[arg-type]
+        ordered = sorted(costs)
+        timing = {
+            "frames": len(ordered),
+            "p50_ms": ordered[len(ordered) // 2] if ordered else 0.0,
+            "p95_ms": ordered[int(0.95 * (len(ordered) - 1))] if ordered else 0.0,
+            "max_ms": ordered[-1] if ordered else 0.0,
+        }
+        document["splits"][split] = {  # type: ignore[index]
+            "sequences": {k: v.as_dict() for k, v in results.items() if k != "__all__"},
+            "strata": {k: v.as_dict() for k, v in by_stratum(results).items()},
+            "total": results["__all__"].as_dict(),
+            "perception_ms": timing,
+        }
+        print(f"== split: {split} ==")
+        print(describe({k: v for k, v in results.items() if k != "__all__"}))
+        print(describe(by_stratum(results)))
+        print(describe({"__all__": results["__all__"]}))
+        print(
+            f"perception ms p50 {timing['p50_ms']:.1f} p95 {timing['p95_ms']:.1f} "
+            f"max {timing['max_ms']:.1f}\n"
+        )
+    print(
+        "Regression evidence on real frames from one session. It is not E-PROF: "
+        "one map, one machine, one lighting pass per stratum, no held-out session."
+    )
+    if json_path:
+        Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(json_path).write_text(json.dumps(document, indent=1), encoding="utf-8")
+        print(f"JSON written to {json_path}")
+    return 0
+
+
+def _run_detector_report(profile_id: str = "green_arrow_v1") -> int:
+    """Measure the detector on rendered stress frames. Emits no input.
+
+    Rendered frames are **training stress, never a held-out split** (plan 7.2),
+    so this can never pass E-PROF or E-DIR-E2E. It exists so a change to the
+    detector can be judged against the same conditions every time, and so the
+    numbers in STATUS.md can be regenerated by anybody.
+    """
+    from dataclasses import asdict
+
+    import numpy as np
+
+    from prospector_engine.arrow import ArrowDetector, DetectorConfig, DirectionEstimator
+    from prospector_engine.contracts import CapturedFrame, freeze_array
+    from prospector_engine.evaluation import DatasetSplit, LabelledFrame, evaluate
+    from prospector_engine.geometry import (
+        DisplayInfo,
+        LogicalRect,
+        ViewportGeometry,
+        ViewportState,
+        WindowIdentity,
+    )
+    from prospector_engine.vision import load_profiles
+
+    sys.path.insert(0, _HERE)
+    try:
+        from tests.arrow_fixtures import render_scene
+    except ImportError:
+        print("The detector report needs the test fixtures; run from a source checkout.")
+        return 2
+
+    profile = load_profiles().get(profile_id)
+    if profile is None:
+        print(f"Unknown profile {profile_id!r}.")
+        return 2
+
+    client = LogicalRect(0.0, 0.0, 1280.0, 720.0)
+    geometry = ViewportGeometry(
+        state=ViewportState.CANONICAL_VERIFIED,
+        window=WindowIdentity(0, 0, "synthetic"),
+        display=DisplayInfo("synthetic", client, 1.0),
+        frame_logical=client,
+        client_logical=client,
+        canonical_px=(1280, 720),
+        detail="rendered stress frame",
+    )
+    strata: dict[str, dict[str, object]] = {
+        "day-grass": {"terrain": "grass", "scale_px": 100.0},
+        "day-dirt": {"terrain": "dirt", "scale_px": 100.0},
+        "water": {"terrain": "water", "scale_px": 100.0},
+        "pale-terrain": {"terrain": "pale", "scale_px": 100.0},
+        "night-grass": {"terrain": "night_grass", "scale_px": 100.0},
+        "small-arrow": {"terrain": "grass", "scale_px": 45.0},
+        "large-arrow": {"terrain": "grass", "scale_px": 210.0},
+        "foreshortened": {"terrain": "dirt", "scale_px": 130.0, "foreshorten": 0.5},
+        "blurred": {"terrain": "grass", "scale_px": 100.0, "blur_px": 7},
+        "translucent": {"terrain": "pale", "scale_px": 110.0, "alpha": 0.55},
+        "dim": {"terrain": "grass", "scale_px": 100.0, "brightness": 0.5},
+        "same-colour-clutter": {"terrain": "dirt", "scale_px": 100.0, "distractors": 5},
+        "same-colour-occlusion": {"terrain": "dirt", "scale_px": 100.0, "occluders": 4},
+    }
+
+    def frame_of(scene: object, sequence: int) -> CapturedFrame:
+        return CapturedFrame(
+            sequence=sequence,
+            captured_at_s=sequence * 0.01,
+            completed_at_s=sequence * 0.01 + 0.002,
+            duration_ms=2.0,
+            geometry=geometry,
+            bgr=freeze_array(np.ascontiguousarray(scene.bgr)),  # type: ignore[attr-defined]
+            backend="synthetic",
+        )
+
+    labelled: list[LabelledFrame] = []
+    episode = 0
+    for name, options in strata.items():
+        for _run in range(6):
+            episode += 1
+            for step, heading in enumerate(range(0, 360, 24)):
+                scene = render_scene(
+                    heading_deg=float(heading), seed=episode * 100 + step, **options
+                )
+                labelled.append(
+                    LabelledFrame(
+                        frame_of(scene, step + 1),
+                        float(heading),
+                        name,
+                        session_id=f"synthetic-{name}",
+                        episode_id=f"ep{episode}",
+                    )
+                )
+            for step in range(6):
+                scene = render_scene(
+                    heading_deg=0.0, seed=episode * 100 + 60 + step, arrow=False, **options
+                )
+                labelled.append(
+                    LabelledFrame(
+                        frame_of(scene, 100 + step),
+                        None,
+                        name,
+                        session_id=f"synthetic-{name}",
+                        episode_id=f"ep{episode}",
+                        arrow_present=False,
+                    )
+                )
+
+    config = DetectorConfig()
+    detector = ArrowDetector(profile, config)
+    estimator = DirectionEstimator(config)
+    last_episode: list[str | None] = [None]
+    original_predict_frames = {id(item.frame): item.episode_id for item in labelled}
+
+    def predict(frame: CapturedFrame) -> tuple[float | None, bool]:
+        episode = original_predict_frames.get(id(frame))
+        if episode != last_episode[0]:
+            # Identities never cross an episode cut.
+            detector.reset()
+            last_episode[0] = episode
+        arrow, hypotheses = detector.analyze(frame)
+        if not arrow.valid:
+            return (None, False)
+        selected = next((h for h in hypotheses if h.state == "selected"), None)
+        observation = estimator.estimate(
+            selected.features if selected is not None else None,
+            anchor_px=(640.0, 430.0),
+            forward_deg=0.0,
+            arrow_confidence=arrow.confidence,
+        ).observation
+        if not observation.valid or observation.error_deg is None:
+            return (None, False)
+        return (observation.error_deg, True)
+
+    report = evaluate(
+        DatasetSplit("synthetic-stress", tuple(labelled)),
+        predict,
+        detector_config={key: str(value) for key, value in asdict(config).items()},
+        notes=(
+            "Rendered frames fitted to the owner's measured crops. Training "
+            "stress only: plan 7.2 forbids synthetic data in a held-out split, "
+            "so nothing here can pass E-PROF or E-DIR-E2E.",
+        ),
+    )
+    print(f"Detector report for {profile.profile_id} [{profile.status.value}]\n")
+    print(report.describe())
+    return 0
+
+
+def _percentile_of(ordered: list[float]) -> Callable[[float], float]:
+    """A percentile reader over an already-sorted list; empty reads as zero."""
+
+    def at(fraction: float) -> float:
+        if not ordered:
+            return 0.0
+        return ordered[min(len(ordered) - 1, int(fraction * (len(ordered) - 1)))]
+
+    return at
+
+
+def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> int:
+    """Native capture and headless perception against the real Roblox window.
+
+    Two configurations, each for ``seconds``: **capture** consumes every frame
+    and does nothing with it; **perception** runs the production pipeline on
+    every frame. No dashboard, no input authority, no deadman, no window is
+    moved and no input is sent. The numbers are the same ones the dashboard
+    shows, taken without the dashboard, which is what makes a regression in
+    the perception path separable from a regression in the preview.
+    """
+    import json
+
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+        _ProcessUsage,
+    )
+    from prospector_engine.contracts import CadenceMode, monotonic_s
+    from prospector_engine.navigation import PerceptionPipeline
+    from prospector_engine.ports import create_platform_port
+    from prospector_engine.trace import FrameTrace
+    from prospector_engine.vision import ArrowSegmenter, load_profiles
+
+    seconds = max(2.0, min(float(seconds), 120.0))
+    port = create_platform_port()
+    guard = ViewportGuard(port)
+    geometry = guard.connect()
+    print("Shadow bench (read-only; no window is moved, no input is sent, no dashboard)")
+    print(f"  viewport: {geometry.describe()}")
+    if not geometry.valid:
+        print("  Roblox client not available; nothing to measure.")
+        return 1
+    profile = load_profiles().get("yellow_map_v1") or load_profiles().all()[0]
+    report: dict[str, object] = {
+        "seconds_per_configuration": seconds,
+        "viewport": geometry.describe(),
+        "profile_id": profile.profile_id,
+        "configurations": {},
+    }
+    for name in ("capture", "perception"):
+        service = CaptureService(
+            guard,
+            EvidenceRegistry(f"bench-{name}"),
+            config=CaptureConfig(),
+            source_factory=port.create_capture_source,
+        )
+        service.set_cadence_mode(CadenceMode.BALANCED)
+        pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+        usage = _ProcessUsage()
+        if not service.start():
+            print(f"  {name}: source failed: {service.last_error()}")
+            continue
+        usage.sample()
+        latencies: list[float] = []
+        started = monotonic_s()
+        deadline = started + seconds
+        last, consumed, unique_seen = 0, 0, 0
+        try:
+            while monotonic_s() < deadline:
+                envelope = service.wait_for_new(last, 0.25)
+                if envelope is None:
+                    continue
+                frame = envelope.frame
+                if last and frame.sequence > last + 1:
+                    service.note_dropped_observation(frame.sequence - last - 1)
+                unique_seen += frame.sequence - last if last else 1
+                last = frame.sequence
+                picked_at_s = monotonic_s()
+                timing = None
+                if name == "perception":
+                    result = pipeline.analyze(frame, map_id="bench", approach_valid=False)
+                    service.note_perception_ms(result.perception_ms)
+                    timing = result.timing
+                else:
+                    service.note_perception_ms(0.0)
+                latency = (monotonic_s() - frame.captured_at_s) * 1000.0
+                service.note_end_to_end_ms(latency)
+                latencies.append(latency)
+                consumed += 1
+                if timing is not None:
+                    service.trace.record(
+                        FrameTrace(
+                            frame_sequence=frame.sequence,
+                            captured_at_s=frame.captured_at_s,
+                            completed_at_s=frame.completed_at_s,
+                            source_epoch=service.source_epoch,
+                            cadence_hz=service.tier.fps,
+                            capture_ms=frame.duration_ms,
+                            scheduling_delay_ms=max(
+                                0.0, (picked_at_s - frame.completed_at_s) * 1000.0
+                            ),
+                            perception=timing,
+                            decision_ms=0.0,
+                            capture_to_observation_ms=latency,
+                            settling=service.settling,
+                        )
+                    )
+        finally:
+            elapsed = monotonic_s() - started
+            sample = usage.sample()
+            metrics = service.metrics()
+            service.stop(3.0)
+        ordered = sorted(latencies)
+        at = _percentile_of(ordered)
+
+        summary = {
+            "consumed_fps": consumed / elapsed,
+            "unique_fps_seen": unique_seen / elapsed,
+            "processed_over_unique": consumed / max(1, unique_seen),
+            "capture_to_observation_ms": {
+                "p50": at(0.5),
+                "p95": at(0.95),
+                "p99": at(0.99),
+                "max": at(1.0),
+            },
+            "tier_hz": metrics.tier.fps,
+            "governor": metrics.governor.reason,
+            "cpu_percent": sample.cpu_percent,
+            "rss_mb": sample.rss_current_mb,
+            "superseded": metrics.superseded_frames.session_total,
+            "pool_exhausted": metrics.pool_exhausted.session_total,
+            "backend": metrics.backend,
+            "trace": service.trace.summary().describe(),
+            "governor_transitions": [t.as_row() for t in service.trace.transitions()],
+        }
+        report["configurations"][name] = summary  # type: ignore[index]
+        print(
+            f"  {name:<10} {summary['consumed_fps']:6.1f} fps consumed of "
+            f"{summary['unique_fps_seen']:6.1f} unique  latency p50 {at(0.5):5.1f} "
+            f"p95 {at(0.95):5.1f} p99 {at(0.99):5.1f} max {at(1.0):6.1f} ms  "
+            f"tier {metrics.tier.fps} Hz  "
+            f"cpu {sample.cpu_percent:3.0f}%  rss {sample.rss_current_mb:4.0f} MB  "
+            f"superseded {summary['superseded']}  pool-exhausted {summary['pool_exhausted']}"
+        )
+    for name, summary in report["configurations"].items():  # type: ignore[union-attr]
+        for row in summary["governor_transitions"]:  # type: ignore[index]
+            print(f"    [{name}] governor {row['from_hz']}->{row['to_hz']} Hz: {row['reason']}")
+    print("\nBackend:", port.create_capture_source().name)
+    print(
+        "This is a native measurement of capture and headless perception. E-PERF stays PENDING."
+    )
+    if json_path:
+        Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(json_path).write_text(json.dumps(report, indent=1), encoding="utf-8")
+        print(f"JSON written to {json_path}")
+    return 0
+
+
 def _run_capture_probe(seconds: float = 4.0) -> int:
     """Measure what the real pipeline sustains. Read-only.
 
@@ -314,8 +854,10 @@ def _run_capture_probe(seconds: float = 4.0) -> int:
             f"  {tier.fps:>3d} Hz request: {consumed / seconds:6.1f} unique fps consumed  "
             f"capture p50 {metrics.capture.p50_ms:4.1f} p95 {metrics.capture.p95_ms:4.1f} ms  "
             f"age {0.0 if metrics.frame_age_ms is None else metrics.frame_age_ms:4.1f} ms  "
-            f"dup {metrics.duplicate_frames}  drop {metrics.dropped_frames}  "
-            f"cpu {metrics.cpu_percent:3.0f}%  rss {metrics.rss_mb:3.0f} MB  [{budget} 40 ms]"
+            f"dup {metrics.duplicate_frames.session_total}  "
+            f"superseded {metrics.superseded_frames.session_total}  "
+            f"cpu {metrics.cpu_percent:3.0f}%  rss {metrics.rss_current_mb:3.0f} MB "
+            f"(peak {metrics.rss_peak_mb:3.0f})  [{budget} 40 ms]"
         )
     print("\nBackend:", port.create_capture_source().name)
     print("These are capture-and-consume costs on this machine. E-PERF, which also")
@@ -375,27 +917,103 @@ def _run_calibrate() -> int:
     return 0
 
 
+_MODES = (
+    "--deadman",
+    "--self-test",
+    "--smoke-test",
+    "--replay",
+    "--capture-probe",
+    "--detector-report",
+    "--soak",
+    "--shadow-bench",
+    "--calibrate",
+)
+
+
+def _option(arguments: list[str], flag: str) -> str | None:
+    """The value after ``flag``, or ``None``."""
+    if flag in arguments:
+        index = arguments.index(flag)
+        if index + 1 < len(arguments) and not arguments[index + 1].startswith("--"):
+            return arguments[index + 1]
+    return None
+
+
+def _positional_after(arguments: list[str], flag: str) -> str | None:
+    value = _option(arguments, flag)
+    return None if value is None or value.startswith("-") else value
+
+
+def _lifecycle_probe() -> None:
+    """Print what an offline mode left behind, for the subprocess tests."""
+    import subprocess
+    import threading
+
+    if os.environ.get("TREASURE_LIFECYCLE_PROBE") != "1":
+        return
+    try:
+        children = subprocess.run(
+            ["pgrep", "-P", str(os.getpid())], capture_output=True, text=True, check=False
+        ).stdout.split()
+    except OSError:
+        children = []
+    print(
+        "lifecycle:"
+        f" tkinter={'tkinter' in sys.modules}"
+        f" treasure_gui={'treasure_gui' in sys.modules}"
+        f" threads={threading.active_count()}"
+        f" children={len(children)}"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(argv if argv is not None else sys.argv[1:])
     if "--deadman" in arguments:
         return _run_deadman()
-    if "--self-test" in arguments:
-        return _run_self_test()
-    if "--smoke-test" in arguments:
-        return _run_smoke_test()
-    if "--replay" in arguments:
-        index = arguments.index("--replay")
-        if index + 1 >= len(arguments):
-            print("--replay needs a recorded session directory")
-            return 2
-        return _run_replay(arguments[index + 1])
-    if "--capture-probe" in arguments:
-        return _run_capture_probe()
-    if "--calibrate" in arguments:
-        return _run_calibrate()
-    from treasure_gui import main as gui_main
+    chosen = [flag for flag in _MODES if flag in arguments]
+    if len(chosen) > 1:
+        print(f"Choose one mode, not {', '.join(chosen)}.")
+        return 2
+    if not chosen:
+        from treasure_gui import main as gui_main
 
-    return gui_main()
+        return gui_main()
+
+    mode = chosen[0]
+    try:
+        if mode == "--self-test":
+            return _run_self_test()
+        if mode == "--smoke-test":
+            return _run_smoke_test()
+        if mode == "--replay":
+            session = _positional_after(arguments, "--replay")
+            if session is None:
+                print("--replay needs a recorded session directory")
+                return 2
+            return _run_replay(session)
+        if mode == "--capture-probe":
+            return _run_capture_probe()
+        if mode == "--detector-report":
+            corpus = _option(arguments, "--corpus")
+            json_path = _option(arguments, "--json")
+            if corpus is not None:
+                return _run_corpus_report(corpus, json_path)
+            return _run_detector_report(
+                _positional_after(arguments, "--detector-report") or "green_arrow_v1"
+            )
+        if mode == "--soak":
+            minutes = _positional_after(arguments, "--soak")
+            return _run_soak(float(minutes) if minutes is not None else 10.0)
+        if mode == "--shadow-bench":
+            seconds = _positional_after(arguments, "--shadow-bench")
+            return _run_shadow_bench(
+                float(seconds) if seconds is not None else 20.0, _option(arguments, "--json")
+            )
+        if mode == "--calibrate":
+            return _run_calibrate()
+        return 2
+    finally:
+        _lifecycle_probe()
 
 
 if __name__ == "__main__":

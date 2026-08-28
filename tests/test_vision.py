@@ -108,7 +108,9 @@ def test_every_bundled_profile_is_pending_and_none_is_auto_selectable() -> None:
 
 def test_profiles_load_from_package_data_not_the_working_directory() -> None:
     """A packaged build must find these the same way a source run does."""
-    assert set(PROFILES.ids()) == {"yellow_map_v0", "generic_saturated_v0"}
+    assert {"green_arrow_v1", "yellow_map_v0", "yellow_map_v1", "generic_saturated_v0"} <= set(
+        PROFILES.ids()
+    )
 
 
 # ---------------------------------------------------------------------------

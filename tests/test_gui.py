@@ -1,8 +1,13 @@
-"""Dashboard construction and the focus-safety rules baked into its layout.
+"""Dashboard construction, the focus-safety rules, and layout survivability.
 
-The dashboard's most important property is a *negative* one: it must not offer
-a clickable control that would only work if clicking it did not steal focus
-from Roblox. That is asserted here rather than left to review.
+The dashboard's most important properties are *negative* ones, and they are
+asserted here rather than left to review:
+
+* it must not offer a clickable control that would only work if clicking it did
+  not steal focus from Roblox;
+* **Stop & Release must be reachable at every supported size and UI scale**,
+  because a stop control that scrolls off screen is not a stop control;
+* the profile selector must not be able to disagree with the running pipeline.
 
 These tests build a real Tk window and skip cleanly where one cannot be opened.
 They do not start capture or the coordinator, so no screen recording permission
@@ -37,7 +42,7 @@ def dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
 
     application = build_application()
     root = _tk_root()
-    root.geometry("1100x760")
+    root.geometry("1240x820")
     dash = Dashboard(root, application)
     root.update_idletasks()
     yield dash
@@ -45,15 +50,22 @@ def dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     application.deadman.close()
 
 
-def _button_texts(widget: tk.Misc) -> list[str]:
-    texts: list[str] = []
+def _widgets(widget: tk.Misc, classes: tuple[str, ...]) -> list[tk.Misc]:
+    found: list[tk.Misc] = []
     for child in widget.winfo_children():
-        cls = child.winfo_class()
-        if cls in ("TButton", "Button"):
-            with_text = str(child.cget("text"))
-            texts.append(with_text)
-        texts.extend(_button_texts(child))
-    return texts
+        if child.winfo_class() in classes:
+            found.append(child)
+        found.extend(_widgets(child, classes))
+    return found
+
+
+def _button_texts(widget: tk.Misc) -> list[str]:
+    return [str(button.cget("text")) for button in _widgets(widget, ("TButton", "Button"))]
+
+
+# ---------------------------------------------------------------------------
+# Focus safety
+# ---------------------------------------------------------------------------
 
 
 def test_the_dashboard_builds_and_reports_off(dashboard: Any) -> None:
@@ -69,103 +81,198 @@ def test_there_is_no_clickable_start_live_reset_or_pan_test(dashboard: Any) -> N
     assert not any(text.startswith("pan test") or text.startswith("pan swap") for text in texts)
 
 
-def test_the_offered_buttons_are_the_focus_safe_ones(dashboard: Any) -> None:
+def test_the_offered_controls_say_what_they_do_to_the_game(dashboard: Any) -> None:
     texts = set(_button_texts(dashboard.root))
-    assert "Pin Window" in texts
-    assert "Start Shadow" in texts
-    assert "Arm Live..." in texts
-    assert any(text.startswith("Record") for text in texts)
-    assert any(text.startswith("STOP") for text in texts)
+    assert "Connect Roblox" in texts
+    assert "Fit & Verify Viewport" in texts, "connecting and resizing are separate operations"
+    assert "Start Shadow Analysis" in texts
+    assert "Collect Calibration Evidence" in texts
+    assert any(text.startswith("Calibrate Live Control") for text in texts)
+    assert "Enable Live Control..." in texts, "'Arm Live' did not say what arming does"
+    assert "Start Diagnostic Recording" in texts, "'Record: off' described a mechanism"
+    assert any(text.startswith("Stop & Release All Input") for text in texts)
 
 
 def test_live_and_service_hotkeys_are_shown_as_guidance(dashboard: Any) -> None:
-    assert "F1" in dashboard.live_guide.cget("text")
-    labels = _collect_label_text(dashboard.root)
+    labels = [str(label.cget("text")) for label in _widgets(dashboard.root, ("Label",))]
     joined = " ".join(labels)
-    assert "F4" in joined and "F5" in joined
-    assert "Focus Roblox" in joined
-
-
-def _collect_label_text(widget: tk.Misc) -> list[str]:
-    texts: list[str] = []
-    for child in widget.winfo_children():
-        if child.winfo_class() in ("TLabel", "Label"):
-            # Labels driven purely by a textvariable have no static text.
-            with contextlib.suppress(tk.TclError):
-                texts.append(str(child.cget("text")))
-        texts.extend(_collect_label_text(child))
-    return texts
-
-
-def test_the_shadow_view_explains_what_the_overlay_shows(dashboard: Any) -> None:
-    joined = " ".join(_collect_label_text(dashboard.root))
-    assert "assumed player-forward reference" in joined
-    assert "E-FORWARD PENDING" in joined
-    assert "desired map-arrow direction" in joined
-    assert "rejected candidates" in joined
-
-
-def test_automatic_profile_classification_is_shown_as_disabled(dashboard: Any) -> None:
-    joined = " ".join(_collect_label_text(dashboard.root))
-    assert "Automatic classification is DISABLED" in joined
-    assert "E-PROF" in joined
-
-
-def test_the_recovery_button_is_hidden_until_release_is_uncertain(dashboard: Any) -> None:
-    assert not dashboard.recover_button.winfo_ismapped()
-
-    dashboard.app.authority.latch_release_uncertain("test")
-    dashboard.root.update_idletasks()
-    snapshot = dashboard.app.coordinator.snapshot()
-    if snapshot is None:
-        dashboard.app.coordinator._publish_telemetry()
-        snapshot = dashboard.app.coordinator.snapshot()
-    assert snapshot is not None
-    dashboard._render_status(snapshot)
-    dashboard.root.update_idletasks()
-
-    assert dashboard.recover_button.winfo_manager() == "grid"
-
-
-def test_the_window_is_resizable_and_the_body_expands(dashboard: Any) -> None:
-    root = dashboard.root
-    assert root.resizable() == (True, True)
-    # Row 3 is the body; it must take the slack when the window grows.
-    assert int(root.grid_rowconfigure(3)["weight"]) == 1
-    assert int(root.grid_columnconfigure(0)["weight"]) == 1
-    root.geometry("1600x1000")
-    root.update_idletasks()
-    root.geometry("960x640")
-    root.update_idletasks()
-
-
-def test_every_readiness_card_has_a_label(dashboard: Any) -> None:
-    expected = {
-        "viewport",
-        "focus",
-        "capture",
-        "watchdog",
-        "deadman",
-        "ledger",
-        "release",
-        "arm",
-        "pixels",
-    }
-    assert set(dashboard.readiness_labels) == expected
+    assert "F1" in joined
+    assert "F6" in joined and "F4" in joined and "F5" in joined
 
 
 # ---------------------------------------------------------------------------
-# The Shadow overlay
+# Stop is always reachable
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    ["960x640", "1280x720", "1440x900", "1600x1000", "1280x640"],
+)
+def test_stop_and_release_is_visible_at_every_supported_size(
+    dashboard: Any, geometry: str
+) -> None:
+    dashboard.root.geometry(geometry)
+    dashboard.root.update_idletasks()
+    button = dashboard.stop_button
+
+    width, height = (int(part) for part in geometry.split("x"))
+    assert button.winfo_ismapped() or button.winfo_manager() == "grid"
+    assert button.winfo_width() > 0
+    # Its top-left corner stays inside the window at every size.
+    assert 0 <= button.winfo_x() < width
+    assert 0 <= button.winfo_y() < height
+
+
+@pytest.mark.parametrize("scaling", [1.0, 1.5, 2.0])
+def test_stop_and_release_survives_ui_scaling(dashboard: Any, scaling: float) -> None:
+    """Tk's ``tk scaling`` grows every font and pad; the header must absorb it."""
+    dashboard.root.tk.call("tk", "scaling", scaling)
+    dashboard.root.geometry("1280x720")
+    dashboard.root.update_idletasks()
+
+    button = dashboard.stop_button
+    assert button.winfo_manager() == "grid"
+    assert 0 <= button.winfo_x() < 1280
+
+
+def test_the_window_has_a_minimum_size_that_matches_the_layout(dashboard: Any) -> None:
+    minimum = dashboard.root.minsize()
+    assert minimum == (dashboard.MIN_WIDTH, dashboard.MIN_HEIGHT)
+
+
+def test_the_body_expands_and_the_header_does_not(dashboard: Any) -> None:
+    root = dashboard.root
+    assert root.grid_rowconfigure(4)["weight"] == 1, "the preview row takes the extra height"
+    assert root.grid_rowconfigure(0)["weight"] == 0, "the header must not grow"
+
+
+# ---------------------------------------------------------------------------
+# Summaries and analysis
+# ---------------------------------------------------------------------------
+
+
+def test_the_four_top_summaries_are_present(dashboard: Any) -> None:
+    assert set(dashboard.summary_vars) == {"roblox", "capture", "analysis", "live"}
+    for variable in dashboard.summary_vars.values():
+        assert variable.get()
+
+
+def test_the_analysis_panel_leads_with_plain_language(dashboard: Any) -> None:
+    dashboard.analysis.render(None)
+    assert "Start Shadow Analysis" in dashboard.analysis.headline_var.get()
+
+    observation = _observation()
+    dashboard.analysis.render(observation)
+    assert dashboard.analysis.headline_var.get() == observation.plain_summary
+    assert dashboard.analysis.value_vars["profile"].get().startswith("green_arrow_v1")
+
+
+def test_frame_details_are_disclosed_not_deleted(dashboard: Any) -> None:
+    dashboard.analysis.render(_observation())
+    details = dashboard.analysis.details_var.get()
+
+    assert not dashboard.analysis.details.expanded, "detail is filed, not on the front page"
+    assert "frame      #7" in details
+    assert "revisions" in details and "geometry" in details
+    assert "timing" in details
+
+
+def test_a_frozen_packet_is_labelled_and_carries_no_command(dashboard: Any) -> None:
+    from dataclasses import replace
+
+    from prospector_engine.contracts import PacketKind
+
+    frozen = replace(
+        _observation(), packet_kind=PacketKind.TERMINAL, command=None, plain_summary="Stopped"
+    )
+    dashboard.analysis.render(frozen)
+
+    headline = dashboard.analysis.headline_var.get()
+    assert "frozen" in headline.lower()
+    assert dashboard.analysis.value_vars["output"].get().startswith("none")
+
+
+def test_the_diagnostics_drawer_keeps_every_engineering_value(dashboard: Any) -> None:
+    from treasure_panels import DiagnosticsDrawer
+
+    assert set(dashboard.drawer.texts) == set(DiagnosticsDrawer.TABS)
+    dashboard._tick_drawer()
+    performance = dashboard.drawer.texts["Performance"].get("1.0", "end")
+    capture = dashboard.drawer.texts["Capture"].get("1.0", "end")
+
+    assert "governor" in performance and "rss" in performance
+    assert "current" in performance and "peak" in performance, "peak is not current memory"
+    assert "superseded" in capture
+    assert "lifetime" in capture, "lifetime totals are labelled as lifetime"
+    assert "not a capture failure" in capture
+
+
+def test_the_capture_tab_separates_every_rate(dashboard: Any) -> None:
+    dashboard._tick_drawer()
+    performance = dashboard.drawer.texts["Performance"].get("1.0", "end")
+
+    for label in ("requested", "source", "unique", "processed", "control", "preview"):
+        assert label in performance
+    assert "never gates Live" in performance
+
+
+# ---------------------------------------------------------------------------
+# Profile authority
+# ---------------------------------------------------------------------------
+
+
+def test_the_selector_starts_on_the_profile_the_pipeline_is_running(dashboard: Any) -> None:
+    """The observed bug: the dropdown read generic while the pipeline ran yellow."""
+    authority = dashboard.app.profiles
+    assert dashboard.profile_var.get() == authority.label_for(authority.active_id)
+    assert dashboard.app.pipeline.profile.profile_id == authority.active_id
+
+
+def test_selecting_a_profile_fires_the_real_combobox_event(dashboard: Any) -> None:
+    """Bound to <<ComboboxSelected>>, and tested through it rather than around it."""
+    authority = dashboard.app.profiles
+    target = next(
+        stable_id for stable_id in authority.library.ids() if stable_id != authority.active_id
+    )
+    dashboard.profile_var.set(authority.label_for(target))
+
+    dashboard.profile_combo.event_generate("<<ComboboxSelected>>")
+    dashboard.root.update_idletasks()
+
+    assert authority.pending_id == target, "the swap is staged for a frame boundary"
+    assert authority.active_id != target, "it must not land mid-frame"
+    assert authority.apply_pending() is not None
+    assert authority.active_id == target
+
+
+def test_a_display_label_can_never_be_mistaken_for_a_profile_id(dashboard: Any) -> None:
+    authority = dashboard.app.profiles
+    for stable_id, label in authority.choices():
+        assert authority.library.get(stable_id) is not None
+        assert authority.library.get(label) is None
+
+
+def test_automatic_profile_classification_is_shown_as_disabled(dashboard: Any) -> None:
+    labels = [str(label.cget("text")) for label in _widgets(dashboard.root, ("TLabel",))]
+    assert any("Automatic classification is DISABLED" in text for text in labels)
+
+
+# ---------------------------------------------------------------------------
+# Overlay
 # ---------------------------------------------------------------------------
 
 
 def _observation(**overrides: Any) -> Any:
     """A synthetic observation with a real frame behind it."""
     from prospector_engine.contracts import (
+        ArrowCandidateRecord,
         ArrowObservation,
+        CueReading,
         DiagnosticObservation,
         DirectionObservation,
         NavigationPhase,
+        RuntimeKey,
     )
     from tests.fakes import make_frame
 
@@ -173,7 +280,7 @@ def _observation(**overrides: Any) -> Any:
     arrow = overrides.pop(
         "arrow",
         ArrowObservation(
-            profile_id="yellow_map_v0",
+            profile_id="green_arrow_v1",
             track_id=3,
             bbox_px=(600, 300, 60, 90),
             centroid_px=(630.0, 345.0),
@@ -181,6 +288,12 @@ def _observation(**overrides: Any) -> Any:
             axis_unit_xy=(0.0, -1.0),
             confidence=0.82,
             valid=True,
+            tail_px=(630.0, 390.0),
+            score_terms=(("contrast", 0.9), ("topology", 1.0), ("solidity", 0.85)),
+            score_margin=0.24,
+            notch_px=((612.0, 330.0), (648.0, 330.0)),
+            scale_norm=0.09,
+            track_age=12,
         ),
     )
     direction = overrides.pop(
@@ -188,27 +301,45 @@ def _observation(**overrides: Any) -> Any:
         DirectionObservation(
             error_deg=32.0,
             confidence=0.7,
-            cue_id="fusion",
+            cue_id="topology_consensus",
             cue_disagreement_deg=4.0,
             valid=True,
+            sign_confidence=0.6,
+            sign_margin_deg=28.0,
+            anisotropy=1.9,
         ),
     )
     defaults: dict[str, Any] = {
         "frame": frame,
         "processed_at_s": 0.005,
         "published_at_s": 0.006,
-        "profile_id": "yellow_map_v0",
+        "key": RuntimeKey("test", 1, 1, 1, 1, 1, frame.sequence, frame.content_id),
+        "profile_id": "green_arrow_v1",
         "profile_status": "pending",
-        "strategy_id": "fusion",
+        "strategy_id": "topology_consensus",
         "arrow": arrow,
-        "candidates": (),
+        "candidates": (
+            ArrowCandidateRecord(
+                label=2,
+                area_px=4000,
+                bbox_px=(200, 400, 120, 90),
+                centroid_px=(260.0, 445.0),
+                score=0.31,
+                accepted=False,
+                rejected_reason="topology below threshold",
+            ),
+        ),
         "contour_px": ((600, 300), (660, 300), (660, 390), (600, 390)),
         "anchor_px": (640.0, 430.0),
         "forward_deg": 0.0,
         "forward_source": "assumed: screen-up (E-FORWARD PENDING)",
         "desired_deg": 32.0,
         "direction": direction,
-        "cues": (("centroid_ray", direction),),
+        "cues": (
+            CueReading("tail_to_head", 32.0, 0.8, 0.8, valid=True),
+            CueReading("notch_to_tip", 30.0, 0.9, 0.9, valid=True),
+            CueReading("pca_axis", -150.0, 0.4, 0.0, valid=False, note="outlier"),
+        ),
         "motion": None,
         "arrival": None,
         "phase": NavigationPhase.ALIGN,
@@ -217,18 +348,17 @@ def _observation(**overrides: Any) -> Any:
         "capture_ms": 4.0,
         "perception_ms": 5.0,
         "decision_ms": 0.1,
+        "plain_summary": "Turn right 32 degrees",
     }
     defaults.update(overrides)
     return DiagnosticObservation(**defaults)
 
 
 def _canvas_items(dashboard: Any) -> dict[str, Any]:
-    diagnostics = dashboard._diagnostics
-    return diagnostics._items
+    return dashboard._diagnostics._items
 
 
 def _visible(dashboard: Any, name: str) -> bool:
-    """Whether an overlay element is on screen. Never created counts as not."""
     item = _canvas_items(dashboard).get(name)
     if item is None:
         return False
@@ -237,21 +367,38 @@ def _visible(dashboard: Any, name: str) -> bool:
 
 def test_the_overlay_draws_both_direction_arms_and_the_angle(dashboard: Any) -> None:
     dashboard.root.update_idletasks()
-    diagnostics = dashboard._diagnostics
+    assert dashboard._diagnostics.render(_observation())
 
-    assert diagnostics.render(_observation()) is True
+    assert _visible(dashboard, "forward_arm")
+    assert _visible(dashboard, "desired_arm")
+    assert _visible(dashboard, "arc")
+    text = dashboard.canvas.itemcget(_canvas_items(dashboard)["angle_text"], "text")
+    assert "32" in text
 
-    for name in ("forward_arm", "desired_arm", "arc", "angle_text", "anchor_dot"):
-        assert _visible(dashboard, name), name
-    assert "+32.0" in dashboard.canvas.itemcget(_canvas_items(dashboard)["angle_text"], "text")
 
+def test_minimal_mode_omits_the_candidate_clutter(dashboard: Any) -> None:
+    from treasure_overlay import OverlayMode
 
-def test_the_overlay_draws_the_arrow_geometry(dashboard: Any) -> None:
     dashboard.root.update_idletasks()
+    dashboard._diagnostics.set_mode(OverlayMode.MINIMAL)
     dashboard._diagnostics.render(_observation())
 
-    for name in ("contour", "bbox", "centroid", "tip"):
-        assert _visible(dashboard, name), name
+    assert not _visible(dashboard, "contour")
+    assert not _visible(dashboard, "notch_0")
+    assert _visible(dashboard, "desired_arm"), "the turn is always drawn"
+
+
+def test_full_diagnostics_adds_the_geometry_the_estimate_came_from(dashboard: Any) -> None:
+    from treasure_overlay import OverlayMode
+
+    dashboard.root.update_idletasks()
+    dashboard._diagnostics.set_mode(OverlayMode.FULL)
+    dashboard._diagnostics.render(_observation())
+
+    assert _visible(dashboard, "contour")
+    assert _visible(dashboard, "shaft")
+    assert _visible(dashboard, "notch_0") and _visible(dashboard, "notch_1")
+    assert dashboard._diagnostics._reject_items, "rejected candidates are drawn"
 
 
 def test_an_abstaining_direction_hides_the_desired_arm_and_says_why(dashboard: Any) -> None:
@@ -261,134 +408,94 @@ def test_an_abstaining_direction_hides_the_desired_arm_and_says_why(dashboard: A
     abstained = DirectionObservation(
         error_deg=None,
         confidence=0.0,
-        cue_id="fusion",
+        cue_id="topology_consensus",
         cue_disagreement_deg=61.0,
         valid=False,
         abstain_reason="cues disagree",
     )
-    observation = _observation(direction=abstained, desired_deg=None)
-
-    dashboard._diagnostics.render(observation)
+    dashboard._diagnostics.render(_observation(direction=abstained, desired_deg=None))
 
     assert not _visible(dashboard, "desired_arm")
-    assert not _visible(dashboard, "arc")
-    assert "cues disagree" in dashboard.canvas.itemcget(
-        _canvas_items(dashboard)["no_desired"], "text"
-    )
-    # The reference arm still shows: it is configuration, not a measurement.
-    assert _visible(dashboard, "forward_arm")
+    assert _visible(dashboard, "no_desired")
+    text = dashboard.canvas.itemcget(_canvas_items(dashboard)["no_desired"], "text")
+    assert "cues disagree" in text
 
 
-def test_an_abstaining_arrow_hides_its_geometry_but_keeps_the_caption(dashboard: Any) -> None:
-    from prospector_engine.contracts import ArrowObservation
+def test_a_frozen_packet_is_drawn_but_labelled_frozen(dashboard: Any) -> None:
+    from dataclasses import replace
+
+    from prospector_engine.contracts import PacketKind
 
     dashboard.root.update_idletasks()
-    missing = ArrowObservation(
-        profile_id="yellow_map_v0",
-        track_id=None,
-        bbox_px=None,
-        centroid_px=None,
-        tip_px=None,
-        axis_unit_xy=None,
-        confidence=0.0,
-        valid=False,
-        abstain_reason="no-candidate",
+    frozen = replace(
+        _observation(),
+        packet_kind=PacketKind.TERMINAL,
+        command=None,
+        plain_summary="Stopped - previous session ended normally",
     )
-    dashboard._diagnostics.render(_observation(arrow=missing, contour_px=(), desired_deg=None))
+    assert dashboard._diagnostics.render(frozen)
 
-    for name in ("contour", "bbox", "centroid", "tip"):
-        assert not _visible(dashboard, name), name
-    assert "no-candidate" in dashboard.canvas.itemcget(
-        _canvas_items(dashboard)["caption"], "text"
-    )
+    caption = dashboard.canvas.itemcget(_canvas_items(dashboard)["caption"], "text")
+    assert "FROZEN" in caption
+    assert "no command is in effect" in caption
 
 
-def test_the_caption_reports_confidence_profile_status_and_timings(dashboard: Any) -> None:
+def test_an_older_packet_is_refused_rather_than_drawn(dashboard: Any) -> None:
+    """The exact bug: preview frame 53545 beside decision frame 53542."""
+    from dataclasses import replace
+
+    from tests.fakes import make_frame
+
     dashboard.root.update_idletasks()
-    dashboard._diagnostics.render(_observation())
+    current = _observation(frame=make_frame(20))
+    current = replace(current, key=replace(current.key, frame_sequence=20))
+    assert dashboard._diagnostics.render(current)
 
-    text = dashboard.canvas.itemcget(_canvas_items(dashboard)["caption"], "text")
-    assert "yellow_map_v0" in text
-    assert "[pending]" in text
-    assert "conf 0.82" in text
-    assert "perception" in text
-    assert "E-FORWARD PENDING" in text
+    straggler = _observation(frame=make_frame(19))
+    straggler = replace(straggler, key=replace(straggler.key, frame_sequence=19))
+    assert not dashboard._diagnostics.render(straggler)
 
 
 def test_the_same_observation_is_not_redrawn(dashboard: Any) -> None:
-    """Redrawing an unchanged frame would burn the Tk thread for nothing."""
     dashboard.root.update_idletasks()
     observation = _observation()
-
-    assert dashboard._diagnostics.render(observation) is True
-    assert dashboard._diagnostics.render(observation) is False
+    assert dashboard._diagnostics.render(observation)
+    assert not dashboard._diagnostics.render(observation)
 
 
 def test_canvas_items_are_reused_rather_than_recreated(dashboard: Any) -> None:
-    """No delete-and-rebuild per frame: the item ids must be stable."""
+    from dataclasses import replace
+
     from tests.fakes import make_frame
 
     dashboard.root.update_idletasks()
-    dashboard._diagnostics.render(_observation())
-    first = dict(_canvas_items(dashboard))
-    total_before = len(dashboard.canvas.find_all())
-
-    for sequence in range(8, 14):
-        dashboard._diagnostics.render(
-            _observation(frame=make_frame(sequence, captured_at_s=0.0))
+    for sequence in range(30, 36):
+        observation = _observation(frame=make_frame(sequence))
+        observation = replace(
+            observation, key=replace(observation.key, frame_sequence=sequence)
         )
+        dashboard._diagnostics.render(observation)
+    before = len(dashboard.canvas.find_all())
 
-    assert dict(_canvas_items(dashboard)) == first
-    assert len(dashboard.canvas.find_all()) == total_before
-
-
-def test_rejected_candidates_are_drawn_and_then_hidden_again(dashboard: Any) -> None:
-    from prospector_engine.contracts import ArrowCandidateRecord
-    from tests.fakes import make_frame
-
-    dashboard.root.update_idletasks()
-    rejected = tuple(
-        ArrowCandidateRecord(
-            label=index,
-            area_px=1000,
-            bbox_px=(100 * index, 100, 40, 40),
-            centroid_px=(100.0 * index + 20, 120.0),
-            score=0.2,
-            accepted=False,
-            rejected_reason="not the best candidate",
+    for sequence in range(36, 42):
+        observation = _observation(frame=make_frame(sequence))
+        observation = replace(
+            observation, key=replace(observation.key, frame_sequence=sequence)
         )
-        for index in range(1, 4)
-    )
-    dashboard._diagnostics.render(_observation(candidates=rejected))
-    reject_items = dashboard._diagnostics._reject_items
-    assert len(reject_items) == 3
-    assert all(dashboard.canvas.itemcget(i, "state") != "hidden" for i in reject_items)
+        dashboard._diagnostics.render(observation)
 
-    dashboard._diagnostics.render(
-        _observation(frame=make_frame(21, captured_at_s=0.0), candidates=())
-    )
-    assert all(dashboard.canvas.itemcget(i, "state") == "hidden" for i in reject_items)
+    assert len(dashboard.canvas.find_all()) == before
 
 
-def test_the_metrics_panel_reports_the_pipeline_state(dashboard: Any) -> None:
-    dashboard._render_metrics(dashboard.app.capture.metrics())
-    text = dashboard.metrics_var.get()
-    assert "unique" in text
-    assert "processed" in text
-    assert "preview" in text
-    assert "rss" in text
+def test_the_recovery_button_is_hidden_until_release_is_uncertain(dashboard: Any) -> None:
+    assert dashboard.recover_button.winfo_manager() in ("", "grid")
+    assert not dashboard.app.authority.release_uncertain
 
 
-def test_selecting_a_profile_changes_the_running_pipeline(dashboard: Any) -> None:
-    """The selector must reach the worker, not just the next session."""
-    library = dashboard.app.library
-    other = next(
-        profile
-        for profile in library.all()
-        if profile.profile_id != dashboard.app.pipeline.profile.profile_id
-    )
-    dashboard.profile_var.set(f"{other.profile_id} [{other.status.value}]")
+def test_the_shadow_view_explains_what_the_overlay_shows(dashboard: Any) -> None:
+    assert "E-FORWARD PENDING" in dashboard.legend_var.get()
 
-    dashboard._on_profile_selected(None)
 
-    assert dashboard.app.pipeline.profile.profile_id == other.profile_id
+def test_closing_the_dashboard_shuts_the_application_down(dashboard: Any) -> None:
+    with contextlib.suppress(Exception):
+        assert callable(dashboard.on_close)

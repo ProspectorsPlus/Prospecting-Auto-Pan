@@ -61,7 +61,21 @@ not silently degrade.
 .venv/bin/python treasure.py --smoke-test     # packaging smoke test, no input
 .venv/bin/python treasure.py --capture-probe  # measure the pipeline, read-only
 .venv/bin/python treasure.py --replay DIR     # replay a recording, no input
+.venv/bin/python treasure.py --detector-report  # rendered stress strata, no input
+.venv/bin/python treasure.py --detector-report --corpus tests/corpus/real --json out.json
+                                              # real-frame corpus report, no input
+.venv/bin/python treasure.py --soak 10        # bounded pipeline soak, no input
+.venv/bin/python treasure.py --shadow-bench 15 --json bench.json
+                                              # native capture + headless perception
 ```
+
+`--detector-report` (rendered) and `--soak` use the fixtures in `tests/`, and
+`--detector-report --corpus` reads the committed real-frame corpus, so all
+three need a source checkout. None touches a window or emits input.
+`--shadow-bench` captures the real Roblox window through the production
+source and runs perception on it; it moves nothing and sends nothing, and
+needs Screen Recording. Every offline mode is mutually exclusive and bounded
+(`tests/test_cli_lifecycle.py`).
 
 Everything above is safe to run unattended. `native` tests are excluded by the
 default `addopts` in `pyproject.toml`, so a plain `pytest` cannot emit OS
@@ -93,6 +107,19 @@ no input, but they do need Screen Recording permission.
    engineering ideas may be reimplemented independently; verbatim reuse is
    not permitted. Adapted first-party mechanics get provenance in
    `DECISIONS.md` and the commit message.
+7. **Never populate a calibration that was not measured.** `YawCalibration`,
+   `ShiftLockProof`, and `LocomotionBaseline` reach `VALIDATED` only through
+   their physically armed procedures on real hardware. Filling them in to make
+   a code path reachable converts a safety gate into a comment. Tests may
+   construct one; they say so in a docstring and live in `tests/`.
+8. **Rendered frames are training stress, never held-out validation.** Plan
+   §7.2 is explicit. `tests/arrow_fixtures.py` exists to stress the detector
+   deterministically, and no gate may be passed on its output.
+9. **Tune on `tune`, read `eval` once.** In `tests/corpus/real/labels.json`
+   the sequences marked `tune` are the only ones a detector change may be
+   chosen on; `eval` sequences are read to report, never to pick. A new
+   real recording extends the corpus as new sequences with provenance; the
+   private recording itself is never committed.
 
 ## 5. Architecture boundaries
 
@@ -117,9 +144,24 @@ no input, but they do need Screen Recording permission.
   `ViewportState`. Detector readiness, coordinator readiness, the GUI, and Live
   gating all read it, so "viewport ok" cannot coexist with "unsupported
   viewport size".
-- **One observation per frame.** `DiagnosticObservation` holds its own frame.
-  Anything drawing, deciding, or reporting reads that, so the picture and the
-  reasoning cannot drift apart.
+- **One observation per frame, keyed.** `DiagnosticObservation` holds its own
+  frame and a `RuntimeKey` of run, coordinator generation, mode session, source
+  epoch, geometry revision, profile revision, frame sequence and content id.
+  Every consumer calls `key.supersedes(...)` before drawing or acting; ordering
+  is by monotonic world ordinal, so a straggler from a cancelled worker is
+  recognised as old rather than merely different.
+- **Connecting is not resizing.** `ViewportGuard.connect()` binds to the client
+  and touches nothing. `fit_and_lock()` is the separate, optional, bounded
+  state machine. Capture must never depend on a resize succeeding.
+- **One profile authority.** `ProfileAuthority` owns the active arrow profile.
+  Selection is by stable id; display labels are derived from ids and never
+  parsed back. A swap is staged and applied at a frame boundary.
+- **Colour proposes, geometry disposes.** `prospector_engine/arrow.py` may use
+  colour to generate candidates and never to accept one. On the green map the
+  arrow and the grass share a chromaticity to three decimals (D-024).
+- **`W` is an evidence-bound lease.** Renewal requires a strictly newer
+  accepted frame. `CommandKind.ALIGN` cannot command forward motion — the
+  contract raises. A navigation command is APPLIED only if every edge landed.
 - **Release is unconditional.** `release_all()` is idempotent, never
   focus-gated, and always attempts the full input vocabulary even after an
   individual edge fails.

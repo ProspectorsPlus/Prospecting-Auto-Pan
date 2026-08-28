@@ -489,3 +489,403 @@ thing that drifts apart silently.
 reason recorded in D-016: each is one ownership boundary the plan assigns
 explicitly, and a module split through the middle of a coordinate contract or a
 capture lifecycle would look like an interface while being an atomic protocol.
+
+---
+
+## D-023 — 2026-08-28 — Connecting and resizing are separate operations
+
+**The tension.** One button did both: *Pin Window* found the Roblox client and
+resized it. When the resize was clamped — which it usually was, because Roblox
+enforces a minimum window size — the result was a confusing half-state, and
+capture appeared to depend on a resize succeeding.
+
+**Decision.** Two operations with two names.
+
+`ViewportGuard.connect()` binds to the client exactly as it is. It moves
+nothing, resizes nothing, and sends nothing. It is the recommended path, and it
+is what Start Shadow does implicitly.
+
+`ViewportGuard.fit_and_lock()` is the optional one, and it is a bounded state
+machine rather than a call:
+
+```text
+requested -> settling -> canonical_verified | achieved_clamped | failed
+```
+
+Three consecutive read-backs must agree before an achieved size is believed, a
+monotonic deadline bounds the whole attempt, and `fit_max_attempts` caps the
+requests. A refusal (permission denied, fullscreen, no window) is `failed`; a
+size the OS or the game clamped is `achieved_clamped`, and it is **adopted**,
+because a clamp is an answer.
+
+**Why the readback count.** A window answers a resize late. Reading once
+returns the old size, and reading twice can catch it mid-animation. Three
+agreeing reads is the smallest number that distinguishes "settled" from
+"passing through".
+
+**Why a revision counter.** `geometry_revision` advances on window
+replacement, display migration, backing-scale change, resize and loss.
+Everything derived from a frame — observations, tracker state, ROI state,
+actionable commands — is keyed by it, so a resize cannot leave a stale
+coordinate alive. During Live a geometry change releases `W` first and blocks
+new input until the new basis is verified.
+
+---
+
+## D-024 — 2026-08-28 — Colour proposes, geometry disposes
+
+**The observed failure.** In daylight a large patch of grass matching the
+arrow's colour was promoted over the real arrow, which was rejected. Candidates
+were ranked by **area**, and confidence was mostly an area-fit score, so a big
+blob of the right colour scored highly on being the right size.
+
+**What the measurements said.** Seven owner-supplied crops of the live arrow —
+flat-on over dirt, grass, water and pale terrain, plus a strongly foreshortened
+one, a right-pointing one, and one filling a quarter of the frame while
+partly transparent — were segmented and measured:
+
+| Property | Measured range |
+|---|---|
+| green chromaticity, arrow vs. its own background on grass | **0.518 vs 0.520** |
+| interior luminance / ring luminance | 1.21 (pale terrain) – 2.65 (dirt) |
+| solidity | 0.851 – 0.961 |
+| extent (area / bbox) | 0.467 – 0.686 |
+| circularity | 0.510 – 0.633 |
+| `approxPolyDP` vertices at 2 % of perimeter | 5 – 8 |
+| fitted-ellipse elongation | 1.27 – 2.93 |
+| two deepest convexity defects / bbox diagonal | 0.043 – 0.155, **matched within 1.1–1.7×** |
+| third-deepest defect | 0.003 – 0.018 — an order of magnitude smaller |
+
+Three decisions follow directly from those numbers.
+
+**1. No colour rule can work, so colour only proposes.** On grass the arrow and
+the background share a chromaticity to three decimal places. A mask tight
+enough to exclude the grass excludes the arrow. So the proposal stage is
+deliberately loose and is *allowed* to include terrain; the score decides. Two
+proposal sources are used, because neither covers the other's blind spot:
+chroma-and-locally-brighter isolates the arrow when the terrain shares its
+colour, and chroma alone survives the case where the arrow fills the view and
+becomes its own local background.
+
+**2. The two-notch signature is the discriminator, and it is necessary.** Every
+crop has exactly two deep convexity defects of comparable depth with a large
+gap to the third — the junction where the arrowhead meets the shaft. It is
+invariant to rotation and scale and terrain does not produce it. It is not
+merely weighted heavily: a candidate with no notches is scaled below the
+acceptance threshold whatever else it scores, because an arrow-coloured ellipse
+satisfied contrast, solidity, extent and scale simultaneously and won.
+
+**3. PCA is not a direction cue for this shape.** Flat-on elongation is
+1.27–1.53. An axis that weakly conditioned flips sign readily, which is the
+180-degree flip seen in the field. PCA is kept as an *unsigned* axis, is
+refused below an anisotropy floor, and is signed by the topology cues rather
+than the other way round.
+
+**Direction comes from topology instead.** The notch midpoint is the base of
+the head; the hull vertex farthest from it is the tip; the vector between them
+is signed by construction. Polarity is decided by **taper** — the head narrows
+to a point while the shaft holds its width — because reach is nearly symmetric
+(0.75 against 0.60 in model units) and under perspective the tail can reach
+*further* than the head. Measured taper is 0.46–0.69 for heads against
+0.25–0.38 for shafts.
+
+**Two bugs this design flushed out during development.** A trapezoidal
+membership band with an exclusive upper bound scored a *perfectly* matched
+notch pair as zero, which is the ideal case. And selecting the two deepest
+defects picks the wrong pair under foreshortening, where one notch shrinks
+below an unrelated nick; the pair is now chosen by which segment passes closest
+to the centroid, because the real pair is the shape's own waist.
+
+**Clipping costs confidence rather than rejecting.** When the player stands
+under the arrow it fills a quarter of the view and touches every edge. The
+previous detector rejected that outright.
+
+**What is not claimed.** The bands above are fitted to seven views from one
+session on one machine. They are a *prior*. E-PROF and E-DIR-E2E need real
+multi-session labelled data with a held-out split evaluated once, and both are
+PENDING.
+
+---
+
+## D-025 — 2026-08-28 — Shift Lock is verified, and W is a lease
+
+**Decision.** `prospector_engine/steering.py` owns the control law, the yaw
+calibration and the control-mode proof. Three rules are structural rather than
+conventional.
+
+**Shift Lock is a state, not a key.** Nothing in the codebase presses Shift. A
+`ShiftLockProof` is bound to the run id, the arm token, the generation, the
+window identity and the calibration fingerprint, and it expires after 20
+seconds, because the player can toggle Shift Lock at any moment. Any of those
+changing invalidates it. Without a valid proof, Live is unavailable — not
+guessed at.
+
+**`W` is a lease, not a state.** Renewal requires a *strictly newer* accepted
+frame, so one frame authorizes exactly one decision. A frozen pipeline cannot
+keep the character walking: the lease expires on its own. `CommandKind.ALIGN`
+is structurally unable to command forward motion — `NavigationCommand.__post_init__`
+raises rather than trusting the caller to remember.
+
+**Alignment is stationary.** `W` is never acquired outside the validated
+alignment threshold, and only after several consecutive frames inside it, so a
+wrong heading costs a rotation rather than a journey.
+
+**Two control-law bugs found by the closed-loop tests.**
+
+The jerk limiter was dimensionally wrong — it bounded the *rate* change by a
+jerk-times-dt² quantity — so the yaw rate could not decelerate and the loop
+sailed past zero: 11.4 degrees of overshoot on a 5-degree correction. The rate
+ceiling is now the largest rate the acceleration bound can still stop within
+the remaining error, `sqrt(2 · a_max · |error|)`.
+
+Below the actuator's minimum effective movement the loop dithered forever — 11
+zero crossings on a 5-degree correction — because asking for a rotation smaller
+than the mouse can produce yields the mouse's minimum instead. The deadband is
+now floored on the *measured* actuator resolution rather than configured
+independently of it, which is what plan §9.1 requires and what makes the
+requirement concrete.
+
+**A command is applied only if every edge succeeded.** If a forward lease
+cannot be taken, the yaw that would have accompanied it is not emitted, what
+did land is released, and the result says `REJECTED`. Turning while believing
+the character is walking is a worse state than doing nothing.
+
+---
+
+## D-026 — 2026-08-28 — Two views of one runtime, derived from one packet
+
+**The observed failure.** The preview showed frame 53545 while the decision
+panel showed 53542, and the profile selector read `generic_saturated_v0` while
+the pipeline ran `yellow_map_v0`. Both are the same bug: two views of one
+runtime rendered from different sources and allowed to disagree.
+
+**Decision.** Every dashboard packet carries a `RuntimeKey` of run id,
+coordinator generation, mode session, source epoch, geometry revision, profile
+revision, frame sequence and content id. A consumer draws a packet only if it
+`supersedes` what it already has.
+
+**Ordering is by monotonic world ordinal, not by difference.** Every component
+of the key is a non-decreasing counter within one run, so a newer world has
+every component greater than or equal to an older one's and at least one
+strictly greater. That is what lets a straggling frame from a cancelled worker
+be recognised as *old* rather than merely different — the first version of this
+treated any key difference as newer, which would have let a straggler overwrite
+the session that replaced it.
+
+**Stop publishes a terminal packet immediately.** The picture may persist; it
+is labelled frozen with its age, and its command is `None`. A frozen image may
+never look actionable.
+
+**`ProfileAuthority` owns the one active profile.** Stable ids in, display
+labels derived out — no caller recovers an id by splitting a string. A request
+is staged and applied at a frame boundary, bumping `profile_revision` once and
+rebuilding tracker, ROI and arrival state. Changing profile spends the arm
+token; changing it during Live releases input and safe-stops.
+
+---
+
+## D-027 — 2026-08-28 — The progress guard may say "stop", never "go around"
+
+**Decision.** `ProgressGuard` produces conservative evidence about whether
+commanded forward motion is producing observed progress, and nothing else.
+
+* Elapsed time never declares an obstacle. Holding `W` for two seconds is not
+  evidence of a wall; measured low displacement with high motion confidence and
+  low yaw contamination is.
+* Ambiguous motion — low texture, poor spatial coverage, yaw contamination, a
+  post-yaw hold-off — returns `UNKNOWN`, which is never a reason to act.
+* A suspicion **releases forward before confirming**, so the confirming
+  evidence is not measuring the motion it is judging.
+* It reasons about forward the input authority *accepted*, not what the
+  navigator asked for. A run of rejected commands must not look like a wall.
+
+`ProgressVerdict` has a `release_forward` field and no field in which a
+maneuver could be expressed; a test asserts that. There is no recovery ladder
+in the control path, no detour, and no A/D/S/jump anywhere in this pass.
+
+**The boundary with the later terrain work.** `TraversabilityObservation`
+records, per frame, what was commanded, what motion was observed, and how much
+either can be trusted. It is written now and read by nothing, so the 2.5D
+traversability grid — a later phase — has real data to build on rather than a
+retrofit. Building the grid on top of the observations this pass replaced would
+have meant building it on the wrong ones.
+
+---
+
+## D-028 — 2026-08-28 — Cadence is judged on processed frames
+
+**The observed failure.** One session reported `tier 15 Hz` with `unique 19/s`
+and stayed there; another reported 73 processed fps at 209 % CPU. The governor
+judged a tier on *captured* frames, so a pipeline delivering 120 and processing
+57 kept a 120 Hz label, and a single transient could strand it at the bottom of
+the ladder.
+
+**Decision.** An explicit state machine — `WARMUP → STABLE → PROBE → COOLDOWN`,
+with `DEGRADED` for below the 30 Hz Live floor — judged on **processed**
+throughput, with frame age, p95 age, observation loss, stale frames and pool
+exhaustion each able to downshift on their own.
+
+A probe is judged against the bar for *keeping* a tier (90 %), not the lower
+bar for surviving in one (70 %); otherwise a climb "succeeds" at 73 % of the
+tier it just claimed, which is how a 90 Hz source ends up labelled 120 Hz. A
+failed probe is remembered for a bounded period, so a 60-capped source probes
+once instead of oscillating, and the ceiling expires so a machine that recovers
+gets its cadence back.
+
+**Metrics separate six rates** — requested, source, unique, processed, control,
+preview — because conflating them is what made two contradictory numbers both
+true. Counters are per-session with lifetime carried separately; "dropped
+latest frames" is reported as **superseded**, because the design intends it and
+calling it a drop alongside genuine failures made a healthy pipeline read as
+catastrophic. Current RSS is measured separately from peak: `ru_maxrss` is a
+peak and was being displayed as "memory now".
+
+---
+
+## D-029 — 2026-08-28 — The detector is judged on a real-frame corpus, split by sequence
+
+**Plan text:** §7.2 forbids rendered frames in a held-out split; §7.4 (E-PROF)
+requires labelled real sessions.
+
+**Decision:** `tests/corpus/real` holds 170 frames extracted from the owner's
+70-second screen recording of the previous dashboard build plus eight frames
+captured read-only from the live client, labelled by a reviewer, split by
+**contiguous sequence** into `tune` (what the detector was chosen on) and
+`eval` (only ever read). `prospector_engine/corpus.py` is the contract: labels
+in canonical 1280x720 pixels, positive absence labels, `unknown` frames
+excluded from every rate and counted, overlay contact marked, and an
+evaluator that scores the **bounding box** as well as the heading so a
+confident lock on the wrong object is a measured number
+(`false_locks`), not something a heading-only evaluator averages away.
+`tests/test_corpus.py` holds the eval-split results as a regression floor.
+
+**Why:** the rendered stress report said eleven of thirteen strata were
+near-perfect while the field build read 52% recall, eight false locks and a
+coin-flip direction sign on the game. The two disagreed because the rendered
+arrow has a clean outline and real outlines are nicked by UI strokes.
+
+**What the corpus is not:** production evidence. One session, one map, one
+machine, one lighting pass per stratum, no separately held-out session, the
+previous build's overlay drawn on most arrows (a favourable bias on
+same-colour sand and an unfavourable one on outline quality), preview
+downscaled then upscaled, WebP compressed. Every rate in `STATUS.md` carries
+its count. E-PROF and E-DIR-E2E stay PENDING.
+
+**Deviation:** none.
+
+---
+
+## D-030 — 2026-08-28 — One temporal transaction per frame; structure is evidence, not a veto
+
+**Plan text:** §8 (tracking) and §7.3 (abstention).
+
+**Decision:** `ArrowDetector` is three stages with a hard boundary:
+stateless `propose()` in full-frame coordinates, `fuse()`, and `commit()`,
+which advances temporal state exactly once per unique frame and returns the
+previous outcome marked `duplicate` for a repeated one. A region miss no
+longer runs a synchronous full pass on the same screenshot; it schedules the
+global search for the next frame. The tracker is an explicit
+ACQUIRE / TRACK / AMBIGUOUS / REACQUIRE / LOST machine with **time-based**
+bounds and frame floors, so the contract is the same at 60 fps live and at a
+corpus replayed at 2.5 fps. Exactly one candidate is `selected` per
+observation and direction, contour, tip and tail derive from it. Association
+runs over every fused hypothesis before presentation truncation. Polarity is
+a weighted vote led by the **barb asymmetry** beyond the notch line - the one
+property that survives perspective and a hidden shaft end - with reversals
+against a held identity refused below a margin.
+
+The two-notch signature, the barbs and the prominent tip are **weighted
+evidence**. Each was tried as a precondition and each cut eval recall by a
+third or more without removing a single false lock, because real outlines
+are nicked and the notch pair is misread on exactly the frames where recall
+matters. Local contrast remains the one soft veto: every measured view of the
+arrow is brighter than what is behind it, and a flat sand patch under a UI
+label scored 0.76 without it.
+
+**Measured (eval split, 4756ab7 -> this pass):** recall 52% -> 80%, false
+locks 8 -> 0, identity switches 0 -> 0, direction sign 52% -> 91%, median
+error 87 deg -> 10 deg, perception p50/p95 11/51 ms -> 5/8 ms. The occluded
+stratum and the live event scene remain the weak strata and are recorded at
+their measured values.
+
+**Deviation:** the plan's "topology is necessary" wording from D-024 is
+withdrawn on this evidence.
+
+---
+
+## D-031 — 2026-08-28 — Readiness is judged on a recent window; history is kept beside it
+
+**Plan text:** §7.4 E-PERF; D-028.
+
+**Decision:** every latency tracker keeps a 240-sample history for
+diagnostics and answers readiness questions - the governor's verdict and
+Live eligibility - from the last two seconds of the current epoch. Epochs
+reset together across every rate and latency window on cadence, source,
+geometry and profile changes. Polls during settling, and while
+ScreenCaptureKit has not acknowledged a reconfiguration, are tagged and
+skipped. A processed rate of zero is a real zero once a consumer is attached.
+DEGRADED probes upward after the cooldown. A downshift needs a full second of
+shortfall. A bounded per-frame trace (`prospector_engine/trace.py`) records
+where every millisecond went and is exported as JSONL on Stop.
+
+**Why:** one 274 ms sample from a resize sat in the ring and blocked Live for
+as long as the ring took to roll over; a two-poll downshift cascaded Auto to
+15 Hz on a startup transient; DEGRADED had no path to a probe; a stalled
+worker read as a healthy 60 Hz pipeline because zero fell back to capture.
+
+**Amendment, same day — a tier is judged against the tier below.** With the
+real dashboard running, the worker processed 52 frames a second at 60 Hz
+with 13 % superseded; the governor called that "observation loss 10 %",
+downshifted to 30 Hz, and the probe back needed 54. A latest-only slot
+supersedes by design, so a shortfall and its loss are problems only when the
+tier no longer processes more frames than the tier below could deliver
+(`useful_fps > below.fps`), and a probe holds if it processes 10 % more than
+the tier it left. D-028's "57 processed at 120 is a 60 Hz pipeline" still
+holds: 57 is not more than 90, so it steps down twice and stops at 60. Live
+eligibility keeps the latency budget and asks for a processed ratio of 0.80
+and superseding under 25 % (provisional, E-PERF PENDING) instead of 0.90 and
+2 %, because a pipeline processing four frames in five at 60 Hz is fresher
+than one keeping every frame at 30 Hz. The preview ticks at 30 fps instead
+of 60: at 60 its paste competed with the worker for the interpreter.
+
+**Deviation:** none.
+
+---
+
+## D-032 — 2026-08-28 — A clamp is an answer; fit completions are typed
+
+**Plan text:** §4.1, D-023.
+
+**Decision:** on macOS the AX window is correlated with the CG window that
+was selected for capture (frame, then title, then largest); only the size is
+set, so the window keeps its origin and a denied move cannot fail a resize;
+`PinResult.ok=False` is reserved for permission, no-window, fullscreen,
+unsettable and API refusals, and a clamp is `ok=True, clamped=True` with the
+achieved geometry for the guard to classify after three stable read-backs.
+The fit thread submits a typed `FitCompletion`; the coordinator loop applies
+it, ignores stale generations, and invalidates geometry only when the
+revision moved.
+
+**Measured:** `canonical_verified` in 0.35 s on the live client (1280x720 pt
+/ 2560x1440 px, origin preserved) on one display at 2x. E-VIEW is now
+**partial**: the fit half has one measured pass here; other DPIs, displays,
+and Windows remain PENDING.
+
+**Deviation:** none.
+
+---
+
+## D-033 — 2026-08-28 — Blockers are keyed and scoped; commissioning is a guided list
+
+**Plan text:** §15 gates; mission section 10 (plain language).
+
+**Decision:** `LiveBlocker(code, scope, status, summary, detail, remedy,
+evidence)` with scopes *shadow readiness*, *current condition*, *native
+commissioning evidence*, *live control eligibility*, recomputed on every read
+and deduplicated by code. E-YAW is one gate row: no default controller is
+instantiated to ask why it cannot steer. "Roblox is not frontmost" is an
+*expected* condition with an instruction. Eleven commissioning steps are
+rendered from live state and gate statuses; none passes from a fake. Controls
+are named for what they do.
+
+**Deviation:** none.

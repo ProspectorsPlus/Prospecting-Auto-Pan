@@ -16,46 +16,116 @@ worker refuses to steer and safe-stops with an explanation instead of guessing.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from prospector_engine.arrow import (
+    ArrowDetector,
+    DetectorConfig,
+    DirectionEstimator,
+    ProposalSet,
+    ProposalStats,
+    TrackState,
+    present,
+)
 from prospector_engine.contracts import (
     ArrivalObservation,
     ArrowCandidateRecord,
     ArrowObservation,
+    BlockerScope,
     CapturedFrame,
+    CommandKind,
+    ControlState,
+    CueReading,
     DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
+    LiveBlocker,
     ModeResult,
     ModeResultKind,
     MotionObservation,
     NavigationCommand,
     NavigationPhase,
     Provenance,
+    RuntimeKey,
     monotonic_s,
 )
 from prospector_engine.coordinator import WorkerContext
 from prospector_engine.motion import ContactMonitor
+from prospector_engine.steering import ShiftLockController, SteeringInputs
+from prospector_engine.trace import FrameTrace, PerceptionTiming
 from prospector_engine.vision import (
-    DIRECTION_STRATEGIES,
     ArrivalDetector,
     ArrowProfile,
     ArrowSegmenter,
     ArrowTracker,
+    ProfileAuthority,
     wrap_deg,
 )
 
 __all__ = [
+    "COMMISSIONING_STEPS",
+    "CommissioningStep",
     "NavigationGates",
     "Navigator",
     "RecoveryLadder",
     "RecoveryLevel",
     "SteeringConfig",
     "SteeringController",
+    "commissioning_blockers",
+    "commissioning_steps",
+    "describe_decision",
     "make_live_worker",
     "make_shadow_worker",
 ]
+
+
+#: Rejection reasons rendered as something a person can act on. Anything not
+#: listed falls back to the raw reason, which is still readable - the point is
+#: that the common cases read as English, not that the vocabulary is closed.
+_PLAIN_REJECTIONS: dict[str, str] = {
+    "no-candidate": "No arrow visible",
+    "ambiguous-candidates": "Direction uncertain - two candidates score alike",
+    "candidate-clipped": "Arrow is cut off at the edge of the view",
+    "viewport-invalid": "Roblox window is not usable right now",
+    "unsupported-viewport-size": "This viewport size is not supported by the profile",
+    "shape": "Candidate rejected - terrain-like shape",
+    "contrast": "Candidate rejected - no contrast against its surroundings",
+    "topology": "Candidate rejected - no arrowhead notches",
+    "scale": "Candidate rejected - wrong size for an arrow",
+    "margin": "Direction uncertain - candidates score too closely",
+    "cues disagree": "Direction uncertain - detectors disagree",
+    "polarity": "Direction uncertain - cannot tell which end is the tip",
+}
+
+
+def _plain_reason(reason: str | None) -> str:
+    if not reason:
+        return "No reading"
+    head = reason.split(":", 1)[0]
+    return _PLAIN_REJECTIONS.get(reason) or _PLAIN_REJECTIONS.get(head) or reason
+
+
+def describe_decision(inputs: NavigationInputs, decision: NavigationDecision) -> str:
+    """One sentence a person can act on, composed where the reasoning lives.
+
+    It is built here rather than in the dashboard so the UI cannot paraphrase a
+    decision into a different claim than the one the controller made
+    (mission section 10).
+    """
+    if not inputs.arrow.valid:
+        return _plain_reason(inputs.arrow.abstain_reason)
+    direction = inputs.direction
+    if not direction.valid or direction.error_deg is None:
+        return _plain_reason(direction.abstain_reason)
+    error = wrap_deg(direction.error_deg)
+    command = decision.command
+    if command is not None and command.forward_axis == 1 and command.yaw_delta_px == 0:
+        return "Aligned - move forward"
+    if abs(error) < 1.0:
+        return "Aligned - move forward"
+    side = "right" if error > 0 else "left"
+    return f"Turn {side} {abs(error):.0f} degrees"
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +156,10 @@ class NavigationGates:
     e_steer_e2e: EvidenceStatus = EvidenceStatus.PENDING
     e_recovery: EvidenceStatus = EvidenceStatus.PENDING
     e_next_map: EvidenceStatus = EvidenceStatus.PENDING
+    #: Whether the Shift-Lock control mode can be *verified* on this OS and
+    #: profile. Separate from the per-run proof: this gate says the method
+    #: works at all, the proof says the player is in it right now.
+    e_shiftlock: EvidenceStatus = EvidenceStatus.PENDING
 
     def _passed(self, *statuses: EvidenceStatus) -> bool:
         return all(status is EvidenceStatus.VALIDATED for status in statuses)
@@ -99,6 +173,7 @@ class NavigationGates:
             self.e_prof,
             self.e_dir_e2e,
             self.e_yaw,
+            self.e_shiftlock,
             self.e_steer_cal,
             self.e_steer_e2e,
         )
@@ -125,12 +200,256 @@ class NavigationGates:
                 ("E-PROF", self.e_prof),
                 ("E-DIR-E2E", self.e_dir_e2e),
                 ("E-YAW", self.e_yaw),
+                ("E-SHIFTLOCK", self.e_shiftlock),
                 ("E-STEER-CAL", self.e_steer_cal),
                 ("E-STEER-E2E", self.e_steer_e2e),
             )
             if status is not EvidenceStatus.VALIDATED
         ]
         return tuple(pending)
+
+    def explain(self) -> tuple[str, ...]:
+        """The pending gates, in language a person can act on."""
+        wording = {
+            "E-VIEW": "the viewport has not been pinned and read back on this OS",
+            "E-ANCHOR": "the avatar's control anchor has not been labelled",
+            "E-FORWARD": "which way the character faces has not been proven",
+            "E-PROF": "the arrow detector has no labelled corpus for this profile",
+            "E-DIR-E2E": "direction accuracy has not been measured end to end",
+            "E-YAW": "mouse movement has not been calibrated to camera rotation",
+            "E-SHIFTLOCK": "Shift Lock cannot yet be verified on this OS",
+            "E-STEER-CAL": "the alignment deadband has not been frozen",
+            "E-STEER-E2E": "no guarded route has been driven with the frozen controller",
+        }
+        return tuple(
+            f"{name}: {wording.get(name, 'not commissioned')}"
+            for name in self.blocking_reasons()
+        )
+
+
+@dataclass(frozen=True)
+class CommissioningStep:
+    """One step of the guided path from a fresh install to Live control.
+
+    ``gates`` names the evidence gates the step satisfies. A step with no
+    gates is a runtime check (connect, fit) judged from live state. No step
+    is ever passed by a rendered fixture or a fake: ``commissioning_steps``
+    reads gate statuses that only physical procedures may set.
+    """
+
+    number: int
+    title: str
+    control: str
+    what: str
+    gates: tuple[str, ...]
+
+
+COMMISSIONING_STEPS: tuple[CommissioningStep, ...] = (
+    CommissioningStep(
+        1,
+        "Connect to the intended Roblox window",
+        "Connect Roblox",
+        "Bind capture to the game window without touching it.",
+        (),
+    ),
+    CommissioningStep(
+        2,
+        "Fit or verify the viewport",
+        "Fit & Verify Viewport",
+        "Resize to the canonical 1280x720 client, or record the achieved size. "
+        "Either way Shadow can run; calibrated pixel constants need canonical.",
+        ("E-VIEW",),
+    ),
+    CommissioningStep(
+        3,
+        "Label or verify the player anchor",
+        "Collect Calibration Evidence",
+        "Reviewer-labelled avatar control pivot across sessions.",
+        ("E-ANCHOR",),
+    ),
+    CommissioningStep(
+        4,
+        "Verify the forward reference after a camera reset",
+        "Collect Calibration Evidence",
+        "Physically armed bounded W pulses with blinded reviewer labelling.",
+        ("E-FORWARD",),
+    ),
+    CommissioningStep(
+        5,
+        "Select the arrow profile and collect a corpus",
+        "Collect Calibration Evidence",
+        "Record real frames of this map with Shadow running; label; evaluate on a "
+        "held-out session.",
+        ("E-PROF",),
+    ),
+    CommissioningStep(
+        6,
+        "Measure direction end to end",
+        "Collect Calibration Evidence",
+        "Held-out direction accuracy against the frozen detector.",
+        ("E-DIR-E2E",),
+    ),
+    CommissioningStep(
+        7,
+        "Verify Shift Lock",
+        "Calibrate Live Control",
+        "One armed stationary micro-yaw with Shift Lock on and off; the difference is "
+        "the verification.",
+        ("E-SHIFTLOCK",),
+    ),
+    CommissioningStep(
+        8,
+        "Calibrate yaw",
+        "Calibrate Live Control",
+        "Sign, degrees per mouse unit and the minimum effective delta from armed "
+        "pulses confirmed by perception.",
+        ("E-YAW",),
+    ),
+    CommissioningStep(
+        9,
+        "Freeze the alignment deadband",
+        "Calibrate Live Control",
+        "Manual-target trials to fix the largest threshold that still gives acceptable "
+        "route outcomes.",
+        ("E-STEER-CAL",),
+    ),
+    CommissioningStep(
+        10,
+        "Run a guarded owner-observed route",
+        "Calibrate Live Control",
+        "Open-ground routes with the frozen controller, a human watching, Stop in reach.",
+        ("E-STEER-E2E",),
+    ),
+    CommissioningStep(
+        11,
+        "Review the evidence and enable Live",
+        "Enable Live Control",
+        "Every gate validated for this OS and profile, then the physical arm.",
+        (),
+    ),
+)
+
+_GATE_WORDING: dict[str, tuple[str, str]] = {
+    "E-VIEW": (
+        "the viewport has not been pinned and read back on this OS",
+        "Press Fit & Verify Viewport with Roblox windowed; a clamp is a valid answer.",
+    ),
+    "E-ANCHOR": (
+        "the avatar's control anchor has not been labelled",
+        "Record Shadow frames and label the control pivot across sessions.",
+    ),
+    "E-FORWARD": (
+        "which way the character faces has not been proven",
+        "Armed bounded W pulses with blinded labelling (owner present).",
+    ),
+    "E-PROF": (
+        "the arrow detector has no held-out corpus for this profile",
+        "Record this map with Shadow running, label, evaluate a held-out session.",
+    ),
+    "E-DIR-E2E": (
+        "direction accuracy has not been measured end to end",
+        "Evaluate the frozen detector on a fresh held-out recording.",
+    ),
+    "E-YAW": (
+        "mouse movement has not been calibrated to camera rotation",
+        "Armed yaw pulses, ten repeats per magnitude, confirmed by perception.",
+    ),
+    "E-SHIFTLOCK": (
+        "Shift Lock cannot yet be verified on this OS",
+        "Armed stationary micro-yaw with Shift Lock on and off.",
+    ),
+    "E-STEER-CAL": (
+        "the alignment deadband has not been frozen",
+        "Manual-target trials, then freeze the threshold before any held-out evaluation.",
+    ),
+    "E-STEER-E2E": (
+        "no guarded route has been driven with the frozen controller",
+        "Guarded open-ground routes with the owner watching.",
+    ),
+}
+
+
+def commissioning_blockers(gates: NavigationGates) -> tuple[LiveBlocker, ...]:
+    """One keyed blocker per pending gate, with its remedy and step number.
+
+    The E-YAW calibration used to appear three times - the gate, the missing
+    degrees-per-unit, the missing sign - because a default controller was
+    instantiated solely to ask it why it could not steer. One gate, one row.
+    """
+    step_of = {gate: step.number for step in COMMISSIONING_STEPS for gate in step.gates}
+    blockers: list[LiveBlocker] = []
+    for code in gates.blocking_reasons():
+        summary, remedy = _GATE_WORDING.get(code, ("not commissioned", "See STATUS.md."))
+        step = step_of.get(code)
+        blockers.append(
+            LiveBlocker(
+                code=code,
+                scope=BlockerScope.EVIDENCE,
+                status="pending",
+                summary=summary,
+                detail=(
+                    f"{code} is PENDING for {gates.os_name}/{gates.profile_id}. It passes "
+                    "only through its physical procedure on real hardware; no test or "
+                    "fixture can set it."
+                ),
+                remedy=f"Step {step}: {remedy}" if step else remedy,
+                evidence="STATUS.md - Experiment gates",
+            )
+        )
+    return tuple(blockers)
+
+
+def _gate_status(gates: NavigationGates, code: str) -> EvidenceStatus:
+    attribute = "e_" + code[2:].lower().replace("-", "_")
+    status: EvidenceStatus = getattr(gates, attribute)
+    return status
+
+
+def commissioning_steps(
+    gates: NavigationGates,
+    *,
+    connected: bool,
+    viewport_canonical: bool,
+    viewport_usable: bool,
+) -> tuple[tuple[CommissioningStep, str, str], ...]:
+    """Every step with its state (``done``, ``pending``, ``blocked``) and a note.
+
+    Runtime steps read live state; evidence steps read gate statuses. Nothing
+    here can mark an evidence step done from anything but a VALIDATED gate,
+    and a canonical viewport is reported separately from E-VIEW's native
+    commissioning evidence.
+    """
+    rows: list[tuple[CommissioningStep, str, str]] = []
+    for step in COMMISSIONING_STEPS:
+        if step.number == 1:
+            state = "done" if connected else "pending"
+            rows.append((step, state, "connected" if connected else "not connected"))
+        elif step.number == 2:
+            validated = gates.e_view is EvidenceStatus.VALIDATED
+            if not connected:
+                rows.append((step, "blocked", "connect first"))
+            elif viewport_canonical:
+                evidence = "recorded" if validated else "PENDING"
+                note = f"canonical 1280x720 achieved; E-VIEW native evidence {evidence}"
+                rows.append((step, "done" if validated else "pending", note))
+            elif viewport_usable:
+                rows.append(
+                    (step, "pending", "usable for Shadow at the achieved size; not canonical")
+                )
+            else:
+                rows.append((step, "blocked", "viewport not usable"))
+        elif step.number == 11:
+            done = gates.steering_enabled
+            note = "all gates validated" if done else "gates pending"
+            rows.append((step, "done" if done else "blocked", note))
+        else:
+            statuses = [(gate, _gate_status(gates, gate)) for gate in step.gates]
+            if all(status is EvidenceStatus.VALIDATED for _gate, status in statuses):
+                rows.append((step, "done", "validated"))
+            else:
+                note = ", ".join(f"{gate} {status.value}" for gate, status in statuses)
+                rows.append((step, "pending", note))
+    return tuple(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +712,34 @@ class NavigationDecision:
     release: bool = False
 
 
+#: The navigation FSM and the Shift-Lock controller describe the same run from
+#: two angles: one in lifecycle terms, one in "is W held right now" terms. The
+#: mapping is explicit so the two can never drift into disagreeing.
+#: The reverse mapping, used when the controller drives the phase rather than
+#: the other way round.
+_CONTROL_TO_PHASE: dict[ControlState, NavigationPhase] = {
+    ControlState.ACQUIRE: NavigationPhase.ACQUIRE,
+    ControlState.ALIGN: NavigationPhase.ALIGN,
+    ControlState.FOLLOW: NavigationPhase.FOLLOW,
+    ControlState.REACQUIRE: NavigationPhase.REACQUIRE,
+    ControlState.BLOCKED: NavigationPhase.CONTACT,
+    ControlState.SAFE_STOP: NavigationPhase.FAILED,
+}
+
+_PHASE_TO_CONTROL: dict[NavigationPhase, ControlState] = {
+    NavigationPhase.ACQUIRE: ControlState.ACQUIRE,
+    NavigationPhase.ALIGN: ControlState.ALIGN,
+    NavigationPhase.FOLLOW: ControlState.FOLLOW,
+    NavigationPhase.REACQUIRE: ControlState.REACQUIRE,
+    NavigationPhase.CONTACT: ControlState.BLOCKED,
+    NavigationPhase.RECOVERY: ControlState.BLOCKED,
+    NavigationPhase.ARRIVAL_CONFIRM: ControlState.ACQUIRE,
+    NavigationPhase.ARRIVED: ControlState.SAFE_STOP,
+    NavigationPhase.ABANDONED: ControlState.SAFE_STOP,
+    NavigationPhase.FAILED: ControlState.SAFE_STOP,
+}
+
+
 class Navigator:
     """The navigation FSM. Pure decision logic - it emits no input itself.
 
@@ -407,20 +754,45 @@ class Navigator:
         steering: SteeringController | None = None,
         recovery: RecoveryLadder | None = None,
         contact: ContactMonitor | None = None,
+        controller: ShiftLockController | None = None,
         max_evidence_age_ms: int = 100,
     ) -> None:
         self._gates = gates
         self._steering = steering or SteeringController()
         self._recovery = recovery or RecoveryLadder()
         self._contact = contact or ContactMonitor()
+        self._controller = controller or ShiftLockController()
         self._max_evidence_age_ms = max_evidence_age_ms
         self._phase = NavigationPhase.ACQUIRE
         self._last_valid_arrow_s: float | None = None
         self._arrival_latches = 0
+        #: Runtime health the controller consults. Set by the live worker from
+        #: the authority and the capture metrics, so the controller never has
+        #: to reach for something that might be stale.
+        self._focus_ok = True
+        self._processed_fps = 999.0
+        self._cursor_safe = True
+
+    def note_health(
+        self, *, focus_ok: bool, processed_fps: float, cursor_safe: bool = True
+    ) -> None:
+        """Refresh the runtime health the controller is allowed to see."""
+        self._focus_ok = focus_ok
+        self._processed_fps = processed_fps
+        self._cursor_safe = cursor_safe
+
+    @property
+    def controller(self) -> ShiftLockController:
+        return self._controller
 
     @property
     def phase(self) -> NavigationPhase:
         return self._phase
+
+    @property
+    def control_state(self) -> ControlState:
+        """The Shift-Lock controller's view of the same decision."""
+        return _PHASE_TO_CONTROL.get(self._phase, ControlState.ACQUIRE)
 
     @property
     def arrival_latches(self) -> int:
@@ -512,22 +884,54 @@ class Navigator:
                 "steering disabled: " + ",".join(self._gates.blocking_reasons()) + " PENDING",
             )
 
-        yaw = self._steering.update(
-            inputs.direction, now_s=now_s, frame_is_duplicate=frame.duplicate
+        return self._steer(inputs, generation=generation, now_s=now_s)
+
+    def _steer(
+        self, inputs: NavigationInputs, *, generation: int, now_s: float
+    ) -> NavigationDecision:
+        """Hand the frame to the Shift-Lock controller and translate its answer.
+
+        The controller decides; this only turns its decision into the one
+        command type the input authority accepts. Splitting them means the
+        control law can be exercised with no authority in sight, which is what
+        the deterministic steering tests do.
+        """
+        frame = inputs.frame
+        decision = self._controller.update(
+            SteeringInputs(
+                arrow=inputs.arrow,
+                direction=inputs.direction,
+                frame_sequence=frame.sequence,
+                frame_age_ms=frame.age_s(now_s) * 1000.0,
+                now_s=now_s,
+                focus_ok=self._focus_ok,
+                viewport_ok=frame.geometry.valid,
+                processed_fps=self._processed_fps,
+                cursor_safe=self._cursor_safe,
+            )
         )
-        aligned = yaw == 0
-        self._phase = NavigationPhase.FOLLOW if aligned else NavigationPhase.ALIGN
+        if decision.release:
+            return self._release(_CONTROL_TO_PHASE[decision.state], decision.reason)
+        if not decision.moves:
+            # A frame that authorized nothing. The existing lease is left to
+            # expire rather than renewed, because renewing it would be reusing
+            # this frame's evidence for a second decision.
+            self._phase = _CONTROL_TO_PHASE[decision.state]
+            return NavigationDecision(self._phase, None, decision.reason)
+
+        self._phase = _CONTROL_TO_PHASE[decision.state]
         return NavigationDecision(
             self._phase,
             self._command(
                 generation,
                 frame,
                 now_s,
-                forward=1 if aligned else 0,
+                forward=decision.forward,
                 lateral=0,
                 jump=False,
-                yaw=yaw,
-                reason="follow" if aligned else "align",
+                yaw=decision.yaw_units,
+                reason=decision.reason,
+                kind=decision.kind,
             ),
             "steering",
         )
@@ -549,6 +953,7 @@ class Navigator:
         jump: bool,
         yaw: int,
         reason: str,
+        kind: CommandKind = CommandKind.FOLLOW,
     ) -> NavigationCommand:
         lease_s = self._steering.config.command_lease_ms / 1000.0
         max_valid_s = frame.captured_at_s + self._max_evidence_age_ms / 1000.0
@@ -563,6 +968,7 @@ class Navigator:
             issued_at_s=now_s,
             valid_until_s=min(now_s + lease_s, max_valid_s),
             reason=reason,
+            kind=kind,
         )
 
 
@@ -609,24 +1015,34 @@ class PerceptionResult:
     candidates: tuple[ArrowCandidateRecord, ...]
     contour_px: tuple[tuple[int, int], ...]
     desired_deg: float | None
-    cues: tuple[tuple[str, DirectionObservation], ...]
+    cues: tuple[CueReading, ...]
     perception_ms: float
+    #: Stage-by-stage cost and the tracker's verdict, for the frame trace.
+    timing: PerceptionTiming | None = None
 
 
 @dataclass
 class PerceptionPipeline:
-    """Segmenter, tracker, arrival detector, and direction cue for one profile.
+    """Detector, direction estimator, arrival detector for one profile.
 
-    The profile can be swapped at runtime through :meth:`set_profile`, which the
-    dashboard's selector uses; the profile actually used is recorded on every
-    observation so the picture and the label cannot disagree.
+    One frame, one temporal transaction: the detector may run a region pass
+    and, on a *later* frame, a full-frame pass, but ``commit`` is called once
+    per unique frame. A region miss schedules the global search for the next
+    frame instead of running it synchronously on the same screenshot.
+
+    Everything derived - direction, contour, tip and tail, score breakdown -
+    comes from the single candidate the detector **selected**, never from the
+    first candidate that merely cleared the threshold.
     """
 
     segmenter: ArrowSegmenter
+    detector: ArrowDetector | None = None
+    estimator: DirectionEstimator | None = None
     tracker: ArrowTracker = field(default_factory=ArrowTracker)
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
-    strategy: str = "fusion"
+    strategy: str = "topology_consensus"
     reference: ReferenceFrame = field(default_factory=ReferenceFrame)
+    profiles: ProfileAuthority | None = None
     #: Padding around a tracked arrow when searching only a region of interest.
     roi_padding_px: int = 220
     #: Force a full-frame pass this often even while a track holds, so a track
@@ -635,12 +1051,63 @@ class PerceptionPipeline:
     _frames_since_full: int = 0
     _roi_hits: int = 0
     _full_passes: int = 0
+    _fallbacks: int = 0
+    _skipped: int = 0
+    _profile_revision: int = 1
+    _geometry_identity: tuple[object, ...] | None = None
+    _last_heading_deg: float | None = None
+    _last_track_id: int | None = None
+    _reversals_refused: int = 0
+
+    def __post_init__(self) -> None:
+        if self.detector is None:
+            self.detector = ArrowDetector(self.segmenter.profile, DetectorConfig())
+        if self.estimator is None:
+            self.estimator = DirectionEstimator(self.detector.config)
 
     def set_profile(self, profile: ArrowProfile) -> None:
         """Swap the arrow profile and drop any track built from the old one."""
+        config = self.detector.config if self.detector is not None else DetectorConfig()
         self.segmenter = ArrowSegmenter(profile)
+        self.detector = ArrowDetector(profile, config)
+        self.estimator = DirectionEstimator(config)
         self.tracker = ArrowTracker()
+        self.arrival = ArrivalDetector()
         self._frames_since_full = self.full_frame_every  # force a full pass
+        self._last_heading_deg = None
+        self._last_track_id = None
+
+    @property
+    def profile_revision(self) -> int:
+        """Which profile generation the next observation will belong to."""
+        if self.profiles is not None:
+            return self.profiles.revision
+        return self._profile_revision
+
+    def _sync_profile(self) -> ArrowProfile | None:
+        """Apply a staged profile swap. Called at the top of every frame."""
+        if self.profiles is None:
+            return None
+        applied = self.profiles.apply_pending()
+        if applied is not None:
+            self.set_profile(applied)
+        return applied
+
+    def _sync_geometry(self, frame: CapturedFrame) -> bool:
+        """Drop temporal state when the coordinate basis changes."""
+        identity = frame.geometry.identity()
+        if self._geometry_identity is not None and identity != self._geometry_identity:
+            self.tracker = ArrowTracker()
+            self.arrival = ArrivalDetector()
+            if self.detector is not None:
+                self.detector.reset()
+            self._frames_since_full = self.full_frame_every
+            self._geometry_identity = identity
+            self._last_heading_deg = None
+            self._last_track_id = None
+            return True
+        self._geometry_identity = identity
+        return False
 
     @property
     def roi_hits(self) -> int:
@@ -650,20 +1117,39 @@ class PerceptionPipeline:
     def full_passes(self) -> int:
         return self._full_passes
 
+    @property
+    def fallbacks(self) -> int:
+        """Full-frame passes that ran because the previous region pass missed."""
+        return self._fallbacks
+
+    @property
+    def reversals_refused(self) -> int:
+        return self._reversals_refused
+
+    @property
+    def skipped_searches(self) -> int:
+        """Frames observed without a search while nothing was held."""
+        return self._skipped
+
     def _roi_for(self, frame: CapturedFrame) -> tuple[int, int, int, int] | None:
         """A search region around the predicted track, or ``None`` for full frame.
 
-        Returns ``None`` whenever the track is stale or the periodic full-frame
-        pass is due, so acquisition is never permanently confined to where the
-        arrow used to be.
+        ``None`` whenever the detector asks for a global search - no identity
+        held, a region miss on the previous frame, or the periodic challenge -
+        and on the pipeline's own full-frame cadence, so acquisition is never
+        permanently confined to where the arrow used to be.
         """
+        detector = self.detector
+        if detector is None or detector.wants_global_search():
+            return None
         if self._frames_since_full >= self.full_frame_every:
             return None
-        predicted = self.tracker.predicted()
+        predicted = detector.predicted_centroid()
         if predicted is None:
             return None
         width, height = frame.canonical_size_px
-        pad = self.roi_padding_px
+        scale = detector.predicted_scale_px() or 0.0
+        pad = max(self.roi_padding_px, int(scale * 2.5))
         x = max(0, int(predicted[0]) - pad)
         y = max(0, int(predicted[1]) - pad)
         right = min(width, int(predicted[0]) + pad)
@@ -673,8 +1159,8 @@ class PerceptionPipeline:
         return (x, y, right - x, bottom - y)
 
     def set_strategy(self, strategy: str) -> None:
-        if strategy in DIRECTION_STRATEGIES:
-            self.strategy = strategy
+        """Retained for the E-DIR-IDEAL comparison harness."""
+        self.strategy = strategy
 
     @property
     def profile(self) -> ArrowProfile:
@@ -683,38 +1169,77 @@ class PerceptionPipeline:
     def analyze(
         self, frame: CapturedFrame, *, map_id: str, approach_valid: bool
     ) -> PerceptionResult:
-        """Everything derived from one frame, in one pass."""
+        """Everything derived from one frame, in one temporal transaction."""
         started = monotonic_s()
-        roi = self._roi_for(frame)
-        raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, roi)
-        if roi is not None and not raw_arrow.valid:
-            # An ROI miss is not an abstention: fall back to the full frame
-            # immediately rather than reporting a loss the tracker caused.
-            roi = None
-            raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, None)
-        if roi is None:
-            self._frames_since_full = 0
-            self._full_passes += 1
-        else:
-            self._frames_since_full += 1
-            self._roi_hits += 1
-        arrow = self.tracker.update(raw_arrow)
+        self._sync_profile()
+        self._sync_geometry(frame)
+        assert self.detector is not None and self.estimator is not None
+        detector = self.detector
 
+        roi_started = monotonic_s()
+        roi = self._roi_for(frame)
+        roi_proposal_ms = (monotonic_s() - roi_started) * 1000.0
+        # A fallback is a full pass that ran because the detector asked for
+        # one while an identity was held or being reacquired - the scheduled
+        # replacement for the old synchronous second pass.
+        fallback = (
+            roi is None
+            and detector.wants_global_search()
+            and detector.state in (TrackState.TRACK, TrackState.AMBIGUOUS, TrackState.REACQUIRE)
+        )
+        if roi is None and not detector.search_due(frame.captured_at_s):
+            # Nothing is held and the last full search found nothing: this
+            # frame is observed, not searched. Latest-only, one frame of
+            # acquisition latency at most, and no full pass for an empty view.
+            proposals = ProposalSet((), ProposalStats("skipped", None, 0.0, 0, 0, 0, 0), None)
+            outcome = detector.note_skipped(frame)
+            self._skipped += 1
+        else:
+            proposals = detector.propose(frame, roi_px=roi)
+            outcome = detector.commit(frame, [proposals])
+            if roi is None:
+                self._frames_since_full = 0
+                self._full_passes += 1
+                if fallback:
+                    self._fallbacks += 1
+            else:
+                self._frames_since_full += 1
+                self._roi_hits += 1
+
+        arrow = outcome.observation
+        selected = outcome.selected
         anchor = self.reference.anchor_canonical_px
         forward = self.reference.forward_deg
-        # Every cue, every frame: the selected one drives the controller, and
-        # the rest are what make a disagreement legible instead of a silent
-        # abstention (plan 7.4 E-DIR-IDEAL).
-        cues = tuple(
-            (name, strategy(arrow, anchor, forward))
-            for name, strategy in DIRECTION_STRATEGIES.items()
+        # Polarity memory belongs to one identity: a new track id starts with
+        # no remembered sign, so a genuinely different arrow is never forced
+        # to agree with the last one.
+        if arrow.track_id != self._last_track_id:
+            self._last_heading_deg = None
+        direction_started = monotonic_s()
+        result = self.estimator.estimate(
+            selected.features if selected is not None else None,
+            anchor_px=anchor,
+            forward_deg=forward,
+            arrow_confidence=arrow.confidence,
+            previous_heading_deg=self._last_heading_deg,
         )
-        direction = dict(cues)[self.strategy]
+        direction_ms = (monotonic_s() - direction_started) * 1000.0
+        direction = result.observation
+        if result.reversal_refused:
+            self._reversals_refused += 1
+        if selected is not None:
+            arrow = replace(arrow, tip_px=result.tip_px, tail_px=result.tail_px)
+        if arrow.valid and direction.valid and direction.error_deg is not None:
+            self._last_heading_deg = wrap_deg(forward + direction.error_deg)
+            self._last_track_id = arrow.track_id
+        elif not arrow.valid:
+            self._last_track_id = arrow.track_id
 
         desired_deg: float | None = None
         if arrow.valid and direction.valid and direction.error_deg is not None:
             desired_deg = wrap_deg(forward + direction.error_deg)
 
+        contour = selected.features.contour_px if selected is not None else ()
         arrival = self.arrival.observe(frame, map_id=map_id, approach_valid=approach_valid)
         inputs = NavigationInputs(
             frame=frame,
@@ -724,13 +1249,34 @@ class PerceptionPipeline:
             arrival=arrival,
             forward_commanded=False,
         )
+        stats = proposals.stats
+        shown = present(outcome, detector.config.top_k)
+        timing = PerceptionTiming(
+            roi_used=roi is not None,
+            roi_proposal_ms=roi_proposal_ms,
+            roi_detector_ms=stats.elapsed_ms if roi is not None else 0.0,
+            full_detector_ms=stats.elapsed_ms if roi is None else 0.0,
+            fallback=fallback,
+            raw_components=stats.raw_components,
+            components_evaluated=stats.evaluated,
+            mask_pixels_allocated=stats.mask_pixels,
+            direction_ms=direction_ms,
+            tracking_decision=outcome.decision,
+            selected_candidate_id=selected.label if selected is not None else None,
+            confidence=arrow.confidence,
+            rejection_reasons=tuple(
+                f"{h.label}:{h.reason}" for h in shown if h.state != "selected" and h.reason
+            )[:8],
+            track_state=outcome.state.value,
+        )
         return PerceptionResult(
             inputs=inputs,
-            candidates=candidates,
+            candidates=tuple(h.as_record() for h in shown),
             contour_px=contour,
             desired_deg=desired_deg,
-            cues=cues,
+            cues=result.readings,
             perception_ms=(monotonic_s() - started) * 1000.0,
+            timing=timing,
         )
 
     def observe(
@@ -745,17 +1291,27 @@ class PerceptionPipeline:
         decision: NavigationDecision,
         *,
         decision_ms: float,
+        key: RuntimeKey | None = None,
+        control_state: ControlState | None = None,
+        blockers: tuple[str, ...] = (),
     ) -> DiagnosticObservation:
-        """Bind the frame, the geometry, and the decision into one value.
-
-        The preview and the controller both read this, so an overlay can never
-        be drawn from observation N over frame N+1.
-        """
+        """Bind the frame, the geometry, and the decision into one value."""
         inputs = result.inputs
+        stamped = key or RuntimeKey(
+            run_id="local",
+            coordinator_generation=0,
+            mode_session_id=0,
+            source_epoch=0,
+            geometry_revision=0,
+            profile_revision=self.profile_revision,
+            frame_sequence=frame.sequence,
+            content_id=frame.content_id,
+        )
         return DiagnosticObservation(
             frame=frame,
             processed_at_s=frame.completed_at_s,
             published_at_s=monotonic_s(),
+            key=stamped,
             profile_id=self.profile.profile_id,
             profile_status=self.profile.status.value,
             strategy_id=self.strategy,
@@ -780,6 +1336,10 @@ class PerceptionPipeline:
             capture_ms=frame.duration_ms,
             perception_ms=result.perception_ms,
             decision_ms=decision_ms,
+            control_state=control_state,
+            plain_summary=describe_decision(inputs, decision),
+            blockers=blockers,
+            timing=result.timing,
         )
 
 
@@ -817,6 +1377,7 @@ def _run_observer_loop(
         envelope = capture.wait_for_new(last_sequence, 0.25)
         if envelope is None:
             continue
+        picked_at_s = monotonic_s()
         frame = envelope.frame
         if last_sequence and frame.sequence > last_sequence + 1:
             # Frames existed that we never observed: the slot replaced them
@@ -837,9 +1398,40 @@ def _run_observer_loop(
         capture.note_decision_ms(decision_ms)
         capture.note_end_to_end_ms(frame.age_s(monotonic_s()) * 1000.0)
 
-        observation = pipeline.diagnostic(frame, result, decision, decision_ms=decision_ms)
+        observation = pipeline.diagnostic(
+            frame,
+            result,
+            decision,
+            decision_ms=decision_ms,
+            # The key is stamped from the coordinator's current world, not from
+            # anything this worker knows, so a cancelled worker's late frame
+            # cannot outrank the session that replaced it.
+            key=context.key_for(frame, pipeline.profile_revision),
+            control_state=navigator.control_state,
+            blockers=context.blockers,
+        )
         context.on_observation(observation)
         context.on_phase(decision.phase)
+        # The trace ring lives on the capture service; narrower stand-ins used
+        # by replay tests do not carry one, and the loop must not care.
+        trace = getattr(capture, "trace", None)
+        if result.timing is not None and trace is not None:
+            tier = getattr(capture, "tier", None)
+            trace.record(
+                FrameTrace(
+                    frame_sequence=frame.sequence,
+                    captured_at_s=frame.captured_at_s,
+                    completed_at_s=frame.completed_at_s,
+                    source_epoch=int(getattr(capture, "source_epoch", 0)),
+                    cadence_hz=int(tier.fps) if tier is not None else 0,
+                    capture_ms=frame.duration_ms,
+                    scheduling_delay_ms=max(0.0, (picked_at_s - frame.completed_at_s) * 1000.0),
+                    perception=result.timing,
+                    decision_ms=decision_ms,
+                    capture_to_observation_ms=(monotonic_s() - frame.captured_at_s) * 1000.0,
+                    settling=bool(getattr(capture, "settling", False)),
+                )
+            )
 
         if apply is not None and apply(decision, envelope):
             applied += 1

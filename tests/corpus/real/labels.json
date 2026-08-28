@@ -1,0 +1,2926 @@
+{
+ "schema": 1,
+ "profile_id": "yellow_map_v1",
+ "stored_size_px": [
+  972,
+  568
+ ],
+ "provenance": {
+  "source": "owner screen recording 'Recording 2026-08-27 at 23.38.04.mp4' (70 s, 60 fps, 1640x1408, HEVC) of the previous dashboard build's Shadow view while playing; the recording itself is private and NOT committed",
+  "extraction": "the Shadow preview region (972x568 px, detected per frame from the dashboard chrome) was cropped from every 12th recording frame (5 fps) and subsampled per sequence as recorded in sample_period_s; frames were stored as WebP q86 with the chat strip, bottom HUD and currency readout pixelated",
+  "canonical_mapping": "the previous build letterboxed the 1800x1052 pt client into 1280x720; a stored frame maps into canonical space by uniform scale 1232/972 with a 24 px black bar on each side (prospector_engine.corpus.canonicalize)",
+  "labels": "bounding boxes from an independent yellow-mask reference with temporal continuity; headings from a rotation/squash fit of the measured arrow polygon (tests/arrow_fixtures.py) with the 180-degree ambiguity resolved by reviewer-read anchors; every frame was checked on verification sheets and the frames the reviewer could not read are marked unknown",
+  "label_error_budget": "heading labels are believed good to about +-12 degrees; a p95 angular target of 10 degrees cannot be certified from this corpus",
+  "known_biases": "frames marked overlay_contact carry the previous build's jade detection outline and gold markers drawn on the arrow, which favourably separates it from same-colour sand; the preview was downscaled (0.54x) then upscaled, so detail is softer than a live capture; WebP compression adds slight ringing",
+  "status": "PENDING as production evidence: one session, one map, one machine, one lighting pass per stratum, and no separately held-out session",
+  "reviewed_on": "2026-08-28"
+ },
+ "sequences": [
+  {
+   "id": "pink-a",
+   "split": "tune",
+   "stratum": "pink-crystal",
+   "lighting": "day",
+   "source_time_range_s": [
+    0.0,
+    8.0
+   ],
+   "sample_period_s": 0.6,
+   "notes": "walking on pink crystal terrain beside blue water; arrow flat-on, turning; 4.0-5.2 s arrow fills the view under the HUD box (unknown)",
+   "frames": [
+    {
+     "file": "pink-a/f00000.webp",
+     "source_time_s": 0.0,
+     "source_frame": 0,
+     "arrow": {
+      "bbox_px": [
+       490,
+       240,
+       75,
+       67
+      ],
+      "heading_deg": 312,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00036.webp",
+     "source_time_s": 0.6,
+     "source_frame": 36,
+     "arrow": {
+      "bbox_px": [
+       399,
+       297,
+       119,
+       67
+      ],
+      "heading_deg": 284,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00072.webp",
+     "source_time_s": 1.2,
+     "source_frame": 72,
+     "arrow": {
+      "bbox_px": [
+       387,
+       303,
+       125,
+       85
+      ],
+      "heading_deg": 277,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00108.webp",
+     "source_time_s": 1.8,
+     "source_frame": 108,
+     "arrow": {
+      "bbox_px": [
+       402,
+       248,
+       118,
+       71
+      ],
+      "heading_deg": 276,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00144.webp",
+     "source_time_s": 2.4,
+     "source_frame": 144,
+     "arrow": {
+      "bbox_px": [
+       384,
+       308,
+       128,
+       82
+      ],
+      "heading_deg": 272,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00180.webp",
+     "source_time_s": 3.0,
+     "source_frame": 180,
+     "arrow": {
+      "bbox_px": [
+       314,
+       313,
+       136,
+       91
+      ],
+      "heading_deg": 276,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00216.webp",
+     "source_time_s": 3.6,
+     "source_frame": 216,
+     "arrow": {
+      "bbox_px": [
+       394,
+       266,
+       109,
+       71
+      ],
+      "heading_deg": 291,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00252.webp",
+     "source_time_s": 4.2,
+     "source_frame": 252,
+     "arrow": {
+      "bbox_px": [
+       587,
+       251,
+       39,
+       43
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "pink-a/f00288.webp",
+     "source_time_s": 4.8,
+     "source_frame": 288,
+     "arrow": {
+      "bbox_px": [
+       665,
+       237,
+       35,
+       42
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "pink-a/f00324.webp",
+     "source_time_s": 5.4,
+     "source_frame": 324,
+     "arrow": {
+      "bbox_px": [
+       679,
+       124,
+       82,
+       96
+      ],
+      "heading_deg": 32,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00360.webp",
+     "source_time_s": 6.0,
+     "source_frame": 360,
+     "arrow": {
+      "bbox_px": [
+       749,
+       181,
+       112,
+       100
+      ],
+      "heading_deg": 46,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00396.webp",
+     "source_time_s": 6.6,
+     "source_frame": 396,
+     "arrow": {
+      "bbox_px": [
+       759,
+       218,
+       136,
+       84
+      ],
+      "heading_deg": 37,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00432.webp",
+     "source_time_s": 7.2,
+     "source_frame": 432,
+     "arrow": {
+      "bbox_px": [
+       764,
+       266,
+       145,
+       104
+      ],
+      "heading_deg": 62,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-a/f00468.webp",
+     "source_time_s": 7.8,
+     "source_frame": 468,
+     "arrow": {
+      "bbox_px": [
+       754,
+       243,
+       132,
+       96
+      ],
+      "heading_deg": 72,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "pink-b",
+   "split": "eval",
+   "stratum": "pink-crystal",
+   "lighting": "day",
+   "source_time_range_s": [
+    8.2,
+    17.2
+   ],
+   "sample_period_s": 0.4,
+   "notes": "same terrain; arrow rotates through a full turn while the player walks; dark rocks and magenta crystals as distractors",
+   "frames": [
+    {
+     "file": "pink-b/f00492.webp",
+     "source_time_s": 8.2,
+     "source_frame": 492,
+     "arrow": {
+      "bbox_px": [
+       754,
+       233,
+       129,
+       98
+      ],
+      "heading_deg": 71,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00516.webp",
+     "source_time_s": 8.6,
+     "source_frame": 516,
+     "arrow": {
+      "bbox_px": [
+       759,
+       245,
+       129,
+       98
+      ],
+      "heading_deg": 72,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00540.webp",
+     "source_time_s": 9.0,
+     "source_frame": 540,
+     "arrow": {
+      "bbox_px": [
+       772,
+       314,
+       129,
+       101
+      ],
+      "heading_deg": 99,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00564.webp",
+     "source_time_s": 9.4,
+     "source_frame": 564,
+     "arrow": {
+      "bbox_px": [
+       767,
+       312,
+       133,
+       104
+      ],
+      "heading_deg": 101,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00588.webp",
+     "source_time_s": 9.8,
+     "source_frame": 588,
+     "arrow": {
+      "bbox_px": [
+       767,
+       312,
+       133,
+       103
+      ],
+      "heading_deg": 102,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00612.webp",
+     "source_time_s": 10.2,
+     "source_frame": 612,
+     "arrow": {
+      "bbox_px": [
+       740,
+       218,
+       124,
+       93
+      ],
+      "heading_deg": 66,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00636.webp",
+     "source_time_s": 10.6,
+     "source_frame": 636,
+     "arrow": {
+      "bbox_px": [
+       657,
+       124,
+       80,
+       96
+      ],
+      "heading_deg": 27,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00660.webp",
+     "source_time_s": 11.0,
+     "source_frame": 660,
+     "arrow": {
+      "bbox_px": [
+       561,
+       161,
+       94,
+       117
+      ],
+      "heading_deg": 350,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00684.webp",
+     "source_time_s": 11.4,
+     "source_frame": 684,
+     "arrow": {
+      "bbox_px": [
+       508,
+       145,
+       68,
+       82
+      ],
+      "heading_deg": 354,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00708.webp",
+     "source_time_s": 11.8,
+     "source_frame": 708,
+     "arrow": {
+      "bbox_px": [
+       477,
+       205,
+       90,
+       98
+      ],
+      "heading_deg": 312,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00732.webp",
+     "source_time_s": 12.2,
+     "source_frame": 732,
+     "arrow": {
+      "bbox_px": [
+       463,
+       200,
+       96,
+       98
+      ],
+      "heading_deg": 315,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00756.webp",
+     "source_time_s": 12.6,
+     "source_frame": 756,
+     "arrow": {
+      "bbox_px": [
+       447,
+       214,
+       101,
+       82
+      ],
+      "heading_deg": 304,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00780.webp",
+     "source_time_s": 13.0,
+     "source_frame": 780,
+     "arrow": {
+      "bbox_px": [
+       360,
+       307,
+       133,
+       94
+      ],
+      "heading_deg": 267,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00804.webp",
+     "source_time_s": 13.4,
+     "source_frame": 804,
+     "arrow": {
+      "bbox_px": [
+       359,
+       357,
+       138,
+       108
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "pink-b/f00828.webp",
+     "source_time_s": 13.8,
+     "source_frame": 828,
+     "arrow": {
+      "bbox_px": [
+       355,
+       395,
+       139,
+       114
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "note": "position labelled; heading unreadable"
+    },
+    {
+     "file": "pink-b/f00852.webp",
+     "source_time_s": 14.2,
+     "source_frame": 852,
+     "arrow": {
+      "bbox_px": [
+       356,
+       375,
+       142,
+       108
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "note": "position labelled; heading unreadable"
+    },
+    {
+     "file": "pink-b/f00876.webp",
+     "source_time_s": 14.6,
+     "source_frame": 876,
+     "arrow": {
+      "bbox_px": [
+       359,
+       366,
+       139,
+       106
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "note": "position labelled; heading unreadable"
+    },
+    {
+     "file": "pink-b/f00900.webp",
+     "source_time_s": 15.0,
+     "source_frame": 900,
+     "arrow": {
+      "bbox_px": [
+       364,
+       387,
+       133,
+       82
+      ],
+      "heading_deg": 224,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00924.webp",
+     "source_time_s": 15.4,
+     "source_frame": 924,
+     "arrow": {
+      "bbox_px": [
+       359,
+       330,
+       138,
+       108
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "note": "position labelled; heading unreadable"
+    },
+    {
+     "file": "pink-b/f00948.webp",
+     "source_time_s": 15.8,
+     "source_frame": 948,
+     "arrow": {
+      "bbox_px": [
+       347,
+       314,
+       143,
+       112
+      ],
+      "heading_deg": 255,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00972.webp",
+     "source_time_s": 16.2,
+     "source_frame": 972,
+     "arrow": {
+      "bbox_px": [
+       352,
+       289,
+       143,
+       99
+      ],
+      "heading_deg": 262,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f00996.webp",
+     "source_time_s": 16.6,
+     "source_frame": 996,
+     "arrow": {
+      "bbox_px": [
+       349,
+       312,
+       146,
+       77
+      ],
+      "heading_deg": 235,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "pink-b/f01020.webp",
+     "source_time_s": 17.0,
+     "source_frame": 1020,
+     "arrow": {
+      "bbox_px": [
+       341,
+       330,
+       152,
+       60
+      ],
+      "heading_deg": 247,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "purple-a",
+   "split": "tune",
+   "stratum": "purple-night",
+   "lighting": "night",
+   "source_time_range_s": [
+    17.4,
+    23.0
+   ],
+   "sample_period_s": 1.0,
+   "notes": "dark purple terrain with magenta foliage and a blue waterfall; arrow static, strongly foreshortened; one dropout frame",
+   "frames": [
+    {
+     "file": "purple-a/f01044.webp",
+     "source_time_s": 17.4,
+     "source_frame": 1044,
+     "arrow": {
+      "bbox_px": [
+       338,
+       337,
+       155,
+       49
+      ],
+      "heading_deg": 247,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-a/f01104.webp",
+     "source_time_s": 18.4,
+     "source_frame": 1104,
+     "arrow": {
+      "bbox_px": [
+       375,
+       340,
+       153,
+       47
+      ],
+      "heading_deg": 248,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-a/f01164.webp",
+     "source_time_s": 19.4,
+     "source_frame": 1164,
+     "arrow": {
+      "bbox_px": [
+       375,
+       340,
+       153,
+       47
+      ],
+      "heading_deg": 248,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-a/f01224.webp",
+     "source_time_s": 20.4,
+     "source_frame": 1224,
+     "arrow": {
+      "bbox_px": [
+       375,
+       340,
+       153,
+       47
+      ],
+      "heading_deg": 249,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-a/f01284.webp",
+     "source_time_s": 21.4,
+     "source_frame": 1284,
+     "arrow": {
+      "bbox_px": [
+       375,
+       340,
+       155,
+       47
+      ],
+      "heading_deg": 246,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-a/f01344.webp",
+     "source_time_s": 22.4,
+     "source_frame": 1344,
+     "arrow": {
+      "bbox_px": [
+       375,
+       340,
+       155,
+       47
+      ],
+      "heading_deg": 250,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "purple-b",
+   "split": "eval",
+   "stratum": "purple-night",
+   "lighting": "night",
+   "source_time_range_s": [
+    23.2,
+    28.6
+   ],
+   "sample_period_s": 1.0,
+   "notes": "continuation of purple-a",
+   "frames": [
+    {
+     "file": "purple-b/f01392.webp",
+     "source_time_s": 23.2,
+     "source_frame": 1392,
+     "arrow": {
+      "bbox_px": [
+       375,
+       340,
+       155,
+       47
+      ],
+      "heading_deg": 248,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-b/f01452.webp",
+     "source_time_s": 24.2,
+     "source_frame": 1452,
+     "arrow": {
+      "bbox_px": [
+       318,
+       342,
+       170,
+       48
+      ],
+      "heading_deg": 257,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-b/f01512.webp",
+     "source_time_s": 25.2,
+     "source_frame": 1512,
+     "arrow": {
+      "bbox_px": [
+       316,
+       342,
+       170,
+       44
+      ],
+      "heading_deg": 250,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-b/f01572.webp",
+     "source_time_s": 26.2,
+     "source_frame": 1572,
+     "arrow": {
+      "bbox_px": [
+       357,
+       340,
+       171,
+       44
+      ],
+      "heading_deg": 255,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-b/f01632.webp",
+     "source_time_s": 27.2,
+     "source_frame": 1632,
+     "arrow": {
+      "bbox_px": [
+       314,
+       342,
+       172,
+       46
+      ],
+      "heading_deg": 252,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-b/f01692.webp",
+     "source_time_s": 28.2,
+     "source_frame": 1692,
+     "arrow": {
+      "bbox_px": [
+       323,
+       340,
+       165,
+       57
+      ],
+      "heading_deg": 247,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "purple-pale",
+   "split": "eval",
+   "stratum": "purple-pale",
+   "lighting": "night",
+   "source_time_range_s": [
+    28.8,
+    31.0
+   ],
+   "sample_period_s": 0.2,
+   "notes": "purple terrain with pale patches; arrow turning from left to up",
+   "frames": [
+    {
+     "file": "purple-pale/f01728.webp",
+     "source_time_s": 28.8,
+     "source_frame": 1728,
+     "arrow": {
+      "bbox_px": [
+       381,
+       284,
+       129,
+       77
+      ],
+      "heading_deg": 271,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01740.webp",
+     "source_time_s": 29.0,
+     "source_frame": 1740,
+     "arrow": {
+      "bbox_px": [
+       422,
+       189,
+       118,
+       87
+      ],
+      "heading_deg": 319,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01752.webp",
+     "source_time_s": 29.2,
+     "source_frame": 1752,
+     "arrow": {
+      "bbox_px": [
+       464,
+       128,
+       100,
+       115
+      ],
+      "heading_deg": 312,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01764.webp",
+     "source_time_s": 29.4,
+     "source_frame": 1764,
+     "arrow": {
+      "bbox_px": [
+       511,
+       124,
+       94,
+       91
+      ],
+      "heading_deg": 329,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01776.webp",
+     "source_time_s": 29.6,
+     "source_frame": 1776,
+     "arrow": {
+      "bbox_px": [
+       594,
+       124,
+       98,
+       96
+      ],
+      "heading_deg": 347,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01788.webp",
+     "source_time_s": 29.8,
+     "source_frame": 1788,
+     "arrow": {
+      "bbox_px": [
+       635,
+       150,
+       75,
+       68
+      ],
+      "heading_deg": 327,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01800.webp",
+     "source_time_s": 30.0,
+     "source_frame": 1800,
+     "arrow": {
+      "bbox_px": [
+       639,
+       157,
+       58,
+       63
+      ],
+      "heading_deg": 8,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01812.webp",
+     "source_time_s": 30.2,
+     "source_frame": 1812,
+     "arrow": {
+      "bbox_px": [
+       632,
+       160,
+       53,
+       67
+      ],
+      "heading_deg": 8,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01824.webp",
+     "source_time_s": 30.4,
+     "source_frame": 1824,
+     "arrow": {
+      "bbox_px": [
+       612,
+       180,
+       94,
+       106
+      ],
+      "heading_deg": 339,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01836.webp",
+     "source_time_s": 30.6,
+     "source_frame": 1836,
+     "arrow": {
+      "bbox_px": [
+       572,
+       193,
+       91,
+       81
+      ],
+      "heading_deg": 355,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01848.webp",
+     "source_time_s": 30.8,
+     "source_frame": 1848,
+     "arrow": {
+      "bbox_px": [
+       564,
+       229,
+       46,
+       49
+      ],
+      "heading_deg": 18,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "purple-pale/f01860.webp",
+     "source_time_s": 31.0,
+     "source_frame": 1860,
+     "arrow": {
+      "bbox_px": [
+       561,
+       223,
+       76,
+       56
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "note": "position labelled; heading unreadable"
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "menu",
+   "split": "eval",
+   "stratum": "no-arrow-ui",
+   "lighting": "night",
+   "source_time_range_s": [
+    31.2,
+    32.4
+   ],
+   "sample_period_s": 0.2,
+   "notes": "inventory panel open over the scene; no arrow visible",
+   "frames": [
+    {
+     "file": "menu/f01872.webp",
+     "source_time_s": 31.2,
+     "source_frame": 1872,
+     "arrow": null
+    },
+    {
+     "file": "menu/f01884.webp",
+     "source_time_s": 31.4,
+     "source_frame": 1884,
+     "arrow": null
+    },
+    {
+     "file": "menu/f01896.webp",
+     "source_time_s": 31.6,
+     "source_frame": 1896,
+     "arrow": null
+    },
+    {
+     "file": "menu/f01908.webp",
+     "source_time_s": 31.8,
+     "source_frame": 1908,
+     "arrow": null
+    },
+    {
+     "file": "menu/f01920.webp",
+     "source_time_s": 32.0,
+     "source_frame": 1920,
+     "arrow": null
+    },
+    {
+     "file": "menu/f01932.webp",
+     "source_time_s": 32.2,
+     "source_frame": 1932,
+     "arrow": null
+    },
+    {
+     "file": "menu/f01944.webp",
+     "source_time_s": 32.4,
+     "source_frame": 1944,
+     "arrow": null
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "desert-a",
+   "split": "tune",
+   "stratum": "no-arrow-sand",
+   "lighting": "day",
+   "source_time_range_s": [
+    32.6,
+    34.0
+   ],
+   "sample_period_s": 0.4,
+   "notes": "orange-yellow desert, no arrow; Waypoint UI text, dark cliff",
+   "frames": [
+    {
+     "file": "desert-a/f01956.webp",
+     "source_time_s": 32.6,
+     "source_frame": 1956,
+     "arrow": null
+    },
+    {
+     "file": "desert-a/f01980.webp",
+     "source_time_s": 33.0,
+     "source_frame": 1980,
+     "arrow": null
+    },
+    {
+     "file": "desert-a/f02004.webp",
+     "source_time_s": 33.4,
+     "source_frame": 2004,
+     "arrow": null
+    },
+    {
+     "file": "desert-a/f02028.webp",
+     "source_time_s": 33.8,
+     "source_frame": 2028,
+     "arrow": null
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "desert-b",
+   "split": "eval",
+   "stratum": "no-arrow-sand",
+   "lighting": "day",
+   "source_time_range_s": [
+    34.2,
+    37.0
+   ],
+   "sample_period_s": 0.2,
+   "notes": "same desert, no arrow; the terrain is the arrow's own colour family",
+   "frames": [
+    {
+     "file": "desert-b/f02052.webp",
+     "source_time_s": 34.2,
+     "source_frame": 2052,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02064.webp",
+     "source_time_s": 34.4,
+     "source_frame": 2064,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02076.webp",
+     "source_time_s": 34.6,
+     "source_frame": 2076,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02088.webp",
+     "source_time_s": 34.8,
+     "source_frame": 2088,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02100.webp",
+     "source_time_s": 35.0,
+     "source_frame": 2100,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02112.webp",
+     "source_time_s": 35.2,
+     "source_frame": 2112,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02124.webp",
+     "source_time_s": 35.4,
+     "source_frame": 2124,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02136.webp",
+     "source_time_s": 35.6,
+     "source_frame": 2136,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02148.webp",
+     "source_time_s": 35.8,
+     "source_frame": 2148,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02160.webp",
+     "source_time_s": 36.0,
+     "source_frame": 2160,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02172.webp",
+     "source_time_s": 36.2,
+     "source_frame": 2172,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02184.webp",
+     "source_time_s": 36.4,
+     "source_frame": 2184,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02196.webp",
+     "source_time_s": 36.6,
+     "source_frame": 2196,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02208.webp",
+     "source_time_s": 36.8,
+     "source_frame": 2208,
+     "arrow": null
+    },
+    {
+     "file": "desert-b/f02220.webp",
+     "source_time_s": 37.0,
+     "source_frame": 2220,
+     "arrow": null
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "sand-a",
+   "split": "tune",
+   "stratum": "sand-same-colour",
+   "lighting": "day",
+   "source_time_range_s": [
+    37.2,
+    43.4
+   ],
+   "sample_period_s": 0.4,
+   "notes": "pale sand beside teal water; arrow on sand; orange ring timer UI and a dark hut; 42.0-43.4 s reference mask failed (unknown)",
+   "frames": [
+    {
+     "file": "sand-a/f02232.webp",
+     "source_time_s": 37.2,
+     "source_frame": 2232,
+     "arrow": {
+      "bbox_px": [
+       641,
+       150,
+       74,
+       76
+      ],
+      "heading_deg": 27,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02256.webp",
+     "source_time_s": 37.6,
+     "source_frame": 2256,
+     "arrow": {
+      "bbox_px": [
+       654,
+       124,
+       75,
+       106
+      ],
+      "heading_deg": 21,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02280.webp",
+     "source_time_s": 38.0,
+     "source_frame": 2280,
+     "arrow": {
+      "bbox_px": [
+       677,
+       146,
+       71,
+       76
+      ],
+      "heading_deg": 29,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02304.webp",
+     "source_time_s": 38.4,
+     "source_frame": 2304,
+     "arrow": {
+      "bbox_px": [
+       711,
+       248,
+       66,
+       66
+      ],
+      "heading_deg": 38,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02328.webp",
+     "source_time_s": 38.8,
+     "source_frame": 2328,
+     "arrow": {
+      "bbox_px": [
+       707,
+       189,
+       86,
+       94
+      ],
+      "heading_deg": 45,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02352.webp",
+     "source_time_s": 39.2,
+     "source_frame": 2352,
+     "arrow": {
+      "bbox_px": [
+       759,
+       327,
+       122,
+       67
+      ],
+      "heading_deg": 58,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02376.webp",
+     "source_time_s": 39.6,
+     "source_frame": 2376,
+     "arrow": {
+      "bbox_px": [
+       764,
+       342,
+       125,
+       94
+      ],
+      "heading_deg": 98,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02400.webp",
+     "source_time_s": 40.0,
+     "source_frame": 2400,
+     "arrow": {
+      "bbox_px": [
+       762,
+       307,
+       127,
+       71
+      ],
+      "heading_deg": 82,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02424.webp",
+     "source_time_s": 40.4,
+     "source_frame": 2424,
+     "arrow": {
+      "bbox_px": [
+       759,
+       281,
+       124,
+       89
+      ],
+      "heading_deg": 78,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02448.webp",
+     "source_time_s": 40.8,
+     "source_frame": 2448,
+     "arrow": {
+      "bbox_px": [
+       764,
+       297,
+       123,
+       96
+      ],
+      "heading_deg": 87,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02472.webp",
+     "source_time_s": 41.2,
+     "source_frame": 2472,
+     "arrow": {
+      "bbox_px": [
+       763,
+       286,
+       123,
+       95
+      ],
+      "heading_deg": 83,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02496.webp",
+     "source_time_s": 41.6,
+     "source_frame": 2496,
+     "arrow": {
+      "bbox_px": [
+       747,
+       241,
+       117,
+       86
+      ],
+      "heading_deg": 69,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-a/f02520.webp",
+     "source_time_s": 42.0,
+     "source_frame": 2520,
+     "arrow": {
+      "bbox_px": [
+       452,
+       229,
+       390,
+       364
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "sand-a/f02544.webp",
+     "source_time_s": 42.4,
+     "source_frame": 2544,
+     "arrow": {
+      "bbox_px": [
+       554,
+       165,
+       289,
+       380
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "sand-a/f02568.webp",
+     "source_time_s": 42.8,
+     "source_frame": 2568,
+     "arrow": {
+      "bbox_px": [
+       488,
+       167,
+       342,
+       373
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "sand-a/f02592.webp",
+     "source_time_s": 43.2,
+     "source_frame": 2592,
+     "arrow": {
+      "bbox_px": [
+       582,
+       264,
+       241,
+       124
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": false
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "sand-b",
+   "split": "eval",
+   "stratum": "sand-same-colour",
+   "lighting": "day",
+   "source_time_range_s": [
+    43.6,
+    51.6
+   ],
+   "sample_period_s": 0.4,
+   "notes": "same beach; arrow on sand and over water; ring timer UI; 50.6-51.6 s golden ring UI covers the arrow region (unknown)",
+   "frames": [
+    {
+     "file": "sand-b/f02616.webp",
+     "source_time_s": 43.6,
+     "source_frame": 2616,
+     "arrow": {
+      "bbox_px": [
+       399,
+       307,
+       118,
+       91
+      ],
+      "heading_deg": 282,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02640.webp",
+     "source_time_s": 44.0,
+     "source_frame": 2640,
+     "arrow": {
+      "bbox_px": [
+       478,
+       224,
+       89,
+       77
+      ],
+      "heading_deg": 312,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02664.webp",
+     "source_time_s": 44.4,
+     "source_frame": 2664,
+     "arrow": {
+      "bbox_px": [
+       536,
+       177,
+       71,
+       87
+      ],
+      "heading_deg": 331,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02688.webp",
+     "source_time_s": 44.8,
+     "source_frame": 2688,
+     "arrow": {
+      "bbox_px": [
+       594,
+       160,
+       81,
+       91
+      ],
+      "heading_deg": 358,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02712.webp",
+     "source_time_s": 45.2,
+     "source_frame": 2712,
+     "arrow": {
+      "bbox_px": [
+       657,
+       152,
+       71,
+       98
+      ],
+      "heading_deg": 15,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02736.webp",
+     "source_time_s": 45.6,
+     "source_frame": 2736,
+     "arrow": {
+      "bbox_px": [
+       676,
+       170,
+       48,
+       53
+      ],
+      "heading_deg": 358,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02760.webp",
+     "source_time_s": 46.0,
+     "source_frame": 2760,
+     "arrow": {
+      "bbox_px": [
+       670,
+       223,
+       63,
+       58
+      ],
+      "heading_deg": 2,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02784.webp",
+     "source_time_s": 46.4,
+     "source_frame": 2784,
+     "arrow": {
+      "bbox_px": [
+       678,
+       223,
+       53,
+       58
+      ],
+      "heading_deg": 349,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02808.webp",
+     "source_time_s": 46.8,
+     "source_frame": 2808,
+     "arrow": {
+      "bbox_px": [
+       681,
+       222,
+       52,
+       60
+      ],
+      "heading_deg": 348,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02832.webp",
+     "source_time_s": 47.2,
+     "source_frame": 2832,
+     "arrow": {
+      "bbox_px": [
+       669,
+       222,
+       65,
+       60
+      ],
+      "heading_deg": 345,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02856.webp",
+     "source_time_s": 47.6,
+     "source_frame": 2856,
+     "arrow": {
+      "bbox_px": [
+       706,
+       231,
+       41,
+       58
+      ],
+      "heading_deg": 0,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02880.webp",
+     "source_time_s": 48.0,
+     "source_frame": 2880,
+     "arrow": {
+      "bbox_px": [
+       738,
+       247,
+       47,
+       60
+      ],
+      "heading_deg": 5,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02904.webp",
+     "source_time_s": 48.4,
+     "source_frame": 2904,
+     "arrow": {
+      "bbox_px": [
+       711,
+       248,
+       74,
+       61
+      ],
+      "heading_deg": 58,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02928.webp",
+     "source_time_s": 48.8,
+     "source_frame": 2928,
+     "arrow": {
+      "bbox_px": [
+       721,
+       256,
+       75,
+       60
+      ],
+      "heading_deg": 60,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02952.webp",
+     "source_time_s": 49.2,
+     "source_frame": 2952,
+     "arrow": {
+      "bbox_px": [
+       759,
+       252,
+       74,
+       72
+      ],
+      "heading_deg": 48,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f02976.webp",
+     "source_time_s": 49.6,
+     "source_frame": 2976,
+     "arrow": {
+      "bbox_px": [
+       731,
+       257,
+       123,
+       91
+      ],
+      "heading_deg": 55,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f03000.webp",
+     "source_time_s": 50.0,
+     "source_frame": 3000,
+     "arrow": {
+      "bbox_px": [
+       735,
+       280,
+       122,
+       85
+      ],
+      "heading_deg": 54,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f03024.webp",
+     "source_time_s": 50.4,
+     "source_frame": 3024,
+     "arrow": {
+      "bbox_px": [
+       748,
+       304,
+       91,
+       42
+      ],
+      "heading_deg": 72,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-b/f03048.webp",
+     "source_time_s": 50.8,
+     "source_frame": 3048,
+     "arrow": {
+      "bbox_px": [
+       772,
+       183,
+       84,
+       137
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "sand-b/f03072.webp",
+     "source_time_s": 51.2,
+     "source_frame": 3072,
+     "arrow": {
+      "bbox_px": [
+       864,
+       231,
+       232,
+       103
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "sand-b/f03096.webp",
+     "source_time_s": 51.6,
+     "source_frame": 3096,
+     "arrow": {
+      "bbox_px": [
+       1011,
+       431,
+       242,
+       231
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": true,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "water",
+   "split": "eval",
+   "stratum": "open-water",
+   "lighting": "day",
+   "source_time_range_s": [
+    52.0,
+    56.6
+   ],
+   "sample_period_s": 0.4,
+   "notes": "arrow over teal water; high contrast; turning",
+   "frames": [
+    {
+     "file": "water/f03120.webp",
+     "source_time_s": 52.0,
+     "source_frame": 3120,
+     "arrow": {
+      "bbox_px": [
+       769,
+       413,
+       131,
+       61
+      ],
+      "heading_deg": 86,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03144.webp",
+     "source_time_s": 52.4,
+     "source_frame": 3144,
+     "arrow": {
+      "bbox_px": [
+       764,
+       286,
+       125,
+       96
+      ],
+      "heading_deg": 83,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03168.webp",
+     "source_time_s": 52.8,
+     "source_frame": 3168,
+     "arrow": {
+      "bbox_px": [
+       764,
+       279,
+       125,
+       99
+      ],
+      "heading_deg": 82,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03192.webp",
+     "source_time_s": 53.2,
+     "source_frame": 3192,
+     "arrow": {
+      "bbox_px": [
+       764,
+       279,
+       125,
+       98
+      ],
+      "heading_deg": 85,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03216.webp",
+     "source_time_s": 53.6,
+     "source_frame": 3216,
+     "arrow": {
+      "bbox_px": [
+       744,
+       274,
+       123,
+       76
+      ],
+      "heading_deg": 56,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03240.webp",
+     "source_time_s": 54.0,
+     "source_frame": 3240,
+     "arrow": {
+      "bbox_px": [
+       768,
+       309,
+       94,
+       42
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "note": "position labelled; heading unreadable"
+    },
+    {
+     "file": "water/f03264.webp",
+     "source_time_s": 54.4,
+     "source_frame": 3264,
+     "arrow": {
+      "bbox_px": [
+       735,
+       223,
+       67,
+       84
+      ],
+      "heading_deg": 12,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03288.webp",
+     "source_time_s": 54.8,
+     "source_frame": 3288,
+     "arrow": {
+      "bbox_px": [
+       733,
+       228,
+       53,
+       76
+      ],
+      "heading_deg": 15,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03312.webp",
+     "source_time_s": 55.2,
+     "source_frame": 3312,
+     "arrow": {
+      "bbox_px": [
+       709,
+       210,
+       56,
+       79
+      ],
+      "heading_deg": 3,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "water/f03336.webp",
+     "source_time_s": 55.6,
+     "source_frame": 3336,
+     "arrow": {
+      "bbox_px": [
+       663,
+       223,
+       79,
+       60
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "water/f03360.webp",
+     "source_time_s": 56.0,
+     "source_frame": 3360,
+     "arrow": {
+      "bbox_px": [
+       643,
+       222,
+       77,
+       57
+      ],
+      "heading_deg": null,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "water/f03384.webp",
+     "source_time_s": 56.4,
+     "source_frame": 3384,
+     "arrow": {
+      "bbox_px": [
+       597,
+       196,
+       68,
+       81
+      ],
+      "heading_deg": 31,
+      "occluded": false,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "sand-near-a",
+   "split": "tune",
+   "stratum": "sand-occluded",
+   "lighting": "day",
+   "source_time_range_s": [
+    56.8,
+    63.0
+   ],
+   "sample_period_s": 0.4,
+   "notes": "arrow beside the player on sand, partly hidden by green foliage; small and box-like",
+   "frames": [
+    {
+     "file": "sand-near-a/f03408.webp",
+     "source_time_s": 56.8,
+     "source_frame": 3408,
+     "arrow": {
+      "bbox_px": [
+       564,
+       185,
+       122,
+       49
+      ],
+      "heading_deg": 98,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-a/f03432.webp",
+     "source_time_s": 57.2,
+     "source_frame": 3432,
+     "arrow": {
+      "bbox_px": [
+       593,
+       294,
+       42,
+       55
+      ],
+      "heading_deg": null,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     },
+     "unknown": true,
+     "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
+    },
+    {
+     "file": "sand-near-a/f03456.webp",
+     "source_time_s": 57.6,
+     "source_frame": 3456,
+     "arrow": {
+      "bbox_px": [
+       639,
+       361,
+       34,
+       39
+      ],
+      "heading_deg": 2,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03480.webp",
+     "source_time_s": 58.0,
+     "source_frame": 3480,
+     "arrow": {
+      "bbox_px": [
+       641,
+       357,
+       32,
+       38
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03504.webp",
+     "source_time_s": 58.4,
+     "source_frame": 3504,
+     "arrow": {
+      "bbox_px": [
+       643,
+       352,
+       33,
+       43
+      ],
+      "heading_deg": 9,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03528.webp",
+     "source_time_s": 58.8,
+     "source_frame": 3528,
+     "arrow": {
+      "bbox_px": [
+       645,
+       350,
+       30,
+       43
+      ],
+      "heading_deg": 7,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03552.webp",
+     "source_time_s": 59.2,
+     "source_frame": 3552,
+     "arrow": {
+      "bbox_px": [
+       645,
+       352,
+       30,
+       41
+      ],
+      "heading_deg": 3,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03576.webp",
+     "source_time_s": 59.6,
+     "source_frame": 3576,
+     "arrow": {
+      "bbox_px": [
+       643,
+       357,
+       33,
+       38
+      ],
+      "heading_deg": 3,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03600.webp",
+     "source_time_s": 60.0,
+     "source_frame": 3600,
+     "arrow": {
+      "bbox_px": [
+       643,
+       357,
+       30,
+       38
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03624.webp",
+     "source_time_s": 60.4,
+     "source_frame": 3624,
+     "arrow": {
+      "bbox_px": [
+       643,
+       352,
+       33,
+       41
+      ],
+      "heading_deg": 4,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03648.webp",
+     "source_time_s": 60.8,
+     "source_frame": 3648,
+     "arrow": {
+      "bbox_px": [
+       645,
+       350,
+       30,
+       42
+      ],
+      "heading_deg": 4,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03672.webp",
+     "source_time_s": 61.2,
+     "source_frame": 3672,
+     "arrow": {
+      "bbox_px": [
+       643,
+       352,
+       33,
+       39
+      ],
+      "heading_deg": 4,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": false
+     }
+    },
+    {
+     "file": "sand-near-a/f03696.webp",
+     "source_time_s": 61.6,
+     "source_frame": 3696,
+     "arrow": {
+      "bbox_px": [
+       607,
+       155,
+       29,
+       114
+      ],
+      "heading_deg": 11,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-a/f03720.webp",
+     "source_time_s": 62.0,
+     "source_frame": 3720,
+     "arrow": {
+      "bbox_px": [
+       554,
+       152,
+       90,
+       74
+      ],
+      "heading_deg": 55,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-a/f03744.webp",
+     "source_time_s": 62.4,
+     "source_frame": 3744,
+     "arrow": {
+      "bbox_px": [
+       506,
+       150,
+       85,
+       86
+      ],
+      "heading_deg": 39,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-a/f03768.webp",
+     "source_time_s": 62.8,
+     "source_frame": 3768,
+     "arrow": {
+      "bbox_px": [
+       460,
+       150,
+       99,
+       113
+      ],
+      "heading_deg": 355,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "sand-near-b",
+   "split": "eval",
+   "stratum": "sand-occluded",
+   "lighting": "day",
+   "source_time_range_s": [
+    63.2,
+    70.0
+   ],
+   "sample_period_s": 0.4,
+   "notes": "continuation of sand-near-a; arrow mostly clear, pointing up",
+   "frames": [
+    {
+     "file": "sand-near-b/f03792.webp",
+     "source_time_s": 63.2,
+     "source_frame": 3792,
+     "arrow": {
+      "bbox_px": [
+       414,
+       198,
+       76,
+       113
+      ],
+      "heading_deg": 342,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03816.webp",
+     "source_time_s": 63.6,
+     "source_frame": 3816,
+     "arrow": {
+      "bbox_px": [
+       419,
+       226,
+       68,
+       105
+      ],
+      "heading_deg": 340,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03840.webp",
+     "source_time_s": 64.0,
+     "source_frame": 3840,
+     "arrow": {
+      "bbox_px": [
+       465,
+       188,
+       81,
+       110
+      ],
+      "heading_deg": 356,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03864.webp",
+     "source_time_s": 64.4,
+     "source_frame": 3864,
+     "arrow": {
+      "bbox_px": [
+       470,
+       172,
+       82,
+       117
+      ],
+      "heading_deg": 0,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03888.webp",
+     "source_time_s": 64.8,
+     "source_frame": 3888,
+     "arrow": {
+      "bbox_px": [
+       463,
+       157,
+       86,
+       122
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03912.webp",
+     "source_time_s": 65.2,
+     "source_frame": 3912,
+     "arrow": {
+      "bbox_px": [
+       460,
+       150,
+       89,
+       125
+      ],
+      "heading_deg": 359,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03936.webp",
+     "source_time_s": 65.6,
+     "source_frame": 3936,
+     "arrow": {
+      "bbox_px": [
+       468,
+       165,
+       85,
+       120
+      ],
+      "heading_deg": 358,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03960.webp",
+     "source_time_s": 66.0,
+     "source_frame": 3960,
+     "arrow": {
+      "bbox_px": [
+       511,
+       180,
+       79,
+       109
+      ],
+      "heading_deg": 5,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f03984.webp",
+     "source_time_s": 66.4,
+     "source_frame": 3984,
+     "arrow": {
+      "bbox_px": [
+       511,
+       177,
+       79,
+       110
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04008.webp",
+     "source_time_s": 66.8,
+     "source_frame": 4008,
+     "arrow": {
+      "bbox_px": [
+       506,
+       160,
+       82,
+       122
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04032.webp",
+     "source_time_s": 67.2,
+     "source_frame": 4032,
+     "arrow": {
+      "bbox_px": [
+       501,
+       147,
+       86,
+       127
+      ],
+      "heading_deg": 2,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04056.webp",
+     "source_time_s": 67.6,
+     "source_frame": 4056,
+     "arrow": {
+      "bbox_px": [
+       506,
+       160,
+       82,
+       122
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04080.webp",
+     "source_time_s": 68.0,
+     "source_frame": 4080,
+     "arrow": {
+      "bbox_px": [
+       511,
+       177,
+       79,
+       110
+      ],
+      "heading_deg": 1,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04104.webp",
+     "source_time_s": 68.4,
+     "source_frame": 4104,
+     "arrow": {
+      "bbox_px": [
+       511,
+       177,
+       79,
+       113
+      ],
+      "heading_deg": 2,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04128.webp",
+     "source_time_s": 68.8,
+     "source_frame": 4128,
+     "arrow": {
+      "bbox_px": [
+       464,
+       162,
+       87,
+       119
+      ],
+      "heading_deg": 356,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04152.webp",
+     "source_time_s": 69.2,
+     "source_frame": 4152,
+     "arrow": {
+      "bbox_px": [
+       458,
+       147,
+       91,
+       128
+      ],
+      "heading_deg": 357,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04176.webp",
+     "source_time_s": 69.6,
+     "source_frame": 4176,
+     "arrow": {
+      "bbox_px": [
+       463,
+       155,
+       86,
+       122
+      ],
+      "heading_deg": 359,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    },
+    {
+     "file": "sand-near-b/f04200.webp",
+     "source_time_s": 70.0,
+     "source_frame": 4200,
+     "arrow": {
+      "bbox_px": [
+       470,
+       172,
+       82,
+       117
+      ],
+      "heading_deg": 356,
+      "occluded": true,
+      "near_edge": false,
+      "overlay_contact": true
+     }
+    }
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "live-sluice",
+   "split": "eval",
+   "stratum": "no-arrow-live-ui",
+   "lighting": "day",
+   "source_time_range_s": [
+    0,
+    7
+   ],
+   "sample_period_s": 1.0,
+   "notes": "captured read-only from the live client on 2026-08-28 at a sluice/deposit area during a luck-totem event: rainbow event lighting, yellow-pink terrain, the pan-fill HUD, chat and hotbar; no map arrow. Stored at canonical 1280x720 already (letterboxed by the capture service); chat, hotbar and currency pixelated",
+   "frames": [
+    {
+     "file": "live-sluice/live00.webp",
+     "source_time_s": 0.0,
+     "source_frame": 0,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live01.webp",
+     "source_time_s": 1.0,
+     "source_frame": 1,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live02.webp",
+     "source_time_s": 2.0,
+     "source_frame": 2,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live03.webp",
+     "source_time_s": 3.0,
+     "source_frame": 3,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live04.webp",
+     "source_time_s": 4.0,
+     "source_frame": 4,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live05.webp",
+     "source_time_s": 5.0,
+     "source_frame": 5,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live06.webp",
+     "source_time_s": 6.0,
+     "source_frame": 6,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live07.webp",
+     "source_time_s": 7.0,
+     "source_frame": 7,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    }
+   ],
+   "stored_size_px": [
+    1280,
+    720
+   ],
+   "source": "live-capture-2026-08-28"
+  }
+ ]
+}
