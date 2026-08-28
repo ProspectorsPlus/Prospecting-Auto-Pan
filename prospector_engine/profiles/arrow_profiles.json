@@ -8,6 +8,30 @@
   },
   "profiles": [
     {
+      "profile_id": "green_arrow_v1",
+      "display_name": "Green treasure map arrow",
+      "rule": "chroma_band",
+      "parameters": {
+        "min_green_chroma": 0.38,
+        "max_green_chroma": 0.72,
+        "max_blue_chroma": 0.30,
+        "min_red_chroma": 0.20,
+        "min_green": 90.0
+      },
+      "min_area_px": 400,
+      "max_area_px": 420000,
+      "min_aspect": 0.2,
+      "max_aspect": 5.0,
+      "status": "pending",
+      "supported_client_size_px": [1280, 720],
+      "evaluation_spec_id": null,
+      "provenance": {
+        "status": "pending",
+        "source": "seven owner-supplied crops of the live arrow across dirt, grass, water and pale terrain, measured 2026-08-28",
+        "note": "The band is deliberately LOOSE and generates proposals only. On grass the arrow's green chromaticity is 0.518 and the grass behind it is 0.520, so no colour rule can separate them - local contrast, the two-notch topology and the rest of the score do that (DECISIONS.md D-024). Area bounds span 0.04% to 46% of the canonical frame because the arrow fills a quarter of the view when the player stands under it. E-PROF has not been run."
+      }
+    },
+    {
       "profile_id": "yellow_map_v0",
       "display_name": "Yellow treasure map arrow (candidate)",
       "rule": "channel_relation",

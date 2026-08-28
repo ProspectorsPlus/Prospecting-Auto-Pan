@@ -16,15 +16,17 @@ worker refuses to steer and safe-stops with an explanation instead of guessing.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
+from prospector_engine.arrow import ArrowDetector, DetectorConfig, DirectionEstimator
 from prospector_engine.contracts import (
     ArrivalObservation,
     ArrowCandidateRecord,
     ArrowObservation,
     CapturedFrame,
     ControlState,
+    CueReading,
     DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
@@ -40,7 +42,6 @@ from prospector_engine.contracts import (
 from prospector_engine.coordinator import WorkerContext
 from prospector_engine.motion import ContactMonitor
 from prospector_engine.vision import (
-    DIRECTION_STRATEGIES,
     ArrivalDetector,
     ArrowProfile,
     ArrowSegmenter,
@@ -683,7 +684,7 @@ class PerceptionResult:
     candidates: tuple[ArrowCandidateRecord, ...]
     contour_px: tuple[tuple[int, int], ...]
     desired_deg: float | None
-    cues: tuple[tuple[str, DirectionObservation], ...]
+    cues: tuple[CueReading, ...]
     perception_ms: float
 
 
@@ -697,9 +698,13 @@ class PerceptionPipeline:
     """
 
     segmenter: ArrowSegmenter
+    #: The production detector. Built from the segmenter's profile so the two
+    #: can never describe different colours.
+    detector: ArrowDetector | None = None
+    estimator: DirectionEstimator | None = None
     tracker: ArrowTracker = field(default_factory=ArrowTracker)
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
-    strategy: str = "fusion"
+    strategy: str = "topology_consensus"
     reference: ReferenceFrame = field(default_factory=ReferenceFrame)
     #: The one authority on the active profile. When present, the pipeline
     #: applies its staged swap at the top of every frame, which is what makes a
@@ -716,9 +721,18 @@ class PerceptionPipeline:
     _profile_revision: int = 1
     _geometry_identity: tuple[object, ...] | None = None
 
+    def __post_init__(self) -> None:
+        if self.detector is None:
+            self.detector = ArrowDetector(self.segmenter.profile, DetectorConfig())
+        if self.estimator is None:
+            self.estimator = DirectionEstimator(self.detector.config)
+
     def set_profile(self, profile: ArrowProfile) -> None:
         """Swap the arrow profile and drop any track built from the old one."""
+        config = self.detector.config if self.detector is not None else DetectorConfig()
         self.segmenter = ArrowSegmenter(profile)
+        self.detector = ArrowDetector(profile, config)
+        self.estimator = DirectionEstimator(config)
         self.tracker = ArrowTracker()
         self.arrival = ArrivalDetector()
         self._frames_since_full = self.full_frame_every  # force a full pass
@@ -751,6 +765,8 @@ class PerceptionPipeline:
         if self._geometry_identity is not None and identity != self._geometry_identity:
             self.tracker = ArrowTracker()
             self.arrival = ArrivalDetector()
+            if self.detector is not None:
+                self.detector.reset()
             self._frames_since_full = self.full_frame_every
             self._geometry_identity = identity
             return True
@@ -774,7 +790,7 @@ class PerceptionPipeline:
         """
         if self._frames_since_full >= self.full_frame_every:
             return None
-        predicted = self.tracker.predicted()
+        predicted = self.detector.predicted_centroid() if self.detector is not None else None
         if predicted is None:
             return None
         width, height = frame.canonical_size_px
@@ -788,8 +804,12 @@ class PerceptionPipeline:
         return (x, y, right - x, bottom - y)
 
     def set_strategy(self, strategy: str) -> None:
-        if strategy in DIRECTION_STRATEGIES:
-            self.strategy = strategy
+        """Retained for the E-DIR-IDEAL comparison harness.
+
+        Production runs one strategy: robust consensus over every cue, which is
+        what makes a disagreement an abstention rather than a silent average.
+        """
+        self.strategy = strategy
 
     @property
     def profile(self) -> ArrowProfile:
@@ -804,36 +824,42 @@ class PerceptionPipeline:
         # geometry change can never land halfway through an observation.
         self._sync_profile()
         self._sync_geometry(frame)
+        assert self.detector is not None and self.estimator is not None
+
         roi = self._roi_for(frame)
-        raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, roi)
-        if roi is not None and not raw_arrow.valid:
+        arrow, hypotheses = self.detector.analyze(frame, roi_px=roi)
+        if roi is not None and not arrow.valid:
             # An ROI miss is not an abstention: fall back to the full frame
             # immediately rather than reporting a loss the tracker caused.
             roi = None
-            raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, None)
+            arrow, hypotheses = self.detector.analyze(frame, roi_px=None)
         if roi is None:
             self._frames_since_full = 0
             self._full_passes += 1
         else:
             self._frames_since_full += 1
             self._roi_hits += 1
-        arrow = self.tracker.update(raw_arrow)
 
         anchor = self.reference.anchor_canonical_px
         forward = self.reference.forward_deg
-        # Every cue, every frame: the selected one drives the controller, and
-        # the rest are what make a disagreement legible instead of a silent
-        # abstention (plan 7.4 E-DIR-IDEAL).
-        cues = tuple(
-            (name, strategy(arrow, anchor, forward))
-            for name, strategy in DIRECTION_STRATEGIES.items()
+        accepted = next((h for h in hypotheses if h.accepted), None) if arrow.valid else None
+        result = self.estimator.estimate(
+            accepted.features if accepted is not None else None,
+            anchor_px=anchor,
+            forward_deg=forward,
+            arrow_confidence=arrow.confidence,
         )
-        direction = dict(cues)[self.strategy]
+        direction = result.observation
+        if accepted is not None:
+            # The tip and tail come from the direction stage, so the shaft the
+            # overlay draws is exactly the geometry the estimate was taken from.
+            arrow = replace(arrow, tip_px=result.tip_px, tail_px=result.tail_px)
 
         desired_deg: float | None = None
         if arrow.valid and direction.valid and direction.error_deg is not None:
             desired_deg = wrap_deg(forward + direction.error_deg)
 
+        contour = accepted.features.contour_px if accepted is not None else ()
         arrival = self.arrival.observe(frame, map_id=map_id, approach_valid=approach_valid)
         inputs = NavigationInputs(
             frame=frame,
@@ -845,10 +871,10 @@ class PerceptionPipeline:
         )
         return PerceptionResult(
             inputs=inputs,
-            candidates=candidates,
+            candidates=tuple(h.as_record() for h in hypotheses),
             contour_px=contour,
             desired_deg=desired_deg,
-            cues=cues,
+            cues=result.readings,
             perception_ms=(monotonic_s() - started) * 1000.0,
         )
 

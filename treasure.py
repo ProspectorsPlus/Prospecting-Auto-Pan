@@ -8,6 +8,7 @@
     python treasure.py --calibrate    read client-relative pixels under the cursor
     python treasure.py --capture-probe  measure capture cost, read-only
     python treasure.py --replay DIR   replay a recorded session, emits no input
+    python treasure.py --detector-report  stratified detector metrics, no input
 
 ``--deadman`` is dispatched **before** Tk, OpenCV, capture, or engine code is
 imported (plan 4.5), so the helper stays small and starts even if the heavy

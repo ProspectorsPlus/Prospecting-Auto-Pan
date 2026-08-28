@@ -452,14 +452,23 @@ class DiagnosticCanvas:
         what shows *how* they disagree - which is the difference between a
         useful diagnostic and a blank screen.
         """
-        for index, (name, cue) in enumerate(observation.cues):
+        for index, cue in enumerate(observation.cues):
             key = f"cue_{index}"
-            if not cue.valid or cue.error_deg is None or name == observation.strategy_id:
+            if cue.heading_deg is None:
                 self._hide(key)
                 self._hide(f"{key}_label")
                 continue
-            item = self._line(key, fill=self.CUE_COLOUR, width=1, arrow="last", dash=(2, 3))
-            heading = (observation.forward_deg or 0.0) + cue.error_deg
+            # A cue consensus rejected is drawn faintly rather than hidden: the
+            # whole point of showing the components is to see the disagreement.
+            rejected = cue.weight <= 0.0
+            item = self._line(
+                key,
+                fill=self.REJECT_COLOUR if rejected else self.CUE_COLOUR,
+                width=1,
+                arrow="last",
+                dash=(2, 6) if rejected else (2, 3),
+            )
+            name, heading = cue.cue_id, cue.heading_deg
             self._set_arm(item, anchor, heading, transform, length=self.ARM_LENGTH_PX * 0.72)
             radians = math.radians(heading)
             label_point = (
@@ -472,7 +481,9 @@ class DiagnosticCanvas:
             )
             self.canvas.coords(label, view[0], view[1])
             self.canvas.itemconfigure(
-                label, text=f"{name} {cue.error_deg:+.0f}°", state="normal"
+                label,
+                text=f"{name} {heading:+.0f}°" + ("  (outlier)" if rejected else ""),
+                state="normal",
             )
 
     def _draw_arc(
@@ -541,11 +552,16 @@ class DiagnosticCanvas:
         else:
             lines.append(f"direction ABSTAIN: {direction.abstain_reason}")
         agreeing = [
-            f"{name} {cue.error_deg:+.0f}"
-            for name, cue in observation.cues
-            if cue.valid and cue.error_deg is not None
+            f"{cue.cue_id} {cue.heading_deg:+.0f}"
+            for cue in observation.cues
+            if cue.valid and cue.heading_deg is not None
         ]
         lines.append("cues: " + (", ".join(agreeing) if agreeing else "all abstained"))
+        if direction.valid and direction.sign_margin_deg:
+            lines.append(
+                f"polarity margin {direction.sign_margin_deg:.0f}°"
+                f"  anisotropy {direction.anisotropy:.2f}"
+            )
         lines.append(f"forward ref: {observation.forward_source}")
         if observation.candidates:
             rejected = sum(1 for c in observation.candidates if not c.accepted)

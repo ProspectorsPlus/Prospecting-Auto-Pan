@@ -1231,10 +1231,12 @@ class DiagnosticObservation:
     forward_source: str
     desired_deg: float | None
     direction: DirectionObservation
-    #: Every candidate cue evaluated on this frame, not only the selected one.
-    #: Seeing which cues agree is the whole diagnostic value of E-DIR-IDEAL,
-    #: and a fusion abstention is far more informative next to its components.
-    cues: tuple[tuple[str, DirectionObservation], ...]
+    #: Every candidate cue evaluated on this frame, not only the selected one,
+    #: each carrying the weight robust consensus gave it. Seeing which cues
+    #: agreed - and which were rejected as outliers, at weight zero - is the
+    #: whole diagnostic value of E-DIR-IDEAL, and a consensus abstention is far
+    #: more informative next to its components than on its own.
+    cues: tuple[CueReading, ...]
     motion: MotionObservation | None
     arrival: ArrivalObservation | None
 

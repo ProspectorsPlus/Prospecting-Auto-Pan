@@ -7,7 +7,6 @@ saw, and a tier is only held while it is genuinely being sustained.
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from prospector_engine.capture import CadenceGovernor, CaptureConfig, LatencyTracker
@@ -19,7 +18,8 @@ from tests.fakes import make_geometry
 PROFILES = load_profiles()
 YELLOW = PROFILES.get("yellow_map_v0")
 GENERIC = PROFILES.get("generic_saturated_v0")
-assert YELLOW is not None and GENERIC is not None
+GREEN = PROFILES.get("green_arrow_v1")
+assert YELLOW is not None and GENERIC is not None and GREEN is not None
 
 
 # ---------------------------------------------------------------------------
@@ -151,25 +151,35 @@ def test_an_empty_tracker_reports_zeroes_rather_than_failing() -> None:
 
 
 def _frame_with_blob(sequence: int, centre: tuple[int, int]) -> object:
-    from prospector_engine.contracts import CapturedFrame, freeze_array
+    """A real arrow, rendered where the test wants it.
 
-    geometry = make_geometry(size=(1280.0, 720.0))
-    image = np.zeros((720, 1280, 3), dtype=np.uint8)
-    image[:, :] = (20, 20, 20)
-    x, y = centre
-    image[y - 45 : y + 45, x - 30 : x + 30] = (40, 220, 230)  # BGR yellow
+    A painted rectangle used to be enough, because the detector ranked
+    candidates by area. It is not enough now, and that is the point: the
+    production detector requires the arrowhead topology it was built to find,
+    so a fixture without it would be testing nothing.
+    """
+    from prospector_engine.contracts import CapturedFrame, freeze_array
+    from tests.arrow_fixtures import render_scene
+
+    scene = render_scene(
+        heading_deg=35.0,
+        centre_px=(float(centre[0]), float(centre[1])),
+        scale_px=70.0,
+        terrain="dirt",
+        seed=sequence,
+    )
     return CapturedFrame(
         sequence=sequence,
         captured_at_s=float(sequence) * 0.01,
         completed_at_s=float(sequence) * 0.01 + 0.002,
         duration_ms=2.0,
-        geometry=geometry,
-        bgr=freeze_array(image),
+        geometry=make_geometry(size=(1280.0, 720.0)),
+        bgr=freeze_array(scene.bgr),
     )
 
 
 def _pipeline(**overrides: object) -> PerceptionPipeline:
-    return PerceptionPipeline(segmenter=ArrowSegmenter(YELLOW), **overrides)  # type: ignore[arg-type]
+    return PerceptionPipeline(segmenter=ArrowSegmenter(GREEN), **overrides)  # type: ignore[arg-type]
 
 
 def test_the_first_frame_always_uses_a_full_pass() -> None:
@@ -270,8 +280,8 @@ def test_changing_the_profile_forces_a_full_pass_and_drops_the_track() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_every_direction_cue_is_evaluated_not_only_the_selected_one() -> None:
-    """A fusion abstention is only useful next to the cues that disagreed."""
+def test_every_direction_cue_is_reported_with_the_weight_consensus_gave_it() -> None:
+    """A consensus abstention is only useful next to the cues that disagreed."""
     pipeline = _pipeline()
     result = pipeline.analyze(
         _frame_with_blob(1, (900, 250)),  # type: ignore[arg-type]
@@ -279,9 +289,13 @@ def test_every_direction_cue_is_evaluated_not_only_the_selected_one() -> None:
         approach_valid=False,
     )
 
-    names = {name for name, _cue in result.cues}
-    assert names == {"centroid_ray", "tip_ray", "pca_axis", "fusion"}
-    assert dict(result.cues)["fusion"] is result.inputs.direction
+    names = {reading.cue_id for reading in result.cues}
+    assert {"tail_to_head", "notch_to_tip", "centroid_to_tip"} <= names
+    assert "player_to_arrow" in names, "position is reported, and kept distinct from pose"
+    # Every cue carries the weight consensus gave it, so a rejected outlier is
+    # visible at weight zero rather than silently missing.
+    assert all(reading.weight >= 0.0 for reading in result.cues)
+    assert result.inputs.direction.cues == result.cues
 
 
 def test_the_reference_frame_is_configuration_and_says_so() -> None:

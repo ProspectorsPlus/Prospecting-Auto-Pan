@@ -163,6 +163,7 @@ def _observation(**overrides: Any) -> Any:
     """A synthetic observation with a real frame behind it."""
     from prospector_engine.contracts import (
         ArrowObservation,
+        CueReading,
         DiagnosticObservation,
         DirectionObservation,
         NavigationPhase,
@@ -219,7 +220,11 @@ def _observation(**overrides: Any) -> Any:
         "forward_source": "assumed: screen-up (E-FORWARD PENDING)",
         "desired_deg": 32.0,
         "direction": direction,
-        "cues": (("centroid_ray", direction),),
+        "cues": (
+            CueReading("tail_to_head", 32.0, 0.8, 0.8, valid=True),
+            CueReading("notch_to_tip", 30.0, 0.9, 0.9, valid=True),
+            CueReading("pca_axis", -150.0, 0.4, 0.0, valid=False, note="outlier"),
+        ),
         "motion": None,
         "arrival": None,
         "phase": NavigationPhase.ALIGN,
