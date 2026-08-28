@@ -98,7 +98,7 @@ def test_the_windows_port_can_be_imported_and_inspected_from_macos() -> None:
             "  WIN_HOTKEY_BINDINGS, WindowsPlatformPort, WindowsReleaseOnlyPort, _WIN_SCANCODES)\n"
             "from prospector_engine.contracts import InputKey\n"
             "assert set(_WIN_SCANCODES) == set(InputKey)\n"
-            "assert sorted(WIN_HOTKEY_BINDINGS) == ['f1','f2','f3','f4','f5']\n"
+            "assert sorted(WIN_HOTKEY_BINDINGS) == ['f1','f2','f3','f4','f5','f6']\n"
             "port = WindowsPlatformPort()\n"
             "assert port.name == 'windows'\n"
             "assert not hasattr(WindowsReleaseOnlyPort, 'raw_key_down')\n"
@@ -195,13 +195,14 @@ def test_all_five_hotkeys_are_bound_on_this_platform() -> None:
     else:  # pragma: no cover - exercised on Windows
         from prospector_engine.platform_win import WIN_HOTKEY_BINDINGS as bindings
 
-    assert sorted(bindings) == ["f1", "f2", "f3", "f4", "f5"]
+    assert sorted(bindings) == ["f1", "f2", "f3", "f4", "f5", "f6"]
     assert set(bindings.values()) == {
         IntentType.START_LIVE,
         IntentType.STOP,
         IntentType.PIXEL_INFO,
         IntentType.RESET_CHARACTER,
         IntentType.PAN_SWAP_TEST,
+        IntentType.DIG_LOOP,
     }
 
 
@@ -220,6 +221,7 @@ def test_input_emitting_hotkeys_require_positive_focus() -> None:
     assert source.fire(IntentType.START_LIVE) is False
     assert source.fire(IntentType.RESET_CHARACTER) is False
     assert source.fire(IntentType.PAN_SWAP_TEST) is False
+    assert source.fire(IntentType.DIG_LOOP) is False
     assert submitted == []
 
     focus[0] = True

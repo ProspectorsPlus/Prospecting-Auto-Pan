@@ -88,8 +88,16 @@ WIN_HOTKEY_BINDINGS: dict[str, IntentType] = {
     "f3": IntentType.PIXEL_INFO,
     "f4": IntentType.RESET_CHARACTER,
     "f5": IntentType.PAN_SWAP_TEST,
+    "f6": IntentType.DIG_LOOP,
 }
-_WIN_HOTKEY_VK: dict[str, int] = {"f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74}
+_WIN_HOTKEY_VK: dict[str, int] = {
+    "f1": 0x70,
+    "f2": 0x71,
+    "f3": 0x72,
+    "f4": 0x73,
+    "f5": 0x74,
+    "f6": 0x75,
+}
 
 ULONG_PTR = wintypes.WPARAM
 

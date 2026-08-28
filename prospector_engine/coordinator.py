@@ -447,6 +447,7 @@ class RuntimeCoordinator:
             IntentType.START_LIVE: self._on_start_live,
             IntentType.RESET_CHARACTER: self._on_service,
             IntentType.PAN_SWAP_TEST: self._on_service,
+            IntentType.DIG_LOOP: self._on_service,
             IntentType.PIXEL_INFO: self._on_service,
             IntentType.RECOVER_RELEASE: self._on_recover_release,
         }.get(intent.intent_type)

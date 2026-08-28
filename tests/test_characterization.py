@@ -272,3 +272,141 @@ def test_migrated_pixels_are_marked_pending_not_validated() -> None:
     shifted = engine.DEFAULT_PIXELS.from_legacy_window_frame(56)
     assert shifted.dig_spot_a_px == (559, 614 - 56)
     assert shifted.provenance.status is EvidenceStatus.PENDING
+
+
+# ---------------------------------------------------------------------------
+# The standalone dig loop (DECISIONS.md D-015)
+# ---------------------------------------------------------------------------
+
+
+def test_the_dig_loop_taps_while_the_spot_matches(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    pixels = engine.DEFAULT_PIXELS
+    diggable = {
+        pixels.dig_spot_a_px: (51, 51, 51),
+        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.capacity_px: (10, 10, 10),
+    }
+    lost = {pixels.dig_spot_a_px: (0, 0, 0), pixels.capacity_px: (10, 10, 10)}
+    _frames(service_context, rig.clock, [diggable, diggable, diggable, lost])
+
+    result = engine.run_dig_loop(service_context)
+
+    assert result.taps == 3
+    assert result.outcome is DigOutcome.CUE_LOST
+    ops = [op for op, _ in rig.port.ops()]
+    assert ops.count("lmb_down") == ops.count("lmb_up") == 3
+
+
+def test_the_dig_loop_runs_a_pan_swap_when_capacity_reads_full(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    """This is the legacy tick()'s behaviour, rebuilt on the bounded services."""
+    pixels = engine.DEFAULT_PIXELS
+    full = {
+        pixels.dig_spot_a_px: (51, 51, 51),
+        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.capacity_px: (200, 190, 40),
+    }
+    _frames(
+        service_context,
+        rig.clock,
+        [
+            full,
+            PROMPT_SHOWING,
+            PROMPT_CLEARED,
+            PAN_CONFIRMED,
+            {pixels.dig_spot_a_px: (0, 0, 0)},
+        ],
+    )
+
+    result = engine.run_dig_loop(service_context)
+
+    assert result.pan_swaps == 1
+    assert "pan_swap#1:SUCCESS" in result.evidence[0]
+
+
+def test_the_dig_loop_is_bounded_by_its_tap_cap(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    """B2 again: the legacy loop had no cap of any kind."""
+    pixels = engine.DEFAULT_PIXELS
+    diggable = {
+        pixels.dig_spot_a_px: (51, 51, 51),
+        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.capacity_px: (10, 10, 10),
+    }
+    _frames(service_context, rig.clock, [diggable] * 50)
+
+    result = engine.run_dig_loop(service_context, engine.DigLoopLimits(max_taps=5))
+
+    assert result.taps == 5
+    assert result.outcome is DigOutcome.TIMEOUT
+    assert "tap cap" in result.detail
+
+
+def test_the_dig_loop_stops_at_its_deadline(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    pixels = engine.DEFAULT_PIXELS
+    diggable = {
+        pixels.dig_spot_a_px: (51, 51, 51),
+        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.capacity_px: (10, 10, 10),
+    }
+    _frames(service_context, rig.clock, [diggable] * 5000)
+
+    result = engine.run_dig_loop(
+        service_context, engine.DigLoopLimits(max_taps=100000, deadline_ms=200)
+    )
+
+    assert result.outcome in (DigOutcome.TIMEOUT, DigOutcome.CANCELLED)
+    assert result.taps < 100000
+
+
+def test_the_dig_loop_cancels_within_one_wait_slice(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    pixels = engine.DEFAULT_PIXELS
+    diggable = {
+        pixels.dig_spot_a_px: (51, 51, 51),
+        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.capacity_px: (10, 10, 10),
+    }
+    _frames(service_context, rig.clock, [diggable] * 500)
+    cancellation = FakeCancellation(rig.clock, cancel_after_waits=4)
+    service_context.cancel = cancellation
+    rig.authority.activate_generation(
+        1,
+        emits_input=True,
+        cancellation=cancellation,
+        requires_capture=True,
+        pinned_rect=rig.port.find_client_rect(),
+    )
+
+    result = engine.run_dig_loop(service_context)
+
+    assert result.outcome is DigOutcome.CANCELLED
+    assert result.taps <= 6
+    assert rig.authority.ledger_empty()
+
+
+def test_the_dig_loop_never_taps_into_a_full_pan(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    pixels = engine.DEFAULT_PIXELS
+    full = {
+        pixels.dig_spot_a_px: (51, 51, 51),
+        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.capacity_px: (200, 190, 40),
+    }
+    _frames(service_context, rig.clock, [full] * 30)
+
+    result = engine.run_dig_loop(
+        service_context, engine.DigLoopLimits(max_taps=100, max_pan_swaps=0)
+    )
+
+    assert result.taps == 0
+    assert "pan-swap cap" in result.detail
+    assert "lmb_down" not in [op for op, _ in rig.port.ops()]

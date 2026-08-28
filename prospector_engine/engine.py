@@ -57,6 +57,7 @@ __all__ = [
     "on_dig_spot",
     "run_dequip_pan",
     "run_dig_at_current_spot",
+    "run_dig_loop",
     "run_pan_swap",
     "run_reset",
     "sample_client_pixel",
@@ -185,6 +186,37 @@ class TreasurePixels:
 
 
 DEFAULT_PIXELS = TreasurePixels()
+
+
+@dataclass(frozen=True)
+class DigLoopLimits:
+    """Bounds for the standalone dig loop (D-015).
+
+    The pre-navigator build looped forever; this one has both an attempt cap
+    and a monotonic deadline, like every other retry path here.
+    """
+
+    max_taps: int = 5000
+    max_pan_swaps: int = 20
+    deadline_ms: int = 30 * 60 * 1000
+    poll_ms: int = 10
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="DECISIONS.md D-015",
+            note="bounds chosen so a session ends on its own; E-DIG is PENDING",
+        )
+    )
+
+
+@dataclass(frozen=True)
+class DigLoopResult:
+    outcome: DigOutcome
+    taps: int
+    pan_swaps: int
+    elapsed_s: float
+    detail: str
+    evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -614,4 +646,85 @@ def run_dig_at_current_spot(ctx: ServiceContext, max_attempts: int = 1) -> DigHa
             monotonic_s() - started_s,
             attempts,
             str(stop),
+        )
+
+
+def run_dig_loop(ctx: ServiceContext, limits: DigLoopLimits | None = None) -> DigLoopResult:
+    """Dig at the current spot until something says stop (D-015).
+
+    This is the pre-navigator behavior, rebuilt on the bounded services: tap
+    while both terrain check points match, run a pan swap when the capacity bar
+    reads full, and stop on anything else. Unlike the old loop it has an attempt
+    cap, a monotonic deadline, and a cancellation token that lands within one
+    wait slice.
+
+    It is *not* navigation. It assumes the character is already standing on a
+    dig spot, which is exactly what the old build assumed.
+    """
+    bounds = limits or DigLoopLimits()
+    started_s = monotonic_s()
+    deadline_s = min(ctx.deadline_s, started_s + bounds.deadline_ms / 1000.0)
+    # ServiceContext is mutable by design so a nested service inherits the
+    # tighter of the two deadlines rather than the caller's.
+    loop_ctx = ctx
+    loop_ctx.deadline_s = deadline_s
+    taps = 0
+    swaps = 0
+    evidence: list[str] = []
+    try:
+        while taps < bounds.max_taps:
+            result = run_dig_at_current_spot(loop_ctx)
+            if result.outcome is DigOutcome.DIG_PROGRESS:
+                taps += 1
+                loop_ctx.sleep_ms(bounds.poll_ms)
+                continue
+            if result.outcome is DigOutcome.PAN_FULL:
+                if swaps >= bounds.max_pan_swaps:
+                    return DigLoopResult(
+                        DigOutcome.TIMEOUT,
+                        taps,
+                        swaps,
+                        monotonic_s() - started_s,
+                        f"pan-swap cap ({bounds.max_pan_swaps}) reached",
+                        tuple(evidence),
+                    )
+                ctx.status("capacity full - running pan swap")
+                swap = run_pan_swap(loop_ctx)
+                swaps += 1
+                evidence.append(f"pan_swap#{swaps}:{swap.outcome.name}:{swap.detail}")
+                if swap.outcome is not PanSwapOutcome.SUCCESS:
+                    return DigLoopResult(
+                        DigOutcome.FAILED
+                        if swap.outcome is PanSwapOutcome.FAILED
+                        else DigOutcome.CANCELLED,
+                        taps,
+                        swaps,
+                        monotonic_s() - started_s,
+                        f"pan swap {swap.outcome.name.lower()}: {swap.detail}",
+                        tuple(evidence),
+                    )
+                continue
+            # CUE_LOST, TIMEOUT, CANCELLED, FAILED: report it and stop rather
+            # than tapping into an unknown state.
+            evidence.append(f"stopped_on:{result.outcome.name}:{result.detail}")
+            return DigLoopResult(
+                result.outcome,
+                taps,
+                swaps,
+                monotonic_s() - started_s,
+                result.detail,
+                tuple(evidence),
+            )
+        return DigLoopResult(
+            DigOutcome.TIMEOUT,
+            taps,
+            swaps,
+            monotonic_s() - started_s,
+            f"tap cap ({bounds.max_taps}) reached",
+            tuple(evidence),
+        )
+    except ServiceCancelled as stop:
+        outcome = DigOutcome.CANCELLED if str(stop) == "cancelled" else DigOutcome.TIMEOUT
+        return DigLoopResult(
+            outcome, taps, swaps, monotonic_s() - started_s, str(stop), tuple(evidence)
         )

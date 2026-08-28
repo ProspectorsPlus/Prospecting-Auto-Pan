@@ -23,7 +23,7 @@ during implementation.**
 | 0C Input authority and deadman | **done** — ledger, capabilities, watchdog, real helper subprocess tested, B5/B8 fixed | **pending** (real up-events, force-kill) | **pending** |
 | 0D Coordinator migration | **done** — priority loop, one worker, B3/B4/B6/B7/B13 fixed | n/a | n/a |
 | 0E Bounded legacy services | **done** — dig/reset/dequip/pan-swap typed and bounded, B2/B12 fixed | **pending** (owner-observed run) | **pending** |
-| 1 Shadow foundation and GUI | **done** — capture, telemetry, recorder, dashboard, diagnostics | **pending** (manual recording session) | **pending** |
+| 1 Shadow foundation and GUI | **done** — capture, telemetry, recorder with quarantine, dashboard, diagnostics, cross-launch unsafe-release recovery | **pending** (manual recording session) | **pending** |
 | 2 Offline perception candidates | **partial** — candidates implemented and unit-tested on synthetic frames; **no labelled corpus exists** | **blocked** on recordings | **blocked** on recordings |
 | 3 Shadow navigation and controller | **partial** — FSM, controller, recovery ladder implemented and gated off; deterministic replay works (`--replay`) | **pending** (E-YAW, E-STEER-CAL need physical arming) | **pending** |
 | 4 One-map Live lifecycle | **not started, on purpose** — the plan enables a transition only when its evidence is validated, so `NAVIGATE → DIG` is not wired up while E-ARRIVE is pending | **pending** | **pending** |

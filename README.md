@@ -22,6 +22,7 @@ repository state and is not architecture truth.
 | One coherent stamped frame per decision | implemented |
 | Single input authority, leases, watchdog, out-of-process deadman | implemented and tested |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
+| Standalone dig loop (**F6**) | implemented; **pixels pending reverification** |
 | Shadow observation, telemetry, evidence recorder, dashboard | implemented |
 | Arrow detection, direction cues, motion estimators | implemented as **candidates**; no gate has been run |
 | Live navigation (steering) | **refuses to run** — it names the pending experiments instead |
@@ -97,8 +98,15 @@ Clicking Tk removes focus from Roblox, so there is no actionable *Start Live*,
 carry the intent while Roblox is positively focused. A failed readiness check
 spends the token: you re-arm.
 
-Hotkeys: **F1** start Live (armed) · **F2** stop · **F3** pixel probe ·
-**F4** reset character · **F5** pan-swap test.
+Hotkeys (all require Roblox to be positively focused, except **F2**, which
+always works): **F1** start Live (armed) · **F2** stop · **F3** pixel probe ·
+**F4** reset character · **F5** pan-swap test · **F6** dig loop.
+
+**F6** is the pre-navigator dig loop, rebuilt on the bounded services: tap
+while both terrain check points match, pan-swap when the capacity bar reads
+full, stop on anything else — now with an attempt cap, a deadline, and instant
+cancellation. Re-derive the pixels with `--calibrate` first, or it will
+correctly report `CUE_LOST` and do nothing.
 
 ## Development
 

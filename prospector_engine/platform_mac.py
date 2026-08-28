@@ -115,10 +115,21 @@ MAC_HOTKEY_BINDINGS: dict[str, IntentType] = {
     "f3": IntentType.PIXEL_INFO,
     "f4": IntentType.RESET_CHARACTER,
     "f5": IntentType.PAN_SWAP_TEST,
+    "f6": IntentType.DIG_LOOP,
 }
-"""F1-F5, all five actually bound (bug B4: F5 was advertised but missing)."""
+"""F1-F6, all actually bound (bug B4: F5 was advertised but bound nowhere).
 
-_MAC_HOTKEY_VK: dict[str, int] = {"f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96}
+F6 is the standalone dig loop (DECISIONS.md D-015).
+"""
+
+_MAC_HOTKEY_VK: dict[str, int] = {
+    "f1": 122,
+    "f2": 120,
+    "f3": 99,
+    "f4": 118,
+    "f5": 96,
+    "f6": 97,
+}
 
 
 def _post(event: Any) -> None:

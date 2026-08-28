@@ -199,3 +199,75 @@ Nothing is silently rescaled.
 native and physically armed. Making that the default configuration is stronger
 than documenting it, because an agent or a CI runner that types plain `pytest`
 still cannot emit input.
+
+---
+
+## D-013 — 2026-08-27 — `IntentType.RECOVER_RELEASE` added
+
+**Plan text:** §4.4 requires "an explicit release-only recovery handshake"
+before Live may be offered again after an uncertain release, but does not say
+how it is triggered.
+
+**Decision:** a new intent, `RECOVER_RELEASE`, with a dashboard button that
+appears *only* while the latch is set.
+
+**Why:** "explicit" rules out clearing the latch as a side effect of a
+successful Stop. Making it an intent keeps it on the same priority queue and
+the same coordinator lock as everything else, rather than giving the UI a
+private path into the authority. The handshake calls
+`InputAuthority.recover_release()`, which emits up-edges only — there is no
+press anywhere in that path — and the latch clears only if the resulting
+`ReleaseReport` says release is known safe.
+
+**Also added:** the latch now survives the process.
+`AppPaths.recovery/unsafe_release.json` is written whenever a stop or shutdown
+cannot confirm a safe release, adopted at the next `RuntimeCoordinator.start()`,
+and removed only by a successful handshake. An unreadable record is treated as a
+record — fail closed. Plan §4.4 asks for exactly this ("a prominent
+unsafe-release recovery record for the next launch"); without it, a crash while
+a key was held would read as a clean start.
+
+---
+
+## D-014 — 2026-08-27 — Orphan recorder chunks are quarantined, not deleted
+
+**Decision:** `EvidenceRecorder.start()` moves any chunk the previous manifest
+never described into `quarantine/`.
+
+**Why:** §11.1 says unfinished chunks are "recovered or quarantined on next
+start", and that protected evidence is never deleted silently. A chunk left by
+a run that ended without a bounded flush is evidence of *something* — most
+likely of the crash worth investigating — so it is set aside rather than
+deleted or replayed as if the manifest vouched for it.
+
+---
+
+## D-015 — 2026-08-27 — `SERVICE:DIG` keeps the existing dig loop reachable
+
+**Plan text:** §6.1 reaches `DIG` only from `LIVE:NAVIGATE → ARRIVED`, and gives
+standalone hotkeys only to reset (F4) and pan swap (F5).
+
+**Decision:** added `IntentType.DIG_LOOP` on **F6**, a bounded `SERVICE` mode
+that runs the same `run_dig_at_current_spot` / `run_pan_swap` services the
+lifecycle will use.
+
+**Why:** digging at an already-found spot, with automatic pan swap when the
+capacity bar reads full, is the capability the pre-navigator build actually
+had and the owner actually uses. Following §6.1 literally would leave that
+capability unreachable until E-ARRIVE, E-PROF, E-DIR-E2E, E-YAW and
+E-STEER-CAL all pass — that is, indefinitely — because the only door to `DIG`
+is behind Live. Phase 0E converts these services rather than retiring them, so
+leaving them uncallable would make the conversion incomplete in substance while
+looking complete on paper.
+
+**What it is not:** it is not navigation and it does not weaken anything. It
+runs under the same coordinator, the same generation, the same
+`ServiceInputSession`, the same watchdog and deadman, and the same focused-
+hotkey requirement as F4/F5. It has a total attempt cap and a monotonic
+deadline, F2 cancels it within one wait slice, and it stops on any outcome that
+is not `DIG_PROGRESS` or a successful pan swap.
+
+**Important caveat, surfaced in the UI:** the dig pixels are `PENDING`
+reverification (D-006). With the canonical client pin they will simply not
+match, so the service reports `CUE_LOST` and does nothing. That is the correct
+failure — re-derive them with `--calibrate` first.

@@ -77,16 +77,19 @@ no input, but they do need Screen Recording permission.
    hotkey press while Roblox is focused. An agent may not simulate, bypass,
    pre-authorize, or persist that arming, and may not add a code path that
    would let it.
-2. **Never fabricate native evidence.** macOS and Windows gates are tracked
+2. **Never press a game hotkey to test it.** F1–F6 drive real input into
+   Roblox. Their handlers are covered by tests that use fakes; an agent must
+   never fire them on the real machine.
+3. **Never fabricate native evidence.** macOS and Windows gates are tracked
    separately. If hardware, a real Roblox session, or owner observation was
    not available, the gate status is `pending` with the exact steps needed.
    Mocked or opposite-OS import tests are never reported as native proof.
-3. **No destructive git.** No `reset --hard`, no `clean -fd`, no force push,
+4. **No destructive git.** No `reset --hard`, no `clean -fd`, no force push,
    no bare `git stash` / `git stash pop` (the stash stack is shared with
    other worktrees). Do not touch unrelated user changes.
-4. **Do not publish.** No push, tag, or release while **G-LICENSE** (plan
+5. **Do not publish.** No push, tag, or release while **G-LICENSE** (plan
    §15) is unresolved.
-5. **Do not copy Prospector Studio source, docs, or CSS.** General
+6. **Do not copy Prospector Studio source, docs, or CSS.** General
    engineering ideas may be reimplemented independently; verbatim reuse is
    not permitted. Adapted first-party mechanics get provenance in
    `DECISIONS.md` and the commit message.

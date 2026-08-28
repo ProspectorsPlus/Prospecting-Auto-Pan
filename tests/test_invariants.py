@@ -29,50 +29,48 @@ from prospector_engine.contracts import (
 
 @pytest.mark.parametrize("edge", ["pointer_delta", "scroll_lines", "pointer_move_client"])
 def test_no_pointer_or_scroll_edge_survives_a_racing_stop(rig: Any, edge: str) -> None:
+    """Pointer moves and scrolls share the barrier with acquisition and release.
+
+    The port is instrumented to start a ``release_all`` from another thread
+    while the edge is mid-flight. That thread cannot enter the barrier until
+    the edge finishes, which is the ordering guarantee under test: no edge may
+    land after a completed release.
+    """
     rig.activate()
     session = rig.session()
-    fired: list[str] = []
-
-    def racing(*_args: Any, **_kwargs: Any) -> None:
-        if not fired:
-            fired.append("stop")
-            worker = threading.Thread(target=rig.authority.release_all, args=("racing",))
-            worker.start()
-            time.sleep(0.05)
-            worker.join(2.0)
-
-    original = getattr(
-        rig.port,
-        {
-            "pointer_delta": "raw_pointer_delta",
-            "scroll_lines": "raw_scroll_lines",
-            "pointer_move_client": "raw_pointer_move_client",
-        }[edge],
-    )
+    attribute = {
+        "pointer_delta": "raw_pointer_delta",
+        "scroll_lines": "raw_scroll_lines",
+        "pointer_move_client": "raw_pointer_move_client",
+    }[edge]
+    original = getattr(rig.port, attribute)
+    racers: list[threading.Thread] = []
 
     def wrapper(*args: Any, **kwargs: Any) -> None:
         original(*args, **kwargs)
-        racing()
+        if not racers:
+            racer = threading.Thread(target=rig.authority.release_all, args=("racing",))
+            racers.append(racer)
+            racer.start()
+            time.sleep(0.05)  # the racer is now blocked on the barrier we hold
 
-    setattr(
-        rig.port,
-        {
-            "pointer_delta": "raw_pointer_delta",
-            "scroll_lines": "raw_scroll_lines",
-            "pointer_move_client": "raw_pointer_move_client",
-        }[edge],
-        wrapper,
-    )
+    setattr(rig.port, attribute, wrapper)
 
     call = {
         "pointer_delta": lambda: session.pointer_delta(10, 0),
         "scroll_lines": lambda: session.scroll_lines(-1),
         "pointer_move_client": lambda: session.pointer_move_client((10, 10)),
     }[edge]
-    call()
 
-    # After the release completed, a second attempt must be refused outright.
+    assert call() is True  # the first edge completes inside the barrier
+    for racer in racers:
+        racer.join(5.0)
+        assert not racer.is_alive()
+
+    # The release has now completed. Nothing may emit again.
+    rig.port.transcript.clear()
     assert call() is False
+    assert rig.port.ops() == []
     assert rig.authority.ledger_empty()
 
 

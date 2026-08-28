@@ -43,7 +43,13 @@ from prospector_engine.coordinator import (
     WorkerContext,
     WorkerFactory,
 )
-from prospector_engine.engine import DEFAULT_PIXELS, ServiceContext, run_pan_swap, run_reset
+from prospector_engine.engine import (
+    DEFAULT_PIXELS,
+    ServiceContext,
+    run_dig_loop,
+    run_pan_swap,
+    run_reset,
+)
 from prospector_engine.input_authority import (
     AuthorityConfig,
     DeadmanClient,
@@ -140,6 +146,17 @@ def _service_worker(kind: str) -> WorkerFactory:
                 kind_map.get(result.outcome.name, ModeResultKind.FAILED),
                 f"reset: {result.detail}",
                 result.evidence,
+            )
+        if kind == "dig_loop":
+            # The dig loop runs for as long as it is productive, so it gets the
+            # service's own deadline rather than the 90 s the one-shot services use.
+            service_context.deadline_s = monotonic_s() + 31 * 60.0
+            dig = run_dig_loop(service_context)
+            digs_ok = dig.outcome.name in ("CANCELLED", "TIMEOUT", "PAN_FULL", "CUE_LOST")
+            return ModeResult(
+                ModeResultKind.CANCELLED if digs_ok else ModeResultKind.FAILED,
+                f"dig loop: {dig.taps} taps, {dig.pan_swaps} pan swaps - {dig.detail}",
+                dig.evidence,
             )
         swap = run_pan_swap(service_context)
         return ModeResult(
@@ -242,6 +259,7 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
         IntentType.START_LIVE: make_live_worker(pipeline_factory, gates),
         IntentType.RESET_CHARACTER: _service_worker("reset"),
         IntentType.PAN_SWAP_TEST: _service_worker("pan_swap"),
+        IntentType.DIG_LOOP: _service_worker("dig_loop"),
         IntentType.PIXEL_INFO: _pixel_info_worker(port, report),
     }
     coordinator = RuntimeCoordinator(
@@ -429,7 +447,7 @@ class Dashboard:
         self.live_guide.grid(row=0, column=4, sticky="ew", padx=3)
         tk.Label(
             row,
-            text="Focus Roblox -> F4 reset  |  F5 pan test  |  F3 pixel",
+            text="Focus Roblox -> F6 dig  |  F4 reset  |  F5 pan test  |  F3 pixel",
             bg=SURFACE_ALT,
             fg=MUTED,
             font=self.f_small,
