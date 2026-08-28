@@ -304,3 +304,97 @@ def test_the_candidate_record_keeps_rejections_with_reasons() -> None:
     for candidate in result.candidates:
         if not candidate.accepted:
             assert candidate.rejected_reason
+
+
+# ---------------------------------------------------------------------------
+# Bounded reacquisition
+# ---------------------------------------------------------------------------
+
+
+def _service(source: object, **config: object) -> object:
+    from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
+    from tests.fakes import FakePlatformPort, VirtualClock
+
+    clock = VirtualClock()
+    port = FakePlatformPort(
+        clock, geometry=make_geometry(size=(64.0, 48.0), canonical_px=(64, 48))
+    )
+    guard = ViewportGuard(port, requested_client_logical=(64.0, 48.0))
+    guard.adopt_current()
+    service = CaptureService(
+        guard,
+        EvidenceRegistry("reacquire-test"),
+        config=CaptureConfig(
+            start_tier=PerformanceTier.MINIMUM,
+            max_frame_age_ms=100000,
+            **config,  # type: ignore[arg-type]
+        ),
+        source_factory=lambda: source,  # type: ignore[arg-type,return-value]
+    )
+    return (service, port, guard)
+
+
+def test_a_lost_window_triggers_a_bounded_reacquisition() -> None:
+    import time
+
+    from prospector_engine.geometry import ViewportGeometry
+    from tests.fakes import FakeCaptureSource
+
+    source = FakeCaptureSource()
+    service, port, _guard = _service(  # type: ignore[misc]
+        source, supervisor_interval_s=0.02, reacquire_initial_delay_s=0.01
+    )
+    assert service.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while service.latest() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert service.latest() is not None
+
+        port.set_geometry(ViewportGeometry.invalid("window closed"))
+        time.sleep(0.4)
+
+        assert service.metrics().reacquisitions >= 1
+    finally:
+        service.stop()
+
+
+def test_reacquisition_backs_off_instead_of_busy_looping() -> None:
+    """A window that is gone for good must not cost a retry per poll."""
+    import time
+
+    from prospector_engine.geometry import ViewportGeometry
+    from tests.fakes import FakeCaptureSource
+
+    source = FakeCaptureSource()
+    service, port, _guard = _service(  # type: ignore[misc]
+        source,
+        supervisor_interval_s=0.01,
+        reacquire_initial_delay_s=0.02,
+        reacquire_max_delay_s=0.2,
+    )
+    assert service.start()
+    try:
+        port.set_geometry(ViewportGeometry.invalid("window closed"))
+        time.sleep(0.8)
+        attempts = service.metrics().reacquisitions
+        # 80 supervisor polls in that window; exponential backoff to a 0.2 s cap
+        # allows roughly a handful of attempts, never one per poll.
+        assert 1 <= attempts <= 12, attempts
+    finally:
+        service.stop()
+
+
+def test_a_healthy_source_is_never_reacquired() -> None:
+    import time
+
+    from tests.fakes import FakeCaptureSource
+
+    source = FakeCaptureSource()
+    service, _port, _guard = _service(source, supervisor_interval_s=0.02)  # type: ignore[misc]
+    assert service.start()
+    try:
+        time.sleep(0.4)
+        assert service.metrics().reacquisitions == 0
+    finally:
+        service.stop()

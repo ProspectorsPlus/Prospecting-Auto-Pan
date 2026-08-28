@@ -419,3 +419,46 @@ Measured end to end through the real service, consuming every frame:
 zero drops, capture p95 6.4-7.8 ms, frame age 5-7 ms, CPU 39-49% of one core.
 Reproducible with ``treasure.py --capture-probe``. **E-PERF remains PENDING**:
 this is capture-and-consume only, on one machine.
+
+---
+
+## D-020 — 2026-08-28 — Bounded reacquisition instead of a stall that never ends
+
+**Decision.** One supervisor thread runs the cadence governor *and* watches for
+a source that needs rebuilding: a `CAPTURE_MISMATCH` from the guard, an
+`INVALID` viewport, a backend reporting ill health, or no frames inside the
+stall budget. It rebuilds the source through `restart_source`, behind an
+exponential backoff capped at four seconds.
+
+**Why the cap and the backoff matter.** Roblox closing, minimizing, or moving to
+another Space is not a transient; without a cap the supervisor would retry every
+poll forever. With it, a window that is gone for good costs one retry every few
+seconds, the retry structure never grows, and the reacquisition count is a
+visible metric rather than a hidden loop. A stop in flight short-circuits the
+check, so a retry can never undo a shutdown.
+
+---
+
+## D-021 — 2026-08-28 — The reference arm is drawn, and labelled as a hypothesis
+
+**The tension.** The mission asks Shadow to draw the player-forward arm, the
+desired direction, and the angle between them. But E-ANCHOR and E-FORWARD have
+not been run, so there is no validated anchor and no validated forward.
+
+**Decision.** `ReferenceFrame` supplies both as **provisional configuration**
+carrying `EvidenceStatus.PENDING`: the anchor at canonical (640, 430) and
+forward as screen-up, which is precisely the hypothesis plan §7.4 sets out to
+test after a deterministic camera reset. The arm is drawn dashed, labelled
+"forward (assumed)", and every observation records
+`forward_source = "assumed: screen-up after camera reset (E-FORWARD PENDING)"`.
+
+**Why this is not a claim.** Drawing it is the only way a human can judge it,
+which is what Shadow is *for*. Nothing downstream is affected: `steering_enabled`
+still requires E-ANCHOR and E-FORWARD to be `VALIDATED`, the live worker still
+refuses and names them, and the pending status is repeated in the caption, the
+decision panel, and the legend. A picture a human can evaluate is the input to
+the experiment, not a substitute for it.
+
+Every candidate direction cue is also evaluated and drawn, not just the selected
+one, so a fusion abstention shows *how much* the cues disagreed rather than
+leaving a blank screen - which is the diagnostic E-DIR-IDEAL actually needs.

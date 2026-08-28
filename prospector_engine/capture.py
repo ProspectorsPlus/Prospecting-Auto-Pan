@@ -87,6 +87,11 @@ class CaptureConfig:
     upshift_after_s: float = 4.0
     #: Fraction of the tier's nominal rate that counts as "keeping up".
     downshift_ratio: float = 0.7
+    #: Reacquisition backoff. Bounded and capped so a window that is gone for
+    #: good costs a retry every few seconds, not a busy loop.
+    reacquire_initial_delay_s: float = 0.25
+    reacquire_max_delay_s: float = 4.0
+    supervisor_interval_s: float = 0.25
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
@@ -738,7 +743,10 @@ class CaptureService:
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
-        self._governor_thread: threading.Thread | None = None
+        self._supervisor_thread: threading.Thread | None = None
+        self._reacquire_delay_s = self._config.reacquire_initial_delay_s
+        self._next_reacquire_s = 0.0
+        self._reacquiring = False
 
     # -- accessors --------------------------------------------------------
     @property
@@ -840,10 +848,12 @@ class CaptureService:
                 target=self._pull_loop, name="treasure-capture", daemon=True
             )
             self._thread.start()
-        self._governor_thread = threading.Thread(
-            target=self._governor_loop, name="treasure-cadence", daemon=True
-        )
-        self._governor_thread.start()
+        self._reacquire_delay_s = self._config.reacquire_initial_delay_s
+        if self._supervisor_thread is None or not self._supervisor_thread.is_alive():
+            self._supervisor_thread = threading.Thread(
+                target=self._supervisor_loop, name="treasure-cadence", daemon=True
+            )
+            self._supervisor_thread.start()
         return True
 
     def _make_source(self) -> CaptureSource:
@@ -860,24 +870,45 @@ class CaptureService:
             with contextlib.suppress(Exception):
                 source.stop()
         joined = True
-        for thread in (self._thread, self._governor_thread):
-            if thread is not None:
+        for thread in (self._thread, self._supervisor_thread):
+            if thread is not None and thread is not threading.current_thread():
                 thread.join(timeout_s)
                 joined = joined and not thread.is_alive()
         self._thread = None
-        self._governor_thread = None
+        self._supervisor_thread = None
         self._slot.clear()
         self._pool.clear()
         return joined
 
     def restart_source(self, reason: str) -> bool:
-        """Bounded reacquisition after a window replacement or source loss."""
+        """Tear the source down and build a fresh one against current geometry.
+
+        Called by the supervisor on window replacement, display change, source
+        death, or a stall - never in a loop, always behind the backoff.
+        """
         with self._lock:
             self._reacquisitions += 1
             self._last_error = f"reacquiring: {reason}"
-        self.stop(timeout_s=0.5)
-        self._guard.adopt_current()
-        return self.start()
+            self._reacquiring = True
+        try:
+            source = self._source
+            with self._lock:
+                self._source = None
+            if source is not None:
+                with contextlib.suppress(Exception):
+                    source.stop()
+            pull_thread = self._thread
+            self._thread = None
+            self._stop.set()
+            if pull_thread is not None and pull_thread is not threading.current_thread():
+                pull_thread.join(1.0)
+            self._stop.clear()
+            self._slot.clear()
+            self._guard.adopt_current()
+            return self.start()
+        finally:
+            with self._lock:
+                self._reacquiring = False
 
     # -- frame intake -----------------------------------------------------
     def _on_raw_frame(self, raw: RawFrame) -> None:
@@ -990,8 +1021,13 @@ class CaptureService:
             if self._stop.wait(max(0.0, interval - elapsed)):
                 return
 
-    def _governor_loop(self) -> None:
-        while not self._stop.wait(0.5):
+    def _supervisor_loop(self) -> None:
+        """Cadence governance and bounded reacquisition, on one timer.
+
+        Two jobs that both need a steady heartbeat and neither of which may
+        block the frame path.
+        """
+        while not self._stop.wait(self._config.supervisor_interval_s):
             now = monotonic_s()
             age_ms = None
             envelope = self._slot.peek()
@@ -1000,6 +1036,7 @@ class CaptureService:
                 if age_ms > self._config.max_frame_age_ms:
                     with self._lock:
                         self._stale += 1
+
             before = self._governor.tier
             after = self._governor.update(
                 unique_fps=self._unique_rate.rate(), frame_age_ms=age_ms, now_s=now
@@ -1009,6 +1046,45 @@ class CaptureService:
                 if source is not None:
                     with contextlib.suppress(Exception):
                         source.set_target_fps(after.fps)
+
+            self._maybe_reacquire(now)
+
+    def _reacquire_reason(self) -> str | None:
+        """Why the source should be rebuilt, or ``None`` when it is fine."""
+        source = self._source
+        if source is None:
+            return None  # deliberately stopped
+        geometry = self._guard.check()
+        if geometry.state is ViewportState.CAPTURE_MISMATCH:
+            return f"viewport changed: {geometry.detail}"
+        if geometry.state is ViewportState.INVALID:
+            return f"window lost: {geometry.detail}"
+        health = source.health()
+        if health is not None:
+            return f"source unhealthy: {health}"
+        if self.stalled():
+            return "no frames within the stall budget"
+        return None
+
+    def _maybe_reacquire(self, now_s: float) -> None:
+        if self._stop.is_set():
+            return  # a stop in flight must never be undone by a retry
+        with self._lock:
+            if self._reacquiring or now_s < self._next_reacquire_s:
+                return
+        reason = self._reacquire_reason()
+        if reason is None:
+            with self._lock:
+                self._reacquire_delay_s = self._config.reacquire_initial_delay_s
+            return
+        with self._lock:
+            delay = self._reacquire_delay_s
+            # Exponential, capped. A window that is gone for good costs one
+            # retry every few seconds rather than a busy loop, and the retry
+            # structure never grows.
+            self._reacquire_delay_s = min(self._config.reacquire_max_delay_s, delay * 2.0)
+            self._next_reacquire_s = now_s + delay
+        self.restart_source(reason)
 
     # -- metrics ----------------------------------------------------------
     def metrics(self) -> CaptureMetrics:
