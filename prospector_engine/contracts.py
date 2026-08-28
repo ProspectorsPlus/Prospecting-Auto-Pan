@@ -27,6 +27,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from prospector_engine.geometry import Affine2D, ViewportGeometry
+from prospector_engine.trace import PerceptionTiming
 
 __all__ = [
     "ArrivalObservation",
@@ -1166,6 +1167,12 @@ class ArrowCandidateRecord:
     #: single opaque number.
     score_terms: tuple[tuple[str, float], ...] = ()
     contour_px: tuple[tuple[int, int], ...] = ()
+    #: Where this candidate ended up: ``proposed`` (scored, below threshold),
+    #: ``viable`` (above threshold, not chosen), ``selected`` (the single
+    #: candidate the observation was built from), ``challenger`` (contesting
+    #: the held identity), ``rejected`` (failed a hard constraint). Exactly one
+    #: record per observation is ``selected``; ``accepted`` mirrors that.
+    state: str = "proposed"
 
     def term(self, name: str) -> float | None:
         for key, value in self.score_terms:
@@ -1319,6 +1326,8 @@ class DiagnosticObservation:
     plain_summary: str = ""
     #: Why Live output is blocked right now, in the same plain language.
     blockers: tuple[str, ...] = ()
+    #: Stage timings and the tracker's verdict for this frame.
+    timing: PerceptionTiming | None = None
 
     @property
     def frame_sequence(self) -> int:

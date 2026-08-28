@@ -14,8 +14,8 @@
       "parameters": {
         "min_green_chroma": 0.38,
         "max_green_chroma": 0.72,
-        "max_blue_chroma": 0.30,
-        "min_red_chroma": 0.20,
+        "max_blue_chroma": 0.3,
+        "min_red_chroma": 0.2,
         "min_green": 90.0
       },
       "min_area_px": 400,
@@ -23,7 +23,10 @@
       "min_aspect": 0.2,
       "max_aspect": 5.0,
       "status": "pending",
-      "supported_client_size_px": [1280, 720],
+      "supported_client_size_px": [
+        1280,
+        720
+      ],
       "evaluation_spec_id": null,
       "provenance": {
         "status": "pending",
@@ -45,7 +48,10 @@
       "min_aspect": 0.25,
       "max_aspect": 4.0,
       "status": "pending",
-      "supported_client_size_px": [1280, 720],
+      "supported_client_size_px": [
+        1280,
+        720
+      ],
       "evaluation_spec_id": null,
       "provenance": {
         "status": "pending",
@@ -54,19 +60,55 @@
       }
     },
     {
+      "profile_id": "yellow_map_v1",
+      "display_name": "Yellow treasure map arrow (real-corpus fit)",
+      "rule": "channel_relation",
+      "parameters": {
+        "max_rg_delta": 40,
+        "min_rg": 150,
+        "min_blue_gap": 65
+      },
+      "min_area_px": 450,
+      "max_area_px": 420000,
+      "min_aspect": 0.2,
+      "max_aspect": 5.0,
+      "status": "pending",
+      "supported_client_size_px": [
+        1280,
+        720
+      ],
+      "evaluation_spec_id": null,
+      "provenance": {
+        "status": "pending",
+        "source": "tests/corpus/real, TUNE split only (pink-a, purple-a, desert-a, sand-a, sand-near-a), measured 2026-08-28",
+        "note": "Colour bounds chosen where arrow-pixel coverage was 92-98% per tune stratum with surround leakage at or below 4%: |R-G| <= 40 (v0: 28) admits the arrow's shaded side; blue gap 65 keeps pale sand (min(R,G)-B about 52) outside. The area floor is half the smallest labelled tune arrow (1140 px box) because the occluded arrow beside the player fell under v0's 900 px floor; the ceiling admits the arrow filling the view. Evaluated on the EVAL split by treasure.py --detector-report --corpus. Not validated: one session, one map, one machine (E-PROF PENDING)."
+      }
+    },
+    {
       "profile_id": "generic_saturated_v0",
       "display_name": "Generic saturated arrow (HSV candidate)",
       "rule": "hsv_range",
       "parameters": {
-        "lower_hsv": [0, 120, 120],
-        "upper_hsv": [179, 255, 255]
+        "lower_hsv": [
+          0,
+          120,
+          120
+        ],
+        "upper_hsv": [
+          179,
+          255,
+          255
+        ]
       },
       "min_area_px": 900,
       "max_area_px": 90000,
       "min_aspect": 0.25,
       "max_aspect": 4.0,
       "status": "pending",
-      "supported_client_size_px": [1280, 720],
+      "supported_client_size_px": [
+        1280,
+        720
+      ],
       "evaluation_spec_id": null,
       "provenance": {
         "status": "pending",

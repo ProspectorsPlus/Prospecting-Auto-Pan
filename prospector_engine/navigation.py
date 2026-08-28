@@ -19,7 +19,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from prospector_engine.arrow import ArrowDetector, DetectorConfig, DirectionEstimator
+from prospector_engine.arrow import (
+    ArrowDetector,
+    DetectorConfig,
+    DirectionEstimator,
+    TrackState,
+    present,
+)
 from prospector_engine.contracts import (
     ArrivalObservation,
     ArrowCandidateRecord,
@@ -43,6 +49,7 @@ from prospector_engine.contracts import (
 from prospector_engine.coordinator import WorkerContext
 from prospector_engine.motion import ContactMonitor
 from prospector_engine.steering import ShiftLockController, SteeringInputs
+from prospector_engine.trace import PerceptionTiming
 from prospector_engine.vision import (
     ArrivalDetector,
     ArrowProfile,
@@ -777,29 +784,31 @@ class PerceptionResult:
     desired_deg: float | None
     cues: tuple[CueReading, ...]
     perception_ms: float
+    #: Stage-by-stage cost and the tracker's verdict, for the frame trace.
+    timing: PerceptionTiming | None = None
 
 
 @dataclass
 class PerceptionPipeline:
-    """Segmenter, tracker, arrival detector, and direction cue for one profile.
+    """Detector, direction estimator, arrival detector for one profile.
 
-    The profile can be swapped at runtime through :meth:`set_profile`, which the
-    dashboard's selector uses; the profile actually used is recorded on every
-    observation so the picture and the label cannot disagree.
+    One frame, one temporal transaction: the detector may run a region pass
+    and, on a *later* frame, a full-frame pass, but ``commit`` is called once
+    per unique frame. A region miss schedules the global search for the next
+    frame instead of running it synchronously on the same screenshot.
+
+    Everything derived - direction, contour, tip and tail, score breakdown -
+    comes from the single candidate the detector **selected**, never from the
+    first candidate that merely cleared the threshold.
     """
 
     segmenter: ArrowSegmenter
-    #: The production detector. Built from the segmenter's profile so the two
-    #: can never describe different colours.
     detector: ArrowDetector | None = None
     estimator: DirectionEstimator | None = None
     tracker: ArrowTracker = field(default_factory=ArrowTracker)
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
     strategy: str = "topology_consensus"
     reference: ReferenceFrame = field(default_factory=ReferenceFrame)
-    #: The one authority on the active profile. When present, the pipeline
-    #: applies its staged swap at the top of every frame, which is what makes a
-    #: profile change land on a frame boundary rather than mid-observation.
     profiles: ProfileAuthority | None = None
     #: Padding around a tracked arrow when searching only a region of interest.
     roi_padding_px: int = 220
@@ -809,8 +818,12 @@ class PerceptionPipeline:
     _frames_since_full: int = 0
     _roi_hits: int = 0
     _full_passes: int = 0
+    _fallbacks: int = 0
     _profile_revision: int = 1
     _geometry_identity: tuple[object, ...] | None = None
+    _last_heading_deg: float | None = None
+    _last_track_id: int | None = None
+    _reversals_refused: int = 0
 
     def __post_init__(self) -> None:
         if self.detector is None:
@@ -827,6 +840,8 @@ class PerceptionPipeline:
         self.tracker = ArrowTracker()
         self.arrival = ArrivalDetector()
         self._frames_since_full = self.full_frame_every  # force a full pass
+        self._last_heading_deg = None
+        self._last_track_id = None
 
     @property
     def profile_revision(self) -> int:
@@ -845,13 +860,7 @@ class PerceptionPipeline:
         return applied
 
     def _sync_geometry(self, frame: CapturedFrame) -> bool:
-        """Drop temporal state when the coordinate basis changes.
-
-        A tracker prediction, an ROI, and a candidate history are all expressed
-        in canonical pixels of one specific viewport. After a resize, a display
-        migration, or a window replacement they describe a place that no longer
-        exists, so they are discarded rather than reinterpreted.
-        """
+        """Drop temporal state when the coordinate basis changes."""
         identity = frame.geometry.identity()
         if self._geometry_identity is not None and identity != self._geometry_identity:
             self.tracker = ArrowTracker()
@@ -860,6 +869,8 @@ class PerceptionPipeline:
                 self.detector.reset()
             self._frames_since_full = self.full_frame_every
             self._geometry_identity = identity
+            self._last_heading_deg = None
+            self._last_track_id = None
             return True
         self._geometry_identity = identity
         return False
@@ -872,20 +883,34 @@ class PerceptionPipeline:
     def full_passes(self) -> int:
         return self._full_passes
 
+    @property
+    def fallbacks(self) -> int:
+        """Full-frame passes that ran because the previous region pass missed."""
+        return self._fallbacks
+
+    @property
+    def reversals_refused(self) -> int:
+        return self._reversals_refused
+
     def _roi_for(self, frame: CapturedFrame) -> tuple[int, int, int, int] | None:
         """A search region around the predicted track, or ``None`` for full frame.
 
-        Returns ``None`` whenever the track is stale or the periodic full-frame
-        pass is due, so acquisition is never permanently confined to where the
-        arrow used to be.
+        ``None`` whenever the detector asks for a global search - no identity
+        held, a region miss on the previous frame, or the periodic challenge -
+        and on the pipeline's own full-frame cadence, so acquisition is never
+        permanently confined to where the arrow used to be.
         """
+        detector = self.detector
+        if detector is None or detector.wants_global_search():
+            return None
         if self._frames_since_full >= self.full_frame_every:
             return None
-        predicted = self.detector.predicted_centroid() if self.detector is not None else None
+        predicted = detector.predicted_centroid()
         if predicted is None:
             return None
         width, height = frame.canonical_size_px
-        pad = self.roi_padding_px
+        scale = detector.predicted_scale_px() or 0.0
+        pad = max(self.roi_padding_px, int(scale * 2.5))
         x = max(0, int(predicted[0]) - pad)
         y = max(0, int(predicted[1]) - pad)
         right = min(width, int(predicted[0]) + pad)
@@ -895,11 +920,7 @@ class PerceptionPipeline:
         return (x, y, right - x, bottom - y)
 
     def set_strategy(self, strategy: str) -> None:
-        """Retained for the E-DIR-IDEAL comparison harness.
-
-        Production runs one strategy: robust consensus over every cue, which is
-        what makes a disagreement an abstention rather than a silent average.
-        """
+        """Retained for the E-DIR-IDEAL comparison harness."""
         self.strategy = strategy
 
     @property
@@ -909,48 +930,69 @@ class PerceptionPipeline:
     def analyze(
         self, frame: CapturedFrame, *, map_id: str, approach_valid: bool
     ) -> PerceptionResult:
-        """Everything derived from one frame, in one pass."""
+        """Everything derived from one frame, in one temporal transaction."""
         started = monotonic_s()
-        # Both of these run *before* any pixel is read, so a profile swap or a
-        # geometry change can never land halfway through an observation.
         self._sync_profile()
         self._sync_geometry(frame)
         assert self.detector is not None and self.estimator is not None
+        detector = self.detector
 
+        roi_started = monotonic_s()
         roi = self._roi_for(frame)
-        arrow, hypotheses = self.detector.analyze(frame, roi_px=roi)
-        if roi is not None and not arrow.valid:
-            # An ROI miss is not an abstention: fall back to the full frame
-            # immediately rather than reporting a loss the tracker caused.
-            roi = None
-            arrow, hypotheses = self.detector.analyze(frame, roi_px=None)
+        roi_proposal_ms = (monotonic_s() - roi_started) * 1000.0
+        # A fallback is a full pass that ran because the detector asked for
+        # one while an identity was held or being reacquired - the scheduled
+        # replacement for the old synchronous second pass.
+        fallback = (
+            roi is None
+            and detector.wants_global_search()
+            and detector.state in (TrackState.TRACK, TrackState.AMBIGUOUS, TrackState.REACQUIRE)
+        )
+        proposals = detector.propose(frame, roi_px=roi)
+        outcome = detector.commit(frame, [proposals])
         if roi is None:
             self._frames_since_full = 0
             self._full_passes += 1
+            if fallback:
+                self._fallbacks += 1
         else:
             self._frames_since_full += 1
             self._roi_hits += 1
 
+        arrow = outcome.observation
+        selected = outcome.selected
         anchor = self.reference.anchor_canonical_px
         forward = self.reference.forward_deg
-        accepted = next((h for h in hypotheses if h.accepted), None) if arrow.valid else None
+        # Polarity memory belongs to one identity: a new track id starts with
+        # no remembered sign, so a genuinely different arrow is never forced
+        # to agree with the last one.
+        if arrow.track_id != self._last_track_id:
+            self._last_heading_deg = None
+        direction_started = monotonic_s()
         result = self.estimator.estimate(
-            accepted.features if accepted is not None else None,
+            selected.features if selected is not None else None,
             anchor_px=anchor,
             forward_deg=forward,
             arrow_confidence=arrow.confidence,
+            previous_heading_deg=self._last_heading_deg,
         )
+        direction_ms = (monotonic_s() - direction_started) * 1000.0
         direction = result.observation
-        if accepted is not None:
-            # The tip and tail come from the direction stage, so the shaft the
-            # overlay draws is exactly the geometry the estimate was taken from.
+        if result.reversal_refused:
+            self._reversals_refused += 1
+        if selected is not None:
             arrow = replace(arrow, tip_px=result.tip_px, tail_px=result.tail_px)
+        if arrow.valid and direction.valid and direction.error_deg is not None:
+            self._last_heading_deg = wrap_deg(forward + direction.error_deg)
+            self._last_track_id = arrow.track_id
+        elif not arrow.valid:
+            self._last_track_id = arrow.track_id
 
         desired_deg: float | None = None
         if arrow.valid and direction.valid and direction.error_deg is not None:
             desired_deg = wrap_deg(forward + direction.error_deg)
 
-        contour = accepted.features.contour_px if accepted is not None else ()
+        contour = selected.features.contour_px if selected is not None else ()
         arrival = self.arrival.observe(frame, map_id=map_id, approach_valid=approach_valid)
         inputs = NavigationInputs(
             frame=frame,
@@ -960,13 +1002,34 @@ class PerceptionPipeline:
             arrival=arrival,
             forward_commanded=False,
         )
+        stats = proposals.stats
+        shown = present(outcome, detector.config.top_k)
+        timing = PerceptionTiming(
+            roi_used=roi is not None,
+            roi_proposal_ms=roi_proposal_ms,
+            roi_detector_ms=stats.elapsed_ms if roi is not None else 0.0,
+            full_detector_ms=stats.elapsed_ms if roi is None else 0.0,
+            fallback=fallback,
+            raw_components=stats.raw_components,
+            components_evaluated=stats.evaluated,
+            mask_pixels_allocated=stats.mask_pixels,
+            direction_ms=direction_ms,
+            tracking_decision=outcome.decision,
+            selected_candidate_id=selected.label if selected is not None else None,
+            confidence=arrow.confidence,
+            rejection_reasons=tuple(
+                f"{h.label}:{h.reason}" for h in shown if h.state != "selected" and h.reason
+            )[:8],
+            track_state=outcome.state.value,
+        )
         return PerceptionResult(
             inputs=inputs,
-            candidates=tuple(h.as_record() for h in hypotheses),
+            candidates=tuple(h.as_record() for h in shown),
             contour_px=contour,
             desired_deg=desired_deg,
             cues=result.readings,
             perception_ms=(monotonic_s() - started) * 1000.0,
+            timing=timing,
         )
 
     def observe(
@@ -985,12 +1048,7 @@ class PerceptionPipeline:
         control_state: ControlState | None = None,
         blockers: tuple[str, ...] = (),
     ) -> DiagnosticObservation:
-        """Bind the frame, the geometry, and the decision into one value.
-
-        The preview and the controller both read this, so an overlay can never
-        be drawn from observation N over frame N+1. ``key`` stamps the packet
-        with the identity every consumer compares before drawing or acting.
-        """
+        """Bind the frame, the geometry, and the decision into one value."""
         inputs = result.inputs
         stamped = key or RuntimeKey(
             run_id="local",
@@ -1034,6 +1092,7 @@ class PerceptionPipeline:
             control_state=control_state,
             plain_summary=describe_decision(inputs, decision),
             blockers=blockers,
+            timing=result.timing,
         )
 
 

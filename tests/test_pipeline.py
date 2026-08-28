@@ -168,10 +168,11 @@ def _frame_with_blob(sequence: int, centre: tuple[int, int]) -> object:
         terrain="dirt",
         seed=sequence,
     )
+    # Fifty milliseconds apart: the identity is earned on the second frame.
     return CapturedFrame(
         sequence=sequence,
-        captured_at_s=float(sequence) * 0.01,
-        completed_at_s=float(sequence) * 0.01 + 0.002,
+        captured_at_s=float(sequence) * 0.05,
+        completed_at_s=float(sequence) * 0.05 + 0.002,
         duration_ms=2.0,
         geometry=make_geometry(size=(1280.0, 720.0)),
         bgr=freeze_array(scene.bgr),
@@ -218,9 +219,19 @@ def test_the_roi_result_matches_the_full_frame_result() -> None:
             approach_valid=False,
         )
     assert roi_result.inputs.arrow.valid == full_result.inputs.arrow.valid
-    assert roi_result.inputs.arrow.bbox_px == full_result.inputs.arrow.bbox_px
+    # The local-background estimate is computed over the pass's own pixels,
+    # so a region pass may differ from the full pass by a pixel at the mask
+    # edge. What must not differ is which object was found and where.
+    assert (
+        roi_result.inputs.arrow.bbox_px is not None
+        and full_result.inputs.arrow.bbox_px is not None
+    )
+    for mine, theirs in zip(
+        roi_result.inputs.arrow.bbox_px, full_result.inputs.arrow.bbox_px, strict=True
+    ):
+        assert abs(mine - theirs) <= 2
     assert roi_result.inputs.arrow.centroid_px == pytest.approx(
-        full_result.inputs.arrow.centroid_px
+        full_result.inputs.arrow.centroid_px, abs=2.0
     )
 
 
@@ -241,21 +252,49 @@ def test_a_full_frame_pass_happens_periodically_even_while_tracking() -> None:
     assert pipeline.roi_hits + pipeline.full_passes == 12
 
 
-def test_an_roi_miss_falls_back_to_the_full_frame_immediately() -> None:
-    """A tracker-induced miss must not be reported as an arrow loss."""
+def test_an_roi_miss_schedules_a_global_search_on_the_next_frame() -> None:
+    """A region miss is one transaction; the full frame runs on the next one.
+
+    The previous pipeline ran the full pass synchronously on the same
+    screenshot, aging the track and the global-scan cadence twice per frame.
+    """
     pipeline = _pipeline(roi_padding_px=60)
-    pipeline.analyze(_frame_with_blob(1, (200, 200)), map_id="t", approach_valid=False)  # type: ignore[arg-type]
+    for sequence in (1, 2, 3):
+        pipeline.analyze(
+            _frame_with_blob(sequence, (200, 200)), map_id="t", approach_valid=False
+        )  # type: ignore[arg-type]
+    assert pipeline.roi_hits >= 1
 
-    # The arrow jumps far outside any ROI around the old position.
-    result = pipeline.analyze(
-        _frame_with_blob(2, (1000, 500)),  # type: ignore[arg-type]
-        map_id="t",
-        approach_valid=False,
+    # The arrow jumps far outside any region around the old position.
+    jumped = pipeline.analyze(
+        _frame_with_blob(4, (1000, 500)), map_id="t", approach_valid=False
+    )  # type: ignore[arg-type]
+    assert jumped.timing is not None
+    assert jumped.timing.roi_used and jumped.timing.full_detector_ms == 0.0, (
+        "no second pass on this frame"
     )
+    assert not jumped.inputs.arrow.valid, "a region miss is reported as a hold, not as a lock"
 
-    assert result.inputs.arrow.valid
-    assert result.inputs.arrow.centroid_px is not None
-    assert result.inputs.arrow.centroid_px[0] == pytest.approx(999.5, abs=3.0)
+    # The held identity is protected for ``max_track_age_s``; only then does
+    # the arrow at its new place earn a new identity, over consistent frames.
+    reported = None
+    for sequence in range(5, 22):
+        result = pipeline.analyze(
+            _frame_with_blob(sequence, (1000, 500)), map_id="t", approach_valid=False
+        )  # type: ignore[arg-type]
+        assert result.timing is not None
+        assert not (result.timing.roi_used and result.timing.full_detector_ms > 0.0)
+        if result.inputs.arrow.valid:
+            reported = result
+            break
+    assert reported is not None, "the arrow at its new place was never reported"
+    assert (
+        reported.inputs.arrow.track_id != jumped.inputs.arrow.track_id
+        or jumped.inputs.arrow.track_id is None
+    )
+    assert reported.inputs.arrow.centroid_px is not None
+    assert reported.inputs.arrow.centroid_px[0] == pytest.approx(999.5, abs=3.0)
+    assert pipeline.fallbacks >= 1
 
 
 def test_changing_the_profile_forces_a_full_pass_and_drops_the_track() -> None:
@@ -283,14 +322,16 @@ def test_changing_the_profile_forces_a_full_pass_and_drops_the_track() -> None:
 def test_every_direction_cue_is_reported_with_the_weight_consensus_gave_it() -> None:
     """A consensus abstention is only useful next to the cues that disagreed."""
     pipeline = _pipeline()
-    result = pipeline.analyze(
-        _frame_with_blob(1, (900, 250)),  # type: ignore[arg-type]
-        map_id="t",
-        approach_valid=False,
-    )
+    for sequence in (1, 2):
+        result = pipeline.analyze(
+            _frame_with_blob(sequence, (900, 250)),  # type: ignore[arg-type]
+            map_id="t",
+            approach_valid=False,
+        )
 
     names = {reading.cue_id for reading in result.cues}
-    assert {"tail_to_head", "notch_to_tip", "centroid_to_tip"} <= names
+    assert "notch_axis" in names or "pca_axis" in names
+    assert any(name.startswith("sign:") for name in names), "the polarity votes are reported"
     assert "player_to_arrow" in names, "position is reported, and kept distinct from pose"
     # Every cue carries the weight consensus gave it, so a rejected outlier is
     # visible at weight zero rather than silently missing.
@@ -307,17 +348,20 @@ def test_the_reference_frame_is_configuration_and_says_so() -> None:
 
 def test_the_candidate_record_keeps_rejections_with_reasons() -> None:
     pipeline = _pipeline()
-    result = pipeline.analyze(
-        _frame_with_blob(1, (640, 360)),  # type: ignore[arg-type]
-        map_id="t",
-        approach_valid=False,
-    )
+    for sequence in (1, 2):
+        result = pipeline.analyze(
+            _frame_with_blob(sequence, (640, 360)),  # type: ignore[arg-type]
+            map_id="t",
+            approach_valid=False,
+        )
     assert result.candidates
-    accepted = [c for c in result.candidates if c.accepted]
-    assert len(accepted) <= 1
+    selected = [c for c in result.candidates if c.state == "selected"]
+    assert len(selected) == 1, "exactly one candidate is selected per observation"
+    assert [c for c in result.candidates if c.accepted] == selected
     for candidate in result.candidates:
         if not candidate.accepted:
             assert candidate.rejected_reason
+            assert candidate.state in ("proposed", "viable", "challenger", "rejected")
 
 
 # ---------------------------------------------------------------------------
