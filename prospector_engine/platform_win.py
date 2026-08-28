@@ -5,6 +5,14 @@ own (bugs B1, B7, B8). All geometry is the **client** rect in physical pixels,
 which is what ``GetClientRect`` + ``ClientToScreen`` already give a
 Per-Monitor-V2 process.
 
+**Coordinate discipline.** A Per-Monitor-V2 process receives *device pixels*
+from every window API, so on Windows the logical space and the backing space
+coincide numerically: ``DisplayInfo.backing_scale`` is 1.0 and the user's UI
+scaling is reported separately as ``dpi_scale``. That is the opposite of macOS,
+where points and backing pixels differ by the Retina factor - which is exactly
+why the two are never mixed in a transform (see
+:mod:`prospector_engine.geometry`).
+
 **Native status: PENDING.** Nothing in this module has been executed on
 Windows during this implementation - the development machine is macOS. It is
 written against the documented Win32 contracts and is covered locally only by
@@ -21,6 +29,7 @@ import sys
 import threading
 from collections.abc import Callable
 from ctypes import wintypes
+from typing import Any
 
 if sys.platform != "win32" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"):
     raise ImportError(
@@ -29,22 +38,34 @@ if sys.platform != "win32" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM
         "to run the opposite-OS import contract test (plan 16.3)."
     )
 
+
+import numpy as np
+
 from prospector_engine.contracts import (
-    ClientRectPhysicalPx,
     FocusState,
     InputKey,
     InputVocabulary,
     IntentType,
     MouseButton,
     PinResult,
+    RawFrame,
     RuntimeIntent,
     monotonic_s,
+)
+from prospector_engine.geometry import (
+    CANONICAL_SIZE_PX,
+    DisplayInfo,
+    LogicalRect,
+    ViewportGeometry,
+    ViewportState,
+    WindowIdentity,
 )
 
 __all__ = [
     "WIN_HOTKEY_BINDINGS",
     "WindowsHotkeySource",
     "WindowsPlatformPort",
+    "WindowsPrintWindowSource",
     "WindowsReleaseOnlyPort",
     "declare_per_monitor_v2",
 ]
@@ -194,8 +215,7 @@ class WindowsPlatformPort:
         self._vocabulary = InputVocabulary()
         self._title_substring = window_title_substring
         self._lock = threading.Lock()
-        self._last_rect: ClientRectPhysicalPx | None = None
-        self._last_hwnd: int | None = None
+        self._geometry = ViewportGeometry.unpinned()
         self._dpi_mode = declare_per_monitor_v2()
 
     @property
@@ -214,15 +234,26 @@ class WindowsPlatformPort:
         return _WIN_SCANCODES[key]
 
     # -- window lookup ----------------------------------------------------
-    def _scan_roblox(self) -> tuple[int, int, int, int, int] | None:
-        """Largest visible Roblox client window: ``(hwnd, x, y, w, h)`` physical px."""
-        user32 = ctypes.windll.user32
-        found: list[tuple[int, int, int, int, int, int]] = []
+    def _scan_roblox(self) -> tuple[WindowIdentity, LogicalRect, LogicalRect] | None:
+        """Largest visible Roblox client window.
+
+        Returns ``(identity, frame_rect, client_rect)`` where both rectangles
+        are display-absolute device pixels. ``GetClientRect`` gives the client
+        size directly and ``ClientToScreen`` its origin, so unlike macOS there
+        is no inset to measure - the client area is what the API reports.
+        """
+        try:
+            user32 = ctypes.windll.user32
+        except AttributeError:
+            # Only reachable from the opposite-OS import test, where the
+            # contract is that geometry is reported INVALID, never raised.
+            return None
+        found: list[tuple[int, WindowIdentity, LogicalRect, LogicalRect]] = []
 
         @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
         def _callback(hwnd: int, _lparam: int) -> bool:
             with contextlib.suppress(Exception):
-                if not user32.IsWindowVisible(hwnd):
+                if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
                     return True
                 length = user32.GetWindowTextLengthW(hwnd)
                 title_buffer = ctypes.create_unicode_buffer(length + 1)
@@ -236,23 +267,37 @@ class WindowsPlatformPort:
                 )
                 if not is_client:
                     return True
-                rect = wintypes.RECT()
-                if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+                client = wintypes.RECT()
+                if not user32.GetClientRect(hwnd, ctypes.byref(client)):
                     return True
-                width = rect.right - rect.left
-                height = rect.bottom - rect.top
+                width = client.right - client.left
+                height = client.bottom - client.top
                 if width < 320 or height < 240:
                     return True
-                point = wintypes.POINT(0, 0)
-                user32.ClientToScreen(hwnd, ctypes.byref(point))
+                origin = wintypes.POINT(0, 0)
+                user32.ClientToScreen(hwnd, ctypes.byref(origin))
+                outer = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(outer))
+                process_id = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
                 found.append(
                     (
                         width * height,
-                        int(hwnd),
-                        int(point.x),
-                        int(point.y),
-                        int(width),
-                        int(height),
+                        WindowIdentity(
+                            window_id=int(hwnd),
+                            process_id=int(process_id.value),
+                            owner=class_name or "Roblox",
+                            title=title,
+                        ),
+                        LogicalRect(
+                            float(outer.left),
+                            float(outer.top),
+                            float(outer.right - outer.left),
+                            float(outer.bottom - outer.top),
+                        ),
+                        LogicalRect(
+                            float(origin.x), float(origin.y), float(width), float(height)
+                        ),
                     )
                 )
             return True
@@ -283,48 +328,111 @@ class WindowsPlatformPort:
             found = self._scan_roblox()
             if found is None:
                 return False
-            return foreground == found[0]
+            return foreground == found[0].window_id
         return None
 
-    def find_client_rect(self) -> ClientRectPhysicalPx | None:
+    def window_geometry(self) -> ViewportGeometry:
         found = self._scan_roblox()
         if found is None:
+            geometry = ViewportGeometry.invalid("Roblox window not found or minimized")
             with self._lock:
-                self._last_rect = None
-                self._last_hwnd = None
-            return None
-        hwnd, x_px, y_px, w_px, h_px = found
-        # A Per-Monitor-V2 process already receives physical pixels, so this
-        # scale is reported for diagnostics only and is never used to convert
-        # a coordinate on this platform (contrast platform_mac, where CGEvent
-        # takes points).
-        scale = self._dpi_for_window(hwnd) / 96.0
-        rect = ClientRectPhysicalPx(
-            origin_px=(x_px, y_px),
-            size_px=(w_px, h_px),
-            scale=scale,
+                self._geometry = geometry
+            return geometry
+        identity, frame_logical, client_logical = found
+        dpi = self._dpi_for_window(identity.window_id)
+        display = DisplayInfo(
+            display_id=self._monitor_id(identity.window_id),
+            bounds_logical=self._monitor_bounds(identity.window_id),
+            # Per-Monitor V2 already hands us device pixels, so there is no
+            # further backing conversion; the UI scale is diagnostic only.
+            backing_scale=1.0,
+            dpi_scale=dpi / 96.0,
+        )
+        canonical_w, canonical_h = CANONICAL_SIZE_PX
+        is_canonical = (
+            abs(client_logical.width - canonical_w) <= 1.0
+            and abs(client_logical.height - canonical_h) <= 1.0
+        )
+        geometry = ViewportGeometry(
+            state=(
+                ViewportState.CANONICAL_VERIFIED
+                if is_canonical
+                else ViewportState.ADOPTED_NONCANONICAL
+            ),
+            window=identity,
+            display=display,
+            frame_logical=frame_logical,
+            client_logical=client_logical,
+            canonical_px=CANONICAL_SIZE_PX,
             verified_at_s=monotonic_s(),
-            display_id=self._monitor_id(hwnd),
-            valid=w_px > 0 and h_px > 0,
-            invalid_reason=None if w_px > 0 and h_px > 0 else "non-positive client size",
+            detail=(
+                f"client matches the canonical size ({self._dpi_mode}, {dpi} DPI)"
+                if is_canonical
+                else f"client is {client_logical.width:g}x{client_logical.height:g} px, "
+                f"not the canonical {canonical_w}x{canonical_h} ({dpi} DPI)"
+            ),
         )
         with self._lock:
-            self._last_rect = rect
-            self._last_hwnd = hwnd
-        return rect
+            self._geometry = geometry
+        return geometry
 
-    def pin_client_rect(self, size_px: tuple[int, int]) -> PinResult:
-        user32 = ctypes.windll.user32
+    def _monitor_bounds(self, hwnd: int) -> LogicalRect:
+        """Bounds of the monitor showing ``hwnd``; may have a negative origin."""
+
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = (
+                ("cbSize", wintypes.DWORD),
+                ("rcMonitor", wintypes.RECT),
+                ("rcWork", wintypes.RECT),
+                ("dwFlags", wintypes.DWORD),
+            )
+
+        with contextlib.suppress(Exception):
+            monitor = ctypes.windll.user32.MonitorFromWindow(hwnd, 2)
+            info = _MONITORINFO()
+            info.cbSize = ctypes.sizeof(_MONITORINFO)
+            if ctypes.windll.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                rect = info.rcMonitor
+                return LogicalRect(
+                    float(rect.left),
+                    float(rect.top),
+                    float(rect.right - rect.left),
+                    float(rect.bottom - rect.top),
+                )
+        return LogicalRect(0.0, 0.0, 0.0, 0.0)
+
+    def pin_client_rect(self, size_logical: tuple[float, float]) -> PinResult:
+        """Resize so the **client area** is ``size_logical`` device pixels.
+
+        ``AdjustWindowRectExForDpi`` converts the desired client rect into the
+        outer rect ``SetWindowPos`` needs, which is what keeps the border and
+        title bar from eating into the client at non-100% scaling.
+        """
+        try:
+            user32 = ctypes.windll.user32
+        except AttributeError:  # opposite-OS import test only
+            return PinResult(
+                False,
+                "Win32 window APIs are unavailable on this OS.",
+                self.window_geometry(),
+                size_logical,
+            )
         found = self._scan_roblox()
         if found is None:
-            return PinResult(False, "Roblox window not found. Open Roblox (not minimized).")
-        hwnd = found[0]
+            return PinResult(
+                False,
+                "Roblox window not found. Open Roblox, not minimized.",
+                self.window_geometry(),
+                size_logical,
+            )
+        identity = found[0]
+        hwnd = identity.window_id
         with contextlib.suppress(Exception):
             if user32.IsIconic(hwnd):
                 user32.ShowWindow(hwnd, SW_RESTORE)
         style = user32.GetWindowLongW(hwnd, GWL_STYLE)
         exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        rect = wintypes.RECT(0, 0, size_px[0], size_px[1])
+        rect = wintypes.RECT(0, 0, round(size_logical[0]), round(size_logical[1]))
         dpi = self._dpi_for_window(hwnd)
         adjusted = False
         with contextlib.suppress(Exception):
@@ -334,32 +442,65 @@ class WindowsPlatformPort:
         if not adjusted and not user32.AdjustWindowRectEx(
             ctypes.byref(rect), style, False, exstyle
         ):
-            return PinResult(False, "AdjustWindowRectEx(ForDpi) failed.")
+            return PinResult(
+                False,
+                "AdjustWindowRectEx(ForDpi) failed.",
+                self.window_geometry(),
+                size_logical,
+            )
         outer_w = rect.right - rect.left
         outer_h = rect.bottom - rect.top
         if not user32.SetWindowPos(
             hwnd, 0, rect.left, rect.top, outer_w, outer_h, SWP_NOZORDER | SWP_NOACTIVATE
         ):
-            return PinResult(False, "SetWindowPos failed.")
+            return PinResult(
+                False, "SetWindowPos failed.", self.window_geometry(), size_logical
+            )
 
-        readback = self.find_client_rect()
-        if readback is None or not readback.valid:
-            return PinResult(False, "Pinned, but the client rect could not be read back.")
-        dw = abs(readback.width_px - size_px[0])
-        dh = abs(readback.height_px - size_px[1])
-        if dw > 1 or dh > 1:
+        geometry = self.window_geometry()
+        if not geometry.valid or geometry.client_logical is None:
             return PinResult(
                 False,
-                f"Client readback {readback.size_px} differs from requested {size_px} "
-                f"by ({dw},{dh}) px - outside the one-pixel contract.",
-                readback,
+                "Pinned, but the client rect could not be read back.",
+                geometry,
+                size_logical,
+            )
+        client = geometry.client_logical
+        delta_w = abs(client.width - size_logical[0])
+        delta_h = abs(client.height - size_logical[1])
+        if delta_w > 1.0 or delta_h > 1.0:
+            return PinResult(
+                False,
+                f"Requested a {size_logical[0]:g}x{size_logical[1]:g} px client but the OS "
+                f"gave {client.width:g}x{client.height:g} px (off by {delta_w:g}x{delta_h:g}). "
+                f"Running non-canonical: observation and recording work, calibrated pixel "
+                f"constants do not.",
+                geometry.with_state(
+                    ViewportState.ADOPTED_NONCANONICAL, "clamped by the OS or the application"
+                ),
+                size_logical,
             )
         return PinResult(
             True,
-            f"Client area pinned to {readback.width_px}x{readback.height_px} px at "
-            f"{readback.origin_px} (DPI {dpi}, {self._dpi_mode}).",
-            readback,
+            f"Client pinned to {client.width:g}x{client.height:g} px at "
+            f"({client.x:g},{client.y:g}); DPI {dpi} ({self._dpi_mode}).",
+            geometry,
+            size_logical,
         )
+
+    def create_capture_source(self) -> Any:
+        """The window-specific source for this platform.
+
+        ``PrintWindow`` with ``PW_RENDERFULLCONTENT`` asks the window to render
+        itself, so an overlapping window cannot contaminate the frame and
+        capture continues while the dashboard is frontmost. Windows Graphics
+        Capture would be faster and is the intended production backend, but it
+        needs a Windows machine to verify and a new runtime dependency, so it
+        is deliberately not guessed at here (DECISIONS.md D-018).
+
+        **PENDING native verification.**
+        """
+        return WindowsPrintWindowSource()
 
     # -- PlatformPort: raw edges -----------------------------------------
     def raw_key_down(self, code: int) -> None:
@@ -375,15 +516,18 @@ class WindowsPlatformPort:
         _send(_mouse_input(_WIN_BUTTON_FLAGS[button][1]))
 
     def raw_pointer_move_client(self, point_px: tuple[int, int]) -> None:
+        """Move to a point in **canonical** coordinates."""
         with self._lock:
-            rect = self._last_rect
-        if rect is None:
-            rect = self.find_client_rect()
-        if rect is None or not rect.valid:
+            geometry = self._geometry
+        if not geometry.valid:
+            geometry = self.window_geometry()
+        if not geometry.valid:
             return
-        screen_x_px, screen_y_px = rect.to_screen_px(point_px)
+        x, y = geometry.display_logical_from_canonical.apply(
+            float(point_px[0]), float(point_px[1])
+        )
         with contextlib.suppress(Exception):
-            ctypes.windll.user32.SetCursorPos(int(screen_x_px), int(screen_y_px))
+            ctypes.windll.user32.SetCursorPos(round(x), round(y))
 
     def raw_pointer_delta(
         self, dx: int, dy: int, held_button: MouseButton | None = None
@@ -399,17 +543,21 @@ class WindowsPlatformPort:
         _send(_mouse_input(MOUSEEVENTF_WHEEL, data=data))
 
     def cursor_client_px(self) -> tuple[int, int] | None:
-        rect = self.find_client_rect()
-        if rect is None or not rect.valid:
+        """Cursor position in **canonical** coordinates, or ``None``."""
+        geometry = self.window_geometry()
+        if not geometry.valid:
             return None
         point = wintypes.POINT(0, 0)
         with contextlib.suppress(Exception):
             ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
-        client_x = int(point.x) - rect.origin_px[0]
-        client_y = int(point.y) - rect.origin_px[1]
-        if not rect.contains_client_point((client_x, client_y)):
+        canonical = geometry.display_logical_from_canonical.inverse().apply(
+            float(point.x), float(point.y)
+        )
+        x, y = round(canonical[0]), round(canonical[1])
+        width, height = geometry.canonical_px
+        if not (0 <= x < width and 0 <= y < height):
             return None
-        return (client_x, client_y)
+        return (x, y)
 
     # -- PlatformPort: hotkeys -------------------------------------------
     def create_hotkey_source(
@@ -484,3 +632,204 @@ class WindowsHotkeySource:
     def is_running(self) -> bool:
         thread = self._thread
         return bool(thread is not None and thread.is_alive())
+
+
+# ===========================================================================
+# Window-specific capture
+# ===========================================================================
+
+PW_RENDERFULLCONTENT = 0x00000002
+SRCCOPY = 0x00CC0020
+DIB_RGB_COLORS = 0
+BI_RGB = 0
+
+
+class _BITMAPINFOHEADER(ctypes.Structure):
+    _fields_ = (
+        ("biSize", wintypes.DWORD),
+        ("biWidth", wintypes.LONG),
+        ("biHeight", wintypes.LONG),
+        ("biPlanes", wintypes.WORD),
+        ("biBitCount", wintypes.WORD),
+        ("biCompression", wintypes.DWORD),
+        ("biSizeImage", wintypes.DWORD),
+        ("biXPelsPerMeter", wintypes.LONG),
+        ("biYPelsPerMeter", wintypes.LONG),
+        ("biClrUsed", wintypes.DWORD),
+        ("biClrImportant", wintypes.DWORD),
+    )
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = (("bmiHeader", _BITMAPINFOHEADER), ("bmiColors", wintypes.DWORD * 3))
+
+
+class WindowsPrintWindowSource:
+    """Window-specific capture through ``PrintWindow``.
+
+    The window renders itself into our device context, so an overlapping window
+    cannot contaminate the frame and capture keeps working while the dashboard
+    is frontmost - the two properties a desktop-rectangle grab cannot offer.
+
+    It is a *pull* source. The GDI objects are created once for a given client
+    size and reused, so the per-frame cost is one ``PrintWindow`` plus one
+    ``GetDIBits`` rather than an allocation storm.
+
+    **PENDING native verification**: written against the documented Win32
+    contracts and never executed on Windows (DECISIONS.md D-018).
+    """
+
+    def __init__(self) -> None:
+        self._geometry: ViewportGeometry | None = None
+        self._pool: Any = None
+        self._error: str | None = None
+        self._window_dc: Any = None
+        self._memory_dc: Any = None
+        self._bitmap: Any = None
+        self._size: tuple[int, int] = (0, 0)
+        self._buffer: Any = None
+
+    @property
+    def name(self) -> str:
+        return "printwindow"
+
+    @property
+    def is_pushing(self) -> bool:
+        return False
+
+    def set_target_fps(self, fps: int) -> None:
+        del fps  # paced by the service
+
+    def health(self) -> str | None:
+        return self._error
+
+    def start(
+        self, geometry: ViewportGeometry, pool: Any, on_frame: Callable[[RawFrame], None]
+    ) -> None:
+        del on_frame  # pull source
+        self.stop()
+        self._geometry = geometry
+        self._pool = pool
+        self._error = None
+        self._ensure_surface(geometry)
+
+    def _ensure_surface(self, geometry: ViewportGeometry) -> bool:
+        if geometry.window is None or geometry.client_logical is None:
+            return False
+        width = round(geometry.client_logical.width)
+        height = round(geometry.client_logical.height)
+        if width <= 0 or height <= 0:
+            return False
+        if self._bitmap is not None and self._size == (width, height):
+            return True
+        self._release_surface()
+        user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+        self._window_dc = user32.GetWindowDC(geometry.window.window_id)
+        if not self._window_dc:
+            self._error = "GetWindowDC failed"
+            return False
+        self._memory_dc = gdi32.CreateCompatibleDC(self._window_dc)
+        self._bitmap = gdi32.CreateCompatibleBitmap(self._window_dc, width, height)
+        if not self._memory_dc or not self._bitmap:
+            self._error = "could not create a compatible bitmap"
+            return False
+        gdi32.SelectObject(self._memory_dc, self._bitmap)
+        self._size = (width, height)
+        self._buffer = ctypes.create_string_buffer(width * height * 4)
+        return True
+
+    def _release_surface(self) -> None:
+        gdi32 = ctypes.windll.gdi32
+        with contextlib.suppress(Exception):
+            if self._bitmap:
+                gdi32.DeleteObject(self._bitmap)
+            if self._memory_dc:
+                gdi32.DeleteDC(self._memory_dc)
+            if self._window_dc and self._geometry and self._geometry.window:
+                ctypes.windll.user32.ReleaseDC(self._geometry.window.window_id, self._window_dc)
+        self._bitmap = self._memory_dc = self._window_dc = None
+        self._size = (0, 0)
+        self._buffer = None
+
+    def stop(self) -> None:
+        self._release_surface()
+        self._geometry = None
+
+    def poll(self) -> RawFrame | None:
+        geometry = self._geometry
+        if geometry is None or geometry.window is None or geometry.client_logical is None:
+            return None
+        if not self._ensure_surface(geometry):
+            return None
+        width, height = self._size
+        started = monotonic_s()
+        user32, gdi32 = ctypes.windll.user32, ctypes.windll.gdi32
+
+        # PW_RENDERFULLCONTENT captures composited content on Windows 10+,
+        # including for windows that are occluded.
+        if not user32.PrintWindow(
+            geometry.window.window_id, self._memory_dc, PW_RENDERFULLCONTENT
+        ):
+            self._error = "PrintWindow failed"
+            return None
+
+        info = _BITMAPINFO()
+        info.bmiHeader.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        info.bmiHeader.biWidth = width
+        # Negative height requests a top-down DIB, matching array row order.
+        info.bmiHeader.biHeight = -height
+        info.bmiHeader.biPlanes = 1
+        info.bmiHeader.biBitCount = 32
+        info.bmiHeader.biCompression = BI_RGB
+        copied = gdi32.GetDIBits(
+            self._memory_dc,
+            self._bitmap,
+            0,
+            height,
+            self._buffer,
+            ctypes.byref(info),
+            DIB_RGB_COLORS,
+        )
+        if not copied:
+            self._error = "GetDIBits failed"
+            return None
+        bgra = np.frombuffer(self._buffer, dtype=np.uint8, count=width * height * 4)
+        source = bgra.reshape(height, width, 4)[:, :, :3]
+        canonical = _letterbox_into_canonical(source, geometry, self._pool)
+        if canonical is None:
+            self._error = "frame buffer pool exhausted"
+            return None
+        self._error = None
+        return RawFrame(
+            bgr=canonical,
+            geometry=geometry,
+            captured_at_s=started,
+            presented_at_s=monotonic_s(),
+            content_id=None,  # GDI offers no presentation identity
+            backend=self.name,
+        )
+
+
+def _letterbox_into_canonical(
+    source_bgr: Any, geometry: ViewportGeometry, pool: Any
+) -> Any | None:
+    """Resize a client image into the canonical raster exactly once."""
+    import cv2
+
+    width, height = geometry.canonical_px
+    target = pool.acquire(height, width) if pool is not None else None
+    if target is None:
+        return None
+    inner_x, inner_y, inner_w, inner_h = geometry.canonical_letterbox_px()
+    inner_w = max(1, min(inner_w, width - max(0, inner_x)))
+    inner_h = max(1, min(inner_h, height - max(0, inner_y)))
+    inner_x, inner_y = max(0, inner_x), max(0, inner_y)
+    if (inner_x, inner_y, inner_w, inner_h) != (0, 0, width, height):
+        target[:] = 0
+    cv2.resize(
+        source_bgr,
+        (inner_w, inner_h),
+        dst=target[inner_y : inner_y + inner_h, inner_x : inner_x + inner_w],
+        interpolation=cv2.INTER_AREA,
+    )
+    return target

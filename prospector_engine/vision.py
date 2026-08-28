@@ -290,9 +290,9 @@ class ArrowSegmenter:
         """Strict global acquisition with an explicit ambiguity abstention."""
         if frame.capture_error is not None:
             return _abstain(self._profile.profile_id, f"capture-error:{frame.capture_error}")
-        if not frame.client_rect.valid:
+        if not frame.geometry.valid:
             return _abstain(self._profile.profile_id, "viewport-invalid")
-        if tuple(frame.client_rect.size_px) != tuple(self._profile.supported_client_size_px):
+        if tuple(frame.canonical_size_px) != tuple(self._profile.supported_client_size_px):
             return _abstain(self._profile.profile_id, "unsupported-viewport-size")
 
         found = self.candidates(frame)

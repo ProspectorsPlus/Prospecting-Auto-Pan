@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from prospector_engine.contracts import CapturedFrame, EvidenceStatus, freeze_array
+from prospector_engine.geometry import ViewportState
 from prospector_engine.vision import (
     DIRECTION_STRATEGIES,
     ArrivalConfig,
@@ -26,7 +27,7 @@ from prospector_engine.vision import (
     load_profiles,
     wrap_deg,
 )
-from tests.fakes import make_rect
+from tests.fakes import make_geometry
 
 PROFILES = load_profiles()
 YELLOW = PROFILES.get("yellow_map_v0")
@@ -35,12 +36,17 @@ assert YELLOW is not None
 
 def _frame_with_shapes(
     shapes: list[tuple[int, int, int, int, tuple[int, int, int]]],
-    size_px: tuple[int, int] = (1280, 720),
+    canonical_px: tuple[int, int] = (1280, 720),
     sequence: int = 1,
+    geometry: object | None = None,
 ) -> CapturedFrame:
     """Paint solid RGB rectangles onto an otherwise dark client frame."""
-    rect = make_rect(size_px=size_px)
-    bgr = np.zeros((rect.height_px, rect.width_px, 3), dtype=np.uint8)
+    if geometry is None:
+        geometry = make_geometry(
+            size=(float(canonical_px[0]), float(canonical_px[1])), canonical_px=canonical_px
+        )
+    width, height = geometry.canonical_px  # type: ignore[attr-defined]
+    bgr = np.zeros((height, width, 3), dtype=np.uint8)
     bgr[:, :] = (20, 20, 20)
     for x, y, width, height, (r, g, b) in shapes:
         bgr[y : y + height, x : x + width] = (b, g, r)
@@ -49,7 +55,7 @@ def _frame_with_shapes(
         captured_at_s=0.0,
         completed_at_s=0.005,
         duration_ms=5.0,
-        client_rect=rect,
+        geometry=geometry,
         bgr=freeze_array(bgr),
     )
 
@@ -156,7 +162,7 @@ def test_a_clipped_candidate_abstains() -> None:
 
 
 def test_an_unsupported_viewport_size_abstains() -> None:
-    frame = _frame_with_shapes([(300, 200, 60, 90, YELLOW_RGB)], size_px=(1024, 640))
+    frame = _frame_with_shapes([(300, 200, 60, 90, YELLOW_RGB)], canonical_px=(1024, 640))
     observation = ArrowSegmenter(YELLOW).observe(frame)
 
     assert not observation.valid
@@ -170,7 +176,7 @@ def test_an_invalid_viewport_abstains() -> None:
         captured_at_s=frame.captured_at_s,
         completed_at_s=frame.completed_at_s,
         duration_ms=frame.duration_ms,
-        client_rect=make_rect(valid=False),
+        geometry=make_geometry(state=ViewportState.INVALID),
         bgr=frame.bgr,
     )
     assert ArrowSegmenter(YELLOW).observe(broken).abstain_reason == "viewport-invalid"
@@ -183,7 +189,7 @@ def test_a_capture_error_abstains() -> None:
         captured_at_s=0.0,
         completed_at_s=0.0,
         duration_ms=1.0,
-        client_rect=frame.client_rect,
+        geometry=frame.geometry,
         bgr=frame.bgr,
         capture_error="backend died",
     )

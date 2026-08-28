@@ -234,13 +234,15 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
         deadman=deadman,
         health=HealthSources(
             focus=port.focus_state,
-            client_rect=port.find_client_rect,
+            client_rect=lambda: guard.geometry if guard.geometry.valid else None,
             capture_age_s=capture_age_s,
         ),
         config=AuthorityConfig(),
     )
     registry = EvidenceRegistry(authority.run_id, on_token=authority.register_evidence)
-    capture = CaptureService(guard, registry, on_frame=preview.publish)
+    capture = CaptureService(
+        guard, registry, source_factory=port.create_capture_source, on_frame=preview.publish
+    )
 
     library = load_profiles()
     profile = library.get(profile_id) or library.all()[0]

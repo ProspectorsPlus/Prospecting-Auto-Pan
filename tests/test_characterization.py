@@ -178,7 +178,7 @@ def test_b3_reset_releases_the_camera_button_when_cancelled_mid_drag(
         emits_input=True,
         cancellation=cancellation,
         requires_capture=True,
-        pinned_rect=rig.port.find_client_rect(),
+        pinned_rect=rig.port.window_geometry(),
     )
 
     result = engine.run_reset(service_context)
@@ -382,7 +382,7 @@ def test_the_dig_loop_cancels_within_one_wait_slice(
         emits_input=True,
         cancellation=cancellation,
         requires_capture=True,
-        pinned_rect=rig.port.find_client_rect(),
+        pinned_rect=rig.port.window_geometry(),
     )
 
     result = engine.run_dig_loop(service_context)

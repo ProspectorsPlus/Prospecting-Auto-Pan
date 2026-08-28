@@ -31,7 +31,6 @@ from typing import Any
 
 from prospector_engine.contracts import (
     CancellationToken,
-    ClientRectPhysicalPx,
     EvidenceToken,
     FocusState,
     InputKey,
@@ -46,6 +45,7 @@ from prospector_engine.contracts import (
     SafetyFaultKind,
     monotonic_s,
 )
+from prospector_engine.geometry import ViewportGeometry
 from prospector_engine.ports import PlatformPort
 
 __all__ = [
@@ -303,7 +303,7 @@ class HealthSources:
     """Everything the watchdog polls, injected so tests need no real OS."""
 
     focus: Callable[[], FocusState]
-    client_rect: Callable[[], ClientRectPhysicalPx | None]
+    client_rect: Callable[[], ViewportGeometry | None]
     capture_age_s: Callable[[], float | None]
 
 
@@ -469,7 +469,7 @@ class InputAuthority:
         self._issued_tokens: dict[int, EvidenceToken] = {}
         self._consumed_sequences: set[int] = set()
         self._last_applied_sequence = -1
-        self._pinned_rect: ClientRectPhysicalPx | None = None
+        self._pinned_rect: ViewportGeometry | None = None
 
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
@@ -514,7 +514,7 @@ class InputAuthority:
         emits_input: bool,
         cancellation: CancellationToken | None = None,
         requires_capture: bool = True,
-        pinned_rect: ClientRectPhysicalPx | None = None,
+        pinned_rect: ViewportGeometry | None = None,
     ) -> None:
         """Open a new authority generation.
 
@@ -995,7 +995,10 @@ class InputAuthority:
     def pointer_move_client(self, generation: int, point_px: tuple[int, int]) -> bool:
         with self._lock:
             rect = self._pinned_rect or self._safe_call(self._health.client_rect, None)
-            if rect is None or not rect.contains_client_point(point_px):
+            if rect is None or not rect.valid:
+                return False
+            width, height = rect.canonical_px
+            if not (0 <= point_px[0] < width and 0 <= point_px[1] < height):
                 return False
         return self._guarded_edge(
             generation, lambda: self._port.raw_pointer_move_client(point_px)

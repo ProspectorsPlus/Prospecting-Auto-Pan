@@ -138,7 +138,8 @@ def test_the_local_port_satisfies_the_platform_protocol() -> None:
     assert isinstance(port, PlatformPort)
     for name in (
         "focus_state",
-        "find_client_rect",
+        "window_geometry",
+        "create_capture_source",
         "pin_client_rect",
         "raw_key_down",
         "raw_key_up",
@@ -251,26 +252,63 @@ def test_stop_is_accepted_even_without_focus() -> None:
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS geometry")
-def test_the_mac_port_reports_client_geometry_not_window_frame() -> None:
-    """Bug B11. Read-only: it inspects window metadata and moves nothing.
+def test_the_mac_port_reports_client_geometry_in_logical_units() -> None:
+    """Bug B11 and D-017. Read-only: it inspects metadata and moves nothing.
 
     Skips cleanly when Roblox is not running, because that is a fact about the
     machine and not a failure of the code.
     """
+    from prospector_engine.geometry import ViewportState
     from prospector_engine.platform_mac import TITLE_BAR_FALLBACK_PT, MacPlatformPort
 
     port = MacPlatformPort()
-    rect = port.find_client_rect()
-    if rect is None:
+    geometry = port.window_geometry()
+    if geometry.state is ViewportState.INVALID:
         pytest.skip("Roblox is not running; E-VIEW on macOS remains pending")
 
-    assert rect.valid
-    assert rect.scale >= 1.0
-    assert 12.0 <= port.title_bar_pt <= 80.0
-    # A measured inset is the good path; the documented fallback is still legal
-    # and the port says which one it used.
+    assert geometry.valid
+    assert geometry.client_logical is not None
+    assert geometry.frame_logical is not None
+    assert geometry.display is not None
+
+    # The client is the frame minus the title bar, in POINTS.
+    inset_left, inset_top, _r, _b = geometry.client_insets_logical
+    assert inset_left == pytest.approx(0.0)
+    assert 12.0 <= inset_top <= 80.0
+    assert geometry.client_logical.height == pytest.approx(
+        geometry.frame_logical.height - inset_top
+    )
     assert port.title_bar_measured or port.title_bar_pt == TITLE_BAR_FALLBACK_PT
-    assert rect.origin_px[1] >= 0
+
+    # Backing pixels are derived, never the unit the API was given.
+    scale = geometry.backing_scale
+    assert scale >= 1.0
+    assert geometry.client_backing_px == (
+        round(geometry.client_logical.width * scale),
+        round(geometry.client_logical.height * scale),
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS geometry")
+def test_the_mac_client_rect_stays_inside_its_display() -> None:
+    """The captured region must be a real part of the screen, not past its edge.
+
+    This is the property the coordinate bug violated: physical-pixel values
+    handed to a logical-unit API described a rectangle twice the size of the
+    display, so the capture ran off the edge into the desktop.
+    """
+    from prospector_engine.geometry import ViewportState
+    from prospector_engine.platform_mac import MacPlatformPort
+
+    geometry = MacPlatformPort().window_geometry()
+    if geometry.state is ViewportState.INVALID:
+        pytest.skip("Roblox is not running")
+    assert geometry.client_logical is not None and geometry.display is not None
+    client, bounds = geometry.client_logical, geometry.display.bounds_logical
+    assert client.width <= bounds.width + 1.0
+    assert client.height <= bounds.height + 1.0
+    assert client.x >= bounds.x - 1.0
+    assert client.bottom <= bounds.bottom + 1.0
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS scale")

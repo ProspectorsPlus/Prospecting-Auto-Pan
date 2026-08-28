@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -18,22 +17,30 @@ from numpy.typing import NDArray
 
 from prospector_engine.contracts import (
     CapturedFrame,
-    ClientRectPhysicalPx,
     FocusState,
     FrameEnvelope,
     InputKey,
     InputVocabulary,
     MouseButton,
     PinResult,
+    RawFrame,
     RuntimeIntent,
     freeze_array,
+    monotonic_s,
+)
+from prospector_engine.geometry import (
+    DisplayInfo,
+    LogicalRect,
+    ViewportGeometry,
+    ViewportState,
+    WindowIdentity,
 )
 from prospector_engine.input_authority import DeadmanClient
 
 __all__ = [
     "MAC_KEYCODES",
     "FakeCancellation",
-    "FakeCaptureBackend",
+    "FakeCaptureSource",
     "FakeDeadmanClient",
     "FakeFrameSource",
     "FakeHotkeySource",
@@ -41,7 +48,7 @@ __all__ = [
     "VirtualClock",
     "install_virtual_clock",
     "make_frame",
-    "make_rect",
+    "make_geometry",
 ]
 
 #: The real macOS virtual keycodes, so transcripts line up with the legacy
@@ -121,23 +128,36 @@ class FakeCancellation:
         return False
 
 
-def make_rect(
+def make_geometry(
     *,
-    origin_px: tuple[int, int] = (0, 0),
-    size_px: tuple[int, int] = (1280, 720),
-    scale: float = 1.0,
+    origin: tuple[float, float] = (0.0, 0.0),
+    size: tuple[float, float] = (1280.0, 720.0),
+    backing_scale: float = 1.0,
     display_id: str = "fake-display",
-    valid: bool = True,
+    window_id: int = 4242,
+    process_id: int = 999,
+    state: ViewportState | None = None,
+    canonical_px: tuple[int, int] = (1280, 720),
     verified_at_s: float = 0.0,
-) -> ClientRectPhysicalPx:
-    return ClientRectPhysicalPx(
-        origin_px=origin_px,
-        size_px=size_px,
-        scale=scale,
+) -> ViewportGeometry:
+    """A viewport whose state defaults to whatever the size actually implies."""
+    client = LogicalRect(origin[0], origin[1], size[0], size[1])
+    frame = LogicalRect(origin[0], origin[1] - 28.0, size[0], size[1] + 28.0)
+    if state is None:
+        state = (
+            ViewportState.CANONICAL_VERIFIED
+            if (round(size[0]), round(size[1])) == canonical_px
+            else ViewportState.ADOPTED_NONCANONICAL
+        )
+    return ViewportGeometry(
+        state=state,
+        window=WindowIdentity(window_id, process_id, "Roblox", "Roblox"),
+        display=DisplayInfo(display_id, LogicalRect(0.0, 0.0, 1800.0, 1169.0), backing_scale),
+        frame_logical=frame,
+        client_logical=client,
+        canonical_px=canonical_px,
         verified_at_s=verified_at_s,
-        display_id=display_id,
-        valid=valid,
-        invalid_reason=None if valid else "test",
+        detail="fake",
     )
 
 
@@ -146,7 +166,7 @@ def make_frame(
     *,
     captured_at_s: float = 0.0,
     duration_ms: float = 5.0,
-    rect: ClientRectPhysicalPx | None = None,
+    geometry: ViewportGeometry | None = None,
     pixels: dict[tuple[int, int], tuple[int, int, int]] | None = None,
     fill_rgb: tuple[int, int, int] = (0, 0, 0),
     duplicate: bool = False,
@@ -157,8 +177,9 @@ def make_frame(
     detectors' 6x6 sample box - so mean-of-box sampling returns the exact value
     and two points 7 px apart (as the dig-spot pair is) stay independent.
     """
-    rect = rect or make_rect()
-    bgr = np.zeros((rect.height_px, rect.width_px, 3), dtype=np.uint8)
+    geometry = geometry or make_geometry()
+    width, height = geometry.canonical_px
+    bgr = np.zeros((height, width, 3), dtype=np.uint8)
     bgr[:, :, 0] = fill_rgb[2]
     bgr[:, :, 1] = fill_rgb[1]
     bgr[:, :, 2] = fill_rgb[0]
@@ -170,10 +191,11 @@ def make_frame(
         captured_at_s=captured_at_s,
         completed_at_s=captured_at_s + duration_ms / 1000.0,
         duration_ms=duration_ms,
-        client_rect=rect,
+        geometry=geometry,
         bgr=freeze_array(bgr),
         duplicate=duplicate,
         capture_error=None,
+        backend="fake",
     )
 
 
@@ -202,26 +224,82 @@ class FakeFrameSource:
         return envelope
 
 
-@dataclass
-class FakeCaptureBackend:
-    """Capture backend that returns scripted arrays and can be made to fail."""
+class FakeCaptureSource:
+    """A scriptable pull source: returns prepared frames, or fails on cue."""
 
-    frames: list[NDArray[np.uint8]] = field(default_factory=list)
-    fail_times: int = 0
-    grabs: int = 0
-    closed: int = 0
+    def __init__(
+        self,
+        frames: list[NDArray[np.uint8]] | None = None,
+        *,
+        fail_times: int = 0,
+        content_ids: bool = True,
+    ) -> None:
+        self.frames = list(frames or [])
+        self.fail_times = fail_times
+        self.polls = 0
+        self.stopped = 0
+        self.target_fps = 0
+        self._geometry: ViewportGeometry | None = None
+        self._pool: Any = None
+        self._error: str | None = None
+        self._content = 0
+        self._content_ids = content_ids
 
-    def grab_client(self, rect: ClientRectPhysicalPx) -> NDArray[np.uint8]:
-        self.grabs += 1
+    @property
+    def name(self) -> str:
+        return "fake-source"
+
+    @property
+    def is_pushing(self) -> bool:
+        return False
+
+    def start(
+        self, geometry: ViewportGeometry, pool: Any, on_frame: Callable[[RawFrame], None]
+    ) -> None:
+        del on_frame
+        self._geometry = geometry
+        self._pool = pool
+
+    def set_target_fps(self, fps: int) -> None:
+        self.target_fps = fps
+
+    def stop(self) -> None:
+        self.stopped += 1
+        self._geometry = None
+
+    def health(self) -> str | None:
+        return self._error
+
+    def poll(self) -> RawFrame | None:
+        self.polls += 1
+        geometry = self._geometry
+        if geometry is None:
+            return None
         if self.fail_times > 0:
             self.fail_times -= 1
-            raise OSError("scripted capture failure")
-        if not self.frames:
-            return np.zeros((rect.height_px, rect.width_px, 3), dtype=np.uint8)
-        return self.frames[min(self.grabs - 1, len(self.frames) - 1)]
-
-    def close(self) -> None:
-        self.closed += 1
+            self._error = "scripted capture failure"
+            return None
+        self._error = None
+        width, height = geometry.canonical_px
+        buffer = self._pool.acquire(height, width) if self._pool is not None else None
+        if buffer is None:
+            self._error = "pool exhausted"
+            return None
+        if self.frames:
+            source = self.frames[min(self.polls - 1, len(self.frames) - 1)]
+            np.copyto(buffer, source)
+        else:
+            buffer[:] = 0
+        self._content += 1
+        started = monotonic_s()
+        return RawFrame(
+            bgr=buffer,
+            geometry=geometry,
+            captured_at_s=started,
+            presented_at_s=started,
+            content_id=self._content if self._content_ids else None,
+            backend=self.name,
+        )
 
 
 class FakePlatformPort:
@@ -231,13 +309,14 @@ class FakePlatformPort:
         self,
         clock: VirtualClock,
         *,
-        rect: ClientRectPhysicalPx | None = None,
+        geometry: ViewportGeometry | None = None,
         focus: FocusState = True,
         journal: list[str] | None = None,
     ) -> None:
         self._clock = clock
         self.journal = journal if journal is not None else []
-        self._rect = rect if rect is not None else make_rect()
+        self._geometry = geometry if geometry is not None else make_geometry()
+        self.capture_source = FakeCaptureSource()
         self._focus: FocusState = focus
         self._vocabulary = InputVocabulary()
         self.transcript: list[dict[str, Any]] = []
@@ -250,8 +329,8 @@ class FakePlatformPort:
     def set_focus(self, focus: FocusState) -> None:
         self._focus = focus
 
-    def set_rect(self, rect: ClientRectPhysicalPx | None) -> None:
-        self._rect = rect  # type: ignore[assignment]
+    def set_geometry(self, geometry: ViewportGeometry | None) -> None:
+        self._geometry = geometry if geometry is not None else ViewportGeometry.invalid("test")
 
     def fail(self, *ops: str) -> None:
         self.fail_ops.update(ops)
@@ -287,14 +366,17 @@ class FakePlatformPort:
     def focus_state(self) -> FocusState:
         return self._focus
 
-    def find_client_rect(self) -> ClientRectPhysicalPx | None:
-        return self._rect
+    def window_geometry(self) -> ViewportGeometry:
+        return self._geometry
 
-    def pin_client_rect(self, size_px: tuple[int, int]) -> PinResult:
+    def pin_client_rect(self, size_logical: tuple[float, float]) -> PinResult:
         self.pin_calls += 1
-        if self._rect is None:
-            return PinResult(False, "no window")
-        return PinResult(True, f"pinned {size_px}", self._rect)
+        if not self._geometry.valid:
+            return PinResult(False, "no window", self._geometry, size_logical)
+        return PinResult(True, f"pinned {size_logical}", self._geometry, size_logical)
+
+    def create_capture_source(self) -> FakeCaptureSource:
+        return self.capture_source
 
     def raw_key_down(self, code: int) -> None:
         self._record("key_down", code)

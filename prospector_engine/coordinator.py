@@ -37,6 +37,7 @@ from prospector_engine.contracts import (
     WorkerCompletion,
     monotonic_s,
 )
+from prospector_engine.geometry import ViewportState
 from prospector_engine.input_authority import (
     InputAuthority,
     NavigationInputSession,
@@ -108,9 +109,16 @@ class _ConsumedArmProof:
 
 @dataclass(frozen=True)
 class Readiness:
-    """Why a mode can or cannot start right now."""
+    """Why a mode can or cannot start right now.
+
+    ``viewport_state`` is the single authority the detectors, the GUI, and Live
+    gating all read, which is what stops "viewport ok" from ever coexisting
+    with "unsupported viewport size": a client that is not canonical says so in
+    the state, and both consumers see the same value.
+    """
 
     viewport_ok: bool
+    viewport_state: ViewportState
     focus_ok: bool
     capture_fresh: bool
     watchdog_ok: bool
@@ -138,9 +146,13 @@ class Readiness:
             )
         )
 
+    @property
+    def calibrated_pixels_apply(self) -> bool:
+        return self.viewport_state.supports_calibrated_pixels
+
     def as_map(self) -> dict[str, str]:
         return {
-            "viewport": "ok" if self.viewport_ok else "invalid",
+            "viewport": self.viewport_state.value.replace("_", " "),
             "focus": "ok" if self.focus_ok else "not-focused",
             "capture": "fresh" if self.capture_fresh else "stale",
             "watchdog": "ok" if self.watchdog_ok else "stopped",
@@ -485,16 +497,14 @@ class RuntimeCoordinator:
         self._events.add("arm.created", f"ttl={self._config.arm_ttl_s:g}s")
 
     def _on_start_shadow(self, intent: RuntimeIntent) -> None:
-        if self._guard.pinned is None:
+        if not self._guard.geometry.valid:
             # Shadow only observes, so it adopts the client area as it is
-            # rather than moving the user's window. The rect is still verified;
-            # if it is not the canonical size the detectors abstain with
-            # "unsupported-viewport-size", which is the honest outcome.
+            # rather than moving the user's window. A non-canonical client is
+            # letterboxed into the canonical raster and reported as
+            # ADOPTED_NONCANONICAL, so nothing downstream mistakes it for a
+            # calibrated viewport.
             adopted = self._guard.adopt_current()
-            self._events.add(
-                "viewport.adopted",
-                "none" if adopted is None else f"{adopted.width_px}x{adopted.height_px}",
-            )
+            self._events.add("viewport.adopted", adopted.describe())
         readiness = self.readiness()
         if not readiness.shadow_ok:
             self._events.add("shadow.refused", ",".join(readiness.reasons))
@@ -586,7 +596,7 @@ class RuntimeCoordinator:
             emits_input=mode.emits_input,
             cancellation=cancellation,
             requires_capture=True,
-            pinned_rect=self._guard.pinned,
+            pinned_rect=self._guard.geometry,
         )
 
         worker_id = f"{mode.name.lower()}-{self._generation}"
@@ -714,13 +724,13 @@ class RuntimeCoordinator:
 
     # -- readiness and telemetry -----------------------------------------
     def readiness(self) -> Readiness:
-        status = self._guard.check()
+        geometry = self._guard.check()
         focus = self._authority._health.focus()
         age_s = self._capture.latest_age_s()
         max_age_s = self._capture.config.max_frame_age_ms / 1000.0
         reasons: list[str] = []
-        if not status.valid:
-            reasons.append(f"viewport:{status.reason}")
+        if not geometry.state.can_capture:
+            reasons.append(f"viewport:{geometry.state.value}")
         if focus is not True:
             reasons.append(f"focus:{focus}")
         capture_fresh = age_s is not None and age_s <= max_age_s
@@ -738,7 +748,8 @@ class RuntimeCoordinator:
         if not release_safe:
             reasons.append("release:uncertain")
         return Readiness(
-            viewport_ok=status.valid,
+            viewport_ok=geometry.state.can_capture,
+            viewport_state=geometry.state,
             focus_ok=focus is True,
             capture_fresh=capture_fresh,
             watchdog_ok=self._authority.watchdog_running,
@@ -764,13 +775,25 @@ class RuntimeCoordinator:
         readiness_map["arm"] = (
             "none" if token is None else f"{token.remaining_s(monotonic_s()):.0f}s"
         )
-        readiness_map["pixels"] = "PENDING reverification"
+        readiness_map["pixels"] = (
+            "PENDING reverification"
+            if readiness.calibrated_pixels_apply
+            else "N/A (non-canonical viewport)"
+        )
+        metrics = self._capture.metrics()
+        readiness_map["capture"] = (
+            f"{metrics.unique_fps:.0f}/s {metrics.backend}"
+            if metrics.unique_fps > 0
+            else readiness_map.get("capture", "stale")
+        )
+        if metrics.degraded_reason:
+            warnings.append(f"DEGRADED: {metrics.degraded_reason}")
         self._hub.publish(
             TelemetrySnapshot(
                 sequence=0,
                 mode=self._mode,
                 phase=self._phase,
-                viewport=self._guard.pinned,
+                viewport=self._guard.geometry,
                 arrow=None,
                 direction=None,
                 motion=None,
@@ -781,6 +804,7 @@ class RuntimeCoordinator:
                 frame_age_ms=age_ms,
                 warnings=tuple(warnings),
                 readiness=readiness_map,
+                metrics=metrics,
             )
         )
 

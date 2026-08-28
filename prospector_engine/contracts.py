@@ -26,13 +26,17 @@ from typing import Literal, Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
+from prospector_engine.geometry import Affine2D, ViewportGeometry
+
 __all__ = [
     "ArrivalObservation",
+    "ArrowCandidateRecord",
     "ArrowObservation",
     "Cancellation",
     "CancellationToken",
+    "CaptureMetrics",
     "CapturedFrame",
-    "ClientRectPhysicalPx",
+    "DiagnosticObservation",
     "DigEvidence",
     "DigHandoffResult",
     "DigOutcome",
@@ -52,8 +56,10 @@ __all__ = [
     "NextMapOutcome",
     "PanSwapOutcome",
     "PanSwapResult",
+    "PerformanceTier",
     "PinResult",
     "Provenance",
+    "RawFrame",
     "ResetOutcome",
     "ResetResult",
     "RunMode",
@@ -179,52 +185,18 @@ class InputVocabulary:
 
 
 @dataclass(frozen=True)
-class ClientRectPhysicalPx:
-    """The canonical Roblox **client area** in physical pixels.
+class PinResult:
+    """Outcome of a pin attempt, always carrying what was actually achieved.
 
-    Every capture, click, detector, recorder, and diagnostic coordinate in the
-    application is relative to this rect. Outer-window geometry never leaves
-    the platform port (plan 4.1, bug B11).
+    A refusal is as informative as a success: when the OS clamps the request,
+    ``geometry`` describes the window we really have and ``requested`` says what
+    was asked for, so the UI can say both without the caller retrying forever.
     """
 
-    origin_px: tuple[int, int]
-    size_px: tuple[int, int]
-    scale: float
-    verified_at_s: float
-    display_id: str
-    valid: bool
-    invalid_reason: str | None = None
-
-    @property
-    def width_px(self) -> int:
-        return self.size_px[0]
-
-    @property
-    def height_px(self) -> int:
-        return self.size_px[1]
-
-    def identity(self) -> tuple[int, int, int, int, str]:
-        """Fields whose change invalidates every in-flight coordinate."""
-        return (*self.origin_px, *self.size_px, self.display_id)
-
-    def contains_client_point(self, point_px: tuple[int, int]) -> bool:
-        x, y = point_px
-        return 0 <= x < self.width_px and 0 <= y < self.height_px
-
-    def to_screen_px(self, point_px: tuple[int, int]) -> tuple[int, int]:
-        """Client-relative -> screen-absolute physical pixels.
-
-        Only the platform port may call this; feature code never handles a
-        desktop coordinate (plan 4.3).
-        """
-        return (point_px[0] + self.origin_px[0], point_px[1] + self.origin_px[1])
-
-
-@dataclass(frozen=True)
-class PinResult:
     ok: bool
     message: str
-    rect: ClientRectPhysicalPx | None = None
+    geometry: ViewportGeometry | None = None
+    requested_client_logical: tuple[float, float] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -245,14 +217,25 @@ class CapturedFrame:
     captured_at_s: float
     completed_at_s: float
     duration_ms: float
-    client_rect: ClientRectPhysicalPx
+    geometry: ViewportGeometry
     bgr: NDArray[np.uint8]
     duplicate: bool = False
     capture_error: str | None = None
+    content_id: int | None = None
+    backend: str = ""
 
     def __post_init__(self) -> None:
         if self.bgr.flags.writeable:
             raise ValueError("CapturedFrame.bgr must be non-writeable; use freeze_array()")
+
+    @property
+    def canonical_size_px(self) -> tuple[int, int]:
+        return (self.bgr.shape[1], self.bgr.shape[0])
+
+    @property
+    def supports_calibrated_pixels(self) -> bool:
+        """Calibrated constants only mean anything on a canonical client."""
+        return self.geometry.state.supports_calibrated_pixels
 
     def age_s(self, now_s: float) -> float:
         """Age measured from the start of acquisition, computed at read time.
@@ -279,6 +262,121 @@ class CapturedFrame:
             return (0.0, 0.0, 0.0)
         b, g, r = (float(v) for v in patch.reshape(-1, 3).mean(0))
         return (r, g, b)
+
+
+@dataclass(frozen=True)
+class RawFrame:
+    """One delivery from a capture backend, already in the canonical raster.
+
+    Backends normalize (crop the client, letterbox, scale) before handing a
+    frame over, because every backend can do that far more cheaply than a
+    per-frame CPU resize - ScreenCaptureKit does it on the GPU.
+
+    ``content_id`` is the *source's* own notion of frame identity. When the
+    backend can supply one, uniqueness is authoritative rather than guessed
+    from pixel comparison.
+    """
+
+    bgr: NDArray[np.uint8]
+    geometry: ViewportGeometry
+    captured_at_s: float
+    presented_at_s: float
+    content_id: int | None
+    backend: str
+
+    @property
+    def size_px(self) -> tuple[int, int]:
+        return (self.bgr.shape[1], self.bgr.shape[0])
+
+
+class PerformanceTier(Enum):
+    """Cadence tiers the governor selects between.
+
+    ``DEGRADED`` is a truthful state, not a fallback that pretends to be fine:
+    below 30 unique frames per second the application says so rather than
+    reporting a healthy-looking number produced from stale or duplicate frames.
+    """
+
+    DEGRADED = 15
+    MINIMUM = 30
+    STANDARD = 60
+    HIGH = 90
+    MAXIMUM = 120
+
+    @property
+    def fps(self) -> int:
+        return int(self.value)
+
+    @property
+    def interval_s(self) -> float:
+        return 1.0 / float(self.value)
+
+    @property
+    def acceptable(self) -> bool:
+        """At least near-real-time. Below this the UI shows a degraded state."""
+        return self.fps >= PerformanceTier.MINIMUM.fps
+
+
+@dataclass(frozen=True)
+class LatencySummary:
+    """p50/p95/p99 of one measured stage, in milliseconds."""
+
+    label: str
+    samples: int
+    p50_ms: float
+    p95_ms: float
+    p99_ms: float
+    max_ms: float
+
+    def describe(self) -> str:
+        return (
+            f"{self.label} p50 {self.p50_ms:.1f} p95 {self.p95_ms:.1f} p99 {self.p99_ms:.1f} ms"
+        )
+
+
+@dataclass(frozen=True)
+class CaptureMetrics:
+    """What the pipeline is actually doing, as opposed to what it was asked to.
+
+    Every FPS field counts **unique useful frames**, never loop iterations: a
+    backend redelivering an unchanged surface must not inflate a number that
+    the governor and the UI both treat as evidence of health.
+    """
+
+    backend: str
+    tier: PerformanceTier
+    source_fps: float
+    unique_fps: float
+    processed_fps: float
+    preview_fps: float
+    duplicate_frames: int
+    dropped_frames: int
+    dropped_observations: int
+    stale_frames: int
+    slot_depth: int
+    reacquisitions: int
+    frame_age_ms: float | None
+    capture: LatencySummary
+    normalize: LatencySummary
+    perception: LatencySummary
+    decision: LatencySummary
+    preview: LatencySummary
+    end_to_end: LatencySummary
+    cpu_percent: float
+    rss_mb: float
+    degraded_reason: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return self.degraded_reason is None and self.unique_fps >= PerformanceTier.MINIMUM.fps
+
+    def summary_line(self) -> str:
+        return (
+            f"{self.backend} {self.tier.fps}Hz  unique {self.unique_fps:.0f}  "
+            f"processed {self.processed_fps:.0f}  preview {self.preview_fps:.0f}  "
+            f"lat p95 {self.end_to_end.p95_ms:.0f} ms  cpu {self.cpu_percent:.0f}%  "
+            f"rss {self.rss_mb:.0f} MB"
+        )
 
 
 class _EvidenceMintKey:
@@ -309,7 +407,7 @@ class EvidenceToken:
     frame_sequence: int
     captured_at_s: float
     duration_ms: float
-    viewport_identity: tuple[int, int, int, int, str]
+    viewport_identity: tuple[object, ...]
     _mint_key: _EvidenceMintKey = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -699,13 +797,90 @@ class NextMapOutcome(Enum):
 
 
 @dataclass(frozen=True)
+class ArrowCandidateRecord:
+    """One considered blob, kept whether it was accepted or not.
+
+    Rejections are the useful half of the diagnostic: "no arrow" and "four
+    arrows, all plausible" look identical in a boolean but need opposite fixes.
+    """
+
+    label: int
+    area_px: int
+    bbox_px: tuple[int, int, int, int]
+    centroid_px: tuple[float, float]
+    score: float
+    accepted: bool
+    rejected_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class DiagnosticObservation:
+    """Everything derived from ONE frame, produced once and shared.
+
+    The preview and the controller consume the same instance, so the overlay
+    can never show observation N drawn over frame N+1. ``frame_sequence`` and
+    ``content_id`` tie it to the exact source frame, and every consumer is
+    expected to check them rather than assume freshness.
+    """
+
+    frame_sequence: int
+    content_id: int | None
+    geometry: ViewportGeometry
+    captured_at_s: float
+    processed_at_s: float
+    published_at_s: float
+
+    profile_id: str | None
+    profile_status: str
+    strategy_id: str
+
+    arrow: ArrowObservation
+    candidates: tuple[ArrowCandidateRecord, ...]
+    contour_px: tuple[tuple[int, int], ...]
+
+    anchor_px: tuple[float, float] | None
+    forward_deg: float | None
+    forward_source: str
+    desired_deg: float | None
+    direction: DirectionObservation
+    motion: MotionObservation | None
+    arrival: ArrivalObservation | None
+
+    phase: NavigationPhase | None
+    command: NavigationCommand | None
+    abstain_reason: str | None
+
+    capture_ms: float = 0.0
+    perception_ms: float = 0.0
+    decision_ms: float = 0.0
+
+    @property
+    def age_s(self) -> float:
+        return monotonic_s() - self.captured_at_s
+
+    @property
+    def signed_error_deg(self) -> float | None:
+        return self.direction.error_deg if self.direction.valid else None
+
+    @property
+    def has_direction_arms(self) -> bool:
+        """Whether the overlay has enough to draw both arms and the arc."""
+        return self.anchor_px is not None and (
+            self.forward_deg is not None or self.desired_deg is not None
+        )
+
+    def canonical_to_preview(self, canvas_px: tuple[int, int]) -> Affine2D:
+        return self.geometry.preview_from_canonical(canvas_px)
+
+
+@dataclass(frozen=True)
 class TelemetrySnapshot:
     """One emit-on-change view of the whole runtime (bug B13)."""
 
     sequence: int
     mode: RunMode
     phase: NavigationPhase | None
-    viewport: ClientRectPhysicalPx | None
+    viewport: ViewportGeometry | None
     arrow: ArrowObservation | None
     direction: DirectionObservation | None
     motion: MotionObservation | None
@@ -716,6 +891,7 @@ class TelemetrySnapshot:
     frame_age_ms: float | None
     warnings: tuple[str, ...] = ()
     readiness: Mapping[str, str] = field(default_factory=dict)
+    metrics: CaptureMetrics | None = None
 
 
 # ---------------------------------------------------------------------------

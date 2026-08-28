@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -193,7 +192,14 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
     """
     from pathlib import Path
 
-    from prospector_engine.contracts import CapturedFrame, ClientRectPhysicalPx, monotonic_s
+    from prospector_engine.contracts import CapturedFrame, monotonic_s
+    from prospector_engine.geometry import (
+        DisplayInfo,
+        LogicalRect,
+        ViewportGeometry,
+        ViewportState,
+        WindowIdentity,
+    )
     from prospector_engine.navigation import NavigationGates, Navigator, PerceptionPipeline
     from prospector_engine.telemetry import read_session
     from prospector_engine.vision import ArrowSegmenter, load_profiles
@@ -212,22 +218,27 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
     frames = 0
     for record in read_session(Path(session_dir)):
         frames += 1
-        rect = ClientRectPhysicalPx(
-            origin_px=(0, 0),
-            size_px=(record.bgr.shape[1], record.bgr.shape[0]),
-            scale=1.0,
+        height, width = record.bgr.shape[:2]
+        client = LogicalRect(0.0, 0.0, float(width), float(height))
+        geometry = ViewportGeometry(
+            state=ViewportState.CANONICAL_VERIFIED,
+            window=WindowIdentity(0, 0, "replay"),
+            display=DisplayInfo("replay", client, 1.0),
+            frame_logical=client,
+            client_logical=client,
+            canonical_px=(width, height),
             verified_at_s=record.captured_at_s,
-            display_id="replay",
-            valid=True,
+            detail="replayed recording",
         )
         frame = CapturedFrame(
             sequence=record.sequence,
             captured_at_s=record.captured_at_s,
             completed_at_s=record.captured_at_s + record.duration_ms / 1000.0,
             duration_ms=record.duration_ms,
-            client_rect=rect,
+            geometry=geometry,
             bgr=record.bgr,
             duplicate=record.duplicate,
+            backend="replay",
         )
         decision = navigator.decide(
             pipeline.observe(frame, map_id="replay", approach_valid=False),
@@ -252,79 +263,63 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
     return 0
 
 
-def _run_capture_probe(samples: int = 40) -> int:
-    """Measure capture cost at several client sizes. Read-only.
+def _run_capture_probe(seconds: float = 4.0) -> int:
+    """Measure what the real pipeline sustains. Read-only.
 
-    It grabs pixels and nothing else: no window is moved and no input is sent.
-    The numbers feed E-PERF planning; a probe is not the gate (plan 7.4).
+    It captures the Roblox window through the production source and consumes
+    every frame the way the navigator does. No window is moved and no input is
+    sent. The numbers feed E-PERF planning; a probe is not the gate (plan 7.4).
     """
-    import statistics
-
     from prospector_engine.capture import (
         CaptureConfig,
         CaptureService,
         EvidenceRegistry,
         ViewportGuard,
-        ViewportStatus,
     )
-    from prospector_engine.contracts import ClientRectPhysicalPx, monotonic_s
+    from prospector_engine.contracts import PerformanceTier, monotonic_s
     from prospector_engine.ports import create_platform_port
 
     port = create_platform_port()
-    actual = port.find_client_rect()
-    print("Capture cost probe (read-only; no window is moved, no input is sent)")
-    print(f"  current client rect: {actual.size_px if actual else 'not found'}")
+    guard = ViewportGuard(port)
+    geometry = guard.adopt_current()
+    print("Capture pipeline probe (read-only; no window is moved, no input is sent)")
+    print(f"  viewport: {geometry.describe()}")
+    if not geometry.valid:
+        print("  Roblox client not available; nothing to measure.")
+        return 1
 
-    class _FixedGuard(ViewportGuard):
-        """Pretends a rect is pinned so the probe can price several sizes."""
-
-        def __init__(self, platform_port: Any, rect: ClientRectPhysicalPx) -> None:
-            super().__init__(platform_port)
-            self._fixed = rect
-
-        def check(self) -> ViewportStatus:
-            return ViewportStatus(self._fixed, self._fixed, True, "probe")
-
-        @property
-        def pinned(self) -> ClientRectPhysicalPx | None:
-            return self._fixed
-
-    def measure(size_px: tuple[int, int], label: str) -> None:
-        rect = ClientRectPhysicalPx(
-            origin_px=(0, 0),
-            size_px=size_px,
-            scale=1.0,
-            verified_at_s=monotonic_s(),
-            display_id="probe",
-            valid=True,
-        )
+    for tier in (PerformanceTier.STANDARD, PerformanceTier.HIGH, PerformanceTier.MAXIMUM):
         service = CaptureService(
-            _FixedGuard(port, rect),
+            guard,
             EvidenceRegistry("probe"),
-            config=CaptureConfig(target_interval_ms=1),
+            config=CaptureConfig(start_tier=tier, max_tier=tier),
+            source_factory=port.create_capture_source,
         )
-        service.capture_once()  # warm the backend before timing
-        durations = []
-        for _ in range(samples):
-            envelope = service.capture_once()
-            if envelope is not None:
-                durations.append(envelope.frame.duration_ms)
+        if not service.start():
+            print(f"  {tier.fps:>3d} Hz request: source failed: {service.last_error()}")
+            continue
+        consumed, last = 0, 0
+        deadline = monotonic_s() + seconds
+        while monotonic_s() < deadline:
+            envelope = service.wait_for_new(last, 0.25)
+            if envelope is None:
+                continue
+            last = envelope.frame.sequence
+            consumed += 1
+            service.note_perception_ms(0.0)
+        metrics = service.metrics()
         service.stop()
-        if not durations:
-            print(f"  {label:>30}: no frames captured (Screen Recording permission?)")
-            return
-        durations.sort()
-        p50 = statistics.median(durations)
-        p95 = durations[max(0, int(len(durations) * 0.95) - 1)]
-        budget = "within" if p95 <= 40.0 else "OVER"
-        print(f"  {label:>30}: p50 {p50:6.1f} ms   p95 {p95:6.1f} ms   [{budget} 40 ms budget]")
-
-    measure((1280, 720), "canonical client 1280x720")
-    measure((2560, 1440), "2x canonical")
-    if actual is not None:
-        measure(actual.size_px, f"current {actual.size_px[0]}x{actual.size_px[1]}")
-    print("\nThese are capture-only costs on this machine. E-PERF, which also covers")
-    print("perception, control, and Stop latency, remains PENDING (STATUS.md).")
+        budget = "within" if metrics.end_to_end.p95_ms <= 40.0 else "OVER"
+        print(
+            f"  {tier.fps:>3d} Hz request: {consumed / seconds:6.1f} unique fps consumed  "
+            f"capture p50 {metrics.capture.p50_ms:4.1f} p95 {metrics.capture.p95_ms:4.1f} ms  "
+            f"age {0.0 if metrics.frame_age_ms is None else metrics.frame_age_ms:4.1f} ms  "
+            f"dup {metrics.duplicate_frames}  drop {metrics.dropped_frames}  "
+            f"cpu {metrics.cpu_percent:3.0f}%  rss {metrics.rss_mb:3.0f} MB  [{budget} 40 ms]"
+        )
+    print("\nBackend:", port.create_capture_source().name)
+    print("These are capture-and-consume costs on this machine. E-PERF, which also")
+    print("covers perception, control, and Stop latency, remains PENDING (STATUS.md).")
     return 0
 
 
@@ -344,7 +339,9 @@ def _run_calibrate() -> int:
     port = create_platform_port()
     guard = ViewportGuard(port)
     guard.adopt_current()
-    capture = CaptureService(guard, EvidenceRegistry("calibrate"))
+    capture = CaptureService(
+        guard, EvidenceRegistry("calibrate"), source_factory=port.create_capture_source
+    )
     capture.start()
     print("CALIBRATE - hover a target inside the Roblox client, Ctrl+C to quit.")
     print("  PIXEL is reported in CANONICAL CLIENT coordinates (physical px from the")
@@ -362,11 +359,11 @@ def _run_calibrate() -> int:
                 time.sleep(0.1)
                 continue
             r, g, b = envelope.frame.sample_mean_rgb(cursor, DEFAULT_PIXELS.sample_box_px)
-            rect = envelope.frame.client_rect
+            geometry = envelope.frame.geometry
+            note = "" if geometry.is_canonical else "  [NON-CANONICAL: do not bake this]"
             print(
                 f"\rPIXEL=({cursor[0]:>5},{cursor[1]:>5})  RGB=({int(r):>3},{int(g):>3},"
-                f"{int(b):>3})  client={rect.width_px}x{rect.height_px} "
-                f"scale {rect.scale:g}   ",
+                f"{int(b):>3})  {geometry.state.value}{note}   ",
                 end="",
                 flush=True,
             )

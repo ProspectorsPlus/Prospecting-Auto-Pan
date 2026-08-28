@@ -1,14 +1,20 @@
-"""macOS platform port: Quartz input, AX window geometry, pynput hotkeys.
+"""macOS platform port: window geometry, capture sources, Quartz input, hotkeys.
 
 Instance based, with no module-global engine binding and no authoritative held
-input state - both of those belong to :class:`~prospector_engine.input_authority.InputAuthority`
+input state - both belong to :class:`~prospector_engine.input_authority.InputAuthority`
 (bugs B1, B7, B8, B10).
 
-The canonical geometry this port publishes is the Roblox **client area**, not
-the window frame (bug B11). macOS gives us the outer frame; the title-bar
-height is *measured* from the window's own traffic-light geometry rather than
-assumed, with a documented provisional fallback when Accessibility cannot see
-those elements.
+**Coordinate discipline.** Everything this module exchanges with macOS is in
+*logical points*: ``CGWindowListCopyWindowInfo`` bounds, Accessibility position
+and size, CGEvent locations, and ScreenCaptureKit source rects. Device pixels
+appear only as the ``backing_scale`` recorded in
+:class:`~prospector_engine.geometry.DisplayInfo` and as the dimensions of a
+captured raster. Handing a device-pixel rectangle to any of these APIs is the
+bug that captured the desktop instead of the game (DECISIONS.md D-017).
+
+The client area is derived from the window frame minus a title-bar height that
+is *measured* from the window's own traffic lights rather than assumed, with a
+documented fallback when Accessibility cannot see them.
 """
 
 from __future__ import annotations
@@ -19,6 +25,9 @@ import sys
 import threading
 from collections.abc import Callable
 from typing import Any
+
+import numpy as np
+from numpy.typing import NDArray
 
 if sys.platform != "darwin" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"):
     raise ImportError(
@@ -36,7 +45,6 @@ except ImportError as exc:  # pragma: no cover - install-time failure
     ) from exc
 
 from prospector_engine.contracts import (
-    ClientRectPhysicalPx,
     FocusState,
     InputKey,
     InputVocabulary,
@@ -44,8 +52,17 @@ from prospector_engine.contracts import (
     MouseButton,
     PinResult,
     Provenance,
+    RawFrame,
     RuntimeIntent,
     monotonic_s,
+)
+from prospector_engine.geometry import (
+    CANONICAL_SIZE_PX,
+    DisplayInfo,
+    LogicalRect,
+    ViewportGeometry,
+    ViewportState,
+    WindowIdentity,
 )
 
 __all__ = [
@@ -53,7 +70,10 @@ __all__ = [
     "TITLE_BAR_FALLBACK_PT",
     "MacHotkeySource",
     "MacPlatformPort",
+    "MacQuartzWindowSource",
     "MacReleaseOnlyPort",
+    "MacScreenCaptureKitSource",
+    "screencapturekit_available",
 ]
 
 # macOS ANSI virtual keycodes for the whole input vocabulary. These are the
@@ -137,7 +157,18 @@ def _post(event: Any) -> None:
 
 
 def _cursor_point_pt() -> Any:
+    """Cursor location in **logical points**, which is what CGEvent reports."""
     return Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+
+
+def screencapturekit_available() -> bool:
+    """Whether the async window-capture backend can be used on this machine."""
+    try:
+        import CoreMedia  # noqa: F401
+        import ScreenCaptureKit  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 class MacReleaseOnlyPort:
@@ -165,6 +196,465 @@ class MacReleaseOnlyPort:
         _post(Quartz.CGEventCreateMouseEvent(None, up, _cursor_point_pt(), btn))
 
 
+# ===========================================================================
+# Window-specific capture sources
+# ===========================================================================
+
+
+class MacQuartzWindowSource:
+    """Synchronous window capture through ``CGWindowListCreateImage``.
+
+    It captures the Roblox window itself, not a desktop rectangle that happens
+    to contain it, so an overlapping window cannot contaminate a frame.
+
+    Measured on the development Mac (2x display, 1280x720 client): ~13 ms per
+    frame including the copy - about a 75 Hz ceiling with no headroom left for
+    perception. It is the dependency-light fallback; ScreenCaptureKit is
+    preferred (DECISIONS.md D-018).
+    """
+
+    def __init__(self) -> None:
+        self._geometry: ViewportGeometry | None = None
+        self._pool: Any = None
+        self._error: str | None = None
+        self._counter = 0
+
+    @property
+    def name(self) -> str:
+        return "quartz-window"
+
+    @property
+    def is_pushing(self) -> bool:
+        return False
+
+    def start(
+        self, geometry: ViewportGeometry, pool: Any, on_frame: Callable[[RawFrame], None]
+    ) -> None:
+        del on_frame  # pull source
+        self._geometry = geometry
+        self._pool = pool
+        self._error = None
+
+    def set_target_fps(self, fps: int) -> None:
+        del fps  # paced by the service
+
+    def stop(self) -> None:
+        self._geometry = None
+
+    def health(self) -> str | None:
+        return self._error
+
+    def poll(self) -> RawFrame | None:
+        geometry = self._geometry
+        if geometry is None or geometry.window is None or geometry.client_logical is None:
+            return None
+        source = geometry.client_rect_in_window_logical
+        started = monotonic_s()
+        # Nominal resolution: the canonical raster is defined in logical units,
+        # so asking for backing pixels would only pay to downscale them again.
+        image = Quartz.CGWindowListCreateImage(
+            Quartz.CGRectMake(source.x, source.y, source.width, source.height),
+            Quartz.kCGWindowListOptionIncludingWindow,
+            geometry.window.window_id,
+            Quartz.kCGWindowImageBoundsIgnoreFraming | Quartz.kCGWindowImageNominalResolution,
+        )
+        if image is None:
+            self._error = "window image unavailable (minimized, closed, or on another Space)"
+            return None
+        width = int(Quartz.CGImageGetWidth(image))
+        height = int(Quartz.CGImageGetHeight(image))
+        bytes_per_row = int(Quartz.CGImageGetBytesPerRow(image))
+        data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(image))
+        if data is None or width <= 0 or height <= 0:
+            self._error = "window image had no pixel data"
+            return None
+        raw = np.frombuffer(data, dtype=np.uint8)
+        needed = bytes_per_row * height
+        if raw.size < needed:
+            self._error = f"short image buffer: {raw.size} < {needed}"
+            return None
+        bgra = raw[:needed].reshape(height, bytes_per_row // 4, 4)[:, :width, :3]
+        canonical = _letterbox_into_canonical(bgra, geometry, self._pool)
+        if canonical is None:
+            self._error = "frame buffer pool exhausted"
+            return None
+        self._counter += 1
+        self._error = None
+        return RawFrame(
+            bgr=canonical,
+            geometry=geometry,
+            captured_at_s=started,
+            presented_at_s=monotonic_s(),
+            content_id=None,
+            backend=self.name,
+        )
+
+
+def _letterbox_into_canonical(
+    source_bgr: NDArray[np.uint8], geometry: ViewportGeometry, pool: Any
+) -> NDArray[np.uint8] | None:
+    """Resize a client image into the canonical raster exactly once."""
+    import cv2
+
+    width, height = geometry.canonical_px
+    target = pool.acquire(height, width) if pool is not None else None
+    if target is None:
+        return None
+    inner_x, inner_y, inner_w, inner_h = geometry.canonical_letterbox_px()
+    inner_w = max(1, min(inner_w, width - max(0, inner_x)))
+    inner_h = max(1, min(inner_h, height - max(0, inner_y)))
+    inner_x, inner_y = max(0, inner_x), max(0, inner_y)
+    if (inner_x, inner_y, inner_w, inner_h) != (0, 0, width, height):
+        target[:] = 0
+    cv2.resize(
+        source_bgr,
+        (inner_w, inner_h),
+        dst=target[inner_y : inner_y + inner_h, inner_x : inner_x + inner_w],
+        interpolation=cv2.INTER_AREA,
+    )
+    result: NDArray[np.uint8] = target
+    return result
+
+
+class MacScreenCaptureKitSource:
+    """Asynchronous, window-specific capture through ScreenCaptureKit.
+
+    The preferred macOS backend. The OS pushes frames on its own queue, crops
+    the client area and scales to the canonical raster **on the GPU** through
+    ``sourceRect``/``destinationRect``, and keeps delivering while another
+    application is frontmost - which is exactly the case that matters, because
+    the dashboard itself takes focus.
+
+    Measured on the development Mac: 110 unique fps at 1280x720 against a
+    120 Hz request, versus ~75 Hz for the Quartz fallback.
+
+    Two pyobjc details this depends on, both easy to get wrong:
+
+    * ScreenCaptureKit keeps only a **weak** reference to a stream output, so
+      the delegate must be retained here or frames silently stop arriving.
+    * Completion handlers are typed ``void``; returning a value from one raises
+      inside the callback and takes the process down.
+    """
+
+    #: Bounded wait for the async shareable-content query.
+    CONTENT_TIMEOUT_S = 5.0
+    START_TIMEOUT_S = 6.0
+
+    def __init__(self) -> None:
+        self._stream: Any = None
+        self._output: Any = None
+        self._geometry: ViewportGeometry | None = None
+        self._pool: Any = None
+        self._on_frame: Callable[[RawFrame], None] | None = None
+        self._error: str | None = None
+        self._target_fps = 60
+        self._idle_frames = 0
+        self._content_counter = 0
+        self._lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        return "screencapturekit"
+
+    @property
+    def idle_frames(self) -> int:
+        """Surfaces ScreenCaptureKit redelivered unchanged, and we skipped."""
+        with self._lock:
+            return self._idle_frames
+
+    @property
+    def is_pushing(self) -> bool:
+        return True
+
+    def poll(self) -> RawFrame | None:
+        return None  # push source
+
+    def health(self) -> str | None:
+        with self._lock:
+            return self._error
+
+    def set_target_fps(self, fps: int) -> None:
+        self._target_fps = max(1, fps)
+        stream = self._stream
+        if stream is None:
+            return
+        import CoreMedia
+
+        configuration = self._configuration()
+        if configuration is None:
+            return
+        configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, self._target_fps))
+
+        def _updated(error: Any) -> None:
+            if error is not None:
+                with self._lock:
+                    self._error = f"reconfigure failed: {error}"
+
+        with contextlib.suppress(Exception):
+            stream.updateConfiguration_completionHandler_(configuration, _updated)
+
+    # -- construction -----------------------------------------------------
+    def _find_window(self, window_id: int) -> Any:
+        import ScreenCaptureKit as SCK
+
+        done = threading.Event()
+        found: dict[str, Any] = {}
+
+        def _received(content: Any, error: Any) -> None:
+            found["content"] = content
+            found["error"] = error
+            done.set()
+
+        SCK.SCShareableContent.getShareableContentWithCompletionHandler_(_received)
+        if not done.wait(self.CONTENT_TIMEOUT_S):
+            raise TimeoutError("ScreenCaptureKit shareable content query timed out")
+        if found.get("error") is not None:
+            raise RuntimeError(f"shareable content error: {found['error']}")
+        content = found.get("content")
+        if content is None:
+            raise RuntimeError("ScreenCaptureKit returned no shareable content")
+        for window in content.windows():
+            if int(window.windowID()) == int(window_id):
+                return window
+        raise LookupError(f"window {window_id} is not shareable (closed or minimized?)")
+
+    def _configuration(self) -> Any:
+        import CoreMedia
+        import ScreenCaptureKit as SCK
+
+        geometry = self._geometry
+        if geometry is None or geometry.client_logical is None:
+            return None
+        width, height = geometry.canonical_px
+        source = geometry.client_rect_in_window_logical
+        inner_x, inner_y, inner_w, inner_h = geometry.canonical_letterbox_px()
+
+        configuration = SCK.SCStreamConfiguration.alloc().init()
+        configuration.setWidth_(width)
+        configuration.setHeight_(height)
+        configuration.setPixelFormat_(0x42475241)  # 'BGRA'
+        configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, self._target_fps))
+        configuration.setQueueDepth_(3)
+        configuration.setShowsCursor_(False)
+        # Crop to the client and place it letterboxed inside the canonical
+        # raster, both on the GPU. The same rectangle is what
+        # ViewportGeometry inverts, so overlay coordinates stay exact.
+        configuration.setSourceRect_(
+            Quartz.CGRectMake(source.x, source.y, source.width, source.height)
+        )
+        with contextlib.suppress(Exception):
+            configuration.setScalesToFit_(False)
+            configuration.setDestinationRect_(
+                Quartz.CGRectMake(inner_x, inner_y, inner_w, inner_h)
+            )
+        with contextlib.suppress(Exception):
+            configuration.setIgnoreShadowsSingleWindow_(True)
+        return configuration
+
+    def start(
+        self, geometry: ViewportGeometry, pool: Any, on_frame: Callable[[RawFrame], None]
+    ) -> None:
+        import ScreenCaptureKit as SCK
+
+        if geometry.window is None or geometry.client_logical is None:
+            raise ValueError("ScreenCaptureKit needs a resolved window geometry")
+        self._geometry = geometry
+        self._pool = pool
+        self._on_frame = on_frame
+
+        window = self._find_window(geometry.window.window_id)
+        configuration = self._configuration()
+        if configuration is None:
+            raise ValueError("could not build a stream configuration")
+        content_filter = SCK.SCContentFilter.alloc().initWithDesktopIndependentWindow_(window)
+        stream = SCK.SCStream.alloc().initWithFilter_configuration_delegate_(
+            content_filter, configuration, None
+        )
+        output = _make_stream_output(self._deliver)
+        ok, error = stream.addStreamOutput_type_sampleHandlerQueue_error_(
+            output, SCK.SCStreamOutputTypeScreen, None, None
+        )
+        if not ok:
+            raise RuntimeError(f"addStreamOutput failed: {error}")
+
+        started = threading.Event()
+        outcome: dict[str, Any] = {}
+
+        def _started(error: Any) -> None:
+            outcome["error"] = error
+            started.set()
+
+        stream.startCaptureWithCompletionHandler_(_started)
+        if not started.wait(self.START_TIMEOUT_S):
+            raise TimeoutError("ScreenCaptureKit start timed out")
+        if outcome.get("error") is not None:
+            raise RuntimeError(f"ScreenCaptureKit start failed: {outcome['error']}")
+
+        # Retained deliberately: SCK holds the output weakly.
+        self._stream = stream
+        self._output = output
+        with self._lock:
+            self._error = None
+
+    @staticmethod
+    def _frame_status(sample_buffer: Any) -> tuple[int, int | None]:
+        """``(status, display_time)`` from ScreenCaptureKit's own attachments.
+
+        This is the authoritative uniqueness signal: ``SCFrameStatusComplete``
+        means new content was composited, ``SCFrameStatusIdle`` means the same
+        surface was redelivered. Using it means the pipeline never inflates its
+        frame rate by counting a redelivered surface, and never pays for a copy
+        it will discard (mission section 6).
+        """
+        import CoreMedia
+        import ScreenCaptureKit as SCK
+
+        try:
+            attachments = CoreMedia.CMSampleBufferGetSampleAttachmentsArray(
+                sample_buffer, False
+            )
+            if not attachments or len(attachments) == 0:
+                return (int(SCK.SCFrameStatusComplete), None)
+            info = attachments[0]
+            status = info.get(SCK.SCStreamFrameInfoStatus)
+            display_time = info.get(SCK.SCStreamFrameInfoDisplayTime)
+            return (
+                int(SCK.SCFrameStatusComplete) if status is None else int(status),
+                None if display_time is None else int(display_time),
+            )
+        except Exception:
+            return (int(SCK.SCFrameStatusComplete), None)
+
+    def _deliver(self, sample_buffer: Any) -> None:
+        """Called on ScreenCaptureKit's queue. Copies once and returns."""
+        import CoreMedia
+        import ScreenCaptureKit as SCK
+
+        on_frame = self._on_frame
+        geometry = self._geometry
+        if on_frame is None or geometry is None:
+            return
+        status, display_time = self._frame_status(sample_buffer)
+        if status != int(SCK.SCFrameStatusComplete):
+            with self._lock:
+                self._idle_frames += 1
+            return  # redelivered surface: skip the copy entirely
+        started = monotonic_s()
+        try:
+            pixel_buffer = CoreMedia.CMSampleBufferGetImageBuffer(sample_buffer)
+            if pixel_buffer is None:
+                return
+            Quartz.CVPixelBufferLockBaseAddress(pixel_buffer, 1)
+            try:
+                width = int(Quartz.CVPixelBufferGetWidth(pixel_buffer))
+                height = int(Quartz.CVPixelBufferGetHeight(pixel_buffer))
+                stride = int(Quartz.CVPixelBufferGetBytesPerRow(pixel_buffer))
+                address = Quartz.CVPixelBufferGetBaseAddress(pixel_buffer)
+                if address is None or width <= 0 or height <= 0:
+                    return
+                source = np.frombuffer(
+                    address.as_buffer(stride * height), dtype=np.uint8
+                ).reshape(height, stride // 4, 4)[:, :width, :3]
+                target = self._pool.acquire(height, width) if self._pool is not None else None
+                if target is None:
+                    with self._lock:
+                        self._error = "frame buffer pool exhausted"
+                    return
+                np.copyto(target, source)
+            finally:
+                Quartz.CVPixelBufferUnlockBaseAddress(pixel_buffer, 1)
+        except Exception as exc:
+            with self._lock:
+                self._error = f"sample delivery failed: {exc!r}"
+            return
+        with self._lock:
+            self._content_counter += 1
+            content_id = display_time if display_time is not None else self._content_counter
+        on_frame(
+            RawFrame(
+                bgr=target,
+                geometry=geometry,
+                captured_at_s=started,
+                presented_at_s=monotonic_s(),
+                content_id=content_id,
+                backend=self.name,
+            )
+        )
+
+    def stop(self) -> None:
+        stream = self._stream
+        self._stream = None
+        self._output = None
+        self._on_frame = None
+        if stream is None:
+            return
+        stopped = threading.Event()
+
+        def _stopped(error: Any) -> None:
+            stopped.set()
+
+        with contextlib.suppress(Exception):
+            stream.stopCaptureWithCompletionHandler_(_stopped)
+            stopped.wait(2.0)
+
+
+_STREAM_OUTPUT_CLASS: Any = None
+_STREAM_OUTPUT_LOCK = threading.Lock()
+
+
+def _stream_output_class() -> Any:
+    """The ``SCStreamOutput`` delegate class, defined exactly once.
+
+    Objective-C class names are process-global, so defining this per stream
+    raises "overriding existing Objective-C class" the second time a capture
+    session starts - which is every tier change and every reacquisition. The
+    class is therefore cached and the per-stream callback lives on the
+    instance.
+    """
+    global _STREAM_OUTPUT_CLASS
+    with _STREAM_OUTPUT_LOCK:
+        if _STREAM_OUTPUT_CLASS is not None:
+            return _STREAM_OUTPUT_CLASS
+
+        import objc
+        import ScreenCaptureKit as SCK
+
+        protocols = []
+        with contextlib.suppress(Exception):
+            protocols = [objc.protocolNamed("SCStreamOutput")]
+        base: Any = objc.lookUpClass("NSObject")
+
+        class _TreasureStreamOutput(base, protocols=protocols):  # type: ignore[call-arg,misc]
+            def initWithDeliver_(self, deliver: Any) -> Any:
+                instance = objc.super(_TreasureStreamOutput, self).init()
+                if instance is None:
+                    return None
+                instance._deliver_callback = deliver
+                return instance
+
+            def stream_didOutputSampleBuffer_ofType_(
+                self, stream: Any, sample_buffer: Any, output_type: Any
+            ) -> None:
+                if output_type != SCK.SCStreamOutputTypeScreen:
+                    return
+                callback = getattr(self, "_deliver_callback", None)
+                if callback is not None:
+                    callback(sample_buffer)
+
+        _STREAM_OUTPUT_CLASS = _TreasureStreamOutput
+        return _STREAM_OUTPUT_CLASS
+
+
+def _make_stream_output(deliver: Callable[[Any], None]) -> Any:
+    instance: Any = _stream_output_class().alloc().initWithDeliver_(deliver)
+    return instance
+
+
+# ===========================================================================
+# Platform port
+# ===========================================================================
+
+
 class MacPlatformPort:
     """Full macOS port. Only ``InputAuthority`` and capture may hold one."""
 
@@ -172,7 +662,7 @@ class MacPlatformPort:
         self._vocabulary = InputVocabulary()
         self._owner_substring = window_owner_substring
         self._lock = threading.Lock()
-        self._last_rect: ClientRectPhysicalPx | None = None
+        self._geometry = ViewportGeometry.unpinned()
         self._title_bar_pt: float = TITLE_BAR_FALLBACK_PT
         self._title_bar_measured = False
 
@@ -194,7 +684,7 @@ class MacPlatformPort:
 
     @property
     def title_bar_measured(self) -> bool:
-        """True when the inset came from AX geometry, not the fallback."""
+        """True when the inset came from AX geometry rather than the fallback."""
         return self._title_bar_measured
 
     # -- accessibility ----------------------------------------------------
@@ -210,9 +700,10 @@ class MacPlatformPort:
         except Exception:
             return False
 
-    # -- display ----------------------------------------------------------
+    # -- displays ---------------------------------------------------------
     @staticmethod
     def _scale_for_display(display_id: int) -> float:
+        """Backing pixels per logical point for one display."""
         mode = Quartz.CGDisplayCopyDisplayMode(display_id)
         if mode is None:
             return 1.0
@@ -220,18 +711,37 @@ class MacPlatformPort:
         pixels_wide = float(Quartz.CGDisplayModeGetPixelWidth(mode))
         return pixels_wide / points_wide if points_wide else 1.0
 
-    @staticmethod
-    def _display_for_point_pt(x: float, y: float) -> int:
+    def _display_for_rect(self, rect: LogicalRect) -> DisplayInfo:
+        """The display a window sits on, found by its centre.
+
+        Using the centre rather than the origin means a window straddling two
+        displays resolves to the one showing most of it, and a window that
+        migrates is noticed because the display id is part of the viewport
+        identity.
+        """
+        centre_x = rect.x + rect.width / 2.0
+        centre_y = rect.y + rect.height / 2.0
+        display_id = int(Quartz.CGMainDisplayID())
         with contextlib.suppress(Exception):
-            err, displays, count = Quartz.CGGetDisplaysWithPoint(
-                Quartz.CGPoint(x, y), 1, None, None
+            error, displays, count = Quartz.CGGetDisplaysWithPoint(
+                Quartz.CGPoint(centre_x, centre_y), 1, None, None
             )
-            if not err and count:
-                return int(displays[0])
-        return int(Quartz.CGMainDisplayID())
+            if not error and count:
+                display_id = int(displays[0])
+        bounds = Quartz.CGDisplayBounds(display_id)
+        return DisplayInfo(
+            display_id=str(display_id),
+            bounds_logical=LogicalRect(
+                float(bounds.origin.x),
+                float(bounds.origin.y),
+                float(bounds.size.width),
+                float(bounds.size.height),
+            ),
+            backing_scale=self._scale_for_display(display_id),
+        )
 
     # -- window lookup ----------------------------------------------------
-    def _scan_roblox(self) -> tuple[int, float, float, float, float] | None:
+    def _scan_roblox(self) -> tuple[WindowIdentity, LogicalRect] | None:
         """Largest on-screen Roblox (not Studio) window frame, in POINTS."""
         try:
             options = (
@@ -241,13 +751,15 @@ class MacPlatformPort:
             windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
         except Exception:
             return None
-        best: tuple[int, float, float, float, float] | None = None
+        best: tuple[WindowIdentity, LogicalRect] | None = None
         best_area = 0.0
         for window in windows or []:
             owner = str(window.get("kCGWindowOwnerName", ""))
             lowered = owner.lower()
             if self._owner_substring not in lowered or "studio" in lowered:
                 continue
+            if int(window.get("kCGWindowLayer", 0) or 0) != 0:
+                continue  # menu bars, panels, and shadows are not the game
             bounds = window.get("kCGWindowBounds") or {}
             width = float(bounds.get("Width", 0.0))
             height = float(bounds.get("Height", 0.0))
@@ -255,16 +767,23 @@ class MacPlatformPort:
                 continue
             best_area = width * height
             best = (
-                int(window.get("kCGWindowOwnerPID") or 0),
-                float(bounds.get("X", 0.0)),
-                float(bounds.get("Y", 0.0)),
-                width,
-                height,
+                WindowIdentity(
+                    window_id=int(window.get("kCGWindowNumber") or 0),
+                    process_id=int(window.get("kCGWindowOwnerPID") or 0),
+                    owner=owner,
+                    title=str(window.get("kCGWindowName") or ""),
+                ),
+                LogicalRect(
+                    float(bounds.get("X", 0.0)),
+                    float(bounds.get("Y", 0.0)),
+                    width,
+                    height,
+                ),
             )
         return best
 
     def roblox_on_another_space(self) -> bool:
-        """A Roblox window exists but is not on screen - the fullscreen signature."""
+        """A Roblox window exists but is off-screen - the fullscreen signature."""
         with contextlib.suppress(Exception):
             windows = Quartz.CGWindowListCopyWindowInfo(
                 Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID
@@ -278,10 +797,10 @@ class MacPlatformPort:
     def _ax_window(self, pid: int) -> Any | None:
         services = self._app_services()
         app = services.AXUIElementCreateApplication(int(pid))
-        err, windows = services.AXUIElementCopyAttributeValue(
+        error, windows = services.AXUIElementCopyAttributeValue(
             app, services.kAXWindowsAttribute, None
         )
-        if err != services.kAXErrorSuccess or not windows:
+        if error != services.kAXErrorSuccess or not windows:
             return None
         return windows[0]
 
@@ -289,44 +808,46 @@ class MacPlatformPort:
         """Derive the title-bar height from the window's own traffic lights.
 
         ``2 * (close_button_y - frame_y) + close_button_height`` because the
-        buttons are vertically centred in the bar. Returns ``None`` when AX
-        does not expose them, in which case the caller uses the provisional
-        fallback and says so.
+        buttons are vertically centred in the bar. Returns ``None`` when
+        Accessibility does not expose them, and the caller then uses the
+        documented fallback and says which it used.
         """
         services = self._app_services()
         try:
-            err, frame_value = services.AXUIElementCopyAttributeValue(
+            error, frame_value = services.AXUIElementCopyAttributeValue(
                 window, services.kAXPositionAttribute, None
             )
-            if err != services.kAXErrorSuccess:
+            if error != services.kAXErrorSuccess:
                 return None
             ok, frame_point = services.AXValueGetValue(
                 frame_value, services.kAXValueCGPointType, None
             )
             if not ok:
                 return None
-            err, button = services.AXUIElementCopyAttributeValue(window, "AXCloseButton", None)
-            if err != services.kAXErrorSuccess or button is None:
+            error, button = services.AXUIElementCopyAttributeValue(
+                window, "AXCloseButton", None
+            )
+            if error != services.kAXErrorSuccess or button is None:
                 return None
-            err, pos_value = services.AXUIElementCopyAttributeValue(button, "AXPosition", None)
-            if err != services.kAXErrorSuccess:
+            error, position_value = services.AXUIElementCopyAttributeValue(
+                button, "AXPosition", None
+            )
+            if error != services.kAXErrorSuccess:
                 return None
-            err, size_value = services.AXUIElementCopyAttributeValue(button, "AXSize", None)
-            if err != services.kAXErrorSuccess:
+            error, size_value = services.AXUIElementCopyAttributeValue(button, "AXSize", None)
+            if error != services.kAXErrorSuccess:
                 return None
-            ok_pos, button_point = services.AXValueGetValue(
-                pos_value, services.kAXValueCGPointType, None
+            ok_position, button_point = services.AXValueGetValue(
+                position_value, services.kAXValueCGPointType, None
             )
             ok_size, button_size = services.AXValueGetValue(
                 size_value, services.kAXValueCGSizeType, None
             )
-            if not (ok_pos and ok_size):
+            if not (ok_position and ok_size):
                 return None
             inset = float(button_point.y) - float(frame_point.y)
             measured = 2.0 * inset + float(button_size.height)
-            if not 12.0 <= measured <= 80.0:
-                return None
-            return measured
+            return measured if 12.0 <= measured <= 80.0 else None
         except Exception:
             return None
 
@@ -348,133 +869,180 @@ class MacPlatformPort:
             return False
         return self._owner_substring in name
 
-    def find_client_rect(self) -> ClientRectPhysicalPx | None:
+    def window_geometry(self) -> ViewportGeometry:
         found = self._scan_roblox()
         if found is None:
+            detail = (
+                "Roblox is running but not on this Space - exit native fullscreen"
+                if self.roblox_on_another_space()
+                else "Roblox window not found"
+            )
+            geometry = ViewportGeometry.invalid(detail)
             with self._lock:
-                self._last_rect = None
-            return None
-        pid, frame_x_pt, frame_y_pt, frame_w_pt, frame_h_pt = found
+                self._geometry = geometry
+            return geometry
 
+        identity, frame_logical = found
         title_bar_pt = TITLE_BAR_FALLBACK_PT
         measured = False
-        if pid and self.accessibility_trusted():
-            window = self._ax_window(pid)
+        if identity.process_id and self.accessibility_trusted():
+            window = self._ax_window(identity.process_id)
             if window is not None:
                 candidate = self._measure_title_bar_pt(window)
                 if candidate is not None:
-                    title_bar_pt = candidate
-                    measured = True
+                    title_bar_pt, measured = candidate, True
 
-        display_id = self._display_for_point_pt(frame_x_pt, frame_y_pt)
-        scale = self._scale_for_display(display_id)
+        client_logical = frame_logical.inset(top=title_bar_pt)
+        display = self._display_for_rect(frame_logical)
 
-        client_x_px = round(frame_x_pt * scale)
-        client_y_px = round((frame_y_pt + title_bar_pt) * scale)
-        client_w_px = round(frame_w_pt * scale)
-        client_h_px = round((frame_h_pt - title_bar_pt) * scale)
-
-        invalid_reason: str | None = None
-        if client_w_px <= 0 or client_h_px <= 0:
-            invalid_reason = "non-positive client size"
-
-        rect = ClientRectPhysicalPx(
-            origin_px=(client_x_px, client_y_px),
-            size_px=(max(0, client_w_px), max(0, client_h_px)),
-            scale=scale,
-            verified_at_s=monotonic_s(),
-            display_id=str(display_id),
-            valid=invalid_reason is None,
-            invalid_reason=invalid_reason,
-        )
+        if client_logical.width <= 0 or client_logical.height <= 0:
+            geometry = ViewportGeometry.invalid(
+                f"non-positive client size {client_logical.size}"
+            )
+        else:
+            canonical_w, canonical_h = CANONICAL_SIZE_PX
+            is_canonical = (
+                abs(client_logical.width - canonical_w) <= 1.0
+                and abs(client_logical.height - canonical_h) <= 1.0
+            )
+            geometry = ViewportGeometry(
+                state=(
+                    ViewportState.CANONICAL_VERIFIED
+                    if is_canonical
+                    else ViewportState.ADOPTED_NONCANONICAL
+                ),
+                window=identity,
+                display=display,
+                frame_logical=frame_logical,
+                client_logical=client_logical,
+                canonical_px=CANONICAL_SIZE_PX,
+                verified_at_s=monotonic_s(),
+                detail=(
+                    "client matches the canonical size"
+                    if is_canonical
+                    else f"client is {client_logical.width:g}x{client_logical.height:g} pt, "
+                    f"not the canonical {canonical_w}x{canonical_h}"
+                ),
+            )
         with self._lock:
             self._title_bar_pt = title_bar_pt
             self._title_bar_measured = measured
-            self._last_rect = rect
-        return rect
+            self._geometry = geometry
+        return geometry
 
-    def pin_client_rect(self, size_px: tuple[int, int]) -> PinResult:
-        """Move/resize Roblox so its **client area** is exactly ``size_px``.
+    def pin_client_rect(self, size_logical: tuple[float, float]) -> PinResult:
+        """Resize Roblox so its **client content** is ``size_logical`` POINTS.
 
-        macOS may legally refuse the requested origin (menu-bar safe area), so
-        the achieved origin is read back and used everywhere rather than being
-        assumed to be (0, 0) (plan 4.1).
+        Accessibility sets the *frame*, so the title bar is added back before
+        asking. macOS may legally refuse the position or clamp the size, so the
+        achieved geometry is read back and reported rather than retried.
         """
         services = self._app_services()
         if not self.accessibility_trusted():
             return PinResult(
                 False,
                 "Accessibility permission not granted. System Settings > Privacy & "
-                "Security > Accessibility - enable it for this app/terminal, then retry.",
+                "Security > Accessibility - enable it for this app or terminal, then retry.",
+                self.window_geometry(),
+                size_logical,
             )
         found = self._scan_roblox()
-        if found is None or not found[0]:
-            if self.roblox_on_another_space():
-                return PinResult(
-                    False,
-                    "Roblox is running but not on this Space - exit native fullscreen "
-                    "(the green button) and try again.",
-                )
-            return PinResult(False, "Roblox window not found. Open Roblox (not minimized).")
-        pid = found[0]
-        window = self._ax_window(pid)
+        if found is None:
+            return PinResult(
+                False,
+                "Roblox window not found. Open Roblox, not minimized, and not in "
+                "native fullscreen.",
+                self.window_geometry(),
+                size_logical,
+            )
+        identity, _frame = found
+        window = self._ax_window(identity.process_id)
         if window is None:
             return PinResult(
-                False, "Could not reach Roblox's window via Accessibility (minimized?)."
+                False,
+                "Could not reach Roblox's window through Accessibility.",
+                self.window_geometry(),
+                size_logical,
             )
 
-        err, is_fullscreen = services.AXUIElementCopyAttributeValue(
+        error, is_fullscreen = services.AXUIElementCopyAttributeValue(
             window, "AXFullScreen", None
         )
-        if err == services.kAXErrorSuccess and bool(is_fullscreen):
+        if error == services.kAXErrorSuccess and bool(is_fullscreen):
             return PinResult(
-                False, "Roblox is in native fullscreen - exit fullscreen and retry."
+                False,
+                "Roblox is in native fullscreen - exit fullscreen and retry.",
+                self.window_geometry(),
+                size_logical,
             )
 
         measured = self._measure_title_bar_pt(window)
         title_bar_pt = measured if measured is not None else TITLE_BAR_FALLBACK_PT
-        display_id = self._display_for_point_pt(found[1], found[2])
-        scale = self._scale_for_display(display_id)
+        want_width = float(size_logical[0])
+        want_height = float(size_logical[1]) + title_bar_pt
 
-        want_w_pt = size_px[0] / scale
-        want_h_pt = size_px[1] / scale + title_bar_pt
         position = services.AXValueCreate(
             services.kAXValueCGPointType, Quartz.CGPoint(0.0, 0.0)
         )
         size = services.AXValueCreate(
-            services.kAXValueCGSizeType, Quartz.CGSize(want_w_pt, want_h_pt)
+            services.kAXValueCGSizeType, Quartz.CGSize(want_width, want_height)
         )
-        err_pos = services.AXUIElementSetAttributeValue(
+        error_position = services.AXUIElementSetAttributeValue(
             window, services.kAXPositionAttribute, position
         )
-        err_size = services.AXUIElementSetAttributeValue(
+        error_size = services.AXUIElementSetAttributeValue(
             window, services.kAXSizeAttribute, size
         )
-        if services.kAXErrorSuccess not in (err_pos,) or err_size != services.kAXErrorSuccess:
-            return PinResult(
-                False, f"Failed to move/resize Roblox (AX error {err_pos}/{err_size})."
-            )
-
-        rect = self.find_client_rect()
-        if rect is None or not rect.valid:
-            return PinResult(False, "Pinned, but the client rect could not be read back.")
-        dw = abs(rect.width_px - size_px[0])
-        dh = abs(rect.height_px - size_px[1])
-        if dw > 1 or dh > 1:
+        if error_position != services.kAXErrorSuccess or error_size != services.kAXErrorSuccess:
             return PinResult(
                 False,
-                f"Client readback {rect.size_px} differs from requested {size_px} "
-                f"by ({dw},{dh}) px - outside the one-pixel contract.",
-                rect,
+                f"Failed to move or resize Roblox (AX errors {error_position}/{error_size}).",
+                self.window_geometry(),
+                size_logical,
             )
-        source = "measured" if self._title_bar_measured else "provisional-fallback"
+
+        geometry = self.window_geometry()
+        if not geometry.valid or geometry.client_logical is None:
+            return PinResult(
+                False,
+                "Pinned, but the client rect could not be read back.",
+                geometry,
+                size_logical,
+            )
+        client = geometry.client_logical
+        delta_w = abs(client.width - size_logical[0])
+        delta_h = abs(client.height - size_logical[1])
+        if delta_w > 1.0 or delta_h > 1.0:
+            # Reported once, then accepted as a truthful non-canonical state.
+            # Roblox enforces a minimum window size, so a request below it is
+            # clamped and retrying would loop forever (DECISIONS.md D-017).
+            return PinResult(
+                False,
+                f"Requested a {size_logical[0]:g}x{size_logical[1]:g} pt client but the OS "
+                f"gave {client.width:g}x{client.height:g} pt "
+                f"(off by {delta_w:g}x{delta_h:g}). Running non-canonical: observation and "
+                f"recording work, calibrated pixel constants do not.",
+                geometry.with_state(
+                    ViewportState.ADOPTED_NONCANONICAL, "clamped by the OS or the application"
+                ),
+                size_logical,
+            )
+        source = "measured" if self._title_bar_measured else "provisional fallback"
         return PinResult(
             True,
-            f"Client area pinned to {rect.width_px}x{rect.height_px} px at "
-            f"{rect.origin_px} (scale {rect.scale:g}, "
-            f"title bar {title_bar_pt:g} pt, {source}).",
-            rect,
+            f"Client pinned to {client.width:g}x{client.height:g} pt at "
+            f"({client.x:g},{client.y:g}); backing {geometry.client_backing_px[0]}x"
+            f"{geometry.client_backing_px[1]} px at {geometry.backing_scale:g}x, "
+            f"title bar {title_bar_pt:g} pt ({source}).",
+            geometry,
+            size_logical,
         )
+
+    def create_capture_source(self) -> Any:
+        """ScreenCaptureKit when available, otherwise the Quartz fallback."""
+        if screencapturekit_available():
+            return MacScreenCaptureKitSource()
+        return MacQuartzWindowSource()
 
     # -- PlatformPort: raw edges -----------------------------------------
     def raw_key_down(self, code: int) -> None:
@@ -492,14 +1060,21 @@ class MacPlatformPort:
         _post(Quartz.CGEventCreateMouseEvent(None, up, _cursor_point_pt(), btn))
 
     def raw_pointer_move_client(self, point_px: tuple[int, int]) -> None:
+        """Move to a point in **canonical** coordinates.
+
+        The canonical -> display-logical transform lives on the geometry, so
+        this is one composed mapping rather than an ad-hoc division by the
+        display scale.
+        """
         with self._lock:
-            rect = self._last_rect
-        if rect is None:
-            rect = self.find_client_rect()
-        if rect is None or not rect.valid:
+            geometry = self._geometry
+        if not geometry.valid:
+            geometry = self.window_geometry()
+        if not geometry.valid:
             return
-        screen_x_px, screen_y_px = rect.to_screen_px(point_px)
-        x_pt, y_pt = screen_x_px / rect.scale, screen_y_px / rect.scale
+        x_pt, y_pt = geometry.display_logical_from_canonical.apply(
+            float(point_px[0]), float(point_px[1])
+        )
         with contextlib.suppress(Exception):
             Quartz.CGWarpMouseCursorPosition((x_pt, y_pt))
         _post(
@@ -515,8 +1090,7 @@ class MacPlatformPort:
 
         Roblox reads ``kCGMouseEventDeltaX/Y``; a plain absolute move does
         nothing even while a button is genuinely held. When the authority's
-        ledger holds a button, the delta rides that button's *dragged* event,
-        which is what makes yaw work (plan 12, native yaw detail).
+        ledger holds a button, the delta rides that button's *dragged* event.
         """
         if held_button is not None:
             _down, _up, dragged, btn = _MAC_BUTTON_EVENTS[held_button]
@@ -537,15 +1111,19 @@ class MacPlatformPort:
         )
 
     def cursor_client_px(self) -> tuple[int, int] | None:
-        rect = self.find_client_rect()
-        if rect is None or not rect.valid:
+        """Cursor position in **canonical** coordinates, or ``None``."""
+        geometry = self.window_geometry()
+        if not geometry.valid:
             return None
         point = _cursor_point_pt()
-        client_x = round(float(point.x) * rect.scale) - rect.origin_px[0]
-        client_y = round(float(point.y) * rect.scale) - rect.origin_px[1]
-        if not rect.contains_client_point((client_x, client_y)):
+        canonical = geometry.display_logical_from_canonical.inverse().apply(
+            float(point.x), float(point.y)
+        )
+        x, y = round(canonical[0]), round(canonical[1])
+        width, height = geometry.canonical_px
+        if not (0 <= x < width and 0 <= y < height):
             return None
-        return (client_x, client_y)
+        return (x, y)
 
     # -- PlatformPort: hotkeys -------------------------------------------
     def create_hotkey_source(self, submit: Callable[[RuntimeIntent], None]) -> MacHotkeySource:

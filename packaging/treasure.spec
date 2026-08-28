@@ -33,6 +33,10 @@ hiddenimports = [
     "deadman",
     "prospector_engine.platform_win" if sys.platform == "win32" else "prospector_engine.platform_mac",
 ]
+if sys.platform == "darwin":
+    # Imported lazily inside the capture backend, so PyInstaller cannot see
+    # them by analysis (DECISIONS.md D-018).
+    hiddenimports += ["ScreenCaptureKit", "CoreMedia", "objc", "AppKit"]
 
 # Trim what the app genuinely does not use. Everything removed here is checked
 # by packaging/verify_bundle.py, which fails loudly rather than shipping a
@@ -101,6 +105,11 @@ if sys.platform == "darwin":
             "NSAppleEventsUsageDescription": (
                 "Treasure Navigator uses Accessibility to position the Roblox window "
                 "and to send input only while you have physically armed Live mode."
+            ),
+            # ScreenCaptureKit and window capture both require Screen Recording.
+            "NSCameraUsageDescription": (
+                "Treasure Navigator captures the Roblox game window to read the "
+                "on-screen treasure arrow. It never captures other applications."
             ),
         },
     )

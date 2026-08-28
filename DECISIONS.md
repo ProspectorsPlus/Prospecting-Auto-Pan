@@ -299,3 +299,123 @@ explain the ordering rules and cite the bug IDs.
 If it does grow further, the honest seam is `DeadmanClient` — the parent side
 of an out-of-process protocol that shares no state with the authority — not the
 sessions or the ledger.
+
+---
+
+## D-017 — 2026-08-28 — Logical units and device pixels are now different types
+
+**The defect.** ``find_client_rect`` returned a rectangle named ``*_px`` holding
+*device pixels*, and that rectangle was handed to ``mss``, which on macOS speaks
+the display's **logical** space. Measured on the development Mac: the client was
+reported as ``origin (0, 134), size 3600x2108`` in device pixels, and ``mss`` was
+asked for a 3600x2108 region starting at logical (0, 134) on an 1800x1169-point
+display. The capture therefore ran off the screen and returned Roblox plus the
+desktop, the Dock, and whatever else was there - exactly the reported symptom.
+
+The same confusion broke pinning. A 1280x720 **device-pixel** client request was
+divided by the 2x display scale into a 640x360-point window, below Roblox's
+minimum, so the OS clamped it and the size read-back never matched.
+
+**Decision.** Introduce :mod:`prospector_engine.geometry` with four named,
+non-interchangeable spaces - ``DISPLAY_LOGICAL``, ``CLIENT_LOGICAL``,
+``CLIENT_BACKING``, ``CANONICAL`` - and an ``Affine2D`` that carries its source
+and target space and refuses to compose mismatched ones. ``ViewportGeometry``
+holds the window identity, the display, the frame rect, the client rect, the
+backing scale, and every forward and inverse transform in one immutable value.
+
+Consequences:
+
+* Pin requests are in **logical** units on both platforms
+  (``pin_client_rect(size_logical)``), so the canonical request is 1280x720
+  points and no division by the display scale happens anywhere.
+* The canonical processing raster stays 1280x720 regardless of display scale, so
+  a calibrated pixel means the same thing on every machine.
+* ``backing_scale`` (device pixels per logical unit: 2.0 on Retina) and
+  ``dpi_scale`` (the user's UI scaling: 1.25 at 125%) are separate fields.
+  Only the first appears in a transform; on Windows a Per-Monitor-V2 process
+  already receives device pixels, so its ``backing_scale`` is 1.0.
+* ``tests/test_geometry.py`` proves round-trips, mismatched-space refusal,
+  negative monitor origins, window replacement at the same rectangle, display
+  migration, and that a fractional Windows DPI never multiplies a coordinate.
+
+---
+
+## D-018 — 2026-08-28 — ScreenCaptureKit is the macOS backend; Quartz is the fallback
+
+**Measured on the development Mac** (2x display, Roblox client cropped to a
+1280x720 canonical raster, read-only, no window moved):
+
+| Backend | Unique fps | Per-frame cost | Window-specific? |
+|---|---|---|---|
+| ScreenCaptureKit (async push) | **106-110** at a 120 Hz request; 58 at 60 Hz | ~5 ms capture, GPU crop and scale | yes |
+| ``CGWindowListCreateImage`` (sync pull) | ~75 ceiling | ~13 ms including the copy | yes |
+| ``mss`` (desktop rectangle) | ~58 ceiling | ~17 ms | **no** |
+
+**Decision.** ScreenCaptureKit is preferred, Quartz window images are the
+dependency-light fallback, and ``mss`` is a last resort that captures a desktop
+rectangle and therefore picks up anything overlapping Roblox.
+
+ScreenCaptureKit earns two new macOS-scoped dependencies
+(``pyobjc-framework-ScreenCaptureKit`` and ``pyobjc-framework-CoreMedia``, both
+already pinned to the same pyobjc version) because it is the only option that is
+window-specific, asynchronous, keeps delivering while the dashboard is
+frontmost, crops and scales on the GPU through ``sourceRect``/``destinationRect``
+so no per-frame CPU resize is needed, and reports its own frame status so
+uniqueness is authoritative rather than guessed.
+
+Three pyobjc details that cost real debugging time and are now encoded with
+comments so they are not rediscovered:
+
+1. ScreenCaptureKit keeps only a **weak** reference to a stream output. Without
+   retaining the delegate, frames silently stop arriving with no error.
+2. Objective-C class names are process-global, so defining the delegate class
+   per stream raises *"overriding existing Objective-C class"* on the second
+   capture session - which is every tier change and every reacquisition. The
+   class is defined once and cached; the callback lives on the instance.
+3. Completion handlers are typed ``void``; returning a value from one raises
+   inside the callback and terminates the process.
+
+**Windows** gets ``WindowsPrintWindowSource`` (``PrintWindow`` with
+``PW_RENDERFULLCONTENT``), which is window-specific, needs no new dependency,
+and reuses its GDI objects. Windows Graphics Capture would be faster and is the
+intended production backend, but it needs a Windows machine to verify and
+another dependency, so it is deliberately not guessed at. **PENDING native
+verification** - no code in ``platform_win.py`` has ever run on Windows.
+
+---
+
+## D-019 — 2026-08-28 — Event-driven latest-frame pipeline with a cadence governor
+
+**Decision.** Replace the polled path (100 ms GUI, 50 ms capture, 50 ms worker -
+about 10-20 Hz) with a push pipeline: the backend delivers, the frame is
+normalized once into a pooled canonical buffer, and it is published to a
+capacity-one drop-oldest slot whose ``wait_for_new`` wakes consumers
+immediately. Nothing sleeps on a timer to notice a frame arrived, and no
+backlog can form.
+
+Details worth stating:
+
+* **Uniqueness is source-authoritative.** ScreenCaptureKit's
+  ``SCFrameStatusIdle`` marks a redelivered surface; those are skipped before
+  the copy. Backends without such a signal fall back to a decimated digest.
+  A redelivered surface must never inflate the number the governor and the UI
+  read as evidence of health.
+* **Memory is flat with respect to frame rate.** A ``FrameBufferPool`` of eight
+  canonical buffers replaces ~290 MB/s of allocation at 110 Hz. A buffer returns
+  through ``weakref.finalize`` when its frame is released, so a buffer is never
+  recycled while a consumer still holds it. Measured RSS stayed at 97-108 MB
+  across 60, 90, and 120 Hz.
+* **A drop means a frame replaced before any consumer saw it**, not merely an
+  occupied slot - otherwise the metric reads as catastrophic while the pipeline
+  is perfectly healthy.
+* **The governor** walks 15/30/60/90/120, downshifts immediately on sustained
+  shortfall or over-age frames, and upshifts only after four healthy seconds
+  *and* while already saturating the current tier, so it cannot chase a rate the
+  source cannot produce. Below 30 unique fps it reports a degraded state rather
+  than a healthy-looking number.
+
+Measured end to end through the real service, consuming every frame:
+58.0 / 84.8 / 106.2 unique fps at 60 / 90 / 120 Hz requests, zero duplicates,
+zero drops, capture p95 6.4-7.8 ms, frame age 5-7 ms, CPU 39-49% of one core.
+Reproducible with ``treasure.py --capture-probe``. **E-PERF remains PENDING**:
+this is capture-and-consume only, on one machine.

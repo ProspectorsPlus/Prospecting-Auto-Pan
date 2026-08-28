@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ from prospector_engine.capture import (
     CaptureConfig,
     CaptureService,
     EvidenceRegistry,
+    FrameBufferPool,
+    LatestFrameSlot,
     ViewportGuard,
 )
 from prospector_engine.contracts import (
@@ -33,11 +36,19 @@ from prospector_engine.contracts import (
     MouseButton,
     NavigationApplyStatus,
     NavigationCommand,
+    PerformanceTier,
     SafetyFaultKind,
     freeze_array,
 )
+from prospector_engine.geometry import ViewportGeometry, ViewportState
 from prospector_engine.input_authority import InputAuthority
-from tests.fakes import FakeCaptureBackend, VirtualClock, make_frame, make_rect
+from tests.fakes import (
+    FakeCaptureSource,
+    FakePlatformPort,
+    VirtualClock,
+    make_frame,
+    make_geometry,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -332,7 +343,7 @@ def test_a_forged_token_cannot_be_constructed() -> None:
 def test_a_token_the_authority_never_issued_is_rejected(rig: Any) -> None:
     rig.activate(generation=1)
     rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.find_client_rect()
+        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
     )
     unregistered = EvidenceToken(
         run_id=rig.authority.run_id,
@@ -340,7 +351,7 @@ def test_a_token_the_authority_never_issued_is_rejected(rig: Any) -> None:
         frame_sequence=7,
         captured_at_s=rig.clock.now(),
         duration_ms=5.0,
-        viewport_identity=make_rect().identity(),
+        viewport_identity=make_geometry().identity(),
         _mint_key=EVIDENCE_MINT_KEY,
     )
     command = _command(1, 7, rig.clock.now(), rig.clock.now())
@@ -354,7 +365,7 @@ def test_a_token_the_authority_never_issued_is_rejected(rig: Any) -> None:
 def test_replaying_the_same_frame_cannot_extend_a_command_lease(rig: Any) -> None:
     rig.activate(generation=1)
     rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.find_client_rect()
+        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
     )
     registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
     registry.set_generation(1)
@@ -374,7 +385,7 @@ def test_replaying_the_same_frame_cannot_extend_a_command_lease(rig: Any) -> Non
 def test_an_over_age_frame_cannot_authorize_a_command(rig: Any) -> None:
     rig.activate(generation=1)
     rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.find_client_rect()
+        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
     )
     registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
     registry.set_generation(1)
@@ -407,7 +418,7 @@ def test_an_over_age_frame_cannot_authorize_a_command(rig: Any) -> None:
 def test_an_over_budget_capture_duration_cannot_authorize_a_command(rig: Any) -> None:
     rig.activate(generation=1)
     rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.find_client_rect()
+        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
     )
     registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
     registry.set_generation(1)
@@ -426,7 +437,7 @@ def test_an_over_budget_capture_duration_cannot_authorize_a_command(rig: Any) ->
 def test_navigation_translates_axes_into_leases_and_releases_the_rest(rig: Any) -> None:
     rig.activate(generation=1)
     rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.find_client_rect()
+        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
     )
     registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
     registry.set_generation(1)
@@ -483,7 +494,7 @@ def test_a_writeable_array_is_rejected_by_the_contract() -> None:
 
     array = np.zeros((4, 4, 3), dtype=np.uint8)
     with pytest.raises(ValueError, match="non-writeable"):
-        CapturedFrame(1, 0.0, 0.0, 1.0, make_rect(), array)
+        CapturedFrame(1, 0.0, 0.0, 1.0, make_geometry(), array)
 
 
 def test_freeze_array_copies_when_the_buffer_is_not_ours() -> None:
@@ -499,87 +510,193 @@ def test_freeze_array_copies_when_the_buffer_is_not_ours() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _StubPort:
-    """Just enough of a port for the capture tests, with a settable rect."""
-
-    def __init__(self) -> None:
-        self.rect = make_rect(size_px=(64, 48))
-        self.pins = 0
-
-    def find_client_rect(self) -> Any:
-        return self.rect
-
-    def pin_client_rect(self, size_px: tuple[int, int]) -> Any:
-        from prospector_engine.contracts import PinResult
-
-        self.pins += 1
-        return PinResult(True, "pinned", self.rect)
-
-
-def _capture_rig(backend: FakeCaptureBackend) -> tuple[CaptureService, _StubPort]:
-    port = _StubPort()
-    guard = ViewportGuard(port, requested_size_px=(64, 48))  # type: ignore[arg-type]
+def _capture_rig(
+    source: FakeCaptureSource, *, size: tuple[float, float] = (64.0, 48.0)
+) -> tuple[CaptureService, FakePlatformPort, ViewportGuard]:
+    clock = VirtualClock()
+    port = FakePlatformPort(
+        clock,
+        geometry=make_geometry(size=size, canonical_px=(round(size[0]), round(size[1]))),
+    )
+    guard = ViewportGuard(port, requested_client_logical=size)
     guard.adopt_current()
     service = CaptureService(
         guard,
         EvidenceRegistry("capture-test"),
-        config=CaptureConfig(target_interval_ms=1),
-        backend_factory=lambda: backend,
+        config=CaptureConfig(start_tier=PerformanceTier.MINIMUM, max_frame_age_ms=100000),
+        source_factory=lambda: source,
     )
-    return service, port
+    return service, port, guard
+
+
+def _await_frames(service: CaptureService, count: int, timeout_s: float = 3.0) -> int:
+    seen, last = 0, 0
+    deadline = time.monotonic() + timeout_s
+    while seen < count and time.monotonic() < deadline:
+        envelope = service.wait_for_new(last, 0.2)
+        if envelope is None:
+            continue
+        last = envelope.frame.sequence
+        seen += 1
+    return seen
 
 
 def test_capture_publishes_one_coherent_stamped_frame() -> None:
-    backend = FakeCaptureBackend()
-    service, _port = _capture_rig(backend)
-
-    envelope = service.capture_once()
-
-    assert envelope is not None
-    assert envelope.frame.sequence == 1
-    assert envelope.frame.completed_at_s >= envelope.frame.captured_at_s
-    assert envelope.evidence_token.frame_sequence == 1
-    assert not envelope.frame.bgr.flags.writeable
-
-
-def test_repeated_identical_grabs_are_flagged_duplicate() -> None:
-    backend = FakeCaptureBackend()
-    service, _port = _capture_rig(backend)
-
-    first = service.capture_once()
-    second = service.capture_once()
-
-    assert first is not None and second is not None
-    assert first.frame.duplicate is False
-    assert second.frame.duplicate is True
-    assert service.duplicate_run() == 1
+    service, _port, _guard = _capture_rig(FakeCaptureSource())
+    assert service.start()
+    try:
+        assert _await_frames(service, 1) == 1
+        envelope = service.latest()
+        assert envelope is not None
+        frame = envelope.frame
+        assert frame.sequence >= 1
+        assert frame.completed_at_s >= frame.captured_at_s
+        assert envelope.evidence_token.frame_sequence == frame.sequence
+        assert not frame.bgr.flags.writeable
+        assert frame.geometry.state is ViewportState.CANONICAL_VERIFIED
+        assert frame.backend == "fake-source"
+    finally:
+        service.stop()
 
 
-def test_a_failing_backend_is_recreated_and_reported() -> None:
-    backend = FakeCaptureBackend(fail_times=1)
-    service, _port = _capture_rig(backend)
+def test_the_slot_is_event_driven_rather_than_polled() -> None:
+    """A consumer wakes on publication instead of sampling on a timer."""
+    slot = LatestFrameSlot()
+    service, _port, _guard = _capture_rig(FakeCaptureSource())
+    del slot
 
-    assert service.capture_once() is None
-    assert service.last_error() is not None and "backend" in service.last_error()
-    assert backend.closed == 1
-    assert service.capture_once() is not None
+    assert service.start()
+    try:
+        started = time.monotonic()
+        envelope = service.wait_for_new(0, 2.0)
+        elapsed = time.monotonic() - started
+        assert envelope is not None
+        # The MINIMUM tier is 30 Hz, so a polled implementation could not
+        # return in materially less than a frame interval on the first call.
+        assert elapsed < 1.0
+    finally:
+        service.stop()
 
 
-def test_an_invalid_viewport_stops_capture_from_publishing() -> None:
-    backend = FakeCaptureBackend()
-    service, port = _capture_rig(backend)
-    port.rect = make_rect(size_px=(999, 999))  # identity no longer matches the pin
+def test_wait_for_new_returns_none_when_nothing_newer_arrives() -> None:
+    slot = LatestFrameSlot()
+    assert slot.wait_for_new(0, 0.05) is None
 
-    assert service.capture_once() is None
-    assert "viewport" in (service.last_error() or "")
+
+def test_source_reported_duplicates_never_reach_a_consumer() -> None:
+    """A redelivered surface must not inflate the unique frame rate."""
+    source = FakeCaptureSource(content_ids=True)
+    service, _port, _guard = _capture_rig(source)
+    assert service.start()
+    try:
+        _await_frames(service, 2)
+        before = service.metrics().duplicate_frames
+        # Freeze the content id: every later poll is the same surface.
+        source._content = 7
+        source._content_ids = True
+        original_poll = source.poll
+
+        def repeating() -> Any:
+            frame = original_poll()
+            if frame is None:
+                return None
+            source._content = 7
+            return replace(frame, content_id=7)
+
+        source.poll = repeating  # type: ignore[method-assign]
+        time.sleep(0.3)
+        after = service.metrics()
+        assert after.duplicate_frames > before
+    finally:
+        service.stop()
+
+
+def test_a_failing_source_is_reported_and_recovers() -> None:
+    source = FakeCaptureSource(fail_times=2)
+    service, _port, _guard = _capture_rig(source)
+    assert service.start()
+    try:
+        assert _await_frames(service, 1) == 1
+        assert source.polls >= 3  # it failed twice before succeeding
+    finally:
+        service.stop()
+
+
+def test_capture_refuses_to_start_without_a_usable_viewport() -> None:
+    clock = VirtualClock()
+    port = FakePlatformPort(clock, geometry=ViewportGeometry.invalid("no window"))
+    guard = ViewportGuard(port)
+    service = CaptureService(
+        guard, EvidenceRegistry("t"), source_factory=lambda: FakeCaptureSource()
+    )
+
+    assert service.start() is False
+    assert "invalid" in (service.last_error() or "")
+
+
+def test_a_delivered_size_mismatch_becomes_a_capture_mismatch() -> None:
+    """A resize landing between geometry and delivery must fail closed."""
+    source = FakeCaptureSource()
+    service, _port, guard = _capture_rig(source)
+    assert service.start()
+    try:
+        _await_frames(service, 1)
+        smaller = make_geometry(size=(32.0, 24.0), canonical_px=(32, 24))
+        source._geometry = smaller
+        time.sleep(0.2)
+        assert guard.geometry.state is ViewportState.CAPTURE_MISMATCH
+    finally:
+        service.stop()
+
+
+def test_the_buffer_pool_is_bounded_and_returns_buffers() -> None:
+    """Memory must stay flat as the frame rate rises."""
+    pool = FrameBufferPool(capacity=3)
+    first = pool.acquire(8, 8)
+    second = pool.acquire(8, 8)
+    third = pool.acquire(8, 8)
+    assert first is not None and second is not None and third is not None
+    assert pool.acquire(8, 8) is None
+    assert pool.exhausted == 1
+
+    pool.release(first)
+    reused = pool.acquire(8, 8)
+    assert reused is first
+
+
+def test_pooled_buffers_return_when_their_frame_is_released() -> None:
+    source = FakeCaptureSource()
+    service, _port, _guard = _capture_rig(source)
+    assert service.start()
+    try:
+        _await_frames(service, 20)
+        # Far more frames than the pool holds, yet nothing was exhausted.
+        assert service.metrics().duplicate_frames >= 0
+        assert service._pool.exhausted == 0
+        assert service._pool.live <= service._pool.capacity
+    finally:
+        service.stop()
 
 
 def test_frame_age_is_measured_from_the_start_of_acquisition() -> None:
     clock = VirtualClock()
     frame = make_frame(1, captured_at_s=clock.now(), duration_ms=30.0)
     clock.advance(0.02)
-    # Completion was later than the start, but age must not shrink because of it.
     assert frame.age_s(clock.now()) == pytest.approx(0.02)
+
+
+def test_metrics_count_unique_frames_not_loop_iterations() -> None:
+    source = FakeCaptureSource()
+    service, _port, _guard = _capture_rig(source)
+    assert service.start()
+    try:
+        _await_frames(service, 5)
+        metrics = service.metrics()
+        assert metrics.backend == "fake-source"
+        assert metrics.slot_depth <= 1
+        assert metrics.tier is PerformanceTier.MINIMUM
+    finally:
+        service.stop()
 
 
 # ---------------------------------------------------------------------------

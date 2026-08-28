@@ -14,19 +14,22 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from prospector_engine.contracts import (
-    ClientRectPhysicalPx,
     FocusState,
     InputKey,
     InputVocabulary,
     MouseButton,
     PinResult,
+    RawFrame,
     RuntimeIntent,
 )
+from prospector_engine.geometry import ViewportGeometry
 
 __all__ = [
+    "BufferPool",
+    "CaptureSource",
     "HotkeySource",
     "PlatformPort",
     "PlatformUnavailable",
@@ -54,6 +57,66 @@ class HotkeySource(Protocol):
     def stop(self) -> None: ...
 
     def is_running(self) -> bool: ...
+
+
+@runtime_checkable
+class BufferPool(Protocol):
+    """Bounded supply of reusable canonical-raster buffers.
+
+    Capture backends draw from this instead of allocating per frame, so memory
+    stays flat as the frame rate rises. A buffer returns to the pool when the
+    frame holding it is released.
+    """
+
+    def acquire(self, height: int, width: int) -> Any: ...
+
+    def release(self, buffer: Any) -> None: ...
+
+
+@runtime_checkable
+class CaptureSource(Protocol):
+    """A window-specific frame source.
+
+    Two shapes, both supported, because the good backends are push-based and
+    the portable ones are not:
+
+    * **push** - the OS delivers frames on its own thread (ScreenCaptureKit,
+      Windows Graphics Capture). ``is_pushing`` is True and ``on_frame`` is
+      called; ``poll`` is never used.
+    * **pull** - the caller asks for a frame (Quartz window images, mss).
+      ``is_pushing`` is False and the service paces ``poll`` itself.
+
+    Either way the source delivers frames already normalized into the canonical
+    raster, because every backend can crop and scale far more cheaply than a
+    per-frame CPU resize can.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def is_pushing(self) -> bool: ...
+
+    def start(
+        self,
+        geometry: ViewportGeometry,
+        pool: BufferPool,
+        on_frame: Callable[[RawFrame], None],
+    ) -> None: ...
+
+    def stop(self) -> None: ...
+
+    def set_target_fps(self, fps: int) -> None:
+        """Hint the source's delivery cadence. Pull sources may ignore it."""
+        ...
+
+    def poll(self) -> RawFrame | None:
+        """Pull sources only. Returns ``None`` when no frame is available."""
+        ...
+
+    def health(self) -> str | None:
+        """A problem description, or ``None`` when the source is healthy."""
+        ...
 
 
 @runtime_checkable
@@ -92,9 +155,28 @@ class PlatformPort(Protocol):
     # -- window / viewport ------------------------------------------------
     def focus_state(self) -> FocusState: ...
 
-    def find_client_rect(self) -> ClientRectPhysicalPx | None: ...
+    def window_geometry(self) -> ViewportGeometry:
+        """The current, fully-described viewport.
 
-    def pin_client_rect(self, size_px: tuple[int, int]) -> PinResult: ...
+        Always returns a value: an absent or unusable window is reported as a
+        geometry in the ``INVALID`` state with a reason, never as ``None``, so
+        every consumer reads the same authoritative result (plan 4.1).
+        """
+        ...
+
+    def pin_client_rect(self, size_logical: tuple[float, float]) -> PinResult:
+        """Resize so the **client content** is ``size_logical`` LOGICAL units.
+
+        Logical, not device pixels: the window-management APIs on both
+        platforms speak logical units, and dividing a device-pixel target by
+        the display scale is what produced a 640x360-point request that Roblox
+        clamped (DECISIONS.md D-017).
+        """
+        ...
+
+    def create_capture_source(self) -> CaptureSource:
+        """Build the best window-specific capture source for this OS."""
+        ...
 
     # -- raw edges (InputAuthority only) ----------------------------------
     def raw_key_down(self, code: int) -> None: ...

@@ -434,7 +434,7 @@ class Navigator:
             return self._release(
                 NavigationPhase.REACQUIRE, f"capture-error:{frame.capture_error}"
             )
-        if not frame.client_rect.valid:
+        if not frame.geometry.valid:
             return self._release(NavigationPhase.REACQUIRE, "viewport-invalid")
         if age_ms > self._max_evidence_age_ms:
             return self._release(NavigationPhase.REACQUIRE, f"stale-frame:{age_ms:.0f}ms")

@@ -24,6 +24,10 @@ dependencies = [
     "Pillow>=10.0",
     "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+    # ScreenCaptureKit is the measured-fastest window-specific macOS backend
+    # (DECISIONS.md D-018); CoreMedia comes with it for CMSampleBuffer access.
+    "pyobjc-framework-ScreenCaptureKit>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreMedia>=10.0; sys_platform == 'darwin'",
     "pynput>=1.7; sys_platform == 'darwin'",
 ]
 
@@ -89,7 +93,18 @@ exclude = "(^\\.venv|^\\.venv-python38-backup|^build|^dist)"
 
 [[tool.mypy.overrides]]
 # Third-party packages without bundled stubs.
-module = ["mss.*", "cv2.*", "Quartz.*", "ApplicationServices.*", "AppKit.*", "pynput.*", "PIL.*"]
+module = [
+    "mss.*",
+    "cv2.*",
+    "Quartz.*",
+    "ApplicationServices.*",
+    "AppKit.*",
+    "CoreMedia.*",
+    "ScreenCaptureKit.*",
+    "objc.*",
+    "pynput.*",
+    "PIL.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -27,7 +27,7 @@ from tests.fakes import (
     VirtualClock,
     install_virtual_clock,
     make_frame,
-    make_rect,
+    make_geometry,
 )
 
 CLOCK_MODULES = (
@@ -56,7 +56,7 @@ def journal() -> list[str]:
 
 @pytest.fixture
 def port(clock: VirtualClock, journal: list[str]) -> FakePlatformPort:
-    return FakePlatformPort(clock, rect=make_rect(), journal=journal)
+    return FakePlatformPort(clock, geometry=make_geometry(), journal=journal)
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ class Rig:
             emits_input=mode.emits_input,
             cancellation=None,
             requires_capture=True,
-            pinned_rect=self.port.find_client_rect(),
+            pinned_rect=self.port.window_geometry(),
         )
 
     def session(self, generation: int = 1) -> ServiceInputSession:
@@ -109,7 +109,7 @@ def rig(
         deadman=deadman,
         health=HealthSources(
             focus=port.focus_state,
-            client_rect=port.find_client_rect,
+            client_rect=port.window_geometry,
             capture_age_s=capture_age_s,
         ),
         config=AuthorityConfig(),
@@ -130,7 +130,7 @@ def service_context(rig: Rig) -> engine.ServiceContext:
         emits_input=True,
         cancellation=cancellation,
         requires_capture=True,
-        pinned_rect=rig.port.find_client_rect(),
+        pinned_rect=rig.port.window_geometry(),
     )
     frames = FakeFrameSource()
     return engine.ServiceContext(

@@ -24,6 +24,7 @@ from prospector_engine.contracts import (
     IntentType,
     ModeResult,
     ModeResultKind,
+    PerformanceTier,
     RunMode,
     RuntimeIntent,
     SafetyFault,
@@ -38,11 +39,11 @@ from prospector_engine.coordinator import (
 )
 from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
 from tests.fakes import (
-    FakeCaptureBackend,
+    FakeCaptureSource,
     FakeDeadmanClient,
     FakePlatformPort,
     VirtualClock,
-    make_rect,
+    make_geometry,
 )
 
 
@@ -53,26 +54,25 @@ class Harness:
         self.clock = VirtualClock()
         self.journal: list[str] = []
         self.port = FakePlatformPort(
-            self.clock, rect=make_rect(size_px=(64, 48)), journal=self.journal
+            self.clock, geometry=make_geometry(size=(64.0, 48.0)), journal=self.journal
         )
         self.deadman = FakeDeadmanClient(journal=self.journal)
-        self.guard = ViewportGuard(self.port, requested_size_px=(64, 48))
+        self.guard = ViewportGuard(self.port, requested_client_logical=(64.0, 48.0))
         self.guard.adopt_current()
-        self.backend = FakeCaptureBackend()
+        self.source = FakeCaptureSource()
         self.registry = EvidenceRegistry("harness")
         self.capture = CaptureService(
             self.guard,
             self.registry,
-            config=CaptureConfig(target_interval_ms=5, max_frame_age_ms=5000),
-            backend_factory=lambda: self.backend,
+            config=CaptureConfig(max_frame_age_ms=5000, start_tier=PerformanceTier.MINIMUM),
+            source_factory=lambda: self.source,
         )
-        self.capture.capture_once()
         self.authority = InputAuthority(
             self.port,
             deadman=self.deadman,
             health=HealthSources(
                 focus=self.port.focus_state,
-                client_rect=self.port.find_client_rect,
+                client_rect=self.port.window_geometry,
                 capture_age_s=self.capture.latest_age_s,
             ),
             config=AuthorityConfig(safety_poll_interval_ms=10),
@@ -124,6 +124,7 @@ class Harness:
         return False
 
     def start(self) -> None:
+        self.guard.adopt_current()
         self.capture.start()
         self.coordinator.start()
 
@@ -174,7 +175,7 @@ def test_shadow_adopts_the_current_viewport_instead_of_moving_the_window(
 
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.SHADOW)
     assert harness.port.pin_calls == 0
-    assert harness.guard.pinned is not None
+    assert harness.guard.geometry.valid
 
 
 def test_exactly_one_mode_worker_runs_at_a_time(harness: Harness) -> None:
@@ -219,13 +220,13 @@ def test_stop_is_responsive_while_capture_stalls(harness: Harness) -> None:
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.SHADOW)
 
     stall = threading.Event()
-    original = harness.backend.grab_client
+    original = harness.source.poll
 
-    def stalling_grab(rect: Any) -> Any:
+    def stalling_poll() -> Any:
         stall.wait(3.0)
-        return original(rect)
+        return original()
 
-    harness.backend.grab_client = stalling_grab  # type: ignore[method-assign]
+    harness.source.poll = stalling_poll  # type: ignore[method-assign]
     started = time.monotonic()
     harness.submit(IntentType.STOP)
     responsive = harness.wait_for(

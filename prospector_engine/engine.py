@@ -535,7 +535,8 @@ def run_reset(ctx: ServiceContext) -> ResetResult:
         )
         ctx.sleep_ms(timings.reset_post_enter_ms)
 
-        centre = (ctx.frame().client_rect.width_px // 2, ctx.frame().client_rect.height_px // 2)
+        canonical = ctx.frame().canonical_size_px
+        centre = (canonical[0] // 2, canonical[1] // 2)
         ctx.session.pointer_move_client(centre)
         ctx.sleep_ms(timings.reset_pre_drag_ms)
 

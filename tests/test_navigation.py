@@ -40,7 +40,7 @@ from prospector_engine.navigation import (
     SteeringController,
 )
 from prospector_engine.vision import wrap_deg
-from tests.fakes import make_frame
+from tests.fakes import make_frame, make_geometry
 
 ALL_PASSED = NavigationGates(
     os_name="test",
@@ -347,11 +347,12 @@ def _textured_pair(shift_y: int) -> tuple[Any, Any]:
     rng = np.random.default_rng(7)
     texture = rng.integers(0, 255, size=(240, 320, 3), dtype=np.uint8)
     shifted = np.roll(texture, shift_y, axis=0)
-    first = make_frame(1, captured_at_s=0.0)
-    second = make_frame(2, captured_at_s=0.05)
+    from prospector_engine.contracts import CapturedFrame
+
+    geometry = make_geometry(size=(320.0, 240.0), canonical_px=(320, 240))
     return (
-        type(first)(1, 0.0, 0.005, 5.0, first.client_rect, _frozen(texture)),
-        type(second)(2, 0.05, 0.055, 5.0, second.client_rect, _frozen(shifted)),
+        CapturedFrame(1, 0.0, 0.005, 5.0, geometry, _frozen(texture)),
+        CapturedFrame(2, 0.05, 0.055, 5.0, geometry, _frozen(shifted)),
     )
 
 
@@ -395,10 +396,10 @@ def test_displacement_is_normalized_by_actual_delta_t() -> None:
     rng = np.random.default_rng(11)
     texture = rng.integers(0, 255, size=(240, 320, 3), dtype=np.uint8)
     shifted = np.roll(texture, 8, axis=0)
-    rect = make_frame(1).client_rect
-    base = CapturedFrame(1, 0.0, 0.005, 5.0, rect, _frozen(texture))
-    fast = CapturedFrame(2, 0.02, 0.025, 5.0, rect, _frozen(shifted))
-    slow = CapturedFrame(2, 0.20, 0.205, 5.0, rect, _frozen(shifted))
+    geometry = make_geometry(size=(320.0, 240.0), canonical_px=(320, 240))
+    base = CapturedFrame(1, 0.0, 0.005, 5.0, geometry, _frozen(texture))
+    fast = CapturedFrame(2, 0.02, 0.025, 5.0, geometry, _frozen(shifted))
+    slow = CapturedFrame(2, 0.20, 0.205, 5.0, geometry, _frozen(shifted))
 
     quick = estimate_phase_correlation(base, fast, roi_px=(0, 0, 320, 240))
     lazy = estimate_phase_correlation(base, slow, roi_px=(0, 0, 320, 240))
