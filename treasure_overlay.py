@@ -27,12 +27,31 @@ from __future__ import annotations
 import math
 import sys
 import tkinter as tk
+from enum import Enum
 from typing import Any
 
 import numpy as np
 
-from prospector_engine.contracts import DiagnosticObservation, RunMode
+from prospector_engine.contracts import DiagnosticObservation, PacketKind, RunMode
 from prospector_engine.geometry import Affine2D
+
+
+class OverlayMode(Enum):
+    """How much of the reasoning to draw over the frame.
+
+    Two modes rather than a checkbox per element, because the two audiences are
+    different: someone watching a route wants the turn, and someone diagnosing
+    a detector wants everything that produced it. A single crowded overlay
+    serves neither.
+    """
+
+    MINIMAL = "Minimal"
+    FULL = "Full Diagnostics"
+
+    @property
+    def draws_candidates(self) -> bool:
+        return self is OverlayMode.FULL
+
 
 # --- Palette ---------------------------------------------------------------
 BG = "#14171a"
@@ -95,8 +114,9 @@ class DiagnosticCanvas:
 
     ARM_LENGTH_PX = 190.0
 
-    def __init__(self, canvas: tk.Canvas) -> None:
+    def __init__(self, canvas: tk.Canvas, mode: OverlayMode = OverlayMode.MINIMAL) -> None:
         self.canvas = canvas
+        self.mode = mode
         self._photo: Any = None
         self._photo_size: tuple[int, int] = (0, 0)
         self._scaled: Any = None
@@ -105,6 +125,13 @@ class DiagnosticCanvas:
         self._items: dict[str, int] = {}
         self._reject_items: list[int] = []
         self._last_sequence = -1
+        self._last_key: Any = None
+
+    def set_mode(self, mode: OverlayMode) -> None:
+        """Switch modes and force a redraw, so the change is visible at once."""
+        self.mode = mode
+        self._last_sequence = -1
+        self._last_key = None
 
     # -- item helpers -----------------------------------------------------
     def _line(self, name: str, **options: Any) -> int:
@@ -139,9 +166,15 @@ class DiagnosticCanvas:
 
     # -- rendering --------------------------------------------------------
     def render(self, observation: DiagnosticObservation) -> bool:
-        """Draw one observation. Returns False if it was already drawn."""
-        if observation.frame_sequence == self._last_sequence:
+        """Draw one packet, refusing anything an older world produced.
+
+        The key comparison - not the frame number - is what makes it impossible
+        to draw observation N over frame N+1, or to draw a cancelled worker's
+        straggler over the session that replaced it.
+        """
+        if not observation.key.supersedes(self._last_key):
             return False
+        self._last_key = observation.key
         self._last_sequence = observation.frame_sequence
 
         width = max(64, self.canvas.winfo_width())
@@ -303,9 +336,21 @@ class DiagnosticCanvas:
                 self._show("desired_arm")
                 self._draw_arc(observation, anchor, transform)
 
+        # -- notches, the geometry the signed direction came from -----------
+        notches = observation.arrow.notch_px if self.mode.draws_candidates else None
+        for index in (0, 1):
+            key = f"notch_{index}"
+            if notches is None or index >= len(notches):
+                self._hide(key)
+                continue
+            nx, ny = transform.apply_point(notches[index])
+            marker = self._line(key, fill=GOLD, width=2)
+            self.canvas.coords(marker, nx - 5, ny - 5, nx + 5, ny + 5)
+            self._show(key)
+
         # -- arrow geometry ------------------------------------------------
         arrow = observation.arrow
-        if arrow.valid and observation.contour_px:
+        if arrow.valid and observation.contour_px and self.mode.draws_candidates:
             points: list[float] = []
             for x, y in observation.contour_px:
                 view_x, view_y = transform.apply(float(x), float(y))
@@ -371,7 +416,13 @@ class DiagnosticCanvas:
             self._hide("tip2")
 
         # -- rejected candidates -------------------------------------------
-        rejected = [c for c in observation.candidates if not c.accepted]
+        # Minimal mode draws none of these on purpose: someone watching a route
+        # wants the turn, not the eight blobs the detector considered.
+        rejected = (
+            [c for c in observation.candidates if not c.accepted]
+            if self.mode.draws_candidates
+            else []
+        )
         while len(self._reject_items) < len(rejected):
             self._reject_items.append(
                 self.canvas.create_rectangle(
@@ -397,10 +448,11 @@ class DiagnosticCanvas:
                 0, 0, 0, 0, fill=BG, outline="", stipple="gray75"
             )
             self._items["caption_bg"] = backdrop
+        frozen = observation.packet_kind is not PacketKind.FRAME
         caption = self._text(
             "caption",
             anchor="nw",
-            fill=MUTED if stale else BONE,
+            fill=MUTED if (stale or frozen) else BONE,
             font=("Menlo" if sys.platform == "darwin" else "Consolas", 10),
             justify="left",
         )
@@ -525,10 +577,21 @@ class DiagnosticCanvas:
         self.canvas.itemconfigure(text, text=f"{error:+.1f}°")
         self._show("angle_text")
 
-    @staticmethod
-    def _caption(observation: DiagnosticObservation) -> str:
+    def _caption(self, observation: DiagnosticObservation) -> str:
         arrow = observation.arrow
         direction = observation.direction
+        if observation.packet_kind is not PacketKind.FRAME:
+            # A frozen picture may stay on screen. It must say so, carry its
+            # age, and never look like a live reading (mission section 6).
+            return (
+                f"FROZEN - {observation.plain_summary}\n"
+                f"last frame #{observation.frame_sequence}, "
+                f"{observation.age_s:.1f} s old\n"
+                "no command is in effect"
+            )
+        if self.mode is OverlayMode.MINIMAL:
+            summary = observation.plain_summary or "no reading"
+            return f"{summary}\nframe #{observation.frame_sequence}  {self.mode.value}"
         lines = [
             f"frame #{observation.frame_sequence}  age {observation.age_s * 1000:5.1f} ms"
             f"  {observation.geometry.state.value}",
