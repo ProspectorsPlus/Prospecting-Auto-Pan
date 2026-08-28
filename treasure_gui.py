@@ -365,7 +365,7 @@ class EngineSetupPort:
 
 
 def shift_lock_probe(
-    pipeline: PerceptionPipeline,
+    cursor: Callable[[], tuple[int, int] | None],
 ) -> Callable[[CapturedFrame], ControlModeSample]:
     """Confirm the locked-camera control mode without ever toggling it.
 
@@ -379,14 +379,17 @@ def shift_lock_probe(
     When the pointer cannot be read at all the honest answer is "cannot
     confirm", and setup stops with a sentence telling the user to switch Shift
     Lock on. It never presses Shift to find out (D-037).
+
+    ``cursor`` reports the pointer in **canonical** client coordinates, or
+    ``None`` when it is outside the client - which is itself an answer, and the
+    negative one.
     """
-    del pipeline
 
     def probe(frame: CapturedFrame) -> ControlModeSample:
-        cursor = getattr(probe, "cursor", None)
-        if cursor is None:
-            return ControlModeSample(False, 0.0, "none", "the pointer position is unknown")
-        point = cursor()
+        try:
+            point = cursor()
+        except Exception:
+            return ControlModeSample(False, 0.0, "none", "the pointer could not be read")
         if point is None:
             return ControlModeSample(
                 False, 0.0, "pointer", "the pointer is outside the Roblox client"
@@ -528,8 +531,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         profiles=profiles,
         authority=authority,
     )
-    probe = shift_lock_probe(pipeline)
-    probe.cursor = port.cursor_client_px  # type: ignore[attr-defined]
+    probe = shift_lock_probe(port.cursor_client_px)
 
     def make_setup(
         cancelled: Callable[[], bool], publish: Callable[[SetupProgress], None]

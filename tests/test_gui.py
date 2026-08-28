@@ -860,3 +860,52 @@ def test_the_arm_button_is_disabled_until_nothing_is_blocking(dashboard: Any) ->
 
     dashboard._render_guidance(SetupProgress.idle())
     assert str(dashboard.arm_button.cget("state")) == "disabled"
+
+
+# ---------------------------------------------------------------------------
+# The control-mode probe never touches Shift
+# ---------------------------------------------------------------------------
+
+
+def test_the_shift_lock_probe_only_looks(tmp_path: Path) -> None:
+    import inspect
+
+    from treasure_gui import shift_lock_probe
+
+    source = inspect.getsource(shift_lock_probe)
+    for forbidden in ("tap_key", "hold_key", "InputKey.", "raw_key_down", "session"):
+        assert forbidden not in source, f"the probe reaches for {forbidden}"
+    assert "never presses Shift" in source, "the invariant is stated where it lives"
+
+
+@pytest.mark.parametrize(
+    ("point", "verified", "needle"),
+    [
+        ((640, 360), True, "centre"),
+        ((80, 360), False, "not centred"),
+        (None, False, "outside"),
+    ],
+)
+def test_the_pointer_cue_reads_the_control_mode(
+    point: Any, verified: bool, needle: str
+) -> None:
+    from tests.fakes import make_frame
+    from treasure_gui import shift_lock_probe
+
+    sample = shift_lock_probe(lambda: point)(make_frame(1))
+
+    assert sample.verified is verified
+    assert needle in sample.detail
+
+
+def test_a_pointer_probe_that_raises_cannot_confirm_anything() -> None:
+    from tests.fakes import make_frame
+    from treasure_gui import shift_lock_probe
+
+    def boom() -> tuple[int, int] | None:
+        raise OSError("scripted")
+
+    sample = shift_lock_probe(boom)(make_frame(1))
+
+    assert not sample.verified
+    assert "could not be read" in sample.detail

@@ -172,19 +172,27 @@ def make_frame(
     pixels: dict[tuple[int, int], tuple[int, int, int]] | None = None,
     fill_rgb: tuple[int, int, int] = (0, 0, 0),
     duplicate: bool = False,
+    bgr: NDArray[np.uint8] | None = None,
 ) -> CapturedFrame:
     """A synthetic frame with specific RGB values painted at specific points.
 
-    Each requested point is painted as a 7x7 block - exactly covering the
+    ``bgr`` supplies a whole raster instead - a rendered scene, for a test that
+    needs the detector to actually find something. Each requested point is
+    painted as a 7x7 block - exactly covering the
     detectors' 6x6 sample box - so mean-of-box sampling returns the exact value
     and two points 7 px apart (as the dig-spot pair is) stay independent.
     """
     geometry = geometry or make_geometry()
     width, height = geometry.canonical_px
-    bgr = np.zeros((height, width, 3), dtype=np.uint8)
-    bgr[:, :, 0] = fill_rgb[2]
-    bgr[:, :, 1] = fill_rgb[1]
-    bgr[:, :, 2] = fill_rgb[0]
+    if bgr is None:
+        bgr = np.zeros((height, width, 3), dtype=np.uint8)
+        bgr[:, :, 0] = fill_rgb[2]
+        bgr[:, :, 1] = fill_rgb[1]
+        bgr[:, :, 2] = fill_rgb[0]
+    else:
+        # A caller-supplied raster (a rendered scene, say) is copied so the
+        # frozen frame cannot alias a buffer the caller reuses.
+        bgr = np.ascontiguousarray(bgr, dtype=np.uint8).copy()
     for (x, y), (r, g, b) in (pixels or {}).items():
         top, left = max(0, y - 3), max(0, x - 3)
         bgr[top : top + 7, left : left + 7] = (b, g, r)

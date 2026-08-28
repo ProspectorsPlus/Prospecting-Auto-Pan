@@ -1540,6 +1540,7 @@ def make_live_worker(
             return ModeResult(ModeResultKind.FAILED, "live worker started without a session")
 
         pipeline = context.pipeline or pipeline_factory()
+        motion_was_enabled = pipeline.motion_enabled
         pipeline.motion_enabled = True
         capabilities = capabilities_factory()
         navigator = Navigator(capabilities=capabilities)
@@ -1602,16 +1603,19 @@ def make_live_worker(
                 )
             return True
 
-        processed, applied, kind, detail = _run_observer_loop(
-            context,
-            pipeline,
-            navigator,
-            map_id="live",
-            approach_valid=True,
-            max_ticks=None,
-            apply=apply,
-        )
-        session.release_navigation("worker-exit")
+        try:
+            processed, applied, kind, detail = _run_observer_loop(
+                context,
+                pipeline,
+                navigator,
+                map_id="live",
+                approach_valid=True,
+                max_ticks=None,
+                apply=apply,
+            )
+        finally:
+            pipeline.motion_enabled = motion_was_enabled
+            session.release_navigation("worker-exit")
         return ModeResult(kind, f"live: {applied} commands over {processed} frames ({detail})")
 
     return worker
@@ -1637,8 +1641,9 @@ class _LiveControlPort:
     is a bounded yaw delta.
     """
 
-    #: A probe key may be held no longer than this, whatever is asked for.
-    MAX_PROBE_HOLD_MS = 400
+    #: A probe key may be held no longer than one evidence-bound lease,
+    #: whatever is asked for. See ``TurnLimits.key_probe_ms``.
+    MAX_PROBE_HOLD_MS = 100
     #: A probe mouse delta may never exceed this many units.
     MAX_PROBE_UNITS = 200
 
@@ -1657,6 +1662,7 @@ class _LiveControlPort:
         self._sequence = 0
         self._latest: PerceptionResult | None = None
         self._latest_frame: CapturedFrame | None = None
+        self._envelope: Any = None
         self._held: str | None = None
         self._hold_until_s = 0.0
 
@@ -1703,7 +1709,7 @@ class _LiveControlPort:
 
     def emit_turn(self, backend_value: str, units: int) -> bool:
         session = self._context.navigation
-        envelope = getattr(self, "_envelope", None)
+        envelope = self._envelope
         frame = self._latest_frame
         if session is None or envelope is None or frame is None:
             return False
