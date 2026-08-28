@@ -88,6 +88,12 @@ _MAC_KEYCODES: dict[InputKey, int] = {
     InputKey.ESCAPE: 53,
     InputKey.DIGIT_1: 18,
     InputKey.DIGIT_2: 19,
+    # Arrow keys. On macOS these are ordinary virtual keycodes; the NX
+    # "function key" mask CGEvent sets for them is cosmetic and Roblox reads
+    # the keycode, so no extra flag is needed here (contrast Windows, where
+    # the extended-key bit is load-bearing).
+    InputKey.LEFT: 123,
+    InputKey.RIGHT: 124,
 }
 
 _MAC_BUTTON_EVENTS: dict[MouseButton, tuple[int, int, int, int]] = {
@@ -834,6 +840,12 @@ class MacPlatformPort:
         except Exception:
             return ""
 
+    #: How far an AX frame may sit from the CG frame and still be the same
+    #: window. Accessibility and the window server round independently, so an
+    #: exact match is too strict; four points is well inside the gap between
+    #: two genuinely different windows.
+    AX_FRAME_TOLERANCE_PT = 4.0
+
     def _ax_window_for(
         self, identity: WindowIdentity, frame_logical: LogicalRect
     ) -> tuple[Any | None, str]:
@@ -841,35 +853,56 @@ class MacPlatformPort:
 
         ``windows[0]`` is whatever Accessibility lists first, which for a
         process with several windows - a crash handler, a dialog, the game -
-        need not be the one being captured. Correlate by frame first, then by
-        title, and fall back to the largest, saying which rule matched.
+        need not be the one being captured. Three rules, each of which
+        *identifies* a window rather than guessing at one:
+
+        1. its AX frame matches the CG frame we are capturing;
+        2. its AX title uniquely matches the CG title;
+        3. the process has exactly one AX window with a readable frame.
+
+        Anything else is **ambiguous and refused**. Resizing the wrong window
+        of a multi-window process is a visible, confusing failure that the old
+        "fall back to the largest" rule made silent (D-031).
         """
         windows = self._ax_windows(identity.process_id)
         if not windows:
             return (None, "no AX windows")
         target = (frame_logical.x, frame_logical.y, frame_logical.width, frame_logical.height)
         framed = [(window, self._ax_frame(window)) for window in windows]
-        for window, frame in framed:
-            if frame is None:
-                continue
-            if all(abs(frame[i] - target[i]) <= 4.0 for i in range(4)):
-                return (window, "frame match")
+        matches = [
+            window
+            for window, frame in framed
+            if frame is not None
+            and all(abs(frame[i] - target[i]) <= self.AX_FRAME_TOLERANCE_PT for i in range(4))
+        ]
+        if len(matches) == 1:
+            return (matches[0], "frame match")
+        if len(matches) > 1:
+            return (None, f"ambiguous: {len(matches)} AX windows share the captured frame")
         if identity.title:
-            for window in windows:
-                if self._ax_title(window) == identity.title:
-                    return (window, "title match")
+            titled = [w for w in windows if self._ax_title(w) == identity.title]
+            if len(titled) == 1:
+                return (titled[0], "title match")
+            if len(titled) > 1:
+                return (None, f"ambiguous: {len(titled)} AX windows share the title")
         with_frames = [(window, frame) for window, frame in framed if frame is not None]
-        if with_frames:
-            largest = max(with_frames, key=lambda item: item[1][2] * item[1][3])
-            return (largest[0], "largest window")
-        return (windows[0], "first window")
+        if len(with_frames) == 1:
+            return (with_frames[0][0], "only window")
+        return (
+            None,
+            f"ambiguous: {len(windows)} AX windows and none matches the captured "
+            "window by frame or title",
+        )
 
     def _ax_window(self, pid: int) -> Any | None:
-        """The AX window of the CG window currently selected, or ``None``."""
+        """The AX window of the CG window currently selected, or ``None``.
+
+        Returns ``None`` rather than a guess when the correlation is
+        ambiguous; the caller then uses its documented fallback and says so.
+        """
         found = self._scan_roblox()
         if found is None or found[0].process_id != int(pid):
-            windows = self._ax_windows(pid)
-            return windows[0] if windows else None
+            return None
         window, _how = self._ax_window_for(found[0], found[1])
         return window
 
@@ -1027,9 +1060,16 @@ class MacPlatformPort:
         identity, frame_logical = found
         window, how = self._ax_window_for(identity, frame_logical)
         if window is None:
+            message = (
+                f"Roblox has more than one window and none of them can be identified as "
+                f"the one being captured ({how}). Close the extra Roblox window - a "
+                f"login prompt, a crash report, or a second client - and retry."
+                if how.startswith("ambiguous")
+                else f"Could not reach Roblox's window through Accessibility ({how})."
+            )
             return PinResult(
                 False,
-                f"Could not reach Roblox's window through Accessibility ({how}).",
+                message,
                 self.window_geometry(),
                 size_logical,
                 mechanism="AX",

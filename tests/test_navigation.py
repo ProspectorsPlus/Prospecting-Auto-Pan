@@ -1,13 +1,21 @@
-"""Navigation FSM, steering, recovery termination, motion, and the gate wall.
+"""Navigation: capability, recovery termination, motion evidence, and the FSM.
 
 The property tests use Hypothesis for the invariants named in plan section 16.2
 (angle wrapping, bounded commands, recovery termination). Deterministic
 scenario tests carry everything else, because they are far easier to debug.
+
+What replaced the old "gate wall" tests: capability is no longer a frozen table
+of PENDING experiment flags that nothing in production could set. It is
+:class:`NavigationCapabilities`, derived from what *this run* observed and
+measured, and the tests below assert both halves - that a fresh run cannot
+steer, and that a run which has genuinely measured its actuator can.
 """
 
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from itertools import pairwise
 from typing import Any
 
 import pytest
@@ -20,6 +28,8 @@ from prospector_engine.contracts import (
     DirectionObservation,
     EvidenceStatus,
     MotionObservation,
+    NavigationApplyResult,
+    NavigationApplyStatus,
     NavigationCommand,
     NavigationPhase,
 )
@@ -27,76 +37,81 @@ from prospector_engine.motion import (
     ContactConfig,
     ContactMonitor,
     LocomotionBaseline,
+    ProgressConfig,
+    ProgressGuard,
+    RuntimeBaselineEstimator,
     estimate_block_displacement,
     estimate_lk_affine,
     estimate_phase_correlation,
 )
 from prospector_engine.navigation import (
-    RECOVERY_LADDER,
-    NavigationGates,
+    NavigationCapabilities,
     NavigationInputs,
     Navigator,
+    RecoveryAction,
     RecoveryBudget,
     RecoveryLadder,
-    SteeringConfig,
-    SteeringController,
+    choose_detour_side,
 )
+from prospector_engine.steering import ArrowFollowerController, ControlFingerprint
+from prospector_engine.turning import TurnBackend, TurnResponse
 from prospector_engine.vision import wrap_deg
 from tests.fakes import make_frame, make_geometry
 
-ALL_PASSED = NavigationGates(
+FINGERPRINT = ControlFingerprint(
+    os_name="test",
+    backend="mouse_yaw",
+    client_fingerprint="test-client",
+    camera_sensitivity="default",
+    control_mode="shift-lock",
+    viewport_identity=(),
+    profile_id="test",
+    profile_revision=1,
+    supported_min_fps=30,
+)
+
+#: A turn response standing in for one the characterizer would measure. Only a
+#: test may construct this directly; production reaches the same state exactly
+#: once, from bounded stationary probes on real hardware whose observed
+#: rotation perception confirmed.
+MEASURED = TurnResponse(
+    backend=TurnBackend.MOUSE_YAW,
+    fingerprint=FINGERPRINT,
+    degrees_per_unit=0.25,
+    positive_is_right=True,
+    min_effective_units=2,
+    max_units=200,
+    latency_s=0.02,
+    reliability=1.0,
+    samples=8,
+    measured_at_s=0.0,
+    status=EvidenceStatus.VALIDATED,
+)
+
+WALKING = LocomotionBaseline(
+    condition_id="runtime:test",
+    min_forward_speed_norm=0.10,
+    status=EvidenceStatus.VALIDATED,
+    provenance=ContactConfig().provenance,
+)
+
+READY = NavigationCapabilities(
     os_name="test",
     profile_id="test",
-    **{
-        field: EvidenceStatus.VALIDATED
-        for field in NavigationGates.__dataclass_fields__
-        if field.startswith("e_")
-    },
+    reference_ok=True,
+    control_mode_ok=True,
+    turn_response=MEASURED,
+    motion_baseline=WALKING,
 )
 
 
-def _calibrated_navigator(gates: NavigationGates | None = None, **overrides: Any) -> Navigator:
-    """A navigator whose yaw calibration is pretended to have passed E-YAW.
-
-    Only a test may do this. Production reaches the same state exactly once:
-    after physically armed yaw pulses on real hardware whose observed rotation
-    perception confirmed. The point of the fixture is to exercise the control
-    law without hardware, not to shortcut the gate.
-    """
-    from prospector_engine.steering import (
-        CalibrationFingerprint,
-        ShiftLockController,
-        YawCalibration,
-    )
-
-    fingerprint = CalibrationFingerprint(
-        os_name="test",
-        backend="fake",
-        client_fingerprint="test-client",
-        camera_sensitivity="default",
-        control_mode="shift-lock",
-        viewport_identity=(),
-        profile_id="test",
-        profile_revision=1,
-        supported_min_fps=30,
-    )
-    calibration = YawCalibration(
-        fingerprint=fingerprint,
-        degrees_per_unit=0.25,
-        positive_is_right=True,
-        min_effective_units=2,
-        linear_range_units=(2, 160),
-        saturation_units=200,
-        response_delay_ms=18.0,
-        repeatability_deg=0.7,
-        reversal_backlash_deg=0.2,
-        linear_fit_r2=0.995,
-        repeats_per_magnitude=10,
-        status=EvidenceStatus.VALIDATED,
-    )
+def _navigator(
+    capabilities: NavigationCapabilities | None = None, **overrides: Any
+) -> Navigator:
+    caps = capabilities or READY
     return Navigator(
-        gates=gates or ALL_PASSED,
-        controller=ShiftLockController(calibration=calibration),
+        capabilities=caps,
+        follower=ArrowFollowerController(response=caps.turn_response),
         **overrides,
     )
 
@@ -127,107 +142,58 @@ def _arrow(valid: bool = True) -> ArrowObservation:
 
 
 # ---------------------------------------------------------------------------
-# Gates
+# Capability
 # ---------------------------------------------------------------------------
 
 
-def test_a_fresh_gate_set_disables_everything() -> None:
-    gates = NavigationGates(os_name="darwin", profile_id="yellow_map_v0")
-    assert not gates.steering_enabled
-    assert not gates.recovery_enabled
-    assert not gates.arrival_enabled
-    assert not gates.next_map_enabled
-    assert "E-YAW" in gates.blocking_reasons()
+def test_a_fresh_run_can_observe_but_not_steer() -> None:
+    capabilities = NavigationCapabilities.observing(
+        os_name="darwin", profile_id="yellow_map_v1"
+    )
+
+    assert not capabilities.steering_enabled
+    assert not capabilities.recovery_enabled
+    assert not capabilities.progress_enabled
+    assert set(capabilities.blocking_reasons()) == {
+        "reference",
+        "control-mode",
+        "turn-actuator",
+    }
+    assert all(text and " " in text for text in capabilities.explain())
 
 
-def test_recovery_needs_more_than_steering() -> None:
-    """Steering passing is not enough: E-MOTION and E-RECOVERY are separate."""
-    from dataclasses import replace
+@pytest.mark.parametrize("missing", ["reference_ok", "control_mode_ok", "turn_response"])
+def test_any_missing_piece_disables_steering(missing: str) -> None:
+    weakened = replace(READY, **{missing: None if missing == "turn_response" else False})
+    assert not weakened.steering_enabled
 
-    steering_only = replace(ALL_PASSED, e_motion=EvidenceStatus.PENDING)
+
+def test_a_measured_run_may_steer_without_any_frozen_gate() -> None:
+    """The whole point: nothing here needs a table somebody has to edit."""
+    assert READY.steering_enabled
+    assert READY.recovery_enabled
+    assert READY.blocking_reasons() == ()
+    assert "mouse yaw" in READY.describe()
+
+
+def test_recovery_needs_a_measured_walking_speed_as_well() -> None:
+    """Telling "stuck" from "slow" needs a baseline; steering does not."""
+    steering_only = replace(
+        READY,
+        motion_baseline=LocomotionBaseline(
+            condition_id="uncalibrated",
+            min_forward_speed_norm=None,
+            status=EvidenceStatus.PENDING,
+            provenance=ContactConfig().provenance,
+        ),
+    )
     assert steering_only.steering_enabled
     assert not steering_only.recovery_enabled
 
 
-def test_a_single_pending_gate_disables_steering() -> None:
-    from dataclasses import replace
-
-    for field in (
-        "e_view",
-        "e_anchor",
-        "e_forward",
-        "e_prof",
-        "e_dir_e2e",
-        "e_yaw",
-        "e_steer_cal",
-        "e_steer_e2e",
-    ):
-        weakened = replace(ALL_PASSED, **{field: EvidenceStatus.PENDING})
-        assert not weakened.steering_enabled, field
-
-
-# ---------------------------------------------------------------------------
-# Steering
-# ---------------------------------------------------------------------------
-
-
-def test_an_error_inside_the_deadband_produces_no_turn() -> None:
-    controller = SteeringController(SteeringConfig(deadband_deg=6.0, hysteresis_deg=2.0))
-    assert controller.update(_direction(3.0), now_s=0.0, frame_is_duplicate=False) == 0
-
-
-def test_hysteresis_prevents_left_right_chatter() -> None:
-    controller = SteeringController(SteeringConfig(deadband_deg=6.0, hysteresis_deg=4.0))
-    # 7 deg is past the deadband but inside deadband+hysteresis from rest.
-    assert controller.update(_direction(7.0), now_s=0.0, frame_is_duplicate=False) == 0
-    # 12 deg breaks out, and then 7 deg keeps steering rather than snapping off.
-    assert controller.update(_direction(12.0), now_s=0.1, frame_is_duplicate=False) > 0
-    assert controller.update(_direction(7.0), now_s=0.2, frame_is_duplicate=False) > 0
-
-
-def test_the_turn_sign_follows_the_error_sign() -> None:
-    controller = SteeringController()
-    right = controller.update(_direction(40.0), now_s=0.0, frame_is_duplicate=False)
-    controller.reset()
-    left = controller.update(_direction(-40.0), now_s=0.0, frame_is_duplicate=False)
-    assert right > 0 and left < 0
-
-
-def test_lower_confidence_reduces_magnitude_and_never_raises_gain() -> None:
-    high = SteeringController().update(
-        _direction(40.0, confidence=1.0), now_s=0.0, frame_is_duplicate=False
-    )
-    low = SteeringController().update(
-        _direction(40.0, confidence=0.3), now_s=0.0, frame_is_duplicate=False
-    )
-    assert 0 < low <= high
-
-
-def test_an_abstained_direction_releases_yaw_immediately() -> None:
-    controller = SteeringController()
-    controller.update(_direction(60.0), now_s=0.0, frame_is_duplicate=False)
-    assert controller.update(_direction(None), now_s=0.1, frame_is_duplicate=False) == 0
-
-
-def test_a_duplicate_frame_does_not_manufacture_a_derivative_spike() -> None:
-    controller = SteeringController()
-    controller.update(_direction(10.0), now_s=0.0, frame_is_duplicate=False)
-    spike = controller.update(_direction(80.0), now_s=0.0001, frame_is_duplicate=True)
-    limit = controller.config.max_turn_px_per_tick
-    assert abs(spike) <= limit
-
-
-@settings(max_examples=200, deadline=None)
-@given(
-    error=st.floats(min_value=-720.0, max_value=720.0, allow_nan=False),
-    confidence=st.floats(min_value=0.0, max_value=1.0),
-)
-def test_the_turn_command_is_always_bounded(error: float, confidence: float) -> None:
-    controller = SteeringController()
-    turn = controller.update(
-        _direction(error, confidence=confidence), now_s=0.0, frame_is_duplicate=False
-    )
-    assert abs(turn) <= controller.config.max_turn_px_per_tick
+def test_a_pending_turn_response_is_not_a_capability() -> None:
+    pending = replace(READY, turn_response=replace(MEASURED, status=EvidenceStatus.PENDING))
+    assert not pending.steering_enabled
 
 
 @settings(max_examples=300, deadline=None)
@@ -243,53 +209,93 @@ def test_wrapping_is_idempotent_and_in_range(degrees: float) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _run_ladder(ladder: RecoveryLadder, *, ticks: int = 400, dt: float = 0.05) -> list[Any]:
+    steps = []
+    for index in range(1, ticks + 1):
+        step = ladder.step(index * dt, delta_s=dt)
+        if step is None:
+            break
+        steps.append(step)
+    return steps
+
+
 def test_every_recovery_episode_terminates() -> None:
     ladder = RecoveryLadder()
-    ladder.begin(now_s=0.0, side=1)
-    steps = 0
-    while not ladder.exhausted and steps < 100:
-        ladder.escalate()
-        steps += 1
+    ladder.begin(0.0, side=1, error_deg=20.0)
+
+    steps = _run_ladder(ladder)
+
     assert ladder.exhausted
-    assert steps <= sum(level.max_attempts for level in RECOVERY_LADDER)
+    assert steps, "the ladder must actually produce maneuvers"
 
 
-def test_the_locked_side_cannot_flip_inside_the_cooldown() -> None:
-    ladder = RecoveryLadder(RecoveryBudget(side_lock_cooldown_ms=1000))
-    ladder.begin(now_s=0.0, side=1)
+def test_the_ladder_starts_by_letting_go_and_looking_again() -> None:
+    """Two free rungs before any maneuver: most snags are not obstacles."""
+    ladder = RecoveryLadder()
+    ladder.begin(0.0, side=1, error_deg=20.0)
+    actions = [step.action for step in _run_ladder(ladder)]
 
-    assert ladder.switch_side(now_s=0.5) is False
-    assert ladder.side == 1
-    assert ladder.switch_side(now_s=1.5) is True
-    assert ladder.side == -1
+    assert actions[0] is RecoveryAction.RELEASE
+    assert RecoveryAction.REACQUIRE in actions[:20]
+    first_maneuver = next(a for a in actions if a.emits_input)
+    assert first_maneuver is RecoveryAction.STRAFE
+
+
+def test_the_chosen_side_is_sticky_for_the_episode() -> None:
+    """Choosing left then right on alternating frames is a wiggle, not a detour."""
+    ladder = RecoveryLadder()
+    ladder.begin(0.0, side=1, error_deg=20.0)
+    sides = {step.side for step in _run_ladder(ladder) if not step.level.flips_side}
+
+    assert sides == {1}
+
+
+def test_the_opposite_side_is_tried_exactly_once() -> None:
+    ladder = RecoveryLadder()
+    ladder.begin(0.0, side=1, error_deg=20.0)
+    flips = [step for step in _run_ladder(ladder) if step.level.flips_side]
+
+    assert flips, "the ladder must eventually try the other side"
+    assert {step.side for step in flips} == {-1}
 
 
 def test_a_recovery_episode_has_a_total_time_and_input_cap() -> None:
     ladder = RecoveryLadder(RecoveryBudget(total_time_ms=1000, total_input_ms=500))
-    ladder.begin(now_s=0.0, side=1)
+    ladder.begin(0.0, side=1, error_deg=0.0)
 
-    assert ladder.over_budget(now_s=0.5) is None
-    assert ladder.over_budget(now_s=2.0) == "recovery total time cap"
+    assert ladder.over_budget(0.5) is None
+    assert "time" in (ladder.over_budget(2.0) or "")
 
-    fresh = RecoveryLadder(RecoveryBudget(total_time_ms=100000, total_input_ms=500))
-    fresh.begin(now_s=0.0, side=1)
-    fresh.note_input(900)
-    assert fresh.over_budget(now_s=0.1) == "recovery total input cap"
+    fresh = RecoveryLadder(RecoveryBudget(total_time_ms=100000, total_input_ms=100))
+    fresh.begin(0.0, side=1, error_deg=0.0)
+    _run_ladder(fresh, ticks=200)
+    assert fresh.exhausted
+
+
+def test_success_needs_measured_progress_and_a_heading_that_did_not_rot() -> None:
+    ladder = RecoveryLadder()
+    ladder.begin(0.0, side=1, error_deg=10.0)
+
+    assert not ladder.succeeded(progressing=False, error_deg=5.0)
+    assert ladder.succeeded(progressing=True, error_deg=5.0)
+    assert not ladder.succeeded(progressing=True, error_deg=170.0)
+
+
+def test_the_detour_side_follows_local_evidence_not_a_coin_flip() -> None:
+    sliding_right = _motion(0.0)
+    sliding_right = replace(sliding_right, lateral_speed_norm=0.2)
+    assert choose_detour_side(error_deg=-30.0, motion=sliding_right) == 1
+    assert choose_detour_side(error_deg=-30.0, motion=None) == -1
+    assert choose_detour_side(error_deg=30.0, motion=None) == 1
+    assert choose_detour_side(error_deg=None, motion=None) in (-1, 1)
 
 
 @settings(max_examples=50, deadline=None)
-@given(
-    escalations=st.lists(st.booleans(), min_size=0, max_size=40),
-    now=st.floats(min_value=0.0, max_value=60.0),
-)
-def test_recovery_always_reaches_a_terminal_state(escalations: list[bool], now: float) -> None:
+@given(ticks=st.integers(min_value=0, max_value=500), dt=st.floats(0.001, 0.2))
+def test_recovery_always_reaches_a_terminal_state(ticks: int, dt: float) -> None:
     ladder = RecoveryLadder()
-    ladder.begin(now_s=0.0, side=1)
-    for switch in escalations:
-        if switch:
-            ladder.switch_side(now_s=now)
-        else:
-            ladder.escalate()
+    ladder.begin(0.0, side=1, error_deg=0.0)
+    _run_ladder(ladder, ticks=ticks, dt=dt)
     assert ladder.exhausted or ladder.level is not None
 
 
@@ -481,126 +487,77 @@ def _inputs(
     )
 
 
-def test_the_navigator_refuses_to_steer_while_its_gates_are_pending() -> None:
-    navigator = Navigator(gates=NavigationGates(os_name="test", profile_id="test"))
+def test_a_run_that_has_measured_nothing_observes_and_says_why() -> None:
+    navigator = Navigator(
+        capabilities=NavigationCapabilities.observing(os_name="test", profile_id="test")
+    )
     decision = navigator.decide(_inputs(), generation=1, now_s=0.0)
 
     assert decision.command is None
     assert decision.release
-    assert "steering disabled" in decision.reason
+    assert "observing only" in decision.reason
+    assert "camera control mode" in decision.reason
 
 
 def test_a_stale_frame_releases_before_anything_else_is_considered() -> None:
-    navigator = Navigator(gates=ALL_PASSED, max_evidence_age_ms=100)
+    navigator = _navigator(max_evidence_age_ms=100)
     decision = navigator.decide(_inputs(captured_at_s=0.0), generation=1, now_s=5.0)
 
     assert decision.release
     assert "stale-frame" in decision.reason
 
 
-def test_an_abstained_arrow_beyond_the_grace_window_releases() -> None:
-    navigator = Navigator(gates=ALL_PASSED)
+def test_an_abstained_arrow_releases() -> None:
+    navigator = _navigator()
     decision = navigator.decide(_inputs(arrow_valid=False), generation=1, now_s=0.0)
 
     assert decision.release
     assert decision.phase is NavigationPhase.REACQUIRE
 
 
-def test_the_arrow_loss_grace_keeps_forward_but_releases_yaw() -> None:
-    navigator = Navigator(gates=ALL_PASSED)
-    navigator.decide(_inputs(error_deg=0.0), generation=1, now_s=0.0)  # a valid arrow first
-
-    decision = navigator.decide(_inputs(arrow_valid=False), generation=1, now_s=0.1)
-
-    assert decision.command is not None
-    assert decision.command.forward_axis == 1
-    assert decision.command.yaw_delta_px == 0
-    assert "yaw released" in decision.command.reason
-
-
 def test_a_command_lease_never_outlives_its_evidence() -> None:
-    navigator = _calibrated_navigator(max_evidence_age_ms=100)
+    navigator = _navigator(max_evidence_age_ms=100)
     decision = navigator.decide(_inputs(error_deg=30.0), generation=1, now_s=0.0)
 
     assert decision.command is not None
     assert decision.command.valid_until_s <= decision.command.source_captured_at_s + 0.100001
 
 
-def test_arrival_preempts_recovery_and_releases_movement() -> None:
+def test_arrival_releases_movement_and_terminates_after_repeated_evidence() -> None:
     from prospector_engine.contracts import ArrivalObservation
 
-    navigator = Navigator(gates=ALL_PASSED)
+    navigator = _navigator()
     arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
-    decision = navigator.decide(
-        _inputs(arrival=arrival, motion=_motion(0.0), forward_commanded=True),
-        generation=1,
-        now_s=0.0,
-    )
+    phases = []
+    for index in range(Navigator.ARRIVAL_LATCHES):
+        decision = navigator.decide(
+            _inputs(arrival=arrival, sequence=index + 1, captured_at_s=index * 0.02),
+            generation=1,
+            now_s=index * 0.02,
+        )
+        phases.append(decision.phase)
+        assert decision.release and decision.command is None
 
-    assert decision.release
-    assert decision.phase is NavigationPhase.ARRIVAL_CONFIRM
-    assert navigator.arrival_latches == 1
+    assert phases[0] is NavigationPhase.ARRIVAL_CONFIRM
+    assert phases[-1] is NavigationPhase.ARRIVED
 
 
-def test_arrival_evidence_is_ignored_while_e_arrive_is_pending() -> None:
-    from dataclasses import replace
-
+def test_one_arrival_candidate_does_not_end_the_route() -> None:
     from prospector_engine.contracts import ArrivalObservation
 
-    gates = replace(ALL_PASSED, e_arrive=EvidenceStatus.PENDING)
-    navigator = Navigator(gates=gates)
+    navigator = _navigator()
     arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
-    decision = navigator.decide(_inputs(arrival=arrival), generation=1, now_s=0.0)
+    first = navigator.decide(_inputs(arrival=arrival), generation=1, now_s=0.0)
+    # A frame without arrival evidence clears the latch rather than banking it.
+    navigator.decide(_inputs(sequence=2, captured_at_s=0.02), generation=1, now_s=0.02)
 
-    assert decision.release
-    assert "E-ARRIVE PENDING" in decision.reason
+    assert first.phase is NavigationPhase.ARRIVAL_CONFIRM
     assert navigator.arrival_latches == 0
 
 
-def test_contact_abandons_while_recovery_is_ungated() -> None:
-    from dataclasses import replace
-
-    gates = replace(ALL_PASSED, e_recovery=EvidenceStatus.PENDING)
-    monitor = ContactMonitor(CALIBRATED, ContactConfig(sustained_ms=1))
-    navigator = _calibrated_navigator(gates=gates, contact=monitor)
-
-    decision = navigator.decide(
-        _inputs(error_deg=0.5, motion=_motion(0.0), forward_commanded=True, captured_at_s=0.0),
-        generation=1,
-        now_s=0.0,
-    )
-    # A fresh frame each tick: the contact must come from sustained low
-    # progress, not from the frame going stale underneath it.
-    decision = navigator.decide(
-        _inputs(
-            error_deg=0.5,
-            motion=_motion(0.0),
-            forward_commanded=True,
-            captured_at_s=0.5,
-            sequence=2,
-        ),
-        generation=1,
-        now_s=0.5,
-    )
-
-    assert decision.phase is NavigationPhase.ABANDONED
-    assert decision.release
-
-
-def test_steering_is_refused_until_the_yaw_calibration_passes() -> None:
-    """Every perception gate passing is still not permission to move a mouse."""
-    navigator = Navigator(gates=ALL_PASSED)
-
-    decision = navigator.decide(_inputs(error_deg=0.5), generation=1, now_s=0.0)
-
-    assert decision.command is None
-    assert decision.release
-    assert "not calibrated" in decision.reason
-
-
 def test_an_aligned_arrow_walks_only_after_sustained_alignment() -> None:
-    """W is never taken on the strength of one frame inside the deadband."""
-    navigator = _calibrated_navigator()
+    """W is never taken on the strength of one frame inside the cone."""
+    navigator = _navigator()
     decisions = [
         navigator.decide(
             _inputs(error_deg=0.5, sequence=index + 1, captured_at_s=index * 0.02),
@@ -619,7 +576,7 @@ def test_an_aligned_arrow_walks_only_after_sustained_alignment() -> None:
 
 
 def test_a_misaligned_arrow_turns_on_the_spot() -> None:
-    navigator = _calibrated_navigator()
+    navigator = _navigator()
     decision = navigator.decide(_inputs(error_deg=45.0), generation=1, now_s=0.0)
 
     assert decision.command is not None
@@ -647,9 +604,27 @@ def test_an_alignment_command_can_never_ask_for_forward_motion() -> None:
         )
 
 
+def test_a_command_may_never_use_two_turn_actuators_at_once() -> None:
+    with pytest.raises(ValueError, match="both the turn keys and mouse yaw"):
+        NavigationCommand(
+            generation=1,
+            source_frame_sequence=1,
+            source_captured_at_s=0.0,
+            forward_axis=0,
+            lateral_axis=0,
+            jump=False,
+            yaw_delta_px=4,
+            issued_at_s=0.0,
+            valid_until_s=0.1,
+            reason="test",
+            kind=CommandKind.ALIGN,
+            turn_axis=1,
+        )
+
+
 def test_a_frame_authorizes_exactly_one_decision() -> None:
     """Re-reading a frame must not renew a lease (mission section 11)."""
-    navigator = _calibrated_navigator()
+    navigator = _navigator()
     first = navigator.decide(_inputs(error_deg=20.0, sequence=7), generation=1, now_s=0.0)
     second = navigator.decide(_inputs(error_deg=20.0, sequence=7), generation=1, now_s=0.02)
 
@@ -660,52 +635,215 @@ def test_a_frame_authorizes_exactly_one_decision() -> None:
 @settings(max_examples=100, deadline=None)
 @given(error=st.floats(min_value=-180.0, max_value=180.0, allow_nan=False))
 def test_no_command_ever_asks_for_forward_and_reverse_at_once(error: float) -> None:
-    navigator = _calibrated_navigator()
+    navigator = _navigator()
     decision = navigator.decide(_inputs(error_deg=error), generation=1, now_s=0.0)
     if decision.command is not None:
         assert decision.command.forward_axis in (-1, 0, 1)
         assert decision.command.lateral_axis in (-1, 0, 1)
+        assert decision.command.turn_axis in (-1, 0, 1)
         assert decision.command.kind.may_hold_forward or decision.command.forward_axis == 0
 
 
-def test_the_live_worker_refuses_to_start_while_gates_are_pending() -> None:
-    from prospector_engine.contracts import Cancellation, ModeResultKind
-    from prospector_engine.navigation import PerceptionPipeline, make_live_worker
-    from prospector_engine.vision import ArrowSegmenter, load_profiles
+# ---------------------------------------------------------------------------
+# Progress: only *applied* forward counts
+# ---------------------------------------------------------------------------
 
-    profile = load_profiles().get("yellow_map_v0")
-    assert profile is not None
-    gates = NavigationGates(os_name="test", profile_id=profile.profile_id)
-    worker = make_live_worker(lambda: PerceptionPipeline(ArrowSegmenter(profile)), gates)
 
-    class _Session:
-        def __init__(self) -> None:
-            self.released: list[str] = []
+def _applied(*leases: str) -> NavigationApplyResult:
+    return NavigationApplyResult(NavigationApplyStatus.APPLIED, "ok", leases_held=leases)
 
-        def release_navigation(self, reason: str) -> Any:
-            self.released.append(reason)
 
-        def apply_navigation_command(self, command: Any, evidence: Any) -> Any:
-            raise AssertionError("a pending-gate worker must never apply a command")
+def test_only_an_accepted_forward_lease_enters_the_progress_ledger() -> None:
+    """A run of rejected commands must not look exactly like a wall."""
+    navigator = _navigator()
 
-    session = _Session()
-    context = type(
-        "Ctx",
-        (),
-        {
-            "navigation": session,
-            "cancellation": Cancellation(),
-            "generation": 1,
-            "frames": None,
-            "on_phase": lambda self, phase: None,
-            "on_status": lambda self, message: None,
-        },
-    )()
-    result = worker(context)  # type: ignore[arg-type]
+    navigator.note_applied(
+        NavigationApplyResult(NavigationApplyStatus.REJECTED_FOCUS, "not focused"), now_s=0.0
+    )
+    assert not navigator.progress.ledger.holding()
 
-    assert result.kind is ModeResultKind.FAILED
-    assert "PENDING" in result.detail
-    assert session.released == ["gates-pending"]
+    navigator.note_applied(_applied("w"), now_s=0.1)
+    assert navigator.progress.ledger.holding()
+
+    navigator.note_applied(_applied("right"), now_s=0.2)
+    assert not navigator.progress.ledger.holding(), "a turn key is not forward motion"
+
+
+def test_a_release_closes_the_forward_interval() -> None:
+    navigator = _navigator()
+    navigator.note_applied(_applied("w"), now_s=0.0)
+    navigator.note_released(now_s=0.5)
+
+    assert not navigator.progress.ledger.holding()
+    assert navigator.progress.ledger.held_continuously_for(0.6) == 0.0
+
+
+def test_sustained_low_progress_while_walking_releases_and_enters_contact() -> None:
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+
+    navigator.note_applied(_applied("w"), now_s=0.0)
+    decision = None
+    for index in range(1, 12):
+        now = index * 0.1
+        decision = navigator.decide(
+            _inputs(
+                error_deg=0.5,
+                motion=_motion(0.0),
+                sequence=index,
+                captured_at_s=now,
+            ),
+            generation=1,
+            now_s=now,
+        )
+        if decision.phase is NavigationPhase.CONTACT:
+            break
+
+    assert decision is not None
+    assert decision.phase is NavigationPhase.CONTACT
+    assert decision.release, "forward is dropped before anything is decided about it"
+
+
+def test_contact_without_a_measured_baseline_stops_rather_than_improvising() -> None:
+    """No baseline means no way to tell stuck from slow. Stopping is the answer."""
+    capabilities = replace(
+        READY,
+        motion_baseline=LocomotionBaseline(
+            condition_id="uncalibrated",
+            min_forward_speed_norm=None,
+            status=EvidenceStatus.PENDING,
+            provenance=ContactConfig().provenance,
+        ),
+    )
+    navigator = _navigator(capabilities)
+    navigator.note_applied(_applied("w"), now_s=0.0)
+
+    for index in range(1, 12):
+        now = index * 0.1
+        decision = navigator.decide(
+            _inputs(error_deg=0.5, motion=_motion(0.0), sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        assert decision.phase is not NavigationPhase.RECOVERY
+
+
+def test_recovery_emits_real_maneuvers_and_then_abandons() -> None:
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+    navigator.note_applied(_applied("w"), now_s=0.0)
+
+    maneuvers: list[NavigationCommand] = []
+    terminal = None
+    for index in range(1, 400):
+        now = index * 0.05
+        decision = navigator.decide(
+            _inputs(error_deg=0.5, motion=_motion(0.0), sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        if decision.command is not None and decision.phase is NavigationPhase.RECOVERY:
+            maneuvers.append(decision.command)
+        if decision.phase is NavigationPhase.ABANDONED:
+            terminal = decision
+            break
+
+    assert maneuvers, "recovery must emit maneuvers, not just change a label"
+    assert any(c.lateral_axis != 0 for c in maneuvers), "a strafe was never issued"
+    assert terminal is not None, "recovery must abandon rather than loop forever"
+    assert terminal.release and terminal.command is None
+
+
+def test_recovery_never_oscillates_between_sides_within_an_episode() -> None:
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+    navigator.note_applied(_applied("w"), now_s=0.0)
+
+    lateral: list[int] = []
+    for index in range(1, 400):
+        now = index * 0.05
+        decision = navigator.decide(
+            _inputs(error_deg=0.5, motion=_motion(0.0), sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        if decision.command is not None and decision.command.lateral_axis:
+            lateral.append(decision.command.lateral_axis)
+        if decision.phase is NavigationPhase.ABANDONED:
+            break
+
+    flips = sum(1 for a, b in pairwise(lateral) if a != b)
+    assert flips <= 1, f"the detour side flipped {flips} times"
+
+
+def test_a_terminal_state_holds_no_inputs() -> None:
+    navigator = _navigator()
+    decision = navigator.decide(
+        _inputs(arrow_valid=False, error_deg=None), generation=1, now_s=0.0
+    )
+    assert decision.command is None and decision.release
+
+
+# ---------------------------------------------------------------------------
+# The runtime locomotion baseline
+# ---------------------------------------------------------------------------
+
+
+def test_a_runtime_baseline_needs_real_samples_before_it_exists() -> None:
+    estimator = RuntimeBaselineEstimator("run-1")
+    config = ContactConfig()
+    for _ in range(5):
+        estimator.observe(_motion(0.4), forward_applied=True, held_ms=500.0, config=config)
+    assert not estimator.baseline.usable
+
+    for _ in range(LocomotionBaseline.MIN_RUNTIME_SAMPLES):
+        estimator.observe(_motion(0.4), forward_applied=True, held_ms=500.0, config=config)
+    assert estimator.baseline.usable
+
+
+def test_a_runtime_baseline_never_claims_to_be_the_offline_gate() -> None:
+    estimator = RuntimeBaselineEstimator("run-1")
+    config = ContactConfig()
+    for _ in range(20):
+        estimator.observe(_motion(0.4), forward_applied=True, held_ms=500.0, config=config)
+
+    baseline = estimator.baseline
+    assert baseline.measured_at_runtime
+    assert baseline.condition_id.startswith("runtime:")
+    assert "NOT the offline E-MOTION gate" in baseline.provenance.note
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"forward_applied": False},
+        {"held_ms": 10.0},
+    ],
+)
+def test_a_runtime_baseline_refuses_contaminated_samples(kwargs: dict[str, Any]) -> None:
+    estimator = RuntimeBaselineEstimator("run-1")
+    config = ContactConfig()
+    defaults: dict[str, Any] = {"forward_applied": True, "held_ms": 500.0}
+    defaults.update(kwargs)
+    for _ in range(40):
+        estimator.observe(_motion(0.4), config=config, **defaults)
+    assert estimator.samples == 0
+
+
+def test_a_yaw_contaminated_sample_is_refused() -> None:
+    estimator = RuntimeBaselineEstimator("run-1")
+    config = ContactConfig()
+    for _ in range(40):
+        estimator.observe(
+            _motion(0.4, yaw=0.9), forward_applied=True, held_ms=500.0, config=config
+        )
+    assert estimator.samples == 0
 
 
 def test_math_import_is_used_by_the_fusion_geometry() -> None:

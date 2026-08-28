@@ -1,39 +1,40 @@
-"""Shift-Lock steering: yaw calibration, control-mode proof, and the controller.
+"""The arrow follower: one controller, one control mode proof, one release rule.
 
-The behaviour this implements is deliberately small: hold ``W`` to walk, and
-turn the camera with bounded relative mouse motion until the verified forward
-direction lines up with the map arrow. No strafing, no jumping, no recovery
-maneuvers, no left/right hunting. Everything else is safety around that.
+The behaviour is deliberately small: turn on the spot until the heading error
+is inside the alignment cone, then hold ``W`` while issuing small bounded
+corrections, and release everything the moment the evidence stops supporting
+either. Everything else in this module is the safety around that.
 
-Three rules run through the whole module.
+Four rules run through it.
 
-**Shift Lock is a state, not a key.** It is something the player has switched
-on, and this code must never press or toggle Shift to "make sure". It is
-*verified* per run - by a stable on-screen cue, or by a separately armed
-stationary micro-yaw check - and the proof is bound to the exact arm token,
-window, profile revision, viewport and sensitivity it was taken under. An
-unverified control mode means Live is unavailable, not that Live guesses.
+**Shift Lock is a state, not a key.** It is something the player switched on,
+and this code never presses or toggles Shift to "make sure". It is *verified*
+per run - by a stable on-screen cue, or by a bounded stationary micro-yaw check
+- and the proof is bound to the exact arm token, window, profile revision and
+control fingerprint it was taken under. An unverified control mode means Live
+is unavailable, not that Live guesses.
 
-**W is a lease, not a state.** It is held for 75-125 ms at a time and every
-renewal needs a *strictly newer* accepted frame. A frame can authorize exactly
-one renewal, so a frozen pipeline cannot keep the character walking: the lease
-simply expires. Alignment yaw is a different command kind that may never hold
-forward at all.
+**W is a lease, not a state.** It is held for around a tenth of a second at a
+time and every renewal needs a *strictly newer* accepted frame. A frame can
+authorize exactly one renewal, so a frozen pipeline cannot keep the character
+walking: the lease simply expires. An ``ALIGN`` command is a different kind and
+may never hold forward at all.
+
+**One pulse in flight.** A correction is not issued until the previous one has
+been observed. The measured response carries its own latency, and issuing three
+pulses inside that latency is how a controller overshoots and then hunts
+forever. The rule is enforced by the pulse state machine, not by a comment.
 
 **Alignment comes first, and stationary.** ``W`` cannot be acquired while the
-heading error is outside the validated threshold, so the character turns on the
-spot and only then walks. That ordering is what makes a wrong direction cost a
+heading error is outside the alignment cone, so a wrong direction costs a
 rotation rather than a journey.
-
-Every threshold here is provisional configuration. E-YAW, E-STEER-CAL and
-E-STEER-E2E are PENDING, and with them pending the controller refuses to
-produce any command that would move the character.
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from enum import Enum
 
 from prospector_engine.contracts import (
     ArrowObservation,
@@ -44,169 +45,24 @@ from prospector_engine.contracts import (
     Provenance,
     monotonic_s,
 )
+from prospector_engine.turning import (
+    ControlFingerprint,
+    TurnBackend,
+    TurnLimits,
+    TurnPlan,
+    TurnResponse,
+    wrap_deg,
+)
 
 __all__ = [
-    "CalibrationFingerprint",
+    "ArrowFollowerController",
     "ControlDecision",
-    "ShiftLockController",
+    "ControlFingerprint",
     "ShiftLockProof",
+    "SteeringInputs",
     "SteeringLimits",
-    "YawCalibration",
     "wrap_deg",
 ]
-
-
-def wrap_deg(degrees: float) -> float:
-    """Wrap to (-180, 180]. Correct across the +-180 seam."""
-    wrapped = (degrees + 180.0) % 360.0 - 180.0
-    return 180.0 if wrapped == -180.0 else wrapped
-
-
-# ---------------------------------------------------------------------------
-# Calibration identity
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class CalibrationFingerprint:
-    """Everything a yaw calibration is only valid *for*.
-
-    Degrees per mouse unit is not a property of the game; it is a property of
-    this OS, this backend, this client, this sensitivity setting, this viewport
-    and this control mode together. Carrying the fingerprint means a
-    calibration cannot silently follow the user to a different machine, a
-    resized window, or a changed sensitivity slider.
-    """
-
-    os_name: str
-    backend: str
-    client_fingerprint: str
-    camera_sensitivity: str
-    control_mode: str
-    viewport_identity: tuple[object, ...]
-    profile_id: str
-    profile_revision: int
-    supported_min_fps: int
-
-    def matches(self, other: CalibrationFingerprint) -> bool:
-        return self == other
-
-    def mismatches(self, other: CalibrationFingerprint) -> tuple[str, ...]:
-        """Which fields differ, for a message a person can act on."""
-        differences: list[str] = []
-        for field_name in (
-            "os_name",
-            "backend",
-            "client_fingerprint",
-            "camera_sensitivity",
-            "control_mode",
-            "viewport_identity",
-            "profile_id",
-            "profile_revision",
-            "supported_min_fps",
-        ):
-            mine, theirs = getattr(self, field_name), getattr(other, field_name)
-            if mine != theirs:
-                differences.append(f"{field_name}: {mine!r} != {theirs!r}")
-        return tuple(differences)
-
-
-@dataclass(frozen=True)
-class YawCalibration:
-    """The measured relationship between mouse units and camera rotation.
-
-    Populated by the E-YAW procedure: with ``W`` released, bounded positive and
-    negative yaw pulses are issued and the *observed* rotation is measured from
-    perception. A configured multiplier is never trusted on its own - the whole
-    point of the experiment is that the closed loop confirms the number.
-
-    ``status`` stays ``PENDING`` until that has actually been run on hardware,
-    and :attr:`usable` is what the controller consults.
-    """
-
-    fingerprint: CalibrationFingerprint | None = None
-    #: Screen degrees per relative mouse unit, positive to the right.
-    degrees_per_unit: float | None = None
-    #: Whether a positive delta turns the camera right. Measured, never assumed.
-    positive_is_right: bool | None = None
-    #: Smallest delta that produces any observable rotation.
-    min_effective_units: int | None = None
-    #: The range over which the response stays linear.
-    linear_range_units: tuple[int, int] | None = None
-    #: Delta above which the response saturates.
-    saturation_units: int | None = None
-    #: Median lag between issuing a pulse and observing the rotation.
-    response_delay_ms: float | None = None
-    #: Spread of the achieved angle across repeats, in degrees.
-    repeatability_deg: float | None = None
-    #: Dead travel observed when reversing direction.
-    reversal_backlash_deg: float | None = None
-    #: R-squared of the linear fit across the claimed linear range.
-    linear_fit_r2: float | None = None
-    repeats_per_magnitude: int = 0
-    status: EvidenceStatus = EvidenceStatus.PENDING
-    provenance: Provenance = field(
-        default_factory=lambda: Provenance(
-            status=EvidenceStatus.PENDING,
-            source="E-YAW: physically armed bounded yaw pulses on real hardware",
-            note="no pulses have been issued; the controller refuses to steer without this",
-        )
-    )
-
-    @property
-    def usable(self) -> bool:
-        """Whether the controller may convert degrees into mouse units.
-
-        Every field the conversion depends on must be present *and* the gate
-        must have passed. A partially filled calibration is a record of an
-        unfinished experiment, not a usable one.
-        """
-        return (
-            self.status is EvidenceStatus.VALIDATED
-            and self.degrees_per_unit is not None
-            and self.degrees_per_unit > 0.0
-            and self.positive_is_right is not None
-            and self.min_effective_units is not None
-            and self.fingerprint is not None
-        )
-
-    def units_for(self, degrees: float) -> int | None:
-        """Mouse units for a requested rotation, or ``None`` if uncalibrated.
-
-        Below the measured minimum effective movement the request is rounded
-        *up* to that minimum rather than down to zero: a command that cannot
-        move anything is worse than the smallest one that can, and the deadband
-        upstream is what decides whether to ask at all.
-        """
-        if not self.usable:
-            return None
-        assert self.degrees_per_unit and self.min_effective_units is not None
-        magnitude = abs(degrees) / self.degrees_per_unit
-        if magnitude <= 0.0:
-            return 0
-        units = max(self.min_effective_units, round(magnitude))
-        if self.saturation_units is not None:
-            units = min(units, self.saturation_units)
-        sign = 1 if degrees >= 0 else -1
-        if not self.positive_is_right:
-            sign = -sign
-        return sign * units
-
-    def blocking_reasons(self) -> tuple[str, ...]:
-        if self.usable:
-            return ()
-        # Rendered straight into the Live blockers panel, so each one is a
-        # sentence a person can act on rather than a field name.
-        reasons: list[str] = []
-        if self.status is not EvidenceStatus.VALIDATED:
-            reasons.append(f"E-YAW: the yaw calibration is {self.status.value}")
-        if self.degrees_per_unit is None:
-            reasons.append("E-YAW: degrees per mouse unit has not been measured")
-        if self.positive_is_right is None:
-            reasons.append("E-YAW: the sign of a positive yaw delta has not been measured")
-        if self.min_effective_units is None:
-            reasons.append("E-YAW: the smallest effective mouse movement is unknown")
-        return tuple(reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -214,25 +70,36 @@ class YawCalibration:
 # ---------------------------------------------------------------------------
 
 
+class ControlModeMethod(Enum):
+    """How the control mode was verified. Both are *observations*.
+
+    There is deliberately no ``ASSERTED``: a proof cannot be constructed by
+    claiming one.
+    """
+
+    VISUAL_CUE = "visual_cue"
+    """A stable on-screen cue the detector confirmed over several frames."""
+
+    MICRO_YAW = "micro_yaw"
+    """A bounded stationary yaw probe whose observed rotation matched the
+    signature of a locked camera rather than a free one."""
+
+
 @dataclass(frozen=True)
 class ShiftLockProof:
     """Positive evidence that the player is in Shift Lock, right now, here.
 
     Bound to the run, the arm token, the window, the profile revision and the
-    calibration fingerprint. Any of those changing invalidates it, because each
-    one changes what the evidence was evidence *of*.
-
-    There is deliberately no way to construct a proof by asserting it: the two
-    supported methods are an on-screen cue the detector confirmed, and a
-    stationary micro-yaw check that is separately armed and observed.
+    control fingerprint. Any of those changing invalidates it, because each one
+    changes what the evidence was evidence *of*.
     """
 
-    method: str
+    method: ControlModeMethod
     run_id: str
     arm_token_id: str
     generation: int
     window_identity: tuple[object, ...]
-    fingerprint: CalibrationFingerprint
+    fingerprint: ControlFingerprint
     observed_at_s: float
     confidence: float
     evidence: tuple[str, ...] = ()
@@ -249,7 +116,7 @@ class ShiftLockProof:
         arm_token_id: str,
         generation: int,
         window_identity: tuple[object, ...],
-        fingerprint: CalibrationFingerprint,
+        fingerprint: ControlFingerprint,
         now_s: float | None = None,
     ) -> tuple[bool, str]:
         """Whether this proof still covers the situation it is being used in."""
@@ -279,28 +146,27 @@ class ShiftLockProof:
 
 @dataclass(frozen=True)
 class SteeringLimits:
-    """Bounds on what the controller may ask for. All provisional.
+    """Bounds on what the controller may ask for.
 
-    ``align_threshold_deg`` may only be chosen inside the independently
-    measured ``[min_stable_correction_deg, max_usable_deadband_deg]`` interval
-    from E-YAW and E-STEER-CAL. Widening it after seeing estimator failures is
-    explicitly forbidden (plan 9.1), so it lives next to its provenance.
+    The alignment cone and the deadband are *provisional bounds*, not tuned
+    constants: the deadband is floored at a multiple of the actuator resolution
+    the characterizer actually measured, so a machine with a coarse actuator
+    gets a correspondingly wider band without anybody typing a number.
     """
 
     #: Heading error inside which the character may walk. Outside it, the
     #: controller turns on the spot.
-    align_threshold_deg: float = 6.0
+    align_threshold_deg: float = 8.0
     #: Extra error required to leave FOLLOW once inside, so a noisy estimate
     #: cannot chatter between walking and turning.
-    align_hysteresis_deg: float = 4.0
-    #: Consecutive accepted frames inside the threshold before W may be taken.
+    align_hysteresis_deg: float = 5.0
+    #: Consecutive accepted frames inside the cone before W may be taken.
     align_confirm_frames: int = 3
-    #: Heading error inside which no yaw is requested at all. Floored at
-    #: 1.5x the measured minimum effective mouse movement, because asking for
-    #: a rotation smaller than the actuator can produce yields the actuator's
-    #: minimum instead - which overshoots, reverses, and dithers forever.
-    #: Measured: 11 zero crossings on a 5-degree correction without this.
-    yaw_deadband_deg: float = 2.0
+    #: Heading error inside which no correction is requested at all. Floored at
+    #: a multiple of the measured minimum effective actuator movement, because
+    #: asking for a rotation smaller than the actuator can produce yields the
+    #: actuator's minimum instead - which overshoots, reverses, and dithers.
+    yaw_deadband_deg: float = 2.5
     #: Multiple of the actuator resolution the deadband may never go below.
     deadband_resolution_multiple: float = 1.5
 
@@ -308,17 +174,14 @@ class SteeringLimits:
     kd: float = 0.10
     derivative_filter: float = 0.6
 
-    #: Bounds on one pulse, and on the rate, acceleration and jerk of pulses.
-    #: The acceleration bound is what the stopping-distance constraint uses, so
-    #: raising the rate without raising the acceleration buys overshoot rather
-    #: than speed.
-    max_yaw_per_pulse_deg: float = 12.0
-    max_yaw_rate_deg_per_s: float = 160.0
-    max_yaw_accel_deg_per_s2: float = 900.0
-    max_yaw_jerk_deg_per_s3: float = 9000.0
     #: Total rotation one alignment episode may ask for before it gives up.
     #: A controller that has turned 540 degrees is not converging.
     max_episode_yaw_deg: float = 540.0
+    #: Consecutive observed pulses whose error grew before the controller
+    #: abandons the episode rather than continuing to push the wrong way.
+    max_growing_pulses: int = 3
+    #: Fractional error growth that counts as "the correction made it worse".
+    growth_tolerance: float = 1.15
 
     #: The W lease. Renewal is attempted well inside the hard horizon, and the
     #: horizon itself is what the authority will not exceed.
@@ -329,6 +192,10 @@ class SteeringLimits:
     max_evidence_age_ms: int = 100
     #: Minimum processed frames per second before Live is refused.
     min_processed_fps: int = 30
+    #: Consecutive frames without a usable arrow before FOLLOW gives up its
+    #: forward lease. One frame of noise should not stop a walk; a second of
+    #: blindness must.
+    arrow_loss_grace_frames: int = 2
 
     #: Fraction of the client the cursor must stay inside. Outside it, yaw and
     #: W release and the pointer is recentred before anything resumes.
@@ -337,53 +204,13 @@ class SteeringLimits:
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
-            source="TREASURE_NAVIGATION_PLAN.md section 9.1; mission section 11",
-            note="align threshold is NOT frozen; E-YAW and E-STEER-CAL are PENDING",
+            source="TREASURE_NAVIGATION_PLAN.md section 9.1; mission section D",
+            note=(
+                "bounds chosen to be conservative; the deadband floor is derived from "
+                "the measured actuator resolution rather than configured"
+            ),
         )
     )
-
-
-@dataclass(frozen=True)
-class ControlDecision:
-    """One controller tick: what to do, and why.
-
-    ``release`` is separate from ``forward``/``yaw`` on purpose. "Do nothing"
-    and "release everything now" are different instructions, and conflating
-    them is how a held key survives a fault.
-    """
-
-    state: ControlState
-    kind: CommandKind
-    forward: int
-    yaw_deg: float
-    yaw_units: int
-    release: bool
-    reason: str
-    blockers: tuple[str, ...] = ()
-
-    @property
-    def moves(self) -> bool:
-        return self.forward != 0 or self.yaw_units != 0
-
-
-def _released(
-    state: ControlState, reason: str, blockers: tuple[str, ...] = ()
-) -> ControlDecision:
-    return ControlDecision(
-        state=state,
-        kind=CommandKind.RELEASE,
-        forward=0,
-        yaw_deg=0.0,
-        yaw_units=0,
-        release=True,
-        reason=reason,
-        blockers=blockers,
-    )
-
-
-# ---------------------------------------------------------------------------
-# The controller
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -391,8 +218,7 @@ class SteeringInputs:
     """Everything one controller tick is allowed to look at.
 
     Passed in rather than reached for, so the controller has no way to consult
-    something stale: if a value is not in here, it did not come from this
-    frame.
+    something stale: if a value is not in here, it did not come from this frame.
     """
 
     arrow: ArrowObservation
@@ -405,11 +231,76 @@ class SteeringInputs:
     processed_fps: float
     #: Whether the pointer is inside the verified safe region of the client.
     cursor_safe: bool = True
+    #: The coordinate basis and profile this frame belongs to. A change in
+    #: either invalidates the controller's memory rather than being absorbed.
+    geometry_revision: int = 0
+    profile_revision: int = 0
     #: Set by the caller when a fault has already been raised elsewhere.
     fault: str | None = None
 
 
-class ShiftLockController:
+@dataclass(frozen=True)
+class ControlDecision:
+    """One controller tick: what to do, and why.
+
+    ``release`` is separate from ``forward``/``plan`` on purpose. "Do nothing"
+    and "release everything now" are different instructions, and conflating
+    them is how a held key survives a fault.
+    """
+
+    state: ControlState
+    kind: CommandKind
+    forward: int
+    plan: TurnPlan
+    release: bool
+    reason: str
+    blockers: tuple[str, ...] = ()
+    #: Signed heading error this decision was made from, for the dashboard.
+    error_deg: float | None = None
+
+    @property
+    def moves(self) -> bool:
+        return self.forward != 0 or self.plan.moves
+
+    @property
+    def yaw_deg(self) -> float:
+        return self.plan.expected_deg
+
+
+def _released(
+    state: ControlState,
+    reason: str,
+    blockers: tuple[str, ...] = (),
+    backend: TurnBackend = TurnBackend.MOUSE_YAW,
+) -> ControlDecision:
+    return ControlDecision(
+        state=state,
+        kind=CommandKind.RELEASE,
+        forward=0,
+        plan=TurnPlan.none(backend),
+        release=True,
+        reason=reason,
+        blockers=blockers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The controller
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Pulse:
+    """One correction in flight: what was asked, and when it can be read back."""
+
+    units: int
+    error_before_deg: float
+    issued_at_s: float
+    holds_until_s: float
+    observe_until_s: float
+
+
+class ArrowFollowerController:
     """ACQUIRE -> ALIGN -> FOLLOW, with everything else releasing first.
 
     The state machine is small because the interesting behaviour is in what
@@ -421,15 +312,22 @@ class ShiftLockController:
     monotonic time, so the same route behaves the same at 30 and at 120 frames
     per second. Duplicate or missing frames freeze the derivative rather than
     letting a zero delta-t manufacture a spike.
+
+    It is **actuator agnostic**: it asks for degrees, and the measured
+    :class:`~prospector_engine.turning.TurnResponse` turns degrees into either a
+    held arrow key or a relative mouse delta. Swapping backends changes nothing
+    here, which is the point of measuring the response separately.
     """
 
     def __init__(
         self,
         limits: SteeringLimits | None = None,
-        calibration: YawCalibration | None = None,
+        response: TurnResponse | None = None,
+        turn_limits: TurnLimits | None = None,
     ) -> None:
         self._limits = limits or SteeringLimits()
-        self._calibration = calibration or YawCalibration()
+        self._turn_limits = turn_limits or TurnLimits()
+        self._response = response
         self.reset()
 
     # -- lifecycle --------------------------------------------------------
@@ -439,13 +337,15 @@ class ShiftLockController:
         self._last_error_deg: float | None = None
         self._last_time_s: float | None = None
         self._filtered_derivative = 0.0
-        self._last_yaw_deg = 0.0
-        self._last_rate_deg_per_s = 0.0
-        self._last_accel_deg_per_s2 = 0.0
         self._aligned_frames = 0
         self._episode_yaw_deg = 0.0
         self._consumed_sequence = -1
-        self._lease_taken_at_s: float | None = None
+        self._pulse: _Pulse | None = None
+        self._growing_pulses = 0
+        self._track_id: int | None = None
+        self._geometry_revision: int | None = None
+        self._profile_revision: int | None = None
+        self._arrow_missing_frames = 0
 
     @property
     def state(self) -> ControlState:
@@ -456,8 +356,12 @@ class ShiftLockController:
         return self._limits
 
     @property
-    def calibration(self) -> YawCalibration:
-        return self._calibration
+    def response(self) -> TurnResponse | None:
+        return self._response
+
+    @property
+    def backend(self) -> TurnBackend | None:
+        return self._response.backend if self._response is not None else None
 
     @property
     def episode_yaw_deg(self) -> float:
@@ -467,14 +371,26 @@ class ShiftLockController:
     def holds_forward(self) -> bool:
         return self._state.holds_forward
 
+    def set_response(self, response: TurnResponse | None) -> None:
+        """Adopt a freshly measured turn response and drop stale pulse memory."""
+        self._response = response
+        self._pulse = None
+        self._growing_pulses = 0
+
     def blocking_reasons(self) -> tuple[str, ...]:
         """Why the controller cannot steer, in plain language."""
-        return self._calibration.blocking_reasons()
+        response = self._response
+        if response is None:
+            return ("the turn actuator has not been characterized yet",)
+        if not response.usable:
+            return (f"the measured turn response is {response.status.value}",)
+        return ()
 
     # -- the tick ---------------------------------------------------------
     def update(self, inputs: SteeringInputs) -> ControlDecision:
         """One decision. Every early return releases; none of them coasts."""
         limits = self._limits
+        backend = self.backend or TurnBackend.MOUSE_YAW
 
         # 1. Safety. Anything here releases before anything else is considered.
         if inputs.fault:
@@ -500,28 +416,43 @@ class ShiftLockController:
                 ControlState.BLOCKED, "pointer left the safe region; recentring"
             )
 
-        # 2. Evidence. A frame authorizes exactly one decision, ever.
+        # 2. The coordinate basis. A changed geometry or profile means every
+        # remembered angle was measured in a frame that no longer exists.
+        if self._geometry_revision is None:
+            self._geometry_revision = inputs.geometry_revision
+        elif inputs.geometry_revision != self._geometry_revision:
+            return self._release(ControlState.REACQUIRE, "the viewport changed")
+        if self._profile_revision is None:
+            self._profile_revision = inputs.profile_revision
+        elif inputs.profile_revision != self._profile_revision:
+            return self._release(ControlState.REACQUIRE, "the arrow profile changed")
+
+        # 3. Evidence. A frame authorizes exactly one decision, ever.
         if inputs.frame_sequence <= self._consumed_sequence:
             return ControlDecision(
                 state=self._state,
                 kind=CommandKind.RELEASE,
                 forward=0,
-                yaw_deg=0.0,
-                yaw_units=0,
+                plan=TurnPlan.none(backend),
                 release=False,
                 reason="no newer frame; the lease is left to expire on its own",
             )
 
         blockers = self.blocking_reasons()
         if blockers:
-            return self._release(ControlState.SAFE_STOP, "steering is not calibrated", blockers)
+            return self._release(
+                ControlState.SAFE_STOP, "steering is not characterized", blockers
+            )
 
         if not inputs.arrow.valid:
-            # No arrow-loss grace: the first Live gate does not get one
-            # (mission section 11), so a lost arrow releases immediately.
-            return self._release(
-                ControlState.REACQUIRE, f"arrow abstained: {inputs.arrow.abstain_reason}"
-            )
+            return self._on_arrow_lost(inputs, backend)
+        self._arrow_missing_frames = 0
+        if inputs.arrow.track_id != self._track_id:
+            # A different arrow identity is a different target. Drop the pulse
+            # in flight rather than crediting its rotation to the new one.
+            self._track_id = inputs.arrow.track_id
+            self._pulse = None
+            self._growing_pulses = 0
         if not inputs.direction.valid or inputs.direction.error_deg is None:
             return self._release(
                 ControlState.ALIGN,
@@ -536,9 +467,12 @@ class ShiftLockController:
                 f"turned {self._episode_yaw_deg:.0f} degrees without converging",
             )
 
+        settled = self._settle_pulse(error, inputs.now_s)
+        if settled is not None:
+            return settled
+
         aligned = self._track_alignment(error)
-        yaw_deg = self._yaw_for(error, inputs)
-        units = self._calibration.units_for(yaw_deg) or 0
+        plan = self._plan_for(error, inputs)
 
         if aligned and self._aligned_frames >= limits.align_confirm_frames:
             self._state = ControlState.FOLLOW
@@ -546,62 +480,87 @@ class ShiftLockController:
                 state=ControlState.FOLLOW,
                 kind=CommandKind.FOLLOW,
                 forward=1,
-                yaw_deg=yaw_deg,
-                yaw_units=units,
+                plan=plan,
                 release=False,
                 reason=f"aligned within {abs(error):.1f} degrees; walking",
+                error_deg=error,
             )
 
-        # Alignment is stationary by construction: W is never taken outside
-        # the validated threshold, so a wrong heading costs a rotation rather
-        # than a journey.
+        # Alignment is stationary by construction: W is never taken outside the
+        # cone, so a wrong heading costs a rotation rather than a journey.
         self._state = ControlState.ALIGN
         return ControlDecision(
             state=ControlState.ALIGN,
             kind=CommandKind.ALIGN,
             forward=0,
-            yaw_deg=yaw_deg,
-            yaw_units=units,
+            plan=plan,
             release=False,
-            reason=f"turning {yaw_deg:+.1f} degrees to close {error:+.1f}",
+            reason=(
+                f"turning {plan.expected_deg:+.1f} degrees to close {error:+.1f}"
+                if plan.moves
+                else f"waiting out the last correction ({error:+.1f} to close)"
+            ),
+            error_deg=error,
         )
 
     # -- internals --------------------------------------------------------
+    def _on_arrow_lost(self, inputs: SteeringInputs, backend: TurnBackend) -> ControlDecision:
+        """A frame with no usable arrow. Yaw stops immediately; W gets a grace.
+
+        Turning blind is never justified: the correction was computed from a
+        heading that no longer exists. Walking blind for a frame or two is,
+        because the character is already going the right way and stopping dead
+        on one noisy frame is what makes a route stutter.
+        """
+        self._consumed_sequence = inputs.frame_sequence
+        self._pulse = None
+        self._arrow_missing_frames += 1
+        within_grace = self._arrow_missing_frames <= self._limits.arrow_loss_grace_frames
+        if self._state is ControlState.FOLLOW and within_grace:
+            return ControlDecision(
+                state=ControlState.FOLLOW,
+                kind=CommandKind.FOLLOW,
+                forward=1,
+                plan=TurnPlan.none(backend),
+                release=False,
+                reason=(
+                    f"arrow lost for {self._arrow_missing_frames} frame(s); "
+                    "holding course, turning released"
+                ),
+            )
+        return self._release(
+            ControlState.REACQUIRE, f"arrow abstained: {inputs.arrow.abstain_reason}"
+        )
+
     def _release(
         self, state: ControlState, reason: str, blockers: tuple[str, ...] = ()
     ) -> ControlDecision:
+        backend = self.backend or TurnBackend.MOUSE_YAW
+        response = self._response
         self.reset()
+        self._response = response
         self._state = state
-        return _released(state, reason, blockers)
+        return _released(state, reason, blockers, backend)
 
     def _effective_deadband_deg(self) -> float:
         """The configured deadband, never below the actuator's own resolution.
 
-        Plan 9.1 is explicit that the deadband may not be smaller than the
-        stable actuator resolution. Here that floor is *derived* from the
-        measured calibration rather than assumed, so a machine whose smallest
-        effective mouse movement is coarse gets a correspondingly wider band.
+        Derived from the *measured* response rather than assumed, so a machine
+        whose smallest effective movement is coarse gets a correspondingly
+        wider band and does not dither.
         """
-        calibration = self._calibration
+        response = self._response
         floor = 0.0
-        if (
-            calibration.degrees_per_unit is not None
-            and calibration.min_effective_units is not None
-        ):
+        if response is not None and response.usable:
             floor = (
-                calibration.degrees_per_unit
-                * calibration.min_effective_units
+                response.degrees_per_unit
+                * response.min_effective_units
                 * self._limits.deadband_resolution_multiple
             )
         return max(self._limits.yaw_deadband_deg, floor)
 
     def _track_alignment(self, error: float) -> bool:
-        """Deadband with hysteresis, counted in *frames* not seconds.
-
-        Once inside, the error must exceed the threshold plus the hysteresis to
-        get back out, which is what stops a noisy estimate chattering between
-        walking and turning.
-        """
+        """Deadband with hysteresis, counted in *frames* not seconds."""
         limits = self._limits
         threshold = limits.align_threshold_deg
         if self._state is ControlState.FOLLOW:
@@ -612,13 +571,75 @@ class ShiftLockController:
         self._aligned_frames = 0
         return False
 
-    def _yaw_for(self, error: float, inputs: SteeringInputs) -> float:
-        """Filtered PD, then every bound in turn, in degrees.
+    def _settle_pulse(self, error: float, now_s: float) -> ControlDecision | None:
+        """Close out the correction in flight, if there is one.
+
+        Returns a decision when the controller must wait; ``None`` when the
+        pulse has been observed (or there was none) and a new one may be
+        planned. This is the whole of the one-pulse-in-flight rule.
+        """
+        pulse = self._pulse
+        if pulse is None:
+            return None
+        backend = self.backend or TurnBackend.MOUSE_YAW
+        if now_s < pulse.holds_until_s:
+            # A held-key pulse still has time to run: keep the same key down
+            # rather than releasing and re-pressing it every frame.
+            axis = 1 if pulse.units > 0 else -1
+            plan = TurnPlan(
+                backend=backend,
+                turn_axis=axis if backend is TurnBackend.ARROW_KEYS else 0,
+                yaw_delta_px=0,
+                hold_ms=max(1, int((pulse.holds_until_s - now_s) * 1000.0)),
+                requested_deg=0.0,
+                expected_deg=0.0,
+            )
+            forward = 1 if self._state is ControlState.FOLLOW else 0
+            return ControlDecision(
+                state=self._state,
+                kind=CommandKind.FOLLOW if forward else CommandKind.ALIGN,
+                forward=forward,
+                plan=plan,
+                release=False,
+                reason="continuing the correction in flight",
+                error_deg=error,
+            )
+        if now_s < pulse.observe_until_s:
+            forward = 1 if self._state is ControlState.FOLLOW else 0
+            return ControlDecision(
+                state=self._state,
+                kind=CommandKind.FOLLOW if forward else CommandKind.ALIGN,
+                forward=forward,
+                plan=TurnPlan.none(backend),
+                release=False,
+                reason="observing the last correction before the next one",
+                error_deg=error,
+            )
+
+        observed = -wrap_deg(error - pulse.error_before_deg)
+        self._pulse = None
+        if self._response is not None:
+            self._response = self._response.with_observation(pulse.units, observed)
+        if abs(error) > abs(pulse.error_before_deg) * self._limits.growth_tolerance:
+            self._growing_pulses += 1
+            if self._growing_pulses >= self._limits.max_growing_pulses:
+                return self._release(
+                    ControlState.REACQUIRE,
+                    f"the error grew over {self._growing_pulses} corrections; reacquiring",
+                )
+        else:
+            self._growing_pulses = 0
+        return None
+
+    def _plan_for(self, error: float, inputs: SteeringInputs) -> TurnPlan:
+        """Filtered PD, every bound in turn, then the measured actuator.
 
         Confidence scales the output down and never up: an uncertain estimate
         may justify a smaller correction, never a larger one.
         """
         limits = self._limits
+        backend = self.backend or TurnBackend.MOUSE_YAW
+        response = self._response
         now = inputs.now_s
         delta_t = (
             now - self._last_time_s
@@ -632,66 +653,36 @@ class ShiftLockController:
             alpha = limits.derivative_filter
             derivative = alpha * self._filtered_derivative + (1.0 - alpha) * raw
         self._filtered_derivative = derivative
+        self._last_error_deg = error
+        self._last_time_s = now
 
         if abs(error) <= self._effective_deadband_deg():
-            # Inside the deadband the correct request is *nothing*. The rate
-            # state is decayed rather than reset so re-entering the band does
-            # not produce a step change on the next frame outside it.
-            self._last_error_deg = error
-            self._last_time_s = now
-            self._last_rate_deg_per_s = 0.0
-            self._last_accel_deg_per_s2 = 0.0
-            self._last_yaw_deg = 0.0
-            return 0.0
+            return TurnPlan.none(backend, requested_deg=0.0)
+        if response is None or not response.usable:
+            return TurnPlan.none(backend, requested_deg=error)
 
         command = limits.kp * error + limits.kd * derivative
         command *= max(0.0, min(1.0, inputs.direction.confidence))
-        command = max(-limits.max_yaw_per_pulse_deg, min(limits.max_yaw_per_pulse_deg, command))
+        # Never ask for more rotation than remains: a correction bigger than
+        # the error is an overshoot by construction.
+        command = math.copysign(min(abs(command), abs(error)), command)
+        plan = response.plan_for(command, self._turn_limits)
+        if not plan.moves:
+            return plan
 
-        if delta_t is not None and delta_t > 1e-6:
-            command = self._rate_limited(command, error, delta_t)
-
-        self._last_error_deg = error
-        self._last_time_s = now
-        self._last_yaw_deg = command
-        self._episode_yaw_deg += abs(command)
-        return command
-
-    def _rate_limited(self, command: float, error: float, delta_t: float) -> float:
-        """Apply the rate, acceleration and jerk bounds against measured time.
-
-        The rate ceiling is not a constant. It is the largest rate from which
-        the acceleration bound can still bring the turn to a stop within the
-        remaining error::
-
-            rate_cap = sqrt(2 * max_accel * |error|)
-
-        Without that constraint the limiter is the *cause* of overshoot rather
-        than a bound on it: a controller that has spun up to its maximum rate
-        needs a fixed distance to slow down, and if the remaining error is
-        shorter than that distance it sails past zero and comes back. Measured
-        11.4 degrees of overshoot on a 5-degree correction before this existed.
-        """
-        limits = self._limits
-        stopping_cap = math.sqrt(2.0 * limits.max_yaw_accel_deg_per_s2 * max(0.0, abs(error)))
-        rate_cap = min(limits.max_yaw_rate_deg_per_s, stopping_cap)
-
-        desired_rate = command / delta_t
-        desired_rate = max(-rate_cap, min(rate_cap, desired_rate))
-
-        # Acceleration, then jerk, both in their own units.
-        accel = (desired_rate - self._last_rate_deg_per_s) / delta_t
-        accel = max(
-            -limits.max_yaw_accel_deg_per_s2, min(limits.max_yaw_accel_deg_per_s2, accel)
+        self._episode_yaw_deg += abs(plan.expected_deg)
+        hold_s = plan.hold_ms / 1000.0 if backend is TurnBackend.ARROW_KEYS else 0.0
+        self._pulse = _Pulse(
+            units=plan.units,
+            error_before_deg=error,
+            issued_at_s=now,
+            holds_until_s=now + hold_s,
+            observe_until_s=now + hold_s + response.latency_s,
         )
-        max_accel_step = limits.max_yaw_jerk_deg_per_s3 * delta_t
-        accel = max(
-            self._last_accel_deg_per_s2 - max_accel_step,
-            min(self._last_accel_deg_per_s2 + max_accel_step, accel),
-        )
+        return plan
 
-        rate = self._last_rate_deg_per_s + accel * delta_t
-        rate = max(-rate_cap, min(rate_cap, rate))
-        self._last_accel_deg_per_s2 = accel
-        self._last_rate_deg_per_s = rate
-        return rate * delta_t
+
+#: The pre-consolidation name. One controller, one config: the module that used
+#: to carry a second PD loop under this name now re-exports the real one so an
+#: old import cannot resurrect a diverged copy.
+ShiftLockController = ArrowFollowerController

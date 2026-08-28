@@ -163,7 +163,10 @@ def test_there_is_no_abandoned_to_next_map_path_anywhere() -> None:
     for module in (navigation, coordinator):
         source = inspect.getsource(module)
         assert "NEXT_MAP" not in source or "next_map_enabled" in source
-    assert not navigation.NavigationGates(os_name="t", profile_id="p").next_map_enabled
+    # Capability is derived from what the run measured, and nothing measurable
+    # grants a map skip: there is no such field to set.
+    fields = navigation.NavigationCapabilities.__dataclass_fields__
+    assert "next_map" not in " ".join(fields)
 
 
 def test_an_abandoned_result_safe_stops(rig: Any) -> None:
@@ -195,9 +198,9 @@ def test_navigation_phases_have_terminal_states() -> None:
 
 def test_an_abstained_observation_cannot_build_a_command() -> None:
     from prospector_engine.navigation import Navigator
-    from tests.test_navigation import ALL_PASSED, _inputs
+    from tests.test_navigation import READY, _inputs
 
-    navigator = Navigator(gates=ALL_PASSED)
+    navigator = Navigator(capabilities=READY)
     decision = navigator.decide(_inputs(error_deg=None), generation=1, now_s=0.0)
     assert decision.command is None
     assert decision.release

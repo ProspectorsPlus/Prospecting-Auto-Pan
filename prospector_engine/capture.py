@@ -25,7 +25,7 @@ import sys
 import threading
 import weakref
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -172,6 +172,11 @@ class CaptureConfig:
     fit_deadline_s: float = 3.0
     fit_max_attempts: int = 2
     fit_tolerance_logical: float = 1.0
+    #: Hard ceiling on how long a geometry transaction may fence mismatch
+    #: classification. Generous next to ``fit_deadline_s`` because the fence
+    #: also covers the capture restart and the wait for a matching frame, and
+    #: it exists to bound a *crashed* transaction, not a slow one.
+    fit_transaction_deadline_s: float = 12.0
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
@@ -1012,6 +1017,14 @@ class ViewportGuard:
         self._revision = 0
         self._fit = ViewportFit.idle()
         self._fitting = False
+        #: While a deliberate geometry change is in flight, mismatch
+        #: classification is suspended: every intermediate size an OS reports
+        #: mid-resize would otherwise be read as "somebody moved the window".
+        #: Bounded by a monotonic deadline so a transaction that dies without
+        #: unwinding cannot fence the guard for the rest of the session.
+        self._fence_depth = 0
+        self._fence_reason = ""
+        self._fence_until_s = 0.0
 
     @property
     def requested_client_logical(self) -> tuple[float, float]:
@@ -1041,6 +1054,50 @@ class ViewportGuard:
     def fitting(self) -> bool:
         with self._lock:
             return self._fitting
+
+    @property
+    def fenced(self) -> bool:
+        """Whether mismatch classification is currently suspended."""
+        with self._lock:
+            return self._fence_active_locked(monotonic_s())
+
+    @property
+    def fence_reason(self) -> str:
+        with self._lock:
+            return self._fence_reason if self._fence_active_locked(monotonic_s()) else ""
+
+    def _fence_active_locked(self, now_s: float) -> bool:
+        return self._fence_depth > 0 and now_s < self._fence_until_s
+
+    @contextlib.contextmanager
+    def transaction(self, reason: str, *, deadline_s: float | None = None) -> Iterator[None]:
+        """Fence mismatch classification for one deliberate geometry change.
+
+        ``check()`` and ``confirm_capture()`` are honest reporters: they see a
+        window that is not the size we adopted and say so. During a resize that
+        is exactly what we asked for, so classifying it as CAPTURE_MISMATCH
+        restarts capture, churns the source epoch and blanks the preview for a
+        change that was going to succeed (D-032). Inside this block they leave
+        the adopted geometry alone; the transaction adopts the settled result
+        itself.
+
+        Re-entrant, and bounded by ``fit_transaction_deadline_s`` so a worker
+        that dies mid-fit cannot leave the guard permanently blind.
+        """
+        default = self._config.fit_transaction_deadline_s
+        limit = deadline_s if deadline_s is not None else default
+        with self._lock:
+            self._fence_depth += 1
+            self._fence_reason = reason
+            self._fence_until_s = max(self._fence_until_s, monotonic_s() + limit)
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._fence_depth = max(0, self._fence_depth - 1)
+                if self._fence_depth == 0:
+                    self._fence_reason = ""
+                    self._fence_until_s = 0.0
 
     # -- internal ---------------------------------------------------------
     def _adopt_locked(self, geometry: ViewportGeometry, reason: str) -> bool:
@@ -1111,6 +1168,15 @@ class ViewportGuard:
             if self._fitting:
                 return self._fit
             self._fitting = True
+        with self.transaction("viewport fit"):
+            return self._fit_locked(wait, clock, config)
+
+    def _fit_locked(
+        self,
+        wait: Callable[[float], None],
+        clock: Callable[[], float],
+        config: CaptureConfig,
+    ) -> ViewportFit:
         started = clock()
         deadline = started + config.fit_deadline_s
         want = self._requested
@@ -1301,7 +1367,14 @@ class ViewportGuard:
         self._publish(changed, f"invalidate:{reason}")
 
     def check(self) -> ViewportGeometry:
-        """Re-read the window and detect replacement, resize, or display change."""
+        """Re-read the window and detect replacement, resize, or display change.
+
+        A no-op while a geometry transaction is fenced: the intermediate sizes
+        a resize passes through are expected, not evidence of interference.
+        """
+        with self._lock:
+            if self._fence_active_locked(monotonic_s()):
+                return self._current
         fresh = self._port.window_geometry()
         with self._lock:
             adopted = self._adopted_identity
@@ -1339,6 +1412,10 @@ class ViewportGuard:
         with self._lock:
             current = self._current
             if not current.valid:
+                return current
+            if self._fence_active_locked(monotonic_s()):
+                # Frames captured against the pre-resize geometry are still in
+                # flight; the transaction restarts capture when it settles.
                 return current
             mismatch = current.with_state(
                 ViewportState.CAPTURE_MISMATCH,
@@ -1713,6 +1790,16 @@ class CaptureService:
 
     def wait_for_new(self, after_sequence: int, timeout_s: float) -> FrameEnvelope | None:
         return self._slot.wait_for_new(after_sequence, timeout_s)
+
+    @property
+    def processed_fps(self) -> float:
+        """Perception ticks per second. Cheap enough for the control loop.
+
+        ``metrics()`` builds a full snapshot and is a dashboard call; this is
+        the one number the controller's cadence check needs, read straight off
+        the rate counter.
+        """
+        return self._processed_rate.rate()
 
     def latest_age_s(self) -> float | None:
         envelope = self._slot.peek()

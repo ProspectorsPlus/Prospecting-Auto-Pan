@@ -84,9 +84,16 @@ def _run_self_test() -> int:
     library = load_profiles()
     checks.append(
         (
-            "no arrow profile is auto-selectable before E-PROF",
+            "no arrow profile claims a passed offline E-PROF gate",
             not library.validated(),
             f"{len(library)} profiles, all {EvidenceStatus.PENDING.value}",
+        )
+    )
+    checks.append(
+        (
+            "the runtime classifier has candidates to choose between",
+            len(library.selectable()) >= 2,
+            ", ".join(p.profile_id for p in library.selectable()),
         )
     )
     checks.append(
@@ -96,12 +103,22 @@ def _run_self_test() -> int:
             str(engine.DEFAULT_PIXELS.provenance),
         )
     )
-    gates = navigation.NavigationGates(os_name=sys.platform, profile_id="yellow_map_v0")
+    fresh = navigation.NavigationCapabilities.observing(
+        os_name=sys.platform, profile_id="yellow_map_v1"
+    )
     checks.append(
         (
-            "live steering is disabled until its gates pass",
-            not gates.steering_enabled and not gates.recovery_enabled,
-            "pending: " + ",".join(gates.blocking_reasons()),
+            "a fresh run cannot steer until it has measured something",
+            not fresh.steering_enabled and not fresh.recovery_enabled,
+            "missing: " + ", ".join(fresh.blocking_reasons()),
+        )
+    )
+    checks.append(
+        (
+            "the release floor covers the turn keys",
+            {contracts.InputKey.LEFT, contracts.InputKey.RIGHT}
+            <= set(contracts.InputVocabulary().keys),
+            f"{len(contracts.InputVocabulary().keys)} keys in the vocabulary",
         )
     )
     checks.append(
@@ -135,7 +152,7 @@ def _run_self_test() -> int:
         print(f"  [{marker}] {name}" + (f"  -- {detail}" if detail else ""))
     print(f"  contracts module exports {len(contracts.__all__)} names")
     print(
-        "\nNo OS input was emitted. Native macOS/Windows gates remain PENDING; see STATUS.md."
+        "\nNo OS input was emitted. Native macOS/Windows verification is tracked in STATUS.md."
     )
     return 1 if failures else 0
 
@@ -216,7 +233,11 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
         ViewportState,
         WindowIdentity,
     )
-    from prospector_engine.navigation import NavigationGates, Navigator, PerceptionPipeline
+    from prospector_engine.navigation import (
+        NavigationCapabilities,
+        Navigator,
+        PerceptionPipeline,
+    )
     from prospector_engine.telemetry import read_session
     from prospector_engine.vision import ArrowSegmenter, load_profiles
 
@@ -224,8 +245,11 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
     if profile is None:
         print(f"Unknown profile {profile_id!r}.")
         return 2
-    gates = NavigationGates(os_name=sys.platform, profile_id=profile.profile_id)
-    navigator = Navigator(gates=gates)
+    navigator = Navigator(
+        capabilities=NavigationCapabilities.observing(
+            os_name=sys.platform, profile_id=profile.profile_id
+        )
+    )
     pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
 
     print(f"Replaying {session_dir} with profile {profile.profile_id} [{profile.status.value}]")
@@ -298,7 +322,11 @@ def _run_soak(minutes: float = 10.0) -> int:
         _ProcessUsage,
     )
     from prospector_engine.contracts import PerformanceTier
-    from prospector_engine.navigation import NavigationGates, Navigator, PerceptionPipeline
+    from prospector_engine.navigation import (
+        NavigationCapabilities,
+        Navigator,
+        PerceptionPipeline,
+    )
     from prospector_engine.vision import ArrowSegmenter, load_profiles
 
     sys.path.insert(0, _HERE)
@@ -328,7 +356,9 @@ def _run_soak(minutes: float = 10.0) -> int:
         source_factory=lambda: source,
     )
     pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
-    navigator = Navigator(gates=NavigationGates(os_name=sys.platform, profile_id="soak"))
+    navigator = Navigator(
+        capabilities=NavigationCapabilities.observing(os_name=sys.platform, profile_id="soak")
+    )
     usage = _ProcessUsage()
 
     threads_before = threading.active_count()

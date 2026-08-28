@@ -340,11 +340,14 @@ def test_every_direction_cue_is_reported_with_the_weight_consensus_gave_it() -> 
     assert result.inputs.direction.cues == result.cues
 
 
-def test_the_reference_frame_is_configuration_and_says_so() -> None:
+def test_the_reference_frame_is_checked_never_claimed_validated() -> None:
+    """The runtime check verifies the reference *works*, not that it is true."""
     reference = ReferenceFrame()
     assert not reference.validated
-    assert reference.provenance.status is EvidenceStatus.PENDING
-    assert "PENDING" in reference.source
+    assert not reference.checked, "no run has measured this one"
+    assert reference.provenance.status is EvidenceStatus.PROVISIONAL
+    assert "E-ANCHOR" in reference.provenance.source
+    assert "PENDING" in reference.provenance.source
 
 
 def test_the_candidate_record_keeps_rejections_with_reasons() -> None:

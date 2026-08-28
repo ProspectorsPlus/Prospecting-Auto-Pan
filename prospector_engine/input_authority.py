@@ -1150,6 +1150,15 @@ class InputAuthority:
             wanted["a"] = InputKey.A
         elif command.lateral_axis == 1:
             wanted["d"] = InputKey.D
+        # Turning is a separate actuator from strafing, so it gets its own
+        # leases. Because both directions are ordinary vocabulary keys, the
+        # "release anything not commanded this tick" loop below is what
+        # guarantees the opposite turn key is lifted before this one presses -
+        # there is no path that can hold Left and Right at once.
+        if command.turn_axis == -1:
+            wanted["left"] = InputKey.LEFT
+        elif command.turn_axis == 1:
+            wanted["right"] = InputKey.RIGHT
         if command.jump:
             wanted["space"] = InputKey.SPACE
 

@@ -82,8 +82,19 @@ _WIN_SCANCODES: dict[InputKey, int] = {
     InputKey.ESCAPE: 0x01,
     InputKey.DIGIT_1: 0x02,
     InputKey.DIGIT_2: 0x03,
+    # Arrow keys live on the extended (E0-prefixed) set. Sending the bare
+    # scancode delivers the *numpad* key instead, which Roblox reads as a
+    # different binding entirely - hence _WIN_EXTENDED below.
+    InputKey.LEFT: 0x4B,
+    InputKey.RIGHT: 0x4D,
 }
 
+#: Scancodes that must carry KEYEVENTF_EXTENDEDKEY. Keyed by scancode rather
+#: than by :class:`InputKey` because the release-only port and the deadman
+#: reach this table with a raw code and no enum in hand.
+_WIN_EXTENDED: frozenset[int] = frozenset({0x4B, 0x4D})
+
+KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_SCANCODE = 0x0008
 MOUSEEVENTF_MOVE = 0x0001
@@ -181,7 +192,15 @@ def _send(inp: _INPUT) -> None:
 
 
 def _key_input(scancode: int, up: bool) -> _INPUT:
+    """One scancode edge, with the extended-key bit where the key needs it.
+
+    The arrow keys share their scancodes with the numeric keypad; only the E0
+    prefix distinguishes them, and Windows expresses that prefix as
+    ``KEYEVENTF_EXTENDEDKEY``. Omitting it silently sends numpad 4/6 instead.
+    """
     flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
+    if scancode in _WIN_EXTENDED:
+        flags |= KEYEVENTF_EXTENDEDKEY
     return _INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=_KEYBDINPUT(0, scancode, flags, 0, 0)))
 
 

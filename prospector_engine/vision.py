@@ -108,11 +108,24 @@ class ArrowProfile:
     #: bands whose yellow bars and banners were measured to acquire as
     #: arrows on a live scene. A profile that lists none searches everywhere.
     exclusion_regions_px: tuple[tuple[int, int, int, int], ...] = ()
+    #: Whether the runtime classifier may consider this profile at all.
+    runtime_selectable: bool = True
 
     @property
     def selectable_automatically(self) -> bool:
-        """Automatic classification requires a passed E-PROF gate (plan 7.4)."""
-        return self.status is EvidenceStatus.VALIDATED
+        """Whether the *runtime* classifier may consider this profile.
+
+        This is a runtime check, not an offline gate. Which map the user has
+        equipped is decided from the frames in front of us - temporal agreement
+        plus a clear score margin over consecutive frames - and that evidence
+        is available whether or not a held-out E-PROF corpus exists for the
+        profile. ``status`` still records the offline evidence honestly and is
+        what the dashboard labels the lock with (D-033).
+
+        A profile opts out by declaring ``runtime_selectable: false`` in the
+        bundled JSON - for a profile kept only as a comparison baseline.
+        """
+        return self.runtime_selectable
 
 
 class ProfileLibrary:
@@ -136,7 +149,12 @@ class ProfileLibrary:
         return self._profiles.get(profile_id)
 
     def validated(self) -> tuple[ArrowProfile, ...]:
-        return tuple(p for p in self._profiles.values() if p.selectable_automatically)
+        """Profiles whose *offline* evidence gate has passed. Reporting only."""
+        return tuple(p for p in self._profiles.values() if p.status is EvidenceStatus.VALIDATED)
+
+    def selectable(self) -> tuple[ArrowProfile, ...]:
+        """Profiles the runtime classifier is allowed to choose between."""
+        return tuple(p for p in self.all() if p.selectable_automatically)
 
     def all(self) -> tuple[ArrowProfile, ...]:
         return tuple(self._profiles[key] for key in self.ids())
@@ -282,6 +300,7 @@ def load_profiles(raw: str | None = None) -> ProfileLibrary:
                 (int(r[0]), int(r[1]), int(r[2]), int(r[3]))
                 for r in entry.get("exclusion_regions_px", ())
             ),
+            runtime_selectable=bool(entry.get("runtime_selectable", True)),
         )
     return ProfileLibrary(profiles)
 

@@ -20,7 +20,7 @@ import pytest
 from prospector_engine.capture import EvidenceRegistry
 from prospector_engine.contracts import Cancellation, ModeResultKind
 from prospector_engine.navigation import (
-    NavigationGates,
+    NavigationCapabilities,
     Navigator,
     PerceptionPipeline,
     make_shadow_worker,
@@ -218,8 +218,10 @@ def _scripted_frames(count: int) -> FakeFrameSource:
 
 
 def _trace(frames: FakeFrameSource) -> list[tuple[str, str]]:
-    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
-    navigator = Navigator(gates=gates)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=PROFILE.profile_id
+    )
+    navigator = Navigator(capabilities=capabilities)
     pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE))
     trace: list[tuple[str, str]] = []
     while True:
@@ -300,9 +302,13 @@ def test_the_shadow_worker_proposes_without_any_input_capability() -> None:
 
     clock = VirtualClock()
     port = FakePlatformPort(clock)
-    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=PROFILE.profile_id
+    )
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=5
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lambda: capabilities,
+        max_ticks=5,
     )
     observer = NoInputSession()
     source = _scripted_frames(6)
@@ -321,9 +327,13 @@ def test_every_processed_frame_produces_exactly_one_observation() -> None:
     """Section 7: the diagnostic must publish per unique frame, never suppressed."""
     from prospector_engine.input_authority import NoInputSession
 
-    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=PROFILE.profile_id
+    )
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=4
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lambda: capabilities,
+        max_ticks=4,
     )
     source = _scripted_frames(8)
     capture = _ScriptedCapture(list(source._envelopes))
@@ -340,9 +350,13 @@ def test_an_observation_is_bound_to_the_frame_it_came_from() -> None:
     """The overlay must never be drawn from observation N over frame N+1."""
     from prospector_engine.input_authority import NoInputSession
 
-    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=PROFILE.profile_id
+    )
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=3
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lambda: capabilities,
+        max_ticks=3,
     )
     source = _scripted_frames(5)
     envelopes = list(source._envelopes)
@@ -359,13 +373,17 @@ def test_an_observation_is_bound_to_the_frame_it_came_from() -> None:
         assert observation.profile_status == PROFILE.status.value
 
 
-def test_the_observation_records_the_reference_arm_as_assumed() -> None:
+def test_the_observation_records_the_reference_arm_as_checked_not_proven() -> None:
     """E-ANCHOR and E-FORWARD are pending, so the arm must say so."""
     from prospector_engine.input_authority import NoInputSession
 
-    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=PROFILE.profile_id
+    )
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=1
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lambda: capabilities,
+        max_ticks=1,
     )
     source = _scripted_frames(2)
     capture = _ScriptedCapture(list(source._envelopes))
@@ -377,16 +395,25 @@ def test_the_observation_records_the_reference_arm_as_assumed() -> None:
     observation = observations[0]
     assert observation.anchor_px is not None
     assert observation.forward_deg is not None
-    assert "PENDING" in observation.forward_source
+    # The reference is a *checked* screen anchor, never a claim that it is the
+    # avatar's true pivot: E-ANCHOR and E-FORWARD remain offline and PENDING.
+    assert "screen anchor" in observation.forward_source
+    from prospector_engine.contracts import EvidenceStatus
+    from prospector_engine.navigation import ReferenceFrame
+
+    assert ReferenceFrame().provenance.status is EvidenceStatus.PROVISIONAL
+    assert not ReferenceFrame().validated
     assert observation.has_direction_arms
 
 
 def test_a_shadow_worker_stops_promptly_when_cancelled() -> None:
     from prospector_engine.input_authority import NoInputSession
 
-    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=PROFILE.profile_id
+    )
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), lambda: capabilities
     )
     cancellation = Cancellation()
     source = _scripted_frames(1000)

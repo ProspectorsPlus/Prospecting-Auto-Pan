@@ -42,6 +42,7 @@ from prospector_engine.contracts import (
     RuntimeKey,
     SafetyFault,
     SafetyFaultKind,
+    SetupProgress,
     TelemetrySnapshot,
     WorkerCompletion,
     monotonic_s,
@@ -191,6 +192,16 @@ class Readiness:
         }
 
 
+@dataclass(frozen=True)
+class WorkerHealth:
+    """What a worker may know about the world outside its own frames."""
+
+    focus_ok: bool = True
+    cursor_safe: bool = True
+    geometry_revision: int = 0
+    profile_revision: int = 0
+
+
 @dataclass
 class WorkerContext:
     """The narrow world a mode worker sees. No port, no ledger, no coordinator."""
@@ -215,9 +226,20 @@ class WorkerContext:
     )
     #: Live blockers in plain language, for the packet the UI renders.
     blockers: tuple[str, ...] = ()
+    #: Runtime health the controller is allowed to see: focus, the coordinate
+    #: basis, the profile generation. Supplied by the coordinator so a worker
+    #: cannot read a value that has already been superseded.
+    health: Callable[[], WorkerHealth] = lambda: WorkerHealth()
     on_status: Callable[[str], None] = lambda _message: None
     on_phase: Callable[[NavigationPhase | None], None] = lambda _phase: None
     on_observation: Callable[[DiagnosticObservation], None] = lambda _observation: None
+
+
+#: Runs one automatic-setup pass. Takes a "should I stop" predicate and a
+#: progress sink, and returns the terminal progress. A plain alias rather than
+#: a Protocol so the application can supply a closure over its own objects and
+#: the coordinator stays ignorant of what setup actually touches.
+SetupRunner = Callable[[Callable[[], bool], Callable[[SetupProgress], None]], SetupProgress]
 
 
 #: A mode worker is any callable that takes the narrow context and returns a
@@ -256,6 +278,7 @@ class RuntimeCoordinator:
         paths: AppPaths | None = None,
         pipeline_provider: Callable[[], Any] | None = None,
         profiles: Any = None,
+        setup_runner: SetupRunner | None = None,
     ) -> None:
         self._authority = authority
         self._guard = guard
@@ -268,6 +291,10 @@ class RuntimeCoordinator:
         self._paths = paths
         self._pipeline_provider = pipeline_provider
         self._profiles = profiles
+        self._setup_runner = setup_runner
+        self._setup_progress = SetupProgress.idle()
+        self._setup_thread: threading.Thread | None = None
+        self._setup_cancel = threading.Event()
         # A dedicated channel, deliberately not the emit-on-change hub: a
         # per-frame observation must publish for every processed frame, and
         # change-suppression would silently drop identical consecutive ones
@@ -295,7 +322,7 @@ class RuntimeCoordinator:
         self._stale_fits = 0
         self._last_session_note = ""
         self._recording = "off"
-        self._gate_blockers: tuple[LiveBlocker, ...] = ()
+        self._extra_blockers: tuple[LiveBlocker, ...] = ()
         self._worker: threading.Thread | None = None
         self._worker_cancel: Cancellation | None = None
         self._worker_id: str | None = None
@@ -600,6 +627,8 @@ class RuntimeCoordinator:
             IntentType.DIG_LOOP: self._on_service,
             IntentType.PIXEL_INFO: self._on_service,
             IntentType.RECOVER_RELEASE: self._on_recover_release,
+            IntentType.START_NAVIGATOR: self._on_start_navigator,
+            IntentType.RETRY_SETUP: self._on_start_navigator,
         }.get(intent.intent_type)
         if handler is None:
             return
@@ -607,6 +636,9 @@ class RuntimeCoordinator:
 
     def _on_stop(self, intent: RuntimeIntent) -> None:
         self._events.add("intent.stop", intent.source)
+        # Setup is cancelled before the safe stop, so a stage that is mid-poll
+        # unwinds instead of finishing into a runtime that has already stopped.
+        self._setup_cancel.set()
         self._safe_stop(f"stop:{intent.source}")
         self._export_trace("stop")
 
@@ -622,6 +654,53 @@ class RuntimeCoordinator:
         self._events.add("intent.shutdown", intent.source)
         self._safe_stop("shutdown")
         self._shutdown_complete.set()
+
+    # -- automatic setup ---------------------------------------------------
+    @property
+    def setup_progress(self) -> SetupProgress:
+        return self._setup_progress
+
+    @property
+    def setup_active(self) -> bool:
+        thread = self._setup_thread
+        return thread is not None and thread.is_alive()
+
+    def _publish_setup(self, progress: SetupProgress) -> None:
+        """Adopt a stage transition and let the dashboard see it immediately."""
+        self._setup_progress = progress
+        self.publish_transition(f"Setup: {progress.detail}")
+
+    def _on_start_navigator(self, intent: RuntimeIntent) -> None:
+        """Run automatic setup off the event loop, then start observing.
+
+        Off the loop because finding, resizing and re-binding to another
+        process's window takes seconds, and Stop must stay responsive for every
+        one of them. The thread owns nothing: it publishes progress and submits
+        an ordinary intent when it is done.
+        """
+        if self._setup_runner is None:
+            self._events.add("setup.unavailable", "no setup runner is installed")
+            return
+        if self.setup_active:
+            self._events.add("setup.busy", "automatic setup is already running")
+            return
+        self._setup_cancel = threading.Event()
+        cancel = self._setup_cancel
+        runner = self._setup_runner
+        self._events.add("intent.start-navigator", intent.source)
+
+        def _run() -> None:
+            try:
+                progress = runner(cancel.is_set, self._publish_setup)
+            except Exception as exc:  # never take the process down
+                self._events.add("setup.error", repr(exc))
+                return
+            self._setup_progress = progress
+            if progress.ok and not cancel.is_set():
+                self.submit(self.next_intent(IntentType.START_SHADOW, "system"))
+
+        self._setup_thread = threading.Thread(target=_run, name="treasure-setup", daemon=True)
+        self._setup_thread.start()
 
     def _on_connect(self, intent: RuntimeIntent) -> None:
         """Bind to the Roblox client without touching it (mission section 4)."""
@@ -879,6 +958,7 @@ class RuntimeCoordinator:
             pipeline=self._pipeline_provider() if self._pipeline_provider else None,
             key_for=self.runtime_key,
             blockers=self.live_blockers(),
+            health=self._worker_health,
             on_status=lambda message: self._events.add("worker.status", message),
             on_phase=self._set_phase,
             on_observation=self._publish_observation,
@@ -904,6 +984,17 @@ class RuntimeCoordinator:
         thread = threading.Thread(target=_run, name=f"treasure-{worker_id}", daemon=True)
         self._worker = thread
         thread.start()
+
+    def _worker_health(self) -> WorkerHealth:
+        """One coherent read of focus, geometry and profile for a worker tick."""
+        focus = self._authority.describe_readiness().get("focus")
+        profiles = self._profiles
+        return WorkerHealth(
+            focus_ok=focus == "ok",
+            cursor_safe=True,
+            geometry_revision=self._guard.revision,
+            profile_revision=profiles.revision if profiles is not None else 0,
+        )
 
     def _join_worker(self, timeout_s: float) -> bool:
         thread = self._worker
@@ -1061,7 +1152,7 @@ class RuntimeCoordinator:
                     "blocking",
                     f"Roblox window is not usable ({readiness.viewport_state.value})",
                     "Capture is not bound to a usable Roblox client area.",
-                    "Press Connect Roblox with Roblox open and windowed.",
+                    "Press Start Navigator with Roblox open and windowed.",
                 )
             )
         if not readiness.focus_ok:
@@ -1084,7 +1175,7 @@ class RuntimeCoordinator:
                     "blocking",
                     "No fresh frame from the capture pipeline",
                     "The newest frame is older than the freshness budget, or none has arrived.",
-                    "Connect Roblox; if connected, check Screen Recording permission.",
+                    "Press Start Navigator; if set up, check Screen Recording permission.",
                 )
             )
         if not readiness.watchdog_ok:
@@ -1143,10 +1234,11 @@ class RuntimeCoordinator:
                     "Capture cadence is not Live-eligible",
                     f"{metrics.governor.reason}. Judged on the last "
                     f"{self._capture.config.recent_window_s:g} s of processed frames.",
-                    "Start Shadow Analysis and let the cadence settle.",
+                    "Let the navigator observe for a few seconds while the cadence settles.",
                 )
             )
-        found.extend(self._gate_blockers)
+        found.extend(self._setup_blockers())
+        found.extend(self._extra_blockers)
         deduped: dict[str, LiveBlocker] = {}
         for blocker in found:
             deduped.setdefault(blocker.code, blocker)
@@ -1156,14 +1248,60 @@ class RuntimeCoordinator:
         """The blockers as one line each, for the header and the event log."""
         return tuple(blocker.describe() for blocker in self.blockers())
 
-    def set_gate_blockers(self, blockers: tuple[LiveBlocker, ...]) -> None:
-        """Install the commissioning gates that are not passed.
+    def _setup_blockers(self) -> tuple[LiveBlocker, ...]:
+        """Automatic setup's own state, as a blocker the UI already knows how to
+        render.
 
-        Supplied by the application wiring rather than read from here, because
-        which gates apply depends on the OS and profile, and the coordinator
-        has no business knowing about either.
+        One row, derived from live state, replacing the fourteen frozen
+        commissioning gates. A gate that only a physical procedure could set
+        and that no production code ever set is not a blocker a user can clear
+        - it is a wall - and that is what this is not.
         """
-        self._gate_blockers = tuple(blockers)
+        progress = self._setup_progress
+        if progress.ok:
+            return ()
+        if progress.running:
+            return (
+                LiveBlocker(
+                    "SETUP",
+                    BlockerScope.RUNTIME,
+                    "expected",
+                    f"Automatic setup is running ({progress.stage.value.replace('_', ' ')})",
+                    progress.detail,
+                    "Wait for setup to finish.",
+                ),
+            )
+        failure = progress.failure
+        if failure is not None:
+            return (
+                LiveBlocker(
+                    "SETUP",
+                    BlockerScope.RUNTIME,
+                    "blocking",
+                    failure.summary,
+                    failure.detail or failure.summary,
+                    failure.remedy,
+                ),
+            )
+        return (
+            LiveBlocker(
+                "SETUP",
+                BlockerScope.RUNTIME,
+                "blocking",
+                "The navigator has not been set up yet",
+                "Automatic setup finds Roblox, sizes its window, and checks the arrow.",
+                "Press Start Navigator.",
+            ),
+        )
+
+    def set_extra_blockers(self, blockers: tuple[LiveBlocker, ...]) -> None:
+        """Install additional application-supplied blockers.
+
+        Kept as an extension point for a caller that knows something the
+        coordinator cannot - a licensing state, say. It is deliberately no
+        longer how evidence gates reach the UI.
+        """
+        self._extra_blockers = tuple(blockers)
 
     def _publish_telemetry(self) -> None:
         readiness = self.readiness()
@@ -1221,6 +1359,7 @@ class RuntimeCoordinator:
                 live_blockers=tuple(blocker.describe() for blocker in blockers),
                 last_session_note=self._last_session_note,
                 control_state=self._control_state,
+                setup=self._setup_progress,
                 arm_state=readiness_map.get("arm", "none"),
                 recording=self._recording,
             )

@@ -63,6 +63,8 @@ MAC_KEYCODES: dict[InputKey, int] = {
     InputKey.ESCAPE: 53,
     InputKey.DIGIT_1: 18,
     InputKey.DIGIT_2: 19,
+    InputKey.LEFT: 123,
+    InputKey.RIGHT: 124,
 }
 
 

@@ -78,6 +78,10 @@ __all__ = [
     "SafetyFault",
     "SafetyFaultKind",
     "ServiceKind",
+    "SetupFailure",
+    "SetupFailureKind",
+    "SetupProgress",
+    "SetupStage",
     "TelemetrySnapshot",
     "ViewportFit",
     "WorkerCompletion",
@@ -180,6 +184,16 @@ class InputKey(Enum):
     ESCAPE = "escape"
     DIGIT_1 = "1"
     DIGIT_2 = "2"
+    #: Camera yaw. These are a *turn* actuator, not a lateral one: they rotate
+    #: the camera, where A/D strafe the character. Keeping them as separate
+    #: vocabulary entries is what lets the release floor lift a turn key even
+    #: when the strafe axis is idle (D-030).
+    LEFT = "left"
+    RIGHT = "right"
+
+    @property
+    def is_turn(self) -> bool:
+        return self in (InputKey.LEFT, InputKey.RIGHT)
 
 
 @dataclass(frozen=True)
@@ -922,12 +936,23 @@ class NavigationCommand:
     valid_until_s: float
     reason: str
     kind: CommandKind = CommandKind.FOLLOW
+    #: Camera rotation by held arrow key: -1 left, +1 right, 0 none. Distinct
+    #: from ``lateral_axis`` (strafe) and from ``yaw_delta_px`` (relative
+    #: mouse) because they are three different actuators with three different
+    #: failure modes. At most one turn actuator may be commanded per tick.
+    turn_axis: Literal[-1, 0, 1] = 0
 
     def __post_init__(self) -> None:
         if self.forward_axis not in (-1, 0, 1):
             raise ValueError(f"forward_axis out of range: {self.forward_axis}")
         if self.lateral_axis not in (-1, 0, 1):
             raise ValueError(f"lateral_axis out of range: {self.lateral_axis}")
+        if self.turn_axis not in (-1, 0, 1):
+            raise ValueError(f"turn_axis out of range: {self.turn_axis}")
+        if self.turn_axis != 0 and self.yaw_delta_px != 0:
+            # Two actuators asking for the same rotation would double it, and
+            # the response model is fitted per backend. One at a time.
+            raise ValueError("a command may not use both the turn keys and mouse yaw")
         if self.valid_until_s < self.issued_at_s:
             raise ValueError("NavigationCommand expires before it is issued")
         if not self.kind.may_hold_forward and self.forward_axis != 0:
@@ -938,9 +963,15 @@ class NavigationCommand:
         return (
             self.forward_axis == 0
             and self.lateral_axis == 0
+            and self.turn_axis == 0
             and not self.jump
             and self.yaw_delta_px == 0
         )
+
+    @property
+    def turns(self) -> bool:
+        """Whether this command asks for camera rotation by any actuator."""
+        return self.turn_axis != 0 or self.yaw_delta_px != 0
 
 
 # ---------------------------------------------------------------------------
@@ -974,7 +1005,136 @@ class NavigationPhase(Enum):
     FAILED = auto()
 
 
+# ---------------------------------------------------------------------------
+# Automatic runtime setup
+# ---------------------------------------------------------------------------
+
+
+class SetupStage(Enum):
+    """Where automatic setup has got to.
+
+    One explicit, typed, bounded stage per thing that can independently fail.
+    A stage is never "probably fine": it either produced the evidence its
+    successor needs, or it named the reason it could not.
+    """
+
+    IDLE = "idle"
+    FIND_ROBLOX = "find_roblox"
+    FIT_VIEWPORT = "fit_viewport"
+    RESTART_CAPTURE = "restart_capture"
+    STABILIZE_CAPTURE = "stabilize_capture"
+    SELECT_PROFILE = "select_profile"
+    ESTABLISH_REFERENCE = "establish_reference"
+    VERIFY_CONTROL_MODE = "verify_control_mode"
+    CHARACTERIZE_TURN = "characterize_turn"
+    SHADOW_QUALIFY = "shadow_qualify"
+    READY = "ready"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+    @property
+    def terminal(self) -> bool:
+        return self in (SetupStage.READY, SetupStage.FAILED, SetupStage.CANCELLED)
+
+    @property
+    def emits_input(self) -> bool:
+        """Whether this stage can inject input into the game.
+
+        Only the two live probes can, and both run under an arm token with the
+        character stationary. Everything before them is read-only, which is why
+        Start Navigator is safe to press with no arming at all.
+        """
+        return self in (SetupStage.VERIFY_CONTROL_MODE, SetupStage.CHARACTERIZE_TURN)
+
+
+class SetupFailureKind(Enum):
+    """Why automatic setup stopped, in the vocabulary a user can act on."""
+
+    NO_WINDOW = "no_window"
+    AMBIGUOUS_WINDOW = "ambiguous_window"
+    PERMISSION = "permission"
+    FULLSCREEN = "fullscreen"
+    RESIZE_DENIED = "resize_denied"
+    VIEWPORT_UNUSABLE = "viewport_unusable"
+    CAPTURE_STALE = "capture_stale"
+    PROFILE_AMBIGUOUS = "profile_ambiguous"
+    REFERENCE_UNSTABLE = "reference_unstable"
+    CONTROL_MODE_UNVERIFIED = "control_mode_unverified"
+    ACTUATOR_UNPROVEN = "actuator_unproven"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    INTERNAL = "internal"
+
+
+@dataclass(frozen=True)
+class SetupFailure:
+    """One bounded failure: what went wrong, and the single thing to do next.
+
+    ``remedy`` is deliberately one sentence. A user staring at a stopped
+    navigator needs the next action, not a checklist of everything that could
+    in principle be wrong.
+    """
+
+    kind: SetupFailureKind
+    stage: SetupStage
+    summary: str
+    remedy: str
+    detail: str = ""
+
+    def describe(self) -> str:
+        return f"{self.summary} - {self.remedy}"
+
+
+@dataclass(frozen=True)
+class SetupProgress:
+    """One observable snapshot of the setup machine. Published, never polled.
+
+    Carries the achieved geometry and the chosen backend because those are the
+    two facts a user most often needs to see *while* something is going wrong.
+    """
+
+    stage: SetupStage
+    attempt: int
+    detail: str
+    started_at_s: float
+    updated_at_s: float
+    failure: SetupFailure | None = None
+    #: Requested and achieved client size, in logical points.
+    requested_client_logical: tuple[float, float] | None = None
+    achieved_client_logical: tuple[float, float] | None = None
+    achieved_client_backing_px: tuple[int, int] | None = None
+    profile_id: str | None = None
+    turn_backend: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.stage is SetupStage.READY
+
+    @property
+    def running(self) -> bool:
+        return not self.stage.terminal and self.stage is not SetupStage.IDLE
+
+    def elapsed_s(self, now_s: float) -> float:
+        return max(0.0, now_s - self.started_at_s)
+
+    @classmethod
+    def idle(cls) -> SetupProgress:
+        return cls(
+            stage=SetupStage.IDLE,
+            attempt=0,
+            detail="press Start Navigator",
+            started_at_s=0.0,
+            updated_at_s=0.0,
+        )
+
+
 class IntentType(Enum):
+    #: The one production entry point. Runs automatic setup: find Roblox, fit
+    #: and verify the viewport, restart capture, lock a profile, establish the
+    #: reference, then observe. No manual step precedes it (mission section A).
+    START_NAVIGATOR = auto()
+    #: Re-run automatic setup from IDLE after a bounded failure. Advanced only.
+    RETRY_SETUP = auto()
     #: Bind capture to the Roblox client as it is. Moves nothing, sends
     #: nothing, and is the recommended path (mission section 4).
     CONNECT_WINDOW = auto()
@@ -1468,6 +1628,9 @@ class TelemetrySnapshot:
     control_state: ControlState | None = None
     arm_state: str = "none"
     recording: str = "off"
+    #: Where automatic setup has got to. The production UI renders this rather
+    #: than a list of gates, because it is the thing that is actually happening.
+    setup: SetupProgress | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -28,9 +28,8 @@ from prospector_engine.contracts import IntentType, PerformanceTier, RunMode
 from prospector_engine.coordinator import CoordinatorConfig, RuntimeCoordinator
 from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
 from prospector_engine.navigation import (
-    NavigationGates,
+    NavigationCapabilities,
     PerceptionPipeline,
-    commissioning_blockers,
     make_shadow_worker,
 )
 from prospector_engine.vision import ArrowSegmenter, ProfileAuthority, load_profiles
@@ -80,21 +79,22 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     library = load_profiles()
     profiles = ProfileAuthority(library, "green_arrow_v1")
     pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profiles.active), profiles=profiles)
-    gates = NavigationGates(os_name="test", profile_id=profiles.active_id)
+    capabilities = NavigationCapabilities.observing(
+        os_name="test", profile_id=profiles.active_id
+    )
     coordinator = RuntimeCoordinator(
         authority=authority,
         guard=guard,
         capture=capture,
         registry=registry,
-        workers={IntentType.START_SHADOW: make_shadow_worker(lambda: pipeline, gates)},
+        workers={
+            IntentType.START_SHADOW: make_shadow_worker(lambda: pipeline, lambda: capabilities)
+        },
         config=CoordinatorConfig(),
         paths=resolve_app_paths().ensure(),
         pipeline_provider=lambda: pipeline,
         profiles=profiles,
     )
-    # Wired exactly as the application does it, so the blockers a user would
-    # see are the blockers this test sees.
-    coordinator.set_gate_blockers(commissioning_blockers(gates))
     assert capture.start()
     coordinator.start()
     yield {
@@ -209,14 +209,51 @@ def test_a_profile_swap_reaches_the_running_worker_and_bumps_the_key(wired: Any)
     assert after.key.supersedes(before.key)
 
 
-def test_live_is_blocked_and_says_why_in_plain_language(wired: Any) -> None:
-    blockers = wired["coordinator"].live_blockers()
+def test_navigation_is_blocked_before_setup_and_says_what_to_press(wired: Any) -> None:
+    """Before automatic setup has run, the blocker names the button, not a gate."""
+    coordinator = wired["coordinator"]
+    blockers = coordinator.blockers()
 
-    assert blockers, "Live must never be startable with every gate pending"
-    joined = " ".join(blockers)
-    assert "E-YAW" in joined or "calibrat" in joined
-    for blocker in blockers:
-        assert blocker[0].isupper() or blocker.startswith("E-"), blocker
+    assert blockers, "navigation must never be startable before setup"
+    setup = next(b for b in blockers if b.code == "SETUP")
+    assert "Start Navigator" in setup.remedy
+    joined = " ".join(coordinator.live_blockers())
+    assert "E-YAW" not in joined, "a frozen experiment id is not an instruction"
+    assert "E-STEER" not in joined
+    for line in coordinator.live_blockers():
+        assert line[0].isupper(), line
+
+
+def test_a_failed_setup_becomes_the_one_blocker_a_user_can_act_on(wired: Any) -> None:
+    from prospector_engine.contracts import (
+        SetupFailure,
+        SetupFailureKind,
+        SetupProgress,
+        SetupStage,
+    )
+
+    coordinator = wired["coordinator"]
+    failure = SetupFailure(
+        SetupFailureKind.NO_WINDOW,
+        SetupStage.FIND_ROBLOX,
+        "no Roblox window was found",
+        "Open Roblox in windowed mode and press Start Navigator again.",
+    )
+    coordinator._publish_setup(
+        SetupProgress(
+            stage=SetupStage.FAILED,
+            attempt=1,
+            detail=failure.describe(),
+            started_at_s=0.0,
+            updated_at_s=0.0,
+            failure=failure,
+        )
+    )
+
+    codes = {blocker.code for blocker in coordinator.blockers()}
+    assert "SETUP" in codes
+    setup = next(b for b in coordinator.blockers() if b.code == "SETUP")
+    assert setup.remedy == failure.remedy
 
 
 def test_a_geometry_change_flushes_state_and_bumps_the_revision(wired: Any) -> None:

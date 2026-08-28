@@ -217,3 +217,73 @@ def test_perception_stays_cheap_on_real_frames(corpus: object) -> None:
         costs.append((time.perf_counter() - started) * 1000.0)
     costs.sort()
     assert costs[len(costs) // 2] < 40.0, f"median perception {costs[len(costs) // 2]:.1f} ms"
+
+
+# ---------------------------------------------------------------------------
+# Automatic profile selection, judged on the same real frames
+# ---------------------------------------------------------------------------
+
+
+def test_the_runtime_classifier_picks_the_map_these_frames_actually_are(
+    corpus: object,
+) -> None:
+    """The automatic profile choice, tested on real frames rather than a fake.
+
+    The corpus is a yellow sand map. A classifier that cannot tell it from the
+    green-grass profile would lock the wrong colour model for a whole session,
+    and the user would have no idea why nothing was detected.
+    """
+    from prospector_engine.autosetup import ProfileClassifier, ProfileVote, SetupConfig
+
+    profile = load_profiles().get(corpus.profile_id)  # type: ignore[attr-defined]
+    assert profile is not None
+    candidates = load_profiles().selectable()
+    assert {p.profile_id for p in candidates} >= {"green_arrow_v1", corpus.profile_id}  # type: ignore[attr-defined]
+
+    pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+    classifier = ProfileClassifier(
+        [p.profile_id for p in candidates], SetupConfig(profile_min_frames=8)
+    )
+    sequences = [s for s in corpus.split("eval") if s.stratum.startswith("sand")]  # type: ignore[attr-defined]
+    assert sequences, "the eval split has no sand sequences"
+    index = 0
+    for sequence in sequences:
+        for frame_label in sequence.frames:
+            if frame_label.arrow is None:
+                continue
+            index += 1
+            frame = corpus.load_frame(frame_label, index)  # type: ignore[attr-defined]
+            classifier.observe(ProfileVote(index, pipeline.score_profiles(frame, candidates)))
+            if index >= 16:
+                break
+        if index >= 16:
+            break
+
+    decision = classifier.decide()
+    assert decision.decided, f"ambiguous: {decision.detail}"
+    assert decision.profile_id == corpus.profile_id, decision.detail  # type: ignore[attr-defined]
+
+
+def test_the_classifier_abstains_rather_than_guessing_on_frames_with_no_arrow(
+    corpus: object,
+) -> None:
+    """A menu screen must not elect a profile by scoring noise."""
+    from prospector_engine.autosetup import ProfileClassifier, ProfileVote, SetupConfig
+
+    profile = load_profiles().get(corpus.profile_id)  # type: ignore[attr-defined]
+    assert profile is not None
+    candidates = load_profiles().selectable()
+    pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+    classifier = ProfileClassifier(
+        [p.profile_id for p in candidates], SetupConfig(profile_min_frames=6)
+    )
+    absent = [s for s in corpus.split("eval") if s.stratum.startswith("no-arrow")]  # type: ignore[attr-defined]
+    assert absent, "the eval split has no arrow-absent sequences"
+    index = 0
+    for sequence in absent:
+        for frame_label in sequence.frames:
+            index += 1
+            frame = corpus.load_frame(frame_label, index)  # type: ignore[attr-defined]
+            classifier.observe(ProfileVote(index, pipeline.score_profiles(frame, candidates)))
+
+    assert not classifier.decide().decided, "a profile was elected from frames with no arrow"

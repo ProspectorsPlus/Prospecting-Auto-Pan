@@ -17,7 +17,7 @@ Two rules shape everything here:
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
@@ -272,10 +272,60 @@ class LocomotionBaseline:
     status: EvidenceStatus
     provenance: Provenance
 
+    #: Samples required before a runtime baseline may be minted at all.
+    MIN_RUNTIME_SAMPLES = 12
+    #: Fraction of the observed median below which the character has stopped.
+    RUNTIME_STALL_FRACTION = 0.35
+
     @property
     def usable(self) -> bool:
         return (
             self.min_forward_speed_norm is not None and self.status is EvidenceStatus.VALIDATED
+        )
+
+    @property
+    def measured_at_runtime(self) -> bool:
+        """Whether this came from this session rather than a frozen gate."""
+        return self.condition_id.startswith("runtime:")
+
+    @classmethod
+    def measured_in_run(
+        cls, *, speeds: Sequence[float], run_id: str, condition: str
+    ) -> LocomotionBaseline:
+        """A baseline measured from this session's own unobstructed walking.
+
+        This is not the offline E-MOTION gate and never claims to be. E-MOTION
+        is independently labelled open-ground trials that would let a *frozen*
+        threshold ship with the software; it is still PENDING. What this is: a
+        measurement taken here, on this machine, under the physical arm, from
+        frames where forward was genuinely applied, motion confidence was high
+        and yaw contamination was low - and it is discarded when the session
+        ends (D-034).
+
+        The threshold is a fraction of the observed median rather than the
+        median itself, because the question downstream is "has the character
+        stopped", not "is it at full speed": a slope or deep water legitimately
+        halves the speed and must not read as a wall.
+        """
+        ordered = sorted(float(speed) for speed in speeds)
+        if len(ordered) < cls.MIN_RUNTIME_SAMPLES:
+            return UNCALIBRATED_BASELINE
+        median = ordered[len(ordered) // 2]
+        if median <= 0.0:
+            return UNCALIBRATED_BASELINE
+        return cls(
+            condition_id=f"runtime:{condition}",
+            min_forward_speed_norm=median * cls.RUNTIME_STALL_FRACTION,
+            status=EvidenceStatus.VALIDATED,
+            provenance=Provenance(
+                status=EvidenceStatus.VALIDATED,
+                source=f"runtime locomotion sampling in run {run_id}",
+                note=(
+                    f"median {median:.4f} over {len(ordered)} armed frames with forward "
+                    f"applied; threshold is {cls.RUNTIME_STALL_FRACTION:.0%} of it. "
+                    "Session-scoped; this is NOT the offline E-MOTION gate."
+                ),
+            ),
         )
 
 
@@ -453,6 +503,63 @@ class ForwardCommandLedger:
         self._intervals.clear()
 
 
+class RuntimeBaselineEstimator:
+    """Learns what "walking normally" looks like, from this session's frames.
+
+    It only accepts a sample when every reason to distrust one is absent:
+    forward genuinely applied for long enough, a valid high-confidence motion
+    estimate, good spatial coverage, negligible yaw contamination, and no
+    recent turn. That is a narrow gate on purpose - a baseline built from
+    contaminated frames would set the stall threshold wherever the noise was.
+    """
+
+    def __init__(self, run_id: str, *, condition: str = "open-ground") -> None:
+        self._run_id = run_id
+        self._condition = condition
+        self._speeds: deque[float] = deque(maxlen=120)
+        self._baseline = UNCALIBRATED_BASELINE
+
+    @property
+    def baseline(self) -> LocomotionBaseline:
+        return self._baseline
+
+    @property
+    def samples(self) -> int:
+        return len(self._speeds)
+
+    def reset(self) -> None:
+        self._speeds.clear()
+        self._baseline = UNCALIBRATED_BASELINE
+
+    def observe(
+        self,
+        observation: MotionObservation | None,
+        *,
+        forward_applied: bool,
+        held_ms: float,
+        config: ContactConfig,
+    ) -> LocomotionBaseline:
+        if (
+            observation is None
+            or not forward_applied
+            or held_ms < 250.0
+            or not observation.valid
+            or observation.forward_speed_norm is None
+            or observation.confidence < config.min_confidence
+            or observation.spatial_coverage < config.min_coverage
+            or observation.yaw_contamination > config.max_yaw_contamination
+        ):
+            return self._baseline
+        speed = observation.forward_speed_norm
+        if speed <= 0.0:
+            return self._baseline
+        self._speeds.append(speed)
+        self._baseline = LocomotionBaseline.measured_in_run(
+            speeds=self._speeds, run_id=self._run_id, condition=self._condition
+        )
+        return self._baseline
+
+
 class ProgressState(Enum):
     """What the guard currently believes about forward progress."""
 
@@ -586,6 +693,19 @@ class ProgressGuard:
     @property
     def baseline(self) -> LocomotionBaseline:
         return self._baseline
+
+    def adopt_baseline(self, baseline: LocomotionBaseline) -> None:
+        """Install a baseline measured after the guard was constructed.
+
+        The guard starts with nothing usable and abstains; the runtime
+        estimator supplies one a second or two into the first walk. Adopting it
+        here rather than rebuilding the guard keeps the contact accumulator and
+        the applied-forward ledger intact across the transition.
+        """
+        self._baseline = baseline
+        self._contact = ContactMonitor(
+            baseline, ContactConfig(sustained_ms=self._config.suspect_after_ms)
+        )
 
     def history(self) -> tuple[TraversabilityObservation, ...]:
         """The bounded record a future traversability grid will consume."""

@@ -56,8 +56,9 @@
       "provenance": {
         "status": "pending",
         "source": "owner-supplied frames: one map, one session, one Mac, one render configuration",
-        "note": "The R~=G relationship is ONE candidate among several (plan 2.2). Seed values only; E-PROF must fit and gate them on labelled splits before this can be selected automatically."
-      }
+        "note": "The R~=G relationship is ONE candidate among several (plan 2.2). Seed values only; E-PROF must fit and gate them on labelled splits before this can be selected automatically.  Superseded by yellow_map_v1, which was fitted on the real-frame corpus. Kept for the v0/v1 comparison in --detector-report and excluded from the automatic choice so two near-identical candidates cannot split the runtime margin (D-033)."
+      },
+      "runtime_selectable": false
     },
     {
       "profile_id": "yellow_map_v1",
@@ -127,8 +128,9 @@
       "provenance": {
         "status": "pending",
         "source": "plan section 8 candidate list",
-        "note": "Deliberately broad so E-PROF can measure its false-acquisition rate against the narrower candidates. Not intended for production as written."
-      }
+        "note": "Deliberately broad so E-PROF can measure its false-acquisition rate against the narrower candidates. Not intended for production as written.  Comparison baseline only: deliberately broad, so it would win a runtime classification by matching almost anything. runtime_selectable=false keeps it available for evaluation and for an explicit Advanced override, and out of the automatic choice (D-033)."
+      },
+      "runtime_selectable": false
     }
   ]
 }

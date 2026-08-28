@@ -26,6 +26,7 @@ from __future__ import annotations
 import contextlib
 import sys
 import tkinter as tk
+from collections.abc import Callable
 from tkinter import ttk
 from typing import Any
 
@@ -39,11 +40,10 @@ from treasure_overlay import (
     BAD,
     BG,
     BONE,
-    GOLD,
     INFO,
+    JADE,
     MUTED,
     OK,
-    SURFACE,
     SURFACE_ALT,
     WARN,
 )
@@ -532,7 +532,7 @@ def card(parent: tk.Misc) -> ttk.Frame:
 
 
 # ---------------------------------------------------------------------------
-# Fit & Verify progress and the commissioning window
+# Viewport progress
 # ---------------------------------------------------------------------------
 
 
@@ -541,7 +541,7 @@ def fit_progress_text(fit: Any, active: bool) -> str:
     from prospector_engine.contracts import FitPhase
 
     if fit is None or fit.phase is FitPhase.IDLE:
-        return "not fitted (connect only is fine for Shadow)"
+        return "window not sized yet"
     if fit.phase is FitPhase.REQUESTED:
         return "Requesting size..." if active else "requested"
     if fit.phase is FitPhase.SETTLING:
@@ -549,13 +549,11 @@ def fit_progress_text(fit: Any, active: bool) -> str:
         return f"{stage} ({fit.stable_readbacks}/{fit.required_readbacks} stable)"
     if fit.phase is FitPhase.CANONICAL_VERIFIED:
         got = fit.achieved_client_logical
-        return (
-            f"Canonical {got[0]:g}x{got[1]:g}" if got else "Canonical 1280x720"
-        ) + " - E-VIEW native evidence still PENDING"
+        return f"Sized to {got[0]:g}x{got[1]:g}" if got else "Sized to 1280x720"
     if fit.phase is FitPhase.ACHIEVED_CLAMPED:
         got = fit.achieved_client_logical
         size = f"{got[0]:g}x{got[1]:g}" if got else "an achieved size"
-        return f"Resized but OS-clamped to {size} - usable for Shadow, not canonical"
+        return f"The window clamped to {size} - usable, not the canonical size"
     detail = fit.detail.lower()
     if "accessibility" in detail:
         return "Accessibility permission denied - enable it for this terminal or app"
@@ -566,96 +564,239 @@ def fit_progress_text(fit: Any, active: bool) -> str:
     return f"Fit failed: {fit.detail}"
 
 
-class CommissioningWindow:
-    """The guided path to Live, grouped by what each blocker is about.
+# ---------------------------------------------------------------------------
+# Stable-geometry building blocks
+# ---------------------------------------------------------------------------
 
-    Replaces the flat message box of fourteen repeated lines. Rows are
-    recomputed from the coordinator on every refresh, so a condition that
-    stops being true disappears, and nothing here can pass a step from a
-    fake: evidence rows read gate statuses that only physical procedures set.
+
+class Ticker:
+    """One cancellable ``after`` handle per polling loop.
+
+    The dashboard used to schedule its next tick at the *end* of the render
+    function, which meant calling that function directly - to refresh a window
+    on demand, say - started a second loop that ran forever alongside the
+    first. Clicking a button four times gave four loops and four times the CPU.
+
+    Here scheduling and rendering are different methods. :meth:`start` is
+    idempotent, :meth:`render_once` never schedules, and :meth:`stop` cancels
+    the outstanding handle so a closed window leaves nothing behind.
     """
 
-    REFRESH_MS = 700
-
-    def __init__(self, parent: tk.Misc, fonts: dict[str, Any], provider: Any) -> None:
-        self._provider = provider
-        self.window = tk.Toplevel(parent)
-        self.window.title("Commissioning - the path to Live control")
-        self.window.configure(bg=BG)
-        self.window.geometry("860x640")
-        self.window.minsize(640, 420)
-        self._fonts = fonts
-        self.text = tk.Text(
-            self.window,
-            bg=SURFACE,
-            fg=BONE,
-            insertbackground=BONE,
-            font=fonts["mono"],
-            wrap="word",
-            padx=12,
-            pady=10,
-            relief="flat",
-        )
-        self.text.pack(fill="both", expand=True, padx=10, pady=10)
-        self.text.tag_configure("h", foreground=GOLD, font=fonts["headline"])
-        self.text.tag_configure("done", foreground=OK)
-        self.text.tag_configure("pending", foreground=WARN)
-        self.text.tag_configure("blocked", foreground=BAD)
-        self.text.tag_configure("expected", foreground=MUTED)
-        self.text.tag_configure("muted", foreground=MUTED)
-        self._alive = True
-        self.window.protocol("WM_DELETE_WINDOW", self.close)
-        self.refresh()
+    def __init__(
+        self, widget: tk.Misc, interval_ms: int, render: Callable[[], None], *, name: str = ""
+    ) -> None:
+        self._widget = widget
+        self._interval_ms = interval_ms
+        self._render = render
+        self._handle: str | None = None
+        self._running = False
+        self.name = name or getattr(render, "__name__", "ticker")
+        self.ticks = 0
 
     @property
-    def alive(self) -> bool:
-        return self._alive
+    def running(self) -> bool:
+        return self._running
 
-    def close(self) -> None:
-        self._alive = False
-        with contextlib.suppress(tk.TclError):
-            self.window.destroy()
-
-    def refresh(self) -> None:
-        if not self._alive:
+    def start(self) -> None:
+        if self._running:
             return
-        steps, blockers, focus_note = self._provider()
-        self.text.configure(state="normal")
-        self.text.delete("1.0", "end")
-        self.text.insert("end", "Guided commissioning\n", "h")
-        self.text.insert(
-            "end",
-            "Each step is either read from the running state or from an evidence gate. "
-            "No step passes from a fake, a fixture, or a checkbox.\n\n",
-            "muted",
-        )
-        for step, state, note in steps:
-            marker = {"done": "[x]", "pending": "[ ]", "blocked": "[-]"}[state]
-            self.text.insert("end", f"{marker} {step.number:>2}. {step.title}\n", state)
-            self.text.insert("end", f"        {step.control}  -  {note}\n", "muted")
-        self.text.insert("end", "\nWhy Live cannot be enabled right now\n", "h")
-        if focus_note:
-            self.text.insert("end", focus_note + "\n\n", "expected")
-        grouped: dict[str, list[Any]] = {}
-        for blocker in blockers:
-            grouped.setdefault(blocker.scope.value, []).append(blocker)
-        if not blockers:
-            self.text.insert("end", "No blockers. Live control can be enabled.\n", "done")
-        for scope, rows in grouped.items():
-            self.text.insert("end", f"\n{scope.upper()}\n", "h")
-            for blocker in rows:
-                tag = (
-                    "expected"
-                    if blocker.status == "expected"
-                    else ("pending" if blocker.status == "pending" else "blocked")
-                )
-                self.text.insert("end", f"  {blocker.code:<12} {blocker.summary}\n", tag)
-                self.text.insert("end", f"               {blocker.detail}\n", "muted")
-                self.text.insert("end", f"               Do: {blocker.remedy}\n", "muted")
-                if blocker.evidence:
-                    self.text.insert(
-                        "end", f"               Evidence: {blocker.evidence}\n", "muted"
-                    )
-        self.text.configure(state="disabled")
+        self._running = True
+        self._schedule()
+
+    def stop(self) -> None:
+        self._running = False
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            with contextlib.suppress(tk.TclError):
+                self._widget.after_cancel(handle)
+
+    def render_once(self) -> None:
+        """Render without touching the schedule. Safe to call from anywhere."""
+        self.ticks += 1
+        self._render()
+
+    def _schedule(self) -> None:
+        if not self._running:
+            return
         with contextlib.suppress(tk.TclError):
-            self.window.after(self.REFRESH_MS, self.refresh)
+            self._handle = self._widget.after(self._interval_ms, self._tick)
+
+    def _tick(self) -> None:
+        self._handle = None
+        if not self._running:
+            return
+        try:
+            self.render_once()
+        finally:
+            self._schedule()
+
+
+def fixed_label(
+    parent: tk.Misc,
+    variable: tk.StringVar,
+    *,
+    width: int,
+    style: str = "Card.TLabel",
+    font: Any = None,
+    anchor: str = "w",
+) -> ttk.Label:
+    """A label whose *requested* width does not depend on its text.
+
+    This is the whole of the root-resizing bug. A ttk.Label sizes itself to its
+    content, a grid sizes itself to its children, and a toplevel sizes itself to
+    its grid - so a status string growing from "Ready" to a sentence about
+    Accessibility permissions pushed the window wider, every time it changed.
+    Pinning the width in characters and clipping breaks that chain at the leaf.
+    """
+    options: dict[str, Any] = {"textvariable": variable, "style": style, "anchor": anchor}
+    if font is not None:
+        options["font"] = font
+    label = ttk.Label(parent, width=width, **options)
+    return label
+
+
+class MessageBox:
+    """A fixed-height area for one actionable sentence, however long it is.
+
+    Long text wraps and, past the reserved height, is clipped rather than
+    growing the layout. A message the user cannot fully read is a bug worth
+    fixing in the message; a window that resizes itself is a bug in the window.
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        fonts: dict[str, Any],
+        *,
+        height_px: int = 46,
+        width_px: int = 700,
+    ) -> None:
+        self.frame = tk.Frame(parent, bg=SURFACE_ALT, height=height_px, width=width_px)
+        self.frame.grid_propagate(False)
+        self.frame.pack_propagate(False)
+        self._var = tk.StringVar(value="")
+        self.label = tk.Label(
+            self.frame,
+            textvariable=self._var,
+            bg=SURFACE_ALT,
+            fg=MUTED,
+            font=fonts["small"],
+            justify="left",
+            anchor="w",
+            wraplength=max(120, width_px - 24),
+            padx=10,
+            pady=6,
+        )
+        self.label.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+
+    def set(self, text: str, colour: str = MUTED) -> None:
+        if self._var.get() == text and self.label.cget("fg") == colour:
+            return
+        self._var.set(text)
+        self.label.configure(fg=colour)
+
+    @property
+    def text(self) -> str:
+        return self._var.get()
+
+    def resize(self, width_px: int) -> None:
+        self.frame.configure(width=width_px)
+        self.label.configure(wraplength=max(120, width_px - 24))
+
+
+# ---------------------------------------------------------------------------
+# Automatic setup
+# ---------------------------------------------------------------------------
+
+#: Every stage the user is shown, with the short label that names it. The
+#: two input-emitting stages are listed too, so the sequence a user sees is the
+#: sequence that actually runs rather than the read-only half of it.
+SETUP_STEPS: tuple[tuple[str, str], ...] = (
+    ("find_roblox", "Find Roblox"),
+    ("fit_viewport", "Size window"),
+    ("restart_capture", "Rebind capture"),
+    ("stabilize_capture", "Check frames"),
+    ("select_profile", "Identify map"),
+    ("establish_reference", "Check direction"),
+    ("shadow_qualify", "Qualify"),
+    ("verify_control_mode", "Camera mode"),
+    ("characterize_turn", "Measure turning"),
+)
+
+
+class SetupPanel:
+    """What automatic setup is doing, as a stage strip and one sentence.
+
+    Nine fixed cells, laid out once. A stage changing colour cannot change the
+    panel's requested size, which is why the strip is boxes rather than a text
+    widget that is rewritten - the old commissioning window rewrote a Text on a
+    timer and that is what made the layout breathe.
+    """
+
+    def __init__(self, parent: tk.Misc, fonts: dict[str, Any]) -> None:
+        self.frame = ttk.Frame(parent, style="Card.TFrame", padding=(10, 8))
+        self.frame.columnconfigure(0, weight=1)
+        header = ttk.Frame(self.frame, style="Card.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        ttk.Label(header, text="AUTOMATIC SETUP", style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        self.stage_var = tk.StringVar(value="not started")
+        fixed_label(header, self.stage_var, width=34, style="Card.TLabel").grid(
+            row=0, column=2, sticky="e"
+        )
+
+        strip = ttk.Frame(self.frame, style="Card.TFrame")
+        strip.grid(row=1, column=0, sticky="ew", pady=(6, 4))
+        self.cells: dict[str, tk.Label] = {}
+        for index, (key, label) in enumerate(SETUP_STEPS):
+            strip.columnconfigure(index, weight=1, uniform="setup")
+            cell = tk.Label(
+                strip,
+                text=label,
+                bg=SURFACE_ALT,
+                fg=MUTED,
+                font=fonts["small"],
+                padx=6,
+                pady=5,
+                width=13,
+                anchor="center",
+            )
+            cell.grid(row=0, column=index, sticky="ew", padx=2)
+            self.cells[key] = cell
+        self._last_key: tuple[str, str] | None = None
+
+    def render(self, progress: Any) -> None:
+        """Colour the strip from one progress packet. Emit-on-change."""
+        stage = getattr(progress, "stage", None)
+        stage_value = getattr(stage, "value", "idle")
+        detail = getattr(progress, "detail", "")
+        key = (stage_value, detail)
+        if key == self._last_key:
+            return
+        self._last_key = key
+        order = [name for name, _label in SETUP_STEPS]
+        current = order.index(stage_value) if stage_value in order else -1
+        failed = stage_value == "failed"
+        done = stage_value == "ready"
+        for index, (name, _label) in enumerate(SETUP_STEPS):
+            if done:
+                colour, foreground = SURFACE_ALT, OK
+            elif current < 0:
+                colour, foreground = SURFACE_ALT, MUTED
+            elif index < current:
+                colour, foreground = SURFACE_ALT, OK
+            elif index == current:
+                colour, foreground = JADE, BG
+            else:
+                colour, foreground = SURFACE_ALT, MUTED
+            self.cells[name].configure(bg=colour, fg=foreground)
+        if failed:
+            failure = getattr(progress, "failure", None)
+            failed_stage = getattr(getattr(failure, "stage", None), "value", "")
+            if failed_stage in self.cells:
+                self.cells[failed_stage].configure(bg=BAD, fg=BONE)
+        self.stage_var.set(
+            "ready" if done else (stage_value.replace("_", " ") if stage_value else "idle")
+        )

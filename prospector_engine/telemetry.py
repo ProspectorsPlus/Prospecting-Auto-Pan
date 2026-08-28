@@ -227,10 +227,23 @@ class EventLog:
         self._events: deque[LoggedEvent] = deque(maxlen=capacity)
         self._lock = threading.Lock()
         self._verbatim: deque[tuple[float, str, str]] = deque(maxlen=capacity * 4)
+        self._sequence = 0
+
+    @property
+    def sequence(self) -> int:
+        """Monotonic count of appended events.
+
+        The diagnostics drawer renders only when something changed, and "has
+        the log moved" is one of the things it has to ask. Comparing this
+        integer is cheap; comparing two hundred formatted lines is not.
+        """
+        with self._lock:
+            return self._sequence
 
     def add(self, name: str, detail: str = "") -> None:
         now = monotonic_s()
         with self._lock:
+            self._sequence += 1
             # The raw stream is kept verbatim for the Raw Log tab; only the
             # readable view coalesces.
             self._verbatim.append((now, name, detail))

@@ -1,4 +1,4 @@
-"""Dashboard construction, the focus-safety rules, and layout survivability.
+"""Dashboard construction, focus safety, and - above all - layout stability.
 
 The dashboard's most important properties are *negative* ones, and they are
 asserted here rather than left to review:
@@ -7,7 +7,15 @@ asserted here rather than left to review:
   not steal focus from Roblox;
 * **Stop & Release must be reachable at every supported size and UI scale**,
   because a stop control that scrolls off screen is not a stop control;
-* the profile selector must not be able to disagree with the running pipeline.
+* the profile selector must not be able to disagree with the running pipeline;
+* **the window must not resize itself.** Status strings, blocker text, setup
+  progress and log lines all change several times a second, and every one of
+  them used to be able to push the toplevel wider. The tests below drive each
+  of those strings between empty and worst-case and assert the geometry does
+  not move;
+* **each polling loop owns exactly one timer.** Pressing a button four times
+  used to start four render loops, because scheduling lived at the end of the
+  render function.
 
 These tests build a real Tk window and skip cleanly where one cannot be opened.
 They do not start capture or the coordinator, so no screen recording permission
@@ -81,16 +89,44 @@ def test_there_is_no_clickable_start_live_reset_or_pan_test(dashboard: Any) -> N
     assert not any(text.startswith("pan test") or text.startswith("pan swap") for text in texts)
 
 
-def test_the_offered_controls_say_what_they_do_to_the_game(dashboard: Any) -> None:
+def test_the_normal_flow_is_three_controls(dashboard: Any) -> None:
     texts = set(_button_texts(dashboard.root))
-    assert "Connect Roblox" in texts
-    assert "Fit & Verify Viewport" in texts, "connecting and resizing are separate operations"
-    assert "Start Shadow Analysis" in texts
-    assert "Collect Calibration Evidence" in texts
-    assert any(text.startswith("Calibrate Live Control") for text in texts)
-    assert "Enable Live Control..." in texts, "'Arm Live' did not say what arming does"
-    assert "Start Diagnostic Recording" in texts, "'Record: off' described a mechanism"
+    assert "Start Navigator" in texts
+    assert "Observe Only" in texts
     assert any(text.startswith("Stop & Release All Input") for text in texts)
+
+
+@pytest.mark.parametrize(
+    "retired",
+    [
+        "Connect Roblox",
+        "Fit & Verify Viewport",
+        "Collect Calibration Evidence",
+        "Calibrate Live Control",
+        "Enable Live Control...",
+    ],
+)
+def test_the_dead_commissioning_controls_are_gone(dashboard: Any, retired: str) -> None:
+    """Five buttons that between them did one useful thing and one dead end."""
+    texts = {text.split("(")[0].strip() for text in _button_texts(dashboard.root)}
+    assert retired not in texts
+
+
+def test_diagnostic_recording_is_advanced_and_named_for_what_it_is(dashboard: Any) -> None:
+    assert "Record Diagnostics" in set(_button_texts(dashboard.root))
+    tip = dashboard.record_button
+    assert tip.winfo_manager() == "grid"
+
+
+def test_there_is_no_second_window_for_setup(dashboard: Any) -> None:
+    """The commissioning Toplevel is gone; setup renders in the main window."""
+    import tkinter as tk
+
+    before = [w for w in dashboard.root.winfo_children() if isinstance(w, tk.Toplevel)]
+    for _ in range(5):
+        dashboard._render_setup()
+    after = [w for w in dashboard.root.winfo_children() if isinstance(w, tk.Toplevel)]
+    assert before == after == []
 
 
 def test_live_and_service_hotkeys_are_shown_as_guidance(dashboard: Any) -> None:
@@ -141,10 +177,12 @@ def test_the_window_has_a_minimum_size_that_matches_the_layout(dashboard: Any) -
     assert minimum == (dashboard.MIN_WIDTH, dashboard.MIN_HEIGHT)
 
 
-def test_the_body_expands_and_the_header_does_not(dashboard: Any) -> None:
+def test_exactly_one_row_expands_and_it_is_the_body(dashboard: Any) -> None:
     root = dashboard.root
-    assert root.grid_rowconfigure(4)["weight"] == 1, "the preview row takes the extra height"
-    assert root.grid_rowconfigure(0)["weight"] == 0, "the header must not grow"
+    weights = [int(root.grid_rowconfigure(row)["weight"]) for row in range(7)]
+    assert weights.count(1) == 1, f"row weights {weights} - bounded rows, one grower"
+    assert weights[5] == 1, "the preview row takes the extra height"
+    assert weights[0] == 0, "the header must not grow"
 
 
 # ---------------------------------------------------------------------------
@@ -153,14 +191,14 @@ def test_the_body_expands_and_the_header_does_not(dashboard: Any) -> None:
 
 
 def test_the_four_top_summaries_are_present(dashboard: Any) -> None:
-    assert set(dashboard.summary_vars) == {"roblox", "capture", "analysis", "live"}
+    assert set(dashboard.summary_vars) == {"roblox", "capture", "navigation", "live"}
     for variable in dashboard.summary_vars.values():
         assert variable.get()
 
 
 def test_the_analysis_panel_leads_with_plain_language(dashboard: Any) -> None:
     dashboard.analysis.render(None)
-    assert "Start Shadow Analysis" in dashboard.analysis.headline_var.get()
+    assert dashboard.analysis.headline_var.get()
 
     observation = _observation()
     dashboard.analysis.render(observation)
@@ -197,7 +235,8 @@ def test_the_diagnostics_drawer_keeps_every_engineering_value(dashboard: Any) ->
     from treasure_panels import DiagnosticsDrawer
 
     assert set(dashboard.drawer.texts) == set(DiagnosticsDrawer.TABS)
-    dashboard._tick_drawer()
+    dashboard.advanced.toggle()
+    dashboard._render_drawer()
     performance = dashboard.drawer.texts["Performance"].get("1.0", "end")
     capture = dashboard.drawer.texts["Capture"].get("1.0", "end")
 
@@ -209,7 +248,8 @@ def test_the_diagnostics_drawer_keeps_every_engineering_value(dashboard: Any) ->
 
 
 def test_the_capture_tab_separates_every_rate(dashboard: Any) -> None:
-    dashboard._tick_drawer()
+    dashboard.advanced.toggle()
+    dashboard._render_drawer()
     performance = dashboard.drawer.texts["Performance"].get("1.0", "end")
 
     for label in ("requested", "source", "unique", "processed", "control", "preview"):
@@ -253,9 +293,13 @@ def test_a_display_label_can_never_be_mistaken_for_a_profile_id(dashboard: Any) 
         assert authority.library.get(label) is None
 
 
-def test_automatic_profile_classification_is_shown_as_disabled(dashboard: Any) -> None:
-    labels = [str(label.cget("text")) for label in _widgets(dashboard.root, ("TLabel",))]
-    assert any("Automatic classification is DISABLED" in text for text in labels)
+def test_the_profile_selector_is_an_override_not_the_normal_path(dashboard: Any) -> None:
+    """Setup identifies the map from frames; the dropdown only overrides that."""
+    from prospector_engine.vision import load_profiles
+
+    candidates = load_profiles().selectable()
+    assert len(candidates) >= 2, "a classifier needs something to choose between"
+    assert dashboard.profile_combo.winfo_manager() == "grid"
 
 
 # ---------------------------------------------------------------------------
@@ -487,15 +531,295 @@ def test_canvas_items_are_reused_rather_than_recreated(dashboard: Any) -> None:
     assert len(dashboard.canvas.find_all()) == before
 
 
-def test_the_recovery_button_is_hidden_until_release_is_uncertain(dashboard: Any) -> None:
-    assert dashboard.recover_button.winfo_manager() in ("", "grid")
+def test_a_conditional_control_changes_state_rather_than_leaving_the_grid(
+    dashboard: Any,
+) -> None:
+    """Hiding a button must not change the layout - that is what makes it jump."""
+    assert dashboard.recover_button.winfo_manager() == "grid"
     assert not dashboard.app.authority.release_uncertain
 
 
-def test_the_shadow_view_explains_what_the_overlay_shows(dashboard: Any) -> None:
-    assert "E-FORWARD PENDING" in dashboard.legend_var.get()
+def test_the_preview_explains_what_the_overlay_shows(dashboard: Any) -> None:
+    legend = dashboard.legend_var.get()
+    assert "player-forward reference" in legend
+    assert "map arrow" in legend
 
 
 def test_closing_the_dashboard_shuts_the_application_down(dashboard: Any) -> None:
     with contextlib.suppress(Exception):
         assert callable(dashboard.on_close)
+
+
+# ---------------------------------------------------------------------------
+# Layout stability: the window must not resize itself
+# ---------------------------------------------------------------------------
+
+#: Empty, ordinary, and a genuinely awful string: a full sentence about
+#: Accessibility permissions is exactly the kind of message that used to be
+#: rendered into an unconstrained label and push the toplevel wider.
+TEXT_CASES = (
+    "",
+    "Ready",
+    "macOS has not granted this app permission to see the Roblox window. Enable "
+    "Screen Recording and Accessibility for this app in System Settings > Privacy "
+    "& Security, then press Start Navigator again.",
+    "x" * 400,
+)
+
+
+def _root_size(dashboard: Any) -> tuple[int, int]:
+    dashboard.root.update_idletasks()
+    return (dashboard.root.winfo_reqwidth(), dashboard.root.winfo_reqheight())
+
+
+def test_summary_text_of_any_length_cannot_resize_the_window(dashboard: Any) -> None:
+    baseline = _root_size(dashboard)
+    for text in TEXT_CASES:
+        for key in dashboard.summary_vars:
+            dashboard._set_summary(key, text[:40] or "-", text)
+        assert _root_size(dashboard) == baseline, f"resized on {text[:30]!r}"
+
+
+def test_the_readout_values_cannot_resize_the_window(dashboard: Any) -> None:
+    baseline = _root_size(dashboard)
+    for text in TEXT_CASES:
+        for variable in dashboard.readout_vars.values():
+            variable.set(text)
+        assert _root_size(dashboard) == baseline, f"resized on {text[:30]!r}"
+
+
+def test_the_actionable_message_wraps_and_clips_rather_than_growing(dashboard: Any) -> None:
+    baseline = _root_size(dashboard)
+    for text in TEXT_CASES:
+        dashboard.message.set(text)
+        assert _root_size(dashboard) == baseline, f"resized on {text[:30]!r}"
+
+
+def test_the_mode_badge_cannot_resize_the_window(dashboard: Any) -> None:
+    baseline = _root_size(dashboard)
+    for text in ("OFF", "NAVIGATING", "FAULT - input released", "x" * 120):
+        dashboard.mode_var.set(text)
+        assert _root_size(dashboard) == baseline
+
+
+def test_every_setup_stage_and_failure_leaves_the_geometry_alone(dashboard: Any) -> None:
+    from prospector_engine.contracts import (
+        SetupFailure,
+        SetupFailureKind,
+        SetupProgress,
+        SetupStage,
+    )
+
+    baseline = _root_size(dashboard)
+    for stage in SetupStage:
+        failure = (
+            SetupFailure(
+                SetupFailureKind.PERMISSION,
+                stage,
+                TEXT_CASES[2],
+                TEXT_CASES[2],
+                TEXT_CASES[3],
+            )
+            if stage is SetupStage.FAILED
+            else None
+        )
+        progress = SetupProgress(
+            stage=stage,
+            attempt=3,
+            detail=TEXT_CASES[2],
+            started_at_s=0.0,
+            updated_at_s=1.0,
+            failure=failure,
+        )
+        dashboard.setup_panel.render(progress)
+        dashboard._render_guidance(progress)
+        assert _root_size(dashboard) == baseline, f"resized on {stage}"
+
+
+def test_expanding_the_diagnostics_drawer_does_not_widen_the_window(dashboard: Any) -> None:
+    width_before = _root_size(dashboard)[0]
+    dashboard.advanced.toggle()
+    dashboard._render_drawer()
+    dashboard.root.update_idletasks()
+
+    assert dashboard.root.winfo_reqwidth() == width_before
+
+
+def test_long_log_lines_do_not_widen_the_window(dashboard: Any) -> None:
+    dashboard.advanced.toggle()
+    dashboard._render_drawer()
+    width_before = _root_size(dashboard)[0]
+    for index in range(40):
+        dashboard.app.coordinator.events.add("noise", f"{'y' * 300} {index}")
+    dashboard._render_drawer()
+
+    assert _root_size(dashboard)[0] == width_before
+
+
+# ---------------------------------------------------------------------------
+# Timers: one cancellable handle per loop
+# ---------------------------------------------------------------------------
+
+
+def test_each_polling_loop_owns_exactly_one_timer(dashboard: Any) -> None:
+    assert set(dashboard.tickers) == {"preview", "status", "setup", "metrics", "drawer"}
+    for ticker in dashboard.tickers.values():
+        assert ticker.running
+
+
+def test_starting_a_ticker_repeatedly_does_not_multiply_it(dashboard: Any) -> None:
+    """Clicking a refresh four times used to give four render loops forever."""
+    ticker = dashboard.tickers["setup"]
+    handles = set()
+    for _ in range(6):
+        ticker.start()
+        handles.add(ticker._handle)
+    assert len(handles) == 1
+
+
+def test_rendering_on_demand_never_schedules_a_second_loop(dashboard: Any) -> None:
+    ticker = dashboard.tickers["status"]
+    handle = ticker._handle
+    for _ in range(5):
+        ticker.render_once()
+    assert ticker._handle == handle
+    assert ticker.ticks == 5
+
+
+def test_closing_cancels_every_timer(dashboard: Any) -> None:
+    for ticker in dashboard.tickers.values():
+        ticker.stop()
+        assert not ticker.running
+        assert ticker._handle is None
+
+
+# ---------------------------------------------------------------------------
+# The preview survives status churn
+# ---------------------------------------------------------------------------
+
+
+def test_the_preview_is_not_blanked_by_status_changes(dashboard: Any) -> None:
+    dashboard.root.update_idletasks()
+    assert dashboard._diagnostics.render(_observation())
+    drawn = len(dashboard.canvas.find_all())
+
+    for text in TEXT_CASES:
+        dashboard.message.set(text)
+        dashboard.mode_var.set(text[:20])
+        for key in dashboard.summary_vars:
+            dashboard._set_summary(key, "Connected", text)
+        dashboard.root.update_idletasks()
+
+    assert len(dashboard.canvas.find_all()) == drawn
+
+
+def test_a_one_pixel_layout_change_does_not_discard_the_preview(dashboard: Any) -> None:
+    dashboard.root.update_idletasks()
+    assert dashboard._diagnostics.render(_observation())
+    before = len(dashboard.canvas.find_all())
+
+    dashboard.canvas.configure(width=dashboard.canvas.winfo_width() + 1)
+    dashboard.root.update_idletasks()
+
+    assert len(dashboard.canvas.find_all()) == before
+
+
+# ---------------------------------------------------------------------------
+# Setup progress is visible, and Stop stays reachable through all of it
+# ---------------------------------------------------------------------------
+
+
+def test_every_setup_stage_has_a_visible_cell(dashboard: Any) -> None:
+    from prospector_engine.contracts import SetupStage
+    from treasure_panels import SETUP_STEPS
+
+    shown = {key for key, _label in SETUP_STEPS}
+    machine_stages = {
+        stage.value
+        for stage in SetupStage
+        if stage
+        not in (SetupStage.IDLE, SetupStage.READY, SetupStage.FAILED, SetupStage.CANCELLED)
+    }
+    assert machine_stages == shown
+
+
+def test_a_setup_failure_is_shown_in_red_with_the_remedy(dashboard: Any) -> None:
+    from prospector_engine.contracts import (
+        SetupFailure,
+        SetupFailureKind,
+        SetupProgress,
+        SetupStage,
+    )
+
+    failure = SetupFailure(
+        SetupFailureKind.AMBIGUOUS_WINDOW,
+        SetupStage.FIND_ROBLOX,
+        "more than one Roblox window is open",
+        "Close the extra Roblox window and press Start Navigator again.",
+    )
+    progress = SetupProgress(
+        stage=SetupStage.FAILED,
+        attempt=1,
+        detail=failure.describe(),
+        started_at_s=0.0,
+        updated_at_s=1.0,
+        failure=failure,
+    )
+    dashboard.setup_panel.render(progress)
+    dashboard._render_guidance(progress)
+
+    assert "Close the extra Roblox window" in dashboard.message.text
+    assert dashboard.setup_panel.cells["find_roblox"].cget("bg") != ""
+
+
+def test_stop_stays_reachable_while_setup_is_running(dashboard: Any) -> None:
+    from prospector_engine.contracts import SetupProgress, SetupStage
+
+    progress = SetupProgress(
+        stage=SetupStage.FIT_VIEWPORT,
+        attempt=1,
+        detail="asking Roblox for a 1280x720 client",
+        started_at_s=0.0,
+        updated_at_s=0.5,
+    )
+    dashboard.setup_panel.render(progress)
+    dashboard._render_guidance(progress)
+    dashboard.root.update_idletasks()
+
+    assert str(dashboard.start_button.cget("state")) == "disabled"
+    assert str(dashboard.stop_button.cget("state")) != "disabled"
+    assert dashboard.stop_button.winfo_manager() == "grid"
+
+
+@pytest.mark.parametrize("geometry", ["1000x700", "1180x800", "1600x1000"])
+def test_all_primary_controls_stay_visible_at_supported_sizes(
+    dashboard: Any, geometry: str
+) -> None:
+    dashboard.root.geometry(geometry)
+    dashboard.root.update_idletasks()
+    width, height = (int(part) for part in geometry.split("x"))
+
+    for button in (dashboard.start_button, dashboard.observe_button, dashboard.stop_button):
+        assert button.winfo_manager() == "grid"
+        assert 0 <= button.winfo_x() < width
+        assert 0 <= button.winfo_y() < height
+
+
+def test_a_remembered_window_size_is_bounded_on_read(tmp_path: Path) -> None:
+    from treasure_gui import WindowLayout
+
+    path = tmp_path / "window.json"
+    path.write_text('{"width": 99999, "height": -4}', encoding="utf-8")
+    layout = WindowLayout.load(path)
+
+    assert WindowLayout.MIN_WIDTH <= layout.width <= WindowLayout.MAX_WIDTH
+    assert WindowLayout.MIN_HEIGHT <= layout.height <= WindowLayout.MAX_HEIGHT
+
+
+def test_a_corrupt_window_file_falls_back_to_the_default(tmp_path: Path) -> None:
+    from treasure_gui import WindowLayout
+
+    path = tmp_path / "window.json"
+    path.write_text("not json at all", encoding="utf-8")
+
+    assert WindowLayout.load(path) == WindowLayout()

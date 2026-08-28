@@ -1,22 +1,31 @@
-"""Navigation FSM, steering controller, bounded recovery, and the mode workers.
+"""Navigation FSM, the follower, bounded recovery, and the mode workers.
 
-Two rules run through this whole module:
+Three rules run through this whole module.
 
 * **No transition is justified by elapsed time alone.** Time can expire an
   action; it can never prove collision, movement, arrival, or success.
 * **Within one update the event priority is fixed**: safety/cancellation ->
   credible arrival -> contact/recovery -> ordinary steering. The first credible
   arrival candidate releases movement immediately (plan 6.2).
+* **Capability is derived from this run, not declared once.**
+  :class:`NavigationCapabilities` is computed from what automatic setup
+  actually observed and measured - a stable reference, a confirmed control
+  mode, a characterized turn actuator, a sampled locomotion baseline. There is
+  no frozen table of gates that production code cannot move, because that is
+  what made Live unreachable: every gate was PENDING and nothing was allowed to
+  set one.
 
-Live steering is gated on evidence that does not exist yet. ``NavigationGates``
-carries the per-OS/profile status, and with everything ``PENDING`` the live
-worker refuses to steer and safe-stops with an explanation instead of guessing.
+Offline evidence has not gone anywhere; it has moved to where it belongs.
+Detector corpus metrics and per-profile qualification are build-time facts
+about the software and live in ``--detector-report`` and STATUS.md. What gates
+a *session* is what this session can see.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any
 
 from prospector_engine.arrow import (
@@ -32,7 +41,6 @@ from prospector_engine.contracts import (
     ArrivalObservation,
     ArrowCandidateRecord,
     ArrowObservation,
-    BlockerScope,
     CapturedFrame,
     CommandKind,
     ControlState,
@@ -40,10 +48,10 @@ from prospector_engine.contracts import (
     DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
-    LiveBlocker,
     ModeResult,
     ModeResultKind,
     MotionObservation,
+    NavigationApplyResult,
     NavigationCommand,
     NavigationPhase,
     Provenance,
@@ -51,9 +59,18 @@ from prospector_engine.contracts import (
     monotonic_s,
 )
 from prospector_engine.coordinator import WorkerContext
-from prospector_engine.motion import ContactMonitor
-from prospector_engine.steering import ShiftLockController, SteeringInputs
+from prospector_engine.motion import (
+    UNCALIBRATED_BASELINE,
+    ContactConfig,
+    LocomotionBaseline,
+    ProgressGuard,
+    ProgressState,
+    RuntimeBaselineEstimator,
+    estimate_lk_affine,
+)
+from prospector_engine.steering import ArrowFollowerController, SteeringInputs
 from prospector_engine.trace import FrameTrace, PerceptionTiming
+from prospector_engine.turning import TurnBackend, TurnPlan, TurnResponse
 from prospector_engine.vision import (
     ArrivalDetector,
     ArrowProfile,
@@ -64,16 +81,13 @@ from prospector_engine.vision import (
 )
 
 __all__ = [
-    "COMMISSIONING_STEPS",
-    "CommissioningStep",
-    "NavigationGates",
+    "MotionConfig",
+    "NavigationCapabilities",
     "Navigator",
+    "RecoveryAction",
+    "RecoveryBudget",
     "RecoveryLadder",
     "RecoveryLevel",
-    "SteeringConfig",
-    "SteeringController",
-    "commissioning_blockers",
-    "commissioning_steps",
     "describe_decision",
     "make_live_worker",
     "make_shadow_worker",
@@ -110,9 +124,12 @@ def describe_decision(inputs: NavigationInputs, decision: NavigationDecision) ->
     """One sentence a person can act on, composed where the reasoning lives.
 
     It is built here rather than in the dashboard so the UI cannot paraphrase a
-    decision into a different claim than the one the controller made
-    (mission section 10).
+    decision into a different claim than the one the controller made.
     """
+    if decision.phase is NavigationPhase.RECOVERY and decision.recovery is not None:
+        return f"Recovering - {decision.recovery.description}"
+    if decision.phase is NavigationPhase.CONTACT:
+        return "Something is in the way - stopping to look"
     if not inputs.arrow.valid:
         return _plain_reason(inputs.arrow.abstain_reason)
     direction = inputs.direction
@@ -120,7 +137,7 @@ def describe_decision(inputs: NavigationInputs, decision: NavigationDecision) ->
         return _plain_reason(direction.abstain_reason)
     error = wrap_deg(direction.error_deg)
     command = decision.command
-    if command is not None and command.forward_axis == 1 and command.yaw_delta_px == 0:
+    if command is not None and command.forward_axis == 1 and not command.turns:
         return "Aligned - move forward"
     if abs(error) < 1.0:
         return "Aligned - move forward"
@@ -129,440 +146,123 @@ def describe_decision(inputs: NavigationInputs, decision: NavigationDecision) ->
 
 
 # ---------------------------------------------------------------------------
-# Gates
+# Capability
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class NavigationGates:
-    """Which experiments have passed for this exact OS / profile / condition.
+class NavigationCapabilities:
+    """What this run has proven it can do, derived from live evidence.
 
-    Nothing here defaults to enabled. ``steering_enabled`` requires the whole
-    perception chain plus the actuator characterization; ``recovery_enabled``
-    additionally requires both E-MOTION and E-RECOVERY (plan 15, Phase 4).
+    Every field is set by something that actually happened in this session:
+    automatic setup verified the reference, the live prologue confirmed the
+    control mode and measured the turn actuator, and the first seconds of
+    walking sampled the locomotion baseline. Nothing here is a promise about a
+    future experiment, and nothing here survives the session.
     """
 
     os_name: str
     profile_id: str
-    e_view: EvidenceStatus = EvidenceStatus.PENDING
-    e_anchor: EvidenceStatus = EvidenceStatus.PENDING
-    e_forward: EvidenceStatus = EvidenceStatus.PENDING
-    e_dir_e2e: EvidenceStatus = EvidenceStatus.PENDING
-    e_prof: EvidenceStatus = EvidenceStatus.PENDING
-    e_arrive: EvidenceStatus = EvidenceStatus.PENDING
-    e_motion: EvidenceStatus = EvidenceStatus.PENDING
-    e_yaw: EvidenceStatus = EvidenceStatus.PENDING
-    e_steer_cal: EvidenceStatus = EvidenceStatus.PENDING
-    e_steer_e2e: EvidenceStatus = EvidenceStatus.PENDING
-    e_recovery: EvidenceStatus = EvidenceStatus.PENDING
-    e_next_map: EvidenceStatus = EvidenceStatus.PENDING
-    #: Whether the Shift-Lock control mode can be *verified* on this OS and
-    #: profile. Separate from the per-run proof: this gate says the method
-    #: works at all, the proof says the player is in it right now.
-    e_shiftlock: EvidenceStatus = EvidenceStatus.PENDING
+    #: The runtime reference check passed: the heading to the arrow held still.
+    reference_ok: bool = False
+    #: The locked-camera control mode was observed, not assumed.
+    control_mode_ok: bool = False
+    #: The measured turn actuator, or ``None`` before characterization.
+    turn_response: TurnResponse | None = None
+    #: Sampled from this session's own unobstructed walking.
+    motion_baseline: LocomotionBaseline = UNCALIBRATED_BASELINE
 
-    def _passed(self, *statuses: EvidenceStatus) -> bool:
-        return all(status is EvidenceStatus.VALIDATED for status in statuses)
+    @classmethod
+    def observing(cls, *, os_name: str, profile_id: str) -> NavigationCapabilities:
+        """Shadow: the whole perception path, and no authority to steer."""
+        return cls(os_name=os_name, profile_id=profile_id)
 
     @property
     def steering_enabled(self) -> bool:
-        return self._passed(
-            self.e_view,
-            self.e_anchor,
-            self.e_forward,
-            self.e_prof,
-            self.e_dir_e2e,
-            self.e_yaw,
-            self.e_shiftlock,
-            self.e_steer_cal,
-            self.e_steer_e2e,
-        )
+        response = self.turn_response
+        return self.reference_ok and self.control_mode_ok and bool(response and response.usable)
 
     @property
     def recovery_enabled(self) -> bool:
-        return self.steering_enabled and self._passed(self.e_motion, self.e_recovery)
+        """Recovery needs to be able to tell "stuck" from "slow"."""
+        return self.steering_enabled and self.motion_baseline.usable
+
+    @property
+    def progress_enabled(self) -> bool:
+        return self.motion_baseline.usable
 
     @property
     def arrival_enabled(self) -> bool:
-        return self._passed(self.e_arrive)
-
-    @property
-    def next_map_enabled(self) -> bool:
-        return self._passed(self.e_next_map)
+        """Arrival always *stops*. Stopping needs no gate; digging would."""
+        return True
 
     def blocking_reasons(self) -> tuple[str, ...]:
-        pending = [
-            name
-            for name, status in (
-                ("E-VIEW", self.e_view),
-                ("E-ANCHOR", self.e_anchor),
-                ("E-FORWARD", self.e_forward),
-                ("E-PROF", self.e_prof),
-                ("E-DIR-E2E", self.e_dir_e2e),
-                ("E-YAW", self.e_yaw),
-                ("E-SHIFTLOCK", self.e_shiftlock),
-                ("E-STEER-CAL", self.e_steer_cal),
-                ("E-STEER-E2E", self.e_steer_e2e),
-            )
-            if status is not EvidenceStatus.VALIDATED
-        ]
-        return tuple(pending)
+        reasons: list[str] = []
+        if not self.reference_ok:
+            reasons.append("reference")
+        if not self.control_mode_ok:
+            reasons.append("control-mode")
+        response = self.turn_response
+        if response is None or not response.usable:
+            reasons.append("turn-actuator")
+        return tuple(reasons)
 
     def explain(self) -> tuple[str, ...]:
-        """The pending gates, in language a person can act on."""
+        """The missing pieces, in language a person can act on."""
         wording = {
-            "E-VIEW": "the viewport has not been pinned and read back on this OS",
-            "E-ANCHOR": "the avatar's control anchor has not been labelled",
-            "E-FORWARD": "which way the character faces has not been proven",
-            "E-PROF": "the arrow detector has no labelled corpus for this profile",
-            "E-DIR-E2E": "direction accuracy has not been measured end to end",
-            "E-YAW": "mouse movement has not been calibrated to camera rotation",
-            "E-SHIFTLOCK": "Shift Lock cannot yet be verified on this OS",
-            "E-STEER-CAL": "the alignment deadband has not been frozen",
-            "E-STEER-E2E": "no guarded route has been driven with the frozen controller",
+            "reference": "the direction to the arrow has not held still long enough",
+            "control-mode": "the camera control mode has not been confirmed",
+            "turn-actuator": "no way of turning the camera has been measured yet",
         }
-        return tuple(
-            f"{name}: {wording.get(name, 'not commissioned')}"
-            for name in self.blocking_reasons()
-        )
+        return tuple(wording[name] for name in self.blocking_reasons())
 
-
-@dataclass(frozen=True)
-class CommissioningStep:
-    """One step of the guided path from a fresh install to Live control.
-
-    ``gates`` names the evidence gates the step satisfies. A step with no
-    gates is a runtime check (connect, fit) judged from live state. No step
-    is ever passed by a rendered fixture or a fake: ``commissioning_steps``
-    reads gate statuses that only physical procedures may set.
-    """
-
-    number: int
-    title: str
-    control: str
-    what: str
-    gates: tuple[str, ...]
-
-
-COMMISSIONING_STEPS: tuple[CommissioningStep, ...] = (
-    CommissioningStep(
-        1,
-        "Connect to the intended Roblox window",
-        "Connect Roblox",
-        "Bind capture to the game window without touching it.",
-        (),
-    ),
-    CommissioningStep(
-        2,
-        "Fit or verify the viewport",
-        "Fit & Verify Viewport",
-        "Resize to the canonical 1280x720 client, or record the achieved size. "
-        "Either way Shadow can run; calibrated pixel constants need canonical.",
-        ("E-VIEW",),
-    ),
-    CommissioningStep(
-        3,
-        "Label or verify the player anchor",
-        "Collect Calibration Evidence",
-        "Reviewer-labelled avatar control pivot across sessions.",
-        ("E-ANCHOR",),
-    ),
-    CommissioningStep(
-        4,
-        "Verify the forward reference after a camera reset",
-        "Collect Calibration Evidence",
-        "Physically armed bounded W pulses with blinded reviewer labelling.",
-        ("E-FORWARD",),
-    ),
-    CommissioningStep(
-        5,
-        "Select the arrow profile and collect a corpus",
-        "Collect Calibration Evidence",
-        "Record real frames of this map with Shadow running; label; evaluate on a "
-        "held-out session.",
-        ("E-PROF",),
-    ),
-    CommissioningStep(
-        6,
-        "Measure direction end to end",
-        "Collect Calibration Evidence",
-        "Held-out direction accuracy against the frozen detector.",
-        ("E-DIR-E2E",),
-    ),
-    CommissioningStep(
-        7,
-        "Verify Shift Lock",
-        "Calibrate Live Control",
-        "One armed stationary micro-yaw with Shift Lock on and off; the difference is "
-        "the verification.",
-        ("E-SHIFTLOCK",),
-    ),
-    CommissioningStep(
-        8,
-        "Calibrate yaw",
-        "Calibrate Live Control",
-        "Sign, degrees per mouse unit and the minimum effective delta from armed "
-        "pulses confirmed by perception.",
-        ("E-YAW",),
-    ),
-    CommissioningStep(
-        9,
-        "Freeze the alignment deadband",
-        "Calibrate Live Control",
-        "Manual-target trials to fix the largest threshold that still gives acceptable "
-        "route outcomes.",
-        ("E-STEER-CAL",),
-    ),
-    CommissioningStep(
-        10,
-        "Run a guarded owner-observed route",
-        "Calibrate Live Control",
-        "Open-ground routes with the frozen controller, a human watching, Stop in reach.",
-        ("E-STEER-E2E",),
-    ),
-    CommissioningStep(
-        11,
-        "Review the evidence and enable Live",
-        "Enable Live Control",
-        "Every gate validated for this OS and profile, then the physical arm.",
-        (),
-    ),
-)
-
-_GATE_WORDING: dict[str, tuple[str, str]] = {
-    "E-VIEW": (
-        "the viewport has not been pinned and read back on this OS",
-        "Press Fit & Verify Viewport with Roblox windowed; a clamp is a valid answer.",
-    ),
-    "E-ANCHOR": (
-        "the avatar's control anchor has not been labelled",
-        "Record Shadow frames and label the control pivot across sessions.",
-    ),
-    "E-FORWARD": (
-        "which way the character faces has not been proven",
-        "Armed bounded W pulses with blinded labelling (owner present).",
-    ),
-    "E-PROF": (
-        "the arrow detector has no held-out corpus for this profile",
-        "Record this map with Shadow running, label, evaluate a held-out session.",
-    ),
-    "E-DIR-E2E": (
-        "direction accuracy has not been measured end to end",
-        "Evaluate the frozen detector on a fresh held-out recording.",
-    ),
-    "E-YAW": (
-        "mouse movement has not been calibrated to camera rotation",
-        "Armed yaw pulses, ten repeats per magnitude, confirmed by perception.",
-    ),
-    "E-SHIFTLOCK": (
-        "Shift Lock cannot yet be verified on this OS",
-        "Armed stationary micro-yaw with Shift Lock on and off.",
-    ),
-    "E-STEER-CAL": (
-        "the alignment deadband has not been frozen",
-        "Manual-target trials, then freeze the threshold before any held-out evaluation.",
-    ),
-    "E-STEER-E2E": (
-        "no guarded route has been driven with the frozen controller",
-        "Guarded open-ground routes with the owner watching.",
-    ),
-}
-
-
-def commissioning_blockers(gates: NavigationGates) -> tuple[LiveBlocker, ...]:
-    """One keyed blocker per pending gate, with its remedy and step number.
-
-    The E-YAW calibration used to appear three times - the gate, the missing
-    degrees-per-unit, the missing sign - because a default controller was
-    instantiated solely to ask it why it could not steer. One gate, one row.
-    """
-    step_of = {gate: step.number for step in COMMISSIONING_STEPS for gate in step.gates}
-    blockers: list[LiveBlocker] = []
-    for code in gates.blocking_reasons():
-        summary, remedy = _GATE_WORDING.get(code, ("not commissioned", "See STATUS.md."))
-        step = step_of.get(code)
-        blockers.append(
-            LiveBlocker(
-                code=code,
-                scope=BlockerScope.EVIDENCE,
-                status="pending",
-                summary=summary,
-                detail=(
-                    f"{code} is PENDING for {gates.os_name}/{gates.profile_id}. It passes "
-                    "only through its physical procedure on real hardware; no test or "
-                    "fixture can set it."
-                ),
-                remedy=f"Step {step}: {remedy}" if step else remedy,
-                evidence="STATUS.md - Experiment gates",
-            )
-        )
-    return tuple(blockers)
-
-
-def _gate_status(gates: NavigationGates, code: str) -> EvidenceStatus:
-    attribute = "e_" + code[2:].lower().replace("-", "_")
-    status: EvidenceStatus = getattr(gates, attribute)
-    return status
-
-
-def commissioning_steps(
-    gates: NavigationGates,
-    *,
-    connected: bool,
-    viewport_canonical: bool,
-    viewport_usable: bool,
-) -> tuple[tuple[CommissioningStep, str, str], ...]:
-    """Every step with its state (``done``, ``pending``, ``blocked``) and a note.
-
-    Runtime steps read live state; evidence steps read gate statuses. Nothing
-    here can mark an evidence step done from anything but a VALIDATED gate,
-    and a canonical viewport is reported separately from E-VIEW's native
-    commissioning evidence.
-    """
-    rows: list[tuple[CommissioningStep, str, str]] = []
-    for step in COMMISSIONING_STEPS:
-        if step.number == 1:
-            state = "done" if connected else "pending"
-            rows.append((step, state, "connected" if connected else "not connected"))
-        elif step.number == 2:
-            validated = gates.e_view is EvidenceStatus.VALIDATED
-            if not connected:
-                rows.append((step, "blocked", "connect first"))
-            elif viewport_canonical:
-                evidence = "recorded" if validated else "PENDING"
-                note = f"canonical 1280x720 achieved; E-VIEW native evidence {evidence}"
-                rows.append((step, "done" if validated else "pending", note))
-            elif viewport_usable:
-                rows.append(
-                    (step, "pending", "usable for Shadow at the achieved size; not canonical")
-                )
-            else:
-                rows.append((step, "blocked", "viewport not usable"))
-        elif step.number == 11:
-            done = gates.steering_enabled
-            note = "all gates validated" if done else "gates pending"
-            rows.append((step, "done" if done else "blocked", note))
-        else:
-            statuses = [(gate, _gate_status(gates, gate)) for gate in step.gates]
-            if all(status is EvidenceStatus.VALIDATED for _gate, status in statuses):
-                rows.append((step, "done", "validated"))
-            else:
-                note = ", ".join(f"{gate} {status.value}" for gate, status in statuses)
-                rows.append((step, "pending", note))
-    return tuple(rows)
+    def describe(self) -> str:
+        if self.steering_enabled:
+            response = self.turn_response
+            backend = response.backend.label if response else "unknown"
+            return f"ready to steer using {backend}"
+        return "; ".join(self.explain()) or "not ready"
 
 
 # ---------------------------------------------------------------------------
-# Steering
+# Motion
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class SteeringConfig:
-    """Bounded PD control. Every number is provisional until frozen.
+class MotionConfig:
+    """Where forward progress is measured, and how often.
 
-    ``deadband_deg`` may only be selected inside the independently measured
-    ``[min_stable_correction_deg, max_usable_deadband_deg]`` interval from
-    E-YAW / E-STEER-CAL. Widening it after seeing estimator failures is
-    explicitly forbidden (plan 9.1), so it is stored with its source.
+    A central band of the client, avoiding the fixed HUD at the top and bottom
+    and the window edges. It deliberately does *not* try to cut the arrow out:
+    a rectangle cannot, and the estimator's own spatial-coverage requirement is
+    the real defence - a fit whose inliers all sit on one small static object
+    cannot reach the coverage floor, so it abstains rather than reporting that
+    nothing moved.
     """
 
-    kp: float = 0.9
-    kd: float = 0.12
-    deadband_deg: float = 6.0
-    hysteresis_deg: float = 2.0
-    max_turn_px_per_tick: int = 40
-    max_turn_accel_px: int = 12
-    derivative_filter: float = 0.6
-    command_lease_ms: int = 100
-    arrow_loss_grace_ms: int = 300
+    left_fraction: float = 0.14
+    right_fraction: float = 0.86
+    top_fraction: float = 0.18
+    bottom_fraction: float = 0.72
+    #: Estimate motion at most this often. Flow is the most expensive thing in
+    #: the tick and progress does not need every frame to be honest.
+    min_interval_s: float = 0.05
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
-            source="TREASURE_NAVIGATION_PLAN.md section 9.1",
-            note="deadband is NOT frozen; E-YAW and E-STEER-CAL are PENDING",
+            source="TREASURE_NAVIGATION_PLAN.md section 7.4; mission section E",
+            note="band chosen to avoid the fixed HUD; not fitted to labelled data",
         )
     )
 
-
-class SteeringController:
-    """Proportional control with filtered derivative damping and hysteresis.
-
-    Lower confidence only ever *reduces* command magnitude - it never raises
-    gain - and a duplicate or missing frame freezes the derivative rather than
-    letting a zero delta-t manufacture a spike.
-    """
-
-    def __init__(self, config: SteeringConfig | None = None) -> None:
-        self._config = config or SteeringConfig()
-        self._last_error_deg: float | None = None
-        self._last_time_s: float | None = None
-        self._filtered_derivative = 0.0
-        self._last_turn_px = 0
-        self._active_side: int = 0
-
-    @property
-    def config(self) -> SteeringConfig:
-        return self._config
-
-    def reset(self) -> None:
-        self._last_error_deg = None
-        self._last_time_s = None
-        self._filtered_derivative = 0.0
-        self._last_turn_px = 0
-        self._active_side = 0
-
-    def update(
-        self, direction: DirectionObservation, *, now_s: float, frame_is_duplicate: bool
-    ) -> int:
-        """Return a bounded yaw delta in pixels. Zero means "do not turn"."""
-        if not direction.valid or direction.error_deg is None:
-            self._last_turn_px = 0
-            self._active_side = 0
-            return 0
-
-        error = wrap_deg(direction.error_deg)
-        # Deadband with hysteresis: once inside, stay inside until the error
-        # exceeds deadband + hysteresis, which is what stops left/right chatter.
-        threshold = self._config.deadband_deg
-        if self._active_side == 0:
-            threshold += self._config.hysteresis_deg
-        if abs(error) < threshold:
-            self._active_side = 0
-            self._last_error_deg = error
-            self._last_time_s = now_s
-            self._last_turn_px = 0
-            return 0
-
-        derivative = 0.0
-        if (
-            not frame_is_duplicate
-            and self._last_error_deg is not None
-            and self._last_time_s is not None
-        ):
-            delta_t = now_s - self._last_time_s
-            if delta_t > 1e-6:
-                raw = wrap_deg(error - self._last_error_deg) / delta_t
-                alpha = self._config.derivative_filter
-                derivative = alpha * self._filtered_derivative + (1.0 - alpha) * raw
-        self._filtered_derivative = derivative
-
-        raw_turn = self._config.kp * error + self._config.kd * derivative
-        confidence_scale = max(0.0, min(1.0, direction.confidence))
-        turn = raw_turn * confidence_scale
-
-        limit = self._config.max_turn_px_per_tick
-        turn = max(-limit, min(limit, turn))
-        accel_limit = self._config.max_turn_accel_px
-        turn = max(
-            self._last_turn_px - accel_limit, min(self._last_turn_px + accel_limit, int(turn))
-        )
-
-        self._last_error_deg = error
-        self._last_time_s = now_s
-        self._last_turn_px = int(turn)
-        self._active_side = 1 if error > 0 else -1
-        return int(turn)
+    def roi_px(self, canonical_size_px: tuple[int, int]) -> tuple[int, int, int, int]:
+        width, height = canonical_size_px
+        x = int(width * self.left_fraction)
+        y = int(height * self.top_fraction)
+        right = int(width * self.right_fraction)
+        bottom = int(height * self.bottom_fraction)
+        return (x, y, max(16, right - x), max(16, bottom - y))
 
 
 # ---------------------------------------------------------------------------
@@ -570,121 +270,233 @@ class SteeringController:
 # ---------------------------------------------------------------------------
 
 
+class RecoveryAction(Enum):
+    """One rung of the ladder. Each is a *maneuver*, not a label."""
+
+    RELEASE = "release"
+    REACQUIRE = "reacquire"
+    STRAFE = "strafe"
+    PROBE_FORWARD = "probe_forward"
+    JUMP = "jump"
+    ABANDON = "abandon"
+
+    @property
+    def emits_input(self) -> bool:
+        return self in (
+            RecoveryAction.STRAFE,
+            RecoveryAction.PROBE_FORWARD,
+            RecoveryAction.JUMP,
+        )
+
+
 @dataclass(frozen=True)
 class RecoveryLevel:
     name: str
+    action: RecoveryAction
     description: str
-    max_input_ms: int
+    duration_ms: int
     max_attempts: int
-    forward_axis: int
-    lateral_axis: int
-    jump: bool
+    #: Whether this rung uses the opposite side from the one first locked.
+    flips_side: bool = False
 
 
+#: Escalating and finite. The first two rungs cost nothing and fix the common
+#: case (a momentary snag, a lost arrow); the maneuvers come after, one side
+#: locked, and the whole thing abandons rather than looping.
 RECOVERY_LADDER: tuple[RecoveryLevel, ...] = (
-    RecoveryLevel("R1", "bounded tangent bias, forward intent preserved", 800, 2, 1, 1, False),
-    RecoveryLevel("R2", "jump while continuing the locked tangent", 600, 2, 1, 1, True),
-    RecoveryLevel("R3", "release forward, bounded reverse, rotate away", 700, 1, -1, 0, False),
-    RecoveryLevel("R4", "mark first side failed, try the opposite once", 800, 1, 1, -1, False),
-    RecoveryLevel("R5", "release movement, normalize camera, reacquire", 400, 1, 0, 0, False),
+    RecoveryLevel("R0", RecoveryAction.RELEASE, "letting go of the controls", 200, 1),
+    RecoveryLevel(
+        "R1", RecoveryAction.REACQUIRE, "waiting for a fresh view of the arrow", 500, 1
+    ),
+    RecoveryLevel("R2", RecoveryAction.STRAFE, "stepping to one side", 450, 2),
+    RecoveryLevel("R3", RecoveryAction.PROBE_FORWARD, "trying a short step forward", 350, 2),
+    RecoveryLevel("R4", RecoveryAction.JUMP, "hopping over the obstruction", 250, 1),
+    RecoveryLevel(
+        "R5", RecoveryAction.STRAFE, "stepping to the other side", 450, 1, flips_side=True
+    ),
 )
 
 
 @dataclass(frozen=True)
 class RecoveryBudget:
-    total_time_ms: int = 12000
-    total_input_ms: int = 6000
-    side_lock_cooldown_ms: int = 1500
+    """Hard caps on one recovery episode. Exhaustion is a safe stop."""
+
+    total_time_ms: int = 9000
+    total_input_ms: int = 4000
+    #: Once a side is chosen it is held for the episode; only R5 flips it, once.
+    side_flips_allowed: int = 1
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
-            source="TREASURE_NAVIGATION_PLAN.md section 9.3",
-            note="E-RECOVERY has not been run; recovery stays disabled until it has",
+            source="TREASURE_NAVIGATION_PLAN.md section 9.3; mission section E",
+            note="budgets are chosen bounds; no route corpus has been used to fit them",
         )
     )
+
+
+@dataclass(frozen=True)
+class RecoveryStep:
+    """What recovery wants done this tick, already bounded."""
+
+    level: RecoveryLevel
+    side: int
+    remaining_ms: int
+    description: str
+
+    @property
+    def action(self) -> RecoveryAction:
+        return self.level.action
 
 
 class RecoveryLadder:
     """A finite escalation with a total time cap and a total input cap.
 
-    Every level has an attempt cap and a deadline; exhaustion returns
-    ``ABANDONED``. Success requires restored-progress evidence - elapsed time
-    is never success (plan 9.3).
+    Two properties matter more than the rungs themselves:
+
+    * **The side is sticky.** Choosing left on one frame and right on the next
+      is a wiggle, not a detour. The side is locked when the episode begins and
+      only R5 may flip it, once.
+    * **Success is measured, never assumed.** An episode resolves when progress
+      is observed again *and* the heading error has not got worse. Elapsed time
+      only ever ends an episode in failure.
     """
 
     def __init__(self, budget: RecoveryBudget | None = None) -> None:
         self._budget = budget or RecoveryBudget()
-        self._index = 0
+        self._index = len(RECOVERY_LADDER)
         self._attempts = 0
         self._started_s: float | None = None
-        self._input_ms = 0
+        self._level_started_s: float | None = None
+        self._input_ms = 0.0
         self._side = 0
-        self._side_locked_at_s: float | None = None
-        self._failed_sides: set[int] = set()
+        self._flips = 0
+        self._entry_error_deg: float | None = None
+
+    # -- state ------------------------------------------------------------
+    @property
+    def active(self) -> bool:
+        return self._started_s is not None and not self.exhausted
+
+    @property
+    def exhausted(self) -> bool:
+        return self._index >= len(RECOVERY_LADDER)
 
     @property
     def level(self) -> RecoveryLevel | None:
-        if self._index >= len(RECOVERY_LADDER):
-            return None
-        return RECOVERY_LADDER[self._index]
+        return None if self.exhausted else RECOVERY_LADDER[self._index]
 
     @property
     def side(self) -> int:
         return self._side
 
     @property
-    def exhausted(self) -> bool:
-        return self._index >= len(RECOVERY_LADDER)
+    def input_ms(self) -> float:
+        return self._input_ms
 
-    def begin(self, now_s: float, side: int) -> None:
+    # -- lifecycle --------------------------------------------------------
+    def begin(self, now_s: float, *, side: int, error_deg: float | None) -> None:
+        """Start an episode with one locked side. Idempotent while active."""
+        if self.active:
+            return
         self._index = 0
         self._attempts = 0
         self._started_s = now_s
-        self._input_ms = 0
-        self._side = side
-        self._side_locked_at_s = now_s
-        self._failed_sides.clear()
+        self._level_started_s = now_s
+        self._input_ms = 0.0
+        self._side = side if side in (-1, 1) else 1
+        self._flips = 0
+        self._entry_error_deg = error_deg
 
-    def reset(self) -> None:
+    def resolve(self) -> None:
+        """End the episode successfully. Called only on measured progress."""
         self._index = len(RECOVERY_LADDER)
         self._started_s = None
+        self._level_started_s = None
 
-    def may_switch_side(self, now_s: float) -> bool:
-        """The chosen side locks for the episode; only an explicit failure
-        predicate outside the cooldown may flip it (plan 9.2)."""
-        if self._side_locked_at_s is None:
-            return True
-        return (now_s - self._side_locked_at_s) * 1000.0 >= self._budget.side_lock_cooldown_ms
-
-    def switch_side(self, now_s: float) -> bool:
-        if not self.may_switch_side(now_s):
-            return False
-        self._failed_sides.add(self._side)
-        self._side = -self._side if self._side else 1
-        self._side_locked_at_s = now_s
-        return True
+    reset = resolve
 
     def over_budget(self, now_s: float) -> str | None:
         if self._started_s is None:
             return None
         if (now_s - self._started_s) * 1000.0 > self._budget.total_time_ms:
-            return "recovery total time cap"
+            return "recovery ran out of time"
         if self._input_ms > self._budget.total_input_ms:
-            return "recovery total input cap"
+            return "recovery ran out of its input budget"
         return None
 
-    def note_input(self, milliseconds: int) -> None:
-        self._input_ms += milliseconds
+    def succeeded(self, *, progressing: bool, error_deg: float | None) -> bool:
+        """Whether the episode may end. Progress *and* a heading that did not rot."""
+        if not progressing:
+            return False
+        entry = self._entry_error_deg
+        if entry is None or error_deg is None:
+            return True
+        return abs(wrap_deg(error_deg)) <= abs(wrap_deg(entry)) + 15.0
 
-    def escalate(self) -> RecoveryLevel | None:
+    # -- the tick ---------------------------------------------------------
+    def step(self, now_s: float, *, delta_s: float) -> RecoveryStep | None:
+        """The maneuver for this tick, or ``None`` when the ladder is spent."""
+        over = self.over_budget(now_s)
+        if over is not None:
+            self._index = len(RECOVERY_LADDER)
+            return None
+        level = self.level
+        if level is None or self._level_started_s is None:
+            return None
+        if level.action.emits_input:
+            self._input_ms += max(0.0, delta_s) * 1000.0
+        elapsed_ms = (now_s - self._level_started_s) * 1000.0
+        if elapsed_ms >= level.duration_ms:
+            self._advance(now_s)
+            level = self.level
+            if level is None:
+                return None
+            elapsed_ms = 0.0
+        side = -self._side if level.flips_side else self._side
+        return RecoveryStep(
+            level=level,
+            side=side,
+            remaining_ms=max(0, int(level.duration_ms - elapsed_ms)),
+            description=level.description,
+        )
+
+    def _advance(self, now_s: float) -> None:
         level = self.level
         if level is None:
-            return None
+            return
         self._attempts += 1
         if self._attempts >= level.max_attempts:
             self._index += 1
             self._attempts = 0
-        return self.level
+            next_level = self.level
+            if (
+                next_level is not None
+                and next_level.flips_side
+                and self._flips < self._budget.side_flips_allowed
+            ):
+                self._flips += 1
+        self._level_started_s = now_s
+
+
+def choose_detour_side(*, error_deg: float | None, motion: MotionObservation | None) -> int:
+    """Which way to step around whatever is in front of us.
+
+    Local evidence, in order of how much it is worth:
+
+    1. the way the character was already sliding - if contact has already
+       deflected it along a surface, continuing that way follows the surface;
+    2. the way the target is - stepping toward the arrow keeps the detour
+       useful rather than merely different.
+
+    Never a coin flip, and never re-decided mid-episode: the caller locks it.
+    """
+    if motion is not None and motion.valid and motion.lateral_speed_norm is not None:
+        drift = motion.lateral_speed_norm
+        if abs(drift) > 0.02:
+            return 1 if drift > 0 else -1
+    if error_deg is not None:
+        return 1 if wrap_deg(error_deg) >= 0 else -1
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -710,13 +522,12 @@ class NavigationDecision:
     command: NavigationCommand | None
     reason: str
     release: bool = False
+    recovery: RecoveryStep | None = None
 
 
-#: The navigation FSM and the Shift-Lock controller describe the same run from
-#: two angles: one in lifecycle terms, one in "is W held right now" terms. The
-#: mapping is explicit so the two can never drift into disagreeing.
-#: The reverse mapping, used when the controller drives the phase rather than
-#: the other way round.
+#: The navigation FSM and the follower describe the same run from two angles:
+#: one in lifecycle terms, one in "is W held right now" terms. The mapping is
+#: explicit so the two can never drift into disagreeing.
 _CONTROL_TO_PHASE: dict[ControlState, NavigationPhase] = {
     ControlState.ACQUIRE: NavigationPhase.ACQUIRE,
     ControlState.ALIGN: NavigationPhase.ALIGN,
@@ -744,46 +555,96 @@ class Navigator:
     """The navigation FSM. Pure decision logic - it emits no input itself.
 
     Both the Shadow observer and the Live worker drive the same instance of
-    this class; the only difference is what they do with the returned command.
+    this class; the only difference is what they do with the returned command,
+    and what :class:`NavigationCapabilities` says this run has proven.
     """
+
+    #: Consecutive arrival candidates before the run terminates. One frame of
+    #: arrival evidence releases movement; three end the route.
+    ARRIVAL_LATCHES = 3
 
     def __init__(
         self,
         *,
-        gates: NavigationGates,
-        steering: SteeringController | None = None,
+        capabilities: NavigationCapabilities,
+        follower: ArrowFollowerController | None = None,
         recovery: RecoveryLadder | None = None,
-        contact: ContactMonitor | None = None,
-        controller: ShiftLockController | None = None,
+        progress: ProgressGuard | None = None,
         max_evidence_age_ms: int = 100,
     ) -> None:
-        self._gates = gates
-        self._steering = steering or SteeringController()
+        self._capabilities = capabilities
+        self._follower = follower or ArrowFollowerController(
+            response=capabilities.turn_response
+        )
         self._recovery = recovery or RecoveryLadder()
-        self._contact = contact or ContactMonitor()
-        self._controller = controller or ShiftLockController()
+        self._progress = progress or ProgressGuard(capabilities.motion_baseline)
         self._max_evidence_age_ms = max_evidence_age_ms
         self._phase = NavigationPhase.ACQUIRE
-        self._last_valid_arrow_s: float | None = None
         self._arrival_latches = 0
+        self._last_tick_s: float | None = None
+        self._last_recovery: RecoveryStep | None = None
         #: Runtime health the controller consults. Set by the live worker from
         #: the authority and the capture metrics, so the controller never has
         #: to reach for something that might be stale.
         self._focus_ok = True
         self._processed_fps = 999.0
         self._cursor_safe = True
+        self._geometry_revision = 0
+        self._profile_revision = 0
 
+    # -- wiring -----------------------------------------------------------
     def note_health(
-        self, *, focus_ok: bool, processed_fps: float, cursor_safe: bool = True
+        self,
+        *,
+        focus_ok: bool,
+        processed_fps: float,
+        cursor_safe: bool = True,
+        geometry_revision: int = 0,
+        profile_revision: int = 0,
     ) -> None:
         """Refresh the runtime health the controller is allowed to see."""
         self._focus_ok = focus_ok
         self._processed_fps = processed_fps
         self._cursor_safe = cursor_safe
+        self._geometry_revision = geometry_revision
+        self._profile_revision = profile_revision
+
+    def note_applied(self, result: NavigationApplyResult, *, now_s: float) -> None:
+        """Feed the *authority's* answer into the progress ledger.
+
+        "The navigator asked for forward" and "the authority accepted a forward
+        lease" are different facts, and only the second one means the character
+        was being told to walk. Judging progress against the first is how a run
+        of rejected commands looks exactly like a wall (mission section E).
+        """
+        applied_forward = result.applied and "w" in result.leases_held
+        self._progress.note_applied(now_s, forward=applied_forward)
+
+    def note_released(self, *, now_s: float) -> None:
+        self._progress.note_applied(now_s, forward=False)
+
+    def adopt_capabilities(self, capabilities: NavigationCapabilities) -> None:
+        """Adopt what the live prologue measured, mid-session."""
+        self._capabilities = capabilities
+        self._follower.set_response(capabilities.turn_response)
+        self._progress.adopt_baseline(capabilities.motion_baseline)
+
+    # -- observable -------------------------------------------------------
+    @property
+    def capabilities(self) -> NavigationCapabilities:
+        return self._capabilities
 
     @property
-    def controller(self) -> ShiftLockController:
-        return self._controller
+    def controller(self) -> ArrowFollowerController:
+        return self._follower
+
+    @property
+    def progress(self) -> ProgressGuard:
+        return self._progress
+
+    @property
+    def recovery(self) -> RecoveryLadder:
+        return self._recovery
 
     @property
     def phase(self) -> NavigationPhase:
@@ -791,18 +652,24 @@ class Navigator:
 
     @property
     def control_state(self) -> ControlState:
-        """The Shift-Lock controller's view of the same decision."""
         return _PHASE_TO_CONTROL.get(self._phase, ControlState.ACQUIRE)
 
     @property
     def arrival_latches(self) -> int:
         return self._arrival_latches
 
+    @property
+    def last_recovery(self) -> RecoveryStep | None:
+        return self._last_recovery
+
+    # -- the tick ---------------------------------------------------------
     def decide(
         self, inputs: NavigationInputs, *, generation: int, now_s: float
     ) -> NavigationDecision:
         """One update, with the fixed event priority from plan 6.2."""
         frame = inputs.frame
+        delta_s = 0.0 if self._last_tick_s is None else max(0.0, now_s - self._last_tick_s)
+        self._last_tick_s = now_s
 
         # 1. Safety / evidence validity. A stale or failed frame releases.
         age_ms = frame.age_s(now_s) * 1000.0
@@ -818,86 +685,104 @@ class Navigator:
         # 2. Arrival preempts recovery and steering.
         arrival = inputs.arrival
         if arrival is not None and arrival.valid:
-            if self._gates.arrival_enabled:
-                self._arrival_latches += 1
-                return self._release(NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate")
-            return self._release(
-                NavigationPhase.REACQUIRE, "arrival evidence but E-ARRIVE PENDING"
-            )
+            self._arrival_latches += 1
+            if self._arrival_latches >= self.ARRIVAL_LATCHES:
+                return self._release(NavigationPhase.ARRIVED, "arrival confirmed")
+            return self._release(NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate")
+        self._arrival_latches = 0
 
-        # 3. Contact / recovery.
-        if inputs.motion is not None:
-            evidence = self._contact.update(
-                inputs.motion, forward_commanded=inputs.forward_commanded, now_s=now_s
+        # 3. Progress and contact. The guard abstains until it has a baseline,
+        #    and abstention is never a reason to do anything.
+        heading = (
+            wrap_deg(inputs.direction.error_deg)
+            if inputs.direction.valid and inputs.direction.error_deg is not None
+            else None
+        )
+        verdict = self._progress.update(
+            inputs.motion,
+            now_s=now_s,
+            commanded_heading_deg=heading,
+        )
+        if self._recovery.active:
+            return self._continue_recovery(inputs, verdict, generation, now_s, delta_s, heading)
+        if verdict.release_forward:
+            if not self._capabilities.recovery_enabled:
+                # Without a measured baseline the only safe answer to "we may
+                # be stuck" is to stop pushing, not to invent a detour.
+                return self._release(NavigationPhase.CONTACT, verdict.reason)
+            self._recovery.begin(
+                now_s,
+                side=choose_detour_side(error_deg=heading, motion=inputs.motion),
+                error_deg=heading,
             )
-            if evidence.contact:
-                if not self._gates.recovery_enabled:
-                    return self._release(
-                        NavigationPhase.ABANDONED,
-                        "contact detected but E-MOTION/E-RECOVERY PENDING",
-                    )
-                over = self._recovery.over_budget(now_s)
-                if over is not None or self._recovery.exhausted:
-                    return self._release(
-                        NavigationPhase.ABANDONED, over or "recovery exhausted"
-                    )
-                self._phase = NavigationPhase.RECOVERY
-                return NavigationDecision(
-                    NavigationPhase.RECOVERY, None, "recovery ladder step (gated)"
-                )
+            return self._release(NavigationPhase.CONTACT, verdict.reason)
 
-        # 4. Ordinary reacquisition / steering.
-        if not inputs.arrow.valid:
-            grace_ms = self._steering.config.arrow_loss_grace_ms
-            if (
-                self._last_valid_arrow_s is not None
-                and (now_s - self._last_valid_arrow_s) * 1000.0 <= grace_ms
-            ):
-                # Yaw releases immediately; only the previously safe forward
-                # command may persist through the grace window (plan 7.3).
-                return NavigationDecision(
-                    NavigationPhase.REACQUIRE,
-                    self._command(
-                        generation,
-                        frame,
-                        now_s,
-                        forward=1,
-                        lateral=0,
-                        jump=False,
-                        yaw=0,
-                        reason="arrow-loss grace: forward only, yaw released",
-                    ),
-                    "arrow-loss grace",
-                )
-            return self._release(
-                NavigationPhase.REACQUIRE, f"arrow abstained: {inputs.arrow.abstain_reason}"
-            )
-
-        self._last_valid_arrow_s = now_s
-        if not inputs.direction.valid:
-            return self._release(
-                NavigationPhase.ALIGN, f"direction abstained: {inputs.direction.abstain_reason}"
-            )
-        if not self._gates.steering_enabled:
-            return self._release(
-                NavigationPhase.ALIGN,
-                "steering disabled: " + ",".join(self._gates.blocking_reasons()) + " PENDING",
-            )
-
+        # 4. Ordinary steering.
+        if not self._capabilities.steering_enabled:
+            reason = "; ".join(self._capabilities.explain()) or "not ready to steer"
+            return self._release(NavigationPhase.ALIGN, f"observing only: {reason}")
         return self._steer(inputs, generation=generation, now_s=now_s)
 
+    # -- recovery ---------------------------------------------------------
+    def _continue_recovery(
+        self,
+        inputs: NavigationInputs,
+        verdict: Any,
+        generation: int,
+        now_s: float,
+        delta_s: float,
+        heading: float | None,
+    ) -> NavigationDecision:
+        progressing = verdict.state is ProgressState.PROGRESSING
+        if self._recovery.succeeded(progressing=progressing, error_deg=heading):
+            self._recovery.resolve()
+            self._last_recovery = None
+            self._progress.reset()
+            return self._release(NavigationPhase.REACQUIRE, "recovered; resuming")
+        step = self._recovery.step(now_s, delta_s=delta_s)
+        if step is None:
+            self._recovery.resolve()
+            return self._release(
+                NavigationPhase.ABANDONED,
+                self._recovery.over_budget(now_s) or "recovery ladder exhausted",
+            )
+        self._last_recovery = step
+        self._phase = NavigationPhase.RECOVERY
+        if not step.action.emits_input:
+            return NavigationDecision(
+                NavigationPhase.RECOVERY, None, step.description, release=True, recovery=step
+            )
+        forward = 1 if step.action is RecoveryAction.PROBE_FORWARD else 0
+        lateral = step.side if step.action is RecoveryAction.STRAFE else 0
+        jump = step.action is RecoveryAction.JUMP
+        command = self._command(
+            generation,
+            inputs.frame,
+            now_s,
+            forward=forward,
+            lateral=lateral,
+            jump=jump,
+            plan=TurnPlan.none(self._follower.backend or TurnBackend.MOUSE_YAW),
+            reason=f"recovery {step.level.name}: {step.description}",
+            kind=CommandKind.FOLLOW if forward else CommandKind.ALIGN,
+        )
+        return NavigationDecision(
+            NavigationPhase.RECOVERY, command, step.description, recovery=step
+        )
+
+    # -- steering ---------------------------------------------------------
     def _steer(
         self, inputs: NavigationInputs, *, generation: int, now_s: float
     ) -> NavigationDecision:
-        """Hand the frame to the Shift-Lock controller and translate its answer.
+        """Hand the frame to the follower and translate its answer.
 
-        The controller decides; this only turns its decision into the one
-        command type the input authority accepts. Splitting them means the
-        control law can be exercised with no authority in sight, which is what
-        the deterministic steering tests do.
+        The follower decides; this only turns its decision into the one command
+        type the input authority accepts. Splitting them means the control law
+        can be exercised with no authority in sight, which is what the
+        deterministic steering tests do.
         """
         frame = inputs.frame
-        decision = self._controller.update(
+        decision = self._follower.update(
             SteeringInputs(
                 arrow=inputs.arrow,
                 direction=inputs.direction,
@@ -908,6 +793,8 @@ class Navigator:
                 viewport_ok=frame.geometry.valid,
                 processed_fps=self._processed_fps,
                 cursor_safe=self._cursor_safe,
+                geometry_revision=self._geometry_revision,
+                profile_revision=self._profile_revision,
             )
         )
         if decision.release:
@@ -929,7 +816,7 @@ class Navigator:
                 forward=decision.forward,
                 lateral=0,
                 jump=False,
-                yaw=decision.yaw_units,
+                plan=decision.plan,
                 reason=decision.reason,
                 kind=decision.kind,
             ),
@@ -938,8 +825,14 @@ class Navigator:
 
     def _release(self, phase: NavigationPhase, reason: str) -> NavigationDecision:
         self._phase = phase
-        self._steering.reset()
-        self._contact.reset()
+        self._follower.reset()
+        terminal = (
+            NavigationPhase.ARRIVED,
+            NavigationPhase.ABANDONED,
+            NavigationPhase.FAILED,
+        )
+        if phase in terminal:
+            self._recovery.resolve()
         return NavigationDecision(phase, None, reason, release=True)
 
     def _command(
@@ -951,11 +844,11 @@ class Navigator:
         forward: int,
         lateral: int,
         jump: bool,
-        yaw: int,
+        plan: TurnPlan,
         reason: str,
         kind: CommandKind = CommandKind.FOLLOW,
     ) -> NavigationCommand:
-        lease_s = self._steering.config.command_lease_ms / 1000.0
+        lease_s = self._follower.limits.lease_renew_ms / 1000.0
         max_valid_s = frame.captured_at_s + self._max_evidence_age_ms / 1000.0
         return NavigationCommand(
             generation=generation,
@@ -964,7 +857,8 @@ class Navigator:
             forward_axis=forward,  # type: ignore[arg-type]
             lateral_axis=lateral,  # type: ignore[arg-type]
             jump=jump,
-            yaw_delta_px=yaw,
+            yaw_delta_px=plan.yaw_delta_px,
+            turn_axis=plan.turn_axis,  # type: ignore[arg-type]
             issued_at_s=now_s,
             valid_until_s=min(now_s + lease_s, max_valid_s),
             reason=reason,
@@ -981,30 +875,41 @@ class Navigator:
 class ReferenceFrame:
     """Where the player is on screen and which way "forward" points.
 
-    Both values are **provisional configuration, not estimates**. E-ANCHOR and
-    E-FORWARD have not been run, so the reference arm the diagnostics draw is
-    labelled as assumed everywhere it appears, and the controller stays gated
-    regardless of how convincing the picture looks.
+    Under the locked camera the character sits at a fixed place on screen and
+    faces up it, which is what makes a screen anchor usable at all. That is a
+    *hypothesis about the control mode*, not a labelling of the avatar's pivot,
+    so it is never presented as VALIDATED: E-ANCHOR and E-FORWARD are offline
+    labelling exercises and remain PENDING.
 
-    Screen-up as forward is the hypothesis plan 7.4 sets out to test after a
-    deterministic camera reset; it is drawn here so a human can judge it, which
-    is precisely what Shadow is for.
+    What automatic setup does instead is check the weaker claim navigation
+    actually depends on - that with this anchor the heading to the arrow holds
+    still while the character does - and it records the measured jitter. A
+    badly wrong anchor fails that check, and the left/right consistency
+    requirement inside turn characterization is a second, independent look at
+    the same question.
     """
 
     anchor_canonical_px: tuple[float, float] = (640.0, 430.0)
     forward_deg: float = 0.0
-    source: str = "assumed: screen-up after camera reset (E-FORWARD PENDING)"
+    source: str = "screen anchor under the locked camera; stability checked each run"
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
-            status=EvidenceStatus.PENDING,
-            source="TREASURE_NAVIGATION_PLAN.md section 7.4 E-ANCHOR / E-FORWARD",
-            note="drawn for human judgement in Shadow; never treated as validated",
+            status=EvidenceStatus.PROVISIONAL,
+            source="runtime reference check; E-ANCHOR / E-FORWARD remain PENDING",
+            note="verified stable in this run; never claimed to be the true pivot",
         )
     )
+    #: Peak-to-peak heading jitter measured by the runtime reference check.
+    measured_jitter_deg: float | None = None
 
     @property
     def validated(self) -> bool:
         return self.provenance.status is EvidenceStatus.VALIDATED
+
+    @property
+    def checked(self) -> bool:
+        """Whether this run measured the reference holding still."""
+        return self.measured_jitter_deg is not None
 
 
 @dataclass
@@ -1043,6 +948,11 @@ class PerceptionPipeline:
     strategy: str = "topology_consensus"
     reference: ReferenceFrame = field(default_factory=ReferenceFrame)
     profiles: ProfileAuthority | None = None
+    #: Estimate forward motion from consecutive frames. Off in Shadow, where
+    #: nothing consumes it and optical flow is the most expensive thing in the
+    #: tick; on in Live, where the progress guard depends on it.
+    motion_enabled: bool = False
+    motion_config: MotionConfig = field(default_factory=MotionConfig)
     #: Padding around a tracked arrow when searching only a region of interest.
     roi_padding_px: int = 220
     #: Force a full-frame pass this often even while a track holds, so a track
@@ -1058,12 +968,95 @@ class PerceptionPipeline:
     _last_heading_deg: float | None = None
     _last_track_id: int | None = None
     _reversals_refused: int = 0
+    _previous_frame: CapturedFrame | None = None
+    _last_motion_s: float = 0.0
+    _motion_abstentions: int = 0
+    #: Per-candidate detectors used only while a profile is being chosen.
+    _classifiers: dict[str, ArrowDetector] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.detector is None:
             self.detector = ArrowDetector(self.segmenter.profile, DetectorConfig())
         if self.estimator is None:
             self.estimator = DirectionEstimator(self.detector.config)
+
+    def estimate_motion(self, frame: CapturedFrame) -> MotionObservation | None:
+        """Forward/lateral speed between this frame and the previous one.
+
+        Returns ``None`` - not an abstention - when motion is switched off or
+        there is no coherent previous frame, so "we did not look" and "we
+        looked and could not tell" stay distinguishable downstream.
+        """
+        if not self.motion_enabled:
+            return None
+        previous = self._previous_frame
+        self._previous_frame = frame
+        if previous is None or previous.sequence >= frame.sequence:
+            return None
+        if frame.captured_at_s - self._last_motion_s < self.motion_config.min_interval_s:
+            return None
+        self._last_motion_s = frame.captured_at_s
+        roi = self.motion_config.roi_px(frame.canonical_size_px)
+        try:
+            observation = estimate_lk_affine(previous, frame, roi_px=roi)
+        except Exception:
+            # A flow failure is an abstention, never a crash in the tick that
+            # is also holding a movement lease.
+            self._motion_abstentions += 1
+            return None
+        if not observation.valid:
+            self._motion_abstentions += 1
+        return observation
+
+    @property
+    def motion_abstentions(self) -> int:
+        return self._motion_abstentions
+
+    #: How much of a profile's runtime score comes from *how clearly* its
+    #: chosen candidate beat the runner-up rather than from raw confidence.
+    #: Measured on the real-frame corpus: on sand frames the green-grass
+    #: profile reaches almost the same confidence as the correct yellow one
+    #: (0.60 vs 0.66) and would win half the frames, but its selection margin
+    #: is a third of it (0.20 vs 0.56). Confidence says "something arrow-shaped
+    #: is here"; margin says "and nothing else looks like it", which is the
+    #: question profile identity actually asks (D-036).
+    MARGIN_WEIGHT = 0.8
+
+    def score_profiles(
+        self, frame: CapturedFrame, candidates: tuple[ArrowProfile, ...]
+    ) -> dict[str, float]:
+        """One frame's evidence for each candidate profile.
+
+        Each candidate gets its own detector, run over the same frame, and is
+        scored on the confidence of the candidate it *selected* weighted by how
+        far ahead of the runner-up that candidate scored. A profile that
+        abstains scores zero, so "nothing matched" is a score rather than a
+        missing key.
+        """
+        scores: dict[str, float] = {}
+        for profile in candidates:
+            detector = self._classifiers.get(profile.profile_id)
+            if detector is None:
+                detector = ArrowDetector(profile, DetectorConfig())
+                self._classifiers[profile.profile_id] = detector
+            try:
+                proposals = detector.propose(frame, roi_px=None)
+                outcome = detector.commit(frame, [proposals])
+            except Exception:
+                scores[profile.profile_id] = 0.0
+                continue
+            observation = outcome.observation
+            if not observation.valid:
+                scores[profile.profile_id] = 0.0
+                continue
+            margin = max(0.0, min(1.0, float(observation.score_margin)))
+            clarity = (1.0 - self.MARGIN_WEIGHT) + self.MARGIN_WEIGHT * margin
+            scores[profile.profile_id] = float(observation.confidence) * clarity
+        return scores
+
+    def forget_classifiers(self) -> None:
+        """Drop the per-candidate detectors once a profile has been locked."""
+        self._classifiers.clear()
 
     def set_profile(self, profile: ArrowProfile) -> None:
         """Swap the arrow profile and drop any track built from the old one."""
@@ -1076,6 +1069,7 @@ class PerceptionPipeline:
         self._frames_since_full = self.full_frame_every  # force a full pass
         self._last_heading_deg = None
         self._last_track_id = None
+        self._previous_frame = None
 
     @property
     def profile_revision(self) -> int:
@@ -1105,6 +1099,9 @@ class PerceptionPipeline:
             self._geometry_identity = identity
             self._last_heading_deg = None
             self._last_track_id = None
+            # Motion is measured between two frames in the *same* basis. A
+            # resize invalidates the pair, not just the transform.
+            self._previous_frame = None
             return True
         self._geometry_identity = identity
         return False
@@ -1241,11 +1238,12 @@ class PerceptionPipeline:
 
         contour = selected.features.contour_px if selected is not None else ()
         arrival = self.arrival.observe(frame, map_id=map_id, approach_valid=approach_valid)
+        motion = self.estimate_motion(frame)
         inputs = NavigationInputs(
             frame=frame,
             arrow=arrow,
             direction=direction,
-            motion=None,
+            motion=motion,
             arrival=arrival,
             forward_commanded=False,
         )
@@ -1356,7 +1354,7 @@ def _run_observer_loop(
     map_id: str,
     approach_valid: bool,
     max_ticks: int | None,
-    apply: Callable[[NavigationDecision, Any], bool] | None,
+    apply: Callable[[NavigationDecision, Any, PerceptionResult], bool] | None,
 ) -> tuple[int, int, ModeResultKind, str]:
     """The shared perception loop for Shadow and Live.
 
@@ -1387,6 +1385,17 @@ def _run_observer_loop(
         last_sequence = frame.sequence
 
         result = pipeline.analyze(frame, map_id=map_id, approach_valid=approach_valid)
+        # One coherent read of the world outside this frame, taken once and
+        # handed in - so the controller cannot consult a value that changed
+        # between two of its own safety checks.
+        health = context.health()
+        navigator.note_health(
+            focus_ok=health.focus_ok,
+            processed_fps=float(getattr(capture, "processed_fps", 999.0)),
+            cursor_safe=health.cursor_safe,
+            geometry_revision=health.geometry_revision,
+            profile_revision=health.profile_revision,
+        )
         decision_started = monotonic_s()
         decision = navigator.decide(
             result.inputs, generation=context.generation, now_s=monotonic_s()
@@ -1433,7 +1442,7 @@ def _run_observer_loop(
                 )
             )
 
-        if apply is not None and apply(decision, envelope):
+        if apply is not None and apply(decision, envelope, result):
             applied += 1
         if decision.phase is NavigationPhase.ARRIVED:
             terminal = (ModeResultKind.ARRIVED, "arrival confirmed")
@@ -1454,22 +1463,26 @@ def _run_observer_loop(
 
 def make_shadow_worker(
     pipeline_factory: Callable[[], PerceptionPipeline],
-    gates: NavigationGates,
+    capabilities_factory: Callable[[], NavigationCapabilities],
     *,
     max_ticks: int | None = None,
 ) -> Callable[[WorkerContext], ModeResult]:
     """Shadow: the full decision path through a ``NoInputSession``.
 
     It records what it *would* have applied and can never reach a raw port.
+    Its capabilities are observation-only by construction, so the decision it
+    records is the one a live run would make minus the authority to act.
     """
 
     def worker(context: WorkerContext) -> ModeResult:
         pipeline = context.pipeline or pipeline_factory()
-        navigator = Navigator(gates=gates)
+        navigator = Navigator(capabilities=capabilities_factory())
         observer = context.observer
 
-        def record(decision: NavigationDecision, envelope: Any) -> bool:
-            del envelope
+        def record(
+            decision: NavigationDecision, envelope: Any, result: PerceptionResult
+        ) -> bool:
+            del envelope, result
             if decision.command is None or observer is None:
                 context.on_status(f"{decision.phase.name}: {decision.reason}")
                 return False
@@ -1497,43 +1510,90 @@ def make_shadow_worker(
 
 def make_live_worker(
     pipeline_factory: Callable[[], PerceptionPipeline],
-    gates: NavigationGates,
+    capabilities_factory: Callable[[], NavigationCapabilities],
+    *,
+    prologue: Callable[[WorkerContext, PerceptionPipeline], LivePrologueResult] | None = None,
 ) -> Callable[[WorkerContext], ModeResult]:
-    """Live navigation. Refuses to steer while its gates are pending.
+    """Live navigation, with the two input-emitting setup stages in front of it.
 
-    This is the point of the gate structure: the path exists, is reviewable,
-    and is exercised in Shadow, but it will not emit a movement command until
-    the evidence for that OS, profile, and condition says it may.
+    The prologue is where the character stands still while the control mode is
+    confirmed and the turn actuator is measured. It runs *here*, inside the
+    live worker, because it is the first thing that may legitimately emit input
+    and it may only do so after the physical arm the coordinator already
+    required. Nothing about that arming changed: a human clicked Arm Live and
+    pressed a hotkey with Roblox focused, and this worker exists because of it.
+
+    If the prologue cannot prove a way to turn the camera, the worker releases
+    and reports why. It never falls back to steering blind.
     """
 
     def worker(context: WorkerContext) -> ModeResult:
         session = context.navigation
         if session is None:
             return ModeResult(ModeResultKind.FAILED, "live worker started without a session")
-        if not gates.steering_enabled:
-            session.release_navigation("gates-pending")
-            reasons = ",".join(gates.blocking_reasons())
-            return ModeResult(
-                ModeResultKind.FAILED,
-                f"Live navigation is not enabled for {gates.os_name}/{gates.profile_id}: "
-                f"{reasons} PENDING. Run Shadow and collect evidence first.",
-                evidence=gates.blocking_reasons(),
-            )
 
         pipeline = context.pipeline or pipeline_factory()
-        navigator = Navigator(gates=gates)
+        pipeline.motion_enabled = True
+        capabilities = capabilities_factory()
+        navigator = Navigator(capabilities=capabilities)
 
-        def apply(decision: NavigationDecision, envelope: Any) -> bool:
+        if prologue is not None:
+            outcome = prologue(context, pipeline)
+            session.release_navigation("prologue-complete")
+            if not outcome.ok:
+                return ModeResult(
+                    ModeResultKind.FAILED,
+                    outcome.message,
+                    evidence=(outcome.detail,) if outcome.detail else (),
+                )
+            capabilities = outcome.capabilities or capabilities
+            navigator.adopt_capabilities(capabilities)
+
+        if not capabilities.steering_enabled:
+            session.release_navigation("not-ready")
+            reasons = "; ".join(capabilities.explain())
+            return ModeResult(
+                ModeResultKind.FAILED,
+                f"Live navigation is not ready on {capabilities.os_name}/"
+                f"{capabilities.profile_id}: {reasons}.",
+                evidence=capabilities.blocking_reasons(),
+            )
+
+        baseline = RuntimeBaselineEstimator(context.worker_id)
+        contact_config = ContactConfig()
+
+        def apply(
+            decision: NavigationDecision, envelope: Any, result: PerceptionResult
+        ) -> bool:
+            now = monotonic_s()
             if decision.release or decision.command is None:
                 session.release_navigation(decision.reason)
+                navigator.note_released(now_s=now)
                 return False
             outcome = session.apply_navigation_command(
                 decision.command, envelope.evidence_token
             )
-            if outcome.applied:
-                return True
-            session.release_navigation(f"apply-rejected:{outcome.detail}")
-            return False
+            navigator.note_applied(outcome, now_s=now)
+            if not outcome.applied:
+                session.release_navigation(f"apply-rejected:{outcome.detail}")
+                return False
+            # The baseline is learned from frames where forward was genuinely
+            # applied - the authority's answer, never the request.
+            observed = baseline.observe(
+                result.inputs.motion,
+                forward_applied="w" in outcome.leases_held,
+                held_ms=navigator.progress.ledger.held_continuously_for(now) * 1000.0,
+                config=contact_config,
+            )
+            if observed.usable and not navigator.capabilities.motion_baseline.usable:
+                navigator.adopt_capabilities(
+                    replace(navigator.capabilities, motion_baseline=observed)
+                )
+                context.on_status(
+                    f"walking speed measured over {baseline.samples} frames; "
+                    "obstacle detection is now active"
+                )
+            return True
 
         processed, applied, kind, detail = _run_observer_loop(
             context,
@@ -1548,3 +1608,189 @@ def make_live_worker(
         return ModeResult(kind, f"live: {applied} commands over {processed} frames ({detail})")
 
     return worker
+
+
+@dataclass(frozen=True)
+class LivePrologueResult:
+    """What the input-emitting setup stages concluded, before navigation began."""
+
+    ok: bool
+    message: str
+    capabilities: NavigationCapabilities | None = None
+    detail: str = ""
+
+
+class _LiveControlPort:
+    """Bridges the setup machine's control stages onto a live input session.
+
+    Everything it can do is bounded and released: one probe at a time, a hard
+    cap on the lease horizon, and :meth:`release_turn` called by the machine
+    after every observation and in its ``finally``. It cannot press ``W`` - the
+    only key it can hold is a turn key, and the only mouse motion it can emit
+    is a bounded yaw delta.
+    """
+
+    #: A probe key may be held no longer than this, whatever is asked for.
+    MAX_PROBE_HOLD_MS = 400
+    #: A probe mouse delta may never exceed this many units.
+    MAX_PROBE_UNITS = 200
+
+    def __init__(
+        self,
+        context: WorkerContext,
+        pipeline: PerceptionPipeline,
+        *,
+        fingerprint_factory: Callable[[], Any],
+        control_mode_probe: Callable[[CapturedFrame], Any],
+    ) -> None:
+        self._context = context
+        self._pipeline = pipeline
+        self._fingerprint_factory = fingerprint_factory
+        self._control_mode_probe = control_mode_probe
+        self._sequence = 0
+        self._latest: PerceptionResult | None = None
+        self._latest_frame: CapturedFrame | None = None
+        self._held: str | None = None
+        self._hold_until_s = 0.0
+
+    # -- shared frame plumbing -------------------------------------------
+    def _refresh(self) -> PerceptionResult | None:
+        envelope = self._context.frames.wait_for_new(self._sequence, 0.2)
+        if envelope is None:
+            return self._latest
+        frame = envelope.frame
+        self._sequence = frame.sequence
+        self._latest_frame = frame
+        self._latest = self._pipeline.analyze(frame, map_id="prologue", approach_valid=False)
+        self._envelope = envelope
+        return self._latest
+
+    # -- ControlSetupPort -------------------------------------------------
+    def control_mode_sample(self) -> Any:
+        from prospector_engine.autosetup import ControlModeSample
+
+        result = self._refresh()
+        if result is None or self._latest_frame is None:
+            return ControlModeSample(False, 0.0, "none", "waiting for a frame")
+        sample: ControlModeSample = self._control_mode_probe(self._latest_frame)
+        return sample
+
+    def turn_observation(self) -> Any:
+        from prospector_engine.turning import TurnObservation
+
+        result = self._refresh()
+        if result is None:
+            return None
+        direction = result.inputs.direction
+        health = self._context.health()
+        return TurnObservation(
+            frame_sequence=result.inputs.frame.sequence,
+            now_s=monotonic_s(),
+            error_deg=direction.error_deg if direction.valid else None,
+            confidence=direction.confidence,
+            # The prologue holds no forward lease, so the character is
+            # stationary by construction rather than by belief.
+            stationary=True,
+            focus_ok=health.focus_ok,
+        )
+
+    def emit_turn(self, backend_value: str, units: int) -> bool:
+        session = self._context.navigation
+        envelope = getattr(self, "_envelope", None)
+        frame = self._latest_frame
+        if session is None or envelope is None or frame is None:
+            return False
+        backend = TurnBackend(backend_value)
+        magnitude = abs(units)
+        now = monotonic_s()
+        if backend is TurnBackend.ARROW_KEYS:
+            hold_ms = min(self.MAX_PROBE_HOLD_MS, magnitude)
+            plan = TurnPlan(
+                backend=backend,
+                turn_axis=1 if units > 0 else -1,
+                yaw_delta_px=0,
+                hold_ms=hold_ms,
+                requested_deg=0.0,
+                expected_deg=0.0,
+            )
+            self._hold_until_s = now + hold_ms / 1000.0
+        else:
+            delta = max(-self.MAX_PROBE_UNITS, min(self.MAX_PROBE_UNITS, units))
+            plan = TurnPlan(backend, 0, delta, 0, 0.0, 0.0)
+            self._hold_until_s = now
+        command = NavigationCommand(
+            generation=self._context.generation,
+            source_frame_sequence=frame.sequence,
+            source_captured_at_s=frame.captured_at_s,
+            forward_axis=0,
+            lateral_axis=0,
+            jump=False,
+            yaw_delta_px=plan.yaw_delta_px,
+            turn_axis=plan.turn_axis,  # type: ignore[arg-type]
+            issued_at_s=now,
+            valid_until_s=min(
+                now + max(0.05, plan.hold_ms / 1000.0), frame.captured_at_s + 0.1
+            ),
+            reason=f"setup probe: {backend.label} {units:+d}",
+            kind=CommandKind.ALIGN,
+        )
+        outcome = session.apply_navigation_command(command, envelope.evidence_token)
+        if not outcome.applied:
+            self._context.on_status(f"probe refused: {outcome.detail}")
+            return False
+        self._held = backend_value
+        return True
+
+    def release_turn(self) -> None:
+        session = self._context.navigation
+        if session is not None and self._held is not None:
+            session.release_navigation("setup probe complete")
+        self._held = None
+
+    def control_fingerprint(self) -> Any:
+        return self._fingerprint_factory()
+
+
+def make_live_prologue(
+    *,
+    fingerprint_factory: Callable[[], Any],
+    control_mode_probe: Callable[[CapturedFrame], Any],
+    capabilities_factory: Callable[[], NavigationCapabilities],
+    setup_factory: Callable[[Callable[[], bool]], Any],
+    turn_limits: Any = None,
+    prior_factory: Callable[[Any], Any] | None = None,
+    on_measured: Callable[[Any], None] | None = None,
+) -> Callable[[WorkerContext, PerceptionPipeline], LivePrologueResult]:
+    """Build the bounded, input-emitting prologue the live worker runs first.
+
+    Assembled here rather than in the GUI so the sequence - verify the control
+    mode, then measure the turn actuator, then release - is one reviewable
+    thing rather than a set of callbacks scattered across the application.
+    """
+
+    def prologue(context: WorkerContext, pipeline: PerceptionPipeline) -> LivePrologueResult:
+        port = _LiveControlPort(
+            context,
+            pipeline,
+            fingerprint_factory=fingerprint_factory,
+            control_mode_probe=control_mode_probe,
+        )
+        machine = setup_factory(context.cancellation.is_cancelled)
+        prior = prior_factory(fingerprint_factory()) if prior_factory is not None else None
+        progress, response = machine.run_control(port, limits=turn_limits, prior=prior)
+        port.release_turn()
+        if response is None:
+            failure = progress.failure
+            return LivePrologueResult(
+                False,
+                failure.describe() if failure else "automatic setup could not finish",
+                detail=failure.detail if failure else "",
+            )
+        if on_measured is not None:
+            on_measured(response)
+        capabilities = replace(
+            capabilities_factory(), control_mode_ok=True, turn_response=response
+        )
+        return LivePrologueResult(True, response.describe(), capabilities=capabilities)
+
+    return prologue

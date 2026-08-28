@@ -207,8 +207,10 @@ def test_every_tuned_config_carries_provenance() -> None:
     from prospector_engine.engine import ServiceTimings, TreasurePixels
     from prospector_engine.input_authority import AuthorityConfig
     from prospector_engine.motion import ContactConfig
-    from prospector_engine.navigation import RecoveryBudget, SteeringConfig
+    from prospector_engine.navigation import MotionConfig, RecoveryBudget
+    from prospector_engine.steering import SteeringLimits
     from prospector_engine.telemetry import RecorderConfig
+    from prospector_engine.turning import TurnLimits
     from prospector_engine.vision import ArrivalConfig, SegmenterConfig
 
     for cls in (
@@ -218,7 +220,9 @@ def test_every_tuned_config_carries_provenance() -> None:
         ServiceTimings,
         TreasurePixels,
         ContactConfig,
-        SteeringConfig,
+        MotionConfig,
+        SteeringLimits,
+        TurnLimits,
         RecoveryBudget,
         RecorderConfig,
         ArrivalConfig,
