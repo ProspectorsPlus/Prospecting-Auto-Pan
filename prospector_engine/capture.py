@@ -1601,6 +1601,10 @@ class CaptureService:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._supervisor_thread: threading.Thread | None = None
+        #: True from a successful start() call until stop(). Distinguishes a
+        #: deliberate stop from `self._source` merely being None because the
+        #: last (re)acquisition attempt failed - the latter must keep retrying.
+        self._should_run = False
         self._reacquire_delay_s = self._config.reacquire_initial_delay_s
         self._next_reacquire_s = 0.0
         self._reacquiring = False
@@ -1766,6 +1770,17 @@ class CaptureService:
 
     # -- lifecycle --------------------------------------------------------
     def start(self) -> bool:
+        # Marked True and the supervisor spun up before the geometry check
+        # below can fail: a failed *first* attempt must still get retried by
+        # the supervisor's own reacquire loop, not strand the service with no
+        # source and nothing ever watching for one to become available.
+        self._should_run = True
+        self._stop.clear()
+        if self._supervisor_thread is None or not self._supervisor_thread.is_alive():
+            self._supervisor_thread = threading.Thread(
+                target=self._supervisor_loop, name="treasure-cadence", daemon=True
+            )
+            self._supervisor_thread.start()
         if self._source is not None:
             return True
         geometry = self._guard.geometry
@@ -1789,18 +1804,12 @@ class CaptureService:
             self._last_error = None
         self.reset_epoch("capture started")
         self._slot.set_supersede_hook(self._superseded_rate.tick)
-        self._stop.clear()
         if not source.is_pushing:
             self._thread = threading.Thread(
                 target=self._pull_loop, name="treasure-capture", daemon=True
             )
             self._thread.start()
         self._reacquire_delay_s = self._config.reacquire_initial_delay_s
-        if self._supervisor_thread is None or not self._supervisor_thread.is_alive():
-            self._supervisor_thread = threading.Thread(
-                target=self._supervisor_loop, name="treasure-cadence", daemon=True
-            )
-            self._supervisor_thread.start()
         return True
 
     def _make_source(self) -> CaptureSource:
@@ -1809,6 +1818,7 @@ class CaptureService:
         return MssCaptureSource()
 
     def stop(self, timeout_s: float = 1.0) -> bool:
+        self._should_run = False
         self._stop.set()
         source = self._source
         with self._lock:
@@ -2035,9 +2045,13 @@ class CaptureService:
 
     def _reacquire_reason(self) -> str | None:
         """Why the source should be rebuilt, or ``None`` when it is fine."""
+        if not self._should_run:
+            return None  # deliberately stopped
         source = self._source
         if source is None:
-            return None  # deliberately stopped
+            # start() or a previous restart_source() failed to acquire one -
+            # not a deliberate stop, so keep retrying behind the backoff.
+            return "no source: retrying after a failed acquisition"
         geometry = self._guard.check()
         if geometry.state is ViewportState.CAPTURE_MISMATCH:
             return f"viewport changed: {geometry.detail}"
