@@ -59,7 +59,7 @@ not silently degrade.
 .venv/bin/python -m mypy prospector_engine deadman.py
 .venv/bin/python treasure.py --self-test      # imports + contracts, no input
 .venv/bin/python treasure.py --smoke-test     # packaging smoke test, no input
-.venv/bin/python treasure.py --capture-probe  # capture cost, read-only
+.venv/bin/python treasure.py --capture-probe  # measure the pipeline, read-only
 .venv/bin/python treasure.py --replay DIR     # replay a recording, no input
 ```
 

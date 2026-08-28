@@ -76,10 +76,11 @@ planning; none of them passes a gate.
 |---|---|---|
 | macOS title-bar inset for the Roblox window | 28.0 pt, **measured** from the window's own close-button geometry | dashboard **Pin Window** reports `measured` vs `provisional-fallback` |
 | Client rect derived from that inset | `origin=(0, 134) px, size=(3600, 2108) px, scale=2.0` (unpinned window) | `treasure.py --calibrate` |
-| Backend comparison, 1280×720 canonical | SCK **106–110** unique fps; Quartz window images ~75 ceiling; mss ~58 and not window-specific | `treasure.py --capture-probe` |
-| Full pipeline, capture + consume | 58.0 / 84.8 / 106.2 unique fps at 60 / 90 / 120 Hz requests; 0 duplicates, 0 drops | `treasure.py --capture-probe` |
-| Capture latency | p50 4.6–6.6 ms, p95 6.4–7.8 ms | same |
-| Memory across tiers | RSS 97–108 MB, flat from 60 to 120 Hz | same |
+| Full pipeline, capture + consume (ScreenCaptureKit) | 58.0 / 85.2 / **111.0** unique fps at 60 / 90 / 120 Hz requests; 0 duplicates, 0 drops | `treasure.py --capture-probe` |
+| Capture latency | p50 4.6–6.6 ms, p95 6.4–8.1 ms | same |
+| Memory across tiers | RSS 97–104 MB, flat from 60 to 120 Hz | same |
+| Quartz window fallback | 28.7 unique fps; capture p50 25.3 ms plus 11.1 ms CPU normalize | forced-source probe |
+| `mss` desktop fallback | ~58 fps ceiling, and **not** window-specific | backend comparison |
 | Live Shadow, dashboard running | 57 unique fps captured **and** processed, 43 fps preview, end-to-end p50 9.3 ms / p95 11.6 ms | Start Shadow and read the PIPELINE panel |
 | Perception cost | 5.2 ms p50 (was 12.3 ms before deduplicating the segmentation pass and adding ROI tracking) | PIPELINE panel |
 | Capture content | contains only the Roblox client — no desktop, Dock, or padding | screenshot of the Shadow view |
