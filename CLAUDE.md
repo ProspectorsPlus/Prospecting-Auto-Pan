@@ -106,7 +106,20 @@ no input, but they do need Screen Recording permission.
   threads submit `RuntimeIntent` objects and nothing else.
 - **One coherent frame per decision.** `prospector_engine/capture.py`
   publishes a stamped `CapturedFrame`; no feature captures independently and
-  no logical tick reads three separate instants.
+  no logical tick reads three separate instants. Consumers wake on
+  `wait_for_new`, not on a timer — the pipeline is push-shaped.
+- **Coordinate spaces are types, not conventions.**
+  `prospector_engine/geometry.py` defines `DISPLAY_LOGICAL`, `CLIENT_LOGICAL`,
+  `CLIENT_BACKING`, and `CANONICAL`. Never pass a device-pixel rectangle to a
+  window API, and never write a transform by hand — compose an `Affine2D`,
+  which refuses mismatched spaces.
+- **One viewport authority.** `ViewportGuard` owns the single
+  `ViewportState`. Detector readiness, coordinator readiness, the GUI, and Live
+  gating all read it, so "viewport ok" cannot coexist with "unsupported
+  viewport size".
+- **One observation per frame.** `DiagnosticObservation` holds its own frame.
+  Anything drawing, deciding, or reporting reads that, so the picture and the
+  reasoning cannot drift apart.
 - **Release is unconditional.** `release_all()` is idempotent, never
   focus-gated, and always attempts the full input vocabulary even after an
   individual edge fails.

@@ -18,13 +18,17 @@ repository state and is not architecture truth.
 
 | Capability | Status |
 |---|---|
-| Canonical client-area pin and read-back | implemented; **E-VIEW pending** on both OSes |
+| Explicit coordinate spaces (logical / backing / canonical) | implemented and tested |
+| Window-specific capture at 57–110 unique fps | implemented; **ScreenCaptureKit** on macOS |
+| Canonical client-area pin and read-back | implemented; **E-VIEW pin half pending** on both OSes |
 | One coherent stamped frame per decision | implemented |
+| Per-frame diagnostic observation and Shadow overlay | implemented |
 | Single input authority, leases, watchdog, out-of-process deadman | implemented and tested |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
 | Standalone dig loop (**F6**) | implemented; **pixels pending reverification** |
 | Shadow observation, telemetry, evidence recorder, dashboard | implemented |
 | Arrow detection, direction cues, motion estimators | implemented as **candidates**; no gate has been run |
+| Cadence governor (30/60/90/120 with hysteresis) | implemented and tested |
 | Live navigation (steering) | **refuses to run** — it names the pending experiments instead |
 | Obstacle recovery | **disabled** — needs E-MOTION *and* E-RECOVERY |
 | Automatic arrival | **disabled** — needs E-ARRIVE |
@@ -34,6 +38,43 @@ repository state and is not architecture truth.
 That table is the point of the project, not an apology for it. Each feature is
 enabled only for the exact OS, arrow profile, and condition whose evidence gate
 passed, and no gate has been run yet. See `STATUS.md`.
+
+## What Shadow shows you
+
+Start Shadow and the SHADOW VIEW draws, over the live frame it actually
+decided from:
+
+* the **assumed player-forward arm** — dashed and labelled, because E-ANCHOR
+  and E-FORWARD have not been run and this is a hypothesis you are being shown,
+  not a measurement;
+* the **desired map-arrow arm** and the **signed turn** between them, with the
+  angle in degrees;
+* a thin arm per **direction cue**, so when the fused cue abstains because its
+  components disagree you can see by how much;
+* the detected arrow's **contour, box, centroid and tip**, plus dashed boxes for
+  candidates that were **rejected**, and why;
+* a caption with confidence, profile status, abstention reason, and per-stage
+  timings.
+
+Everything in that picture comes from one `DiagnosticObservation`, which holds
+the frame itself — so the overlay can never be drawn from one frame over the
+image of another.
+
+## Coordinate spaces
+
+Four, and they are never interchangeable:
+
+| Space | Units | Who speaks it |
+|---|---|---|
+| `DISPLAY_LOGICAL` | macOS points; Windows device pixels under Per-Monitor V2 | window APIs, Accessibility, `mss` |
+| `CLIENT_LOGICAL` | same, relative to the client's top-left | pin requests, capture crops |
+| `CLIENT_BACKING` | native device pixels | what a Retina capture contains |
+| `CANONICAL` | fixed 1280×720 | every detector, calibrated pixel, and overlay coordinate |
+
+Handing a device-pixel rectangle to an API that wants logical units is what
+made the capture return the desktop instead of the game. `Affine2D` carries its
+source and target space and refuses to compose mismatched ones, so that class
+of bug no longer type-checks.
 
 ## The dig / pan-swap pixels are pending reverification
 
@@ -75,7 +116,7 @@ on Windows.
 .venv/bin/python treasure.py --self-test  # imports and contracts, emits no input
 .venv/bin/python treasure.py --smoke-test # packaging smoke test, emits no input
 .venv/bin/python treasure.py --calibrate  # client-relative pixel read-out
-.venv/bin/python treasure.py --capture-probe   # capture cost, read-only
+.venv/bin/python treasure.py --capture-probe   # measure the pipeline, read-only
 .venv/bin/python treasure.py --replay <session-dir>  # replay a recording
 ```
 

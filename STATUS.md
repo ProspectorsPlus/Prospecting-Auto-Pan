@@ -4,7 +4,7 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-27. Development machine: macOS 25.4, arm64, CPython
+Last updated: 2026-08-28. Development machine: macOS 25.4, arm64, CPython
 3.13.15, Tk 9.0. **No Roblox session was operated and Live was never armed
 during implementation.**
 
@@ -19,11 +19,11 @@ during implementation.**
 | Phase | Local implementation / replay | macOS commissioning | Windows commissioning |
 |---|---|---|---|
 | 0A Characterization | **done** — legacy transcript recorded, 14 tests green | n/a | n/a |
-| 0B Platform ports and viewport | **done** — instance ports, canonical client rect, B1/B9/B10/B11 fixed | **pending** (E-VIEW) | **pending** (E-VIEW) |
+| 0B Platform ports and viewport | **done** — explicit coordinate spaces, logical-unit pinning, truthful `ViewportState`; B1/B9/B10/B11 and D-017 fixed | **partial** — geometry verified read-only against the live client; pin/read-back **pending** (E-VIEW) | **pending** (E-VIEW) |
 | 0C Input authority and deadman | **done** — ledger, capabilities, watchdog, real helper subprocess tested, B5/B8 fixed | **pending** (real up-events, force-kill) | **pending** |
 | 0D Coordinator migration | **done** — priority loop, one worker, B3/B4/B6/B7/B13 fixed | n/a | n/a |
 | 0E Bounded legacy services | **done** — dig/reset/dequip/pan-swap typed and bounded, B2/B12 fixed | **pending** (owner-observed run) | **pending** |
-| 1 Shadow foundation and GUI | **done** — capture, telemetry, recorder with quarantine, dashboard, diagnostics, cross-launch unsafe-release recovery | **pending** (manual recording session) | **pending** |
+| 1 Shadow foundation and GUI | **done** — window-specific capture, event-driven pipeline, cadence governor, per-frame diagnostics, Shadow overlay, recorder with quarantine, cross-launch unsafe-release recovery | **partial** — Shadow verified against the live client at 57 unique fps; owner-observed session **pending** | **pending** |
 | 2 Offline perception candidates | **partial** — candidates implemented and unit-tested on synthetic frames; **no labelled corpus exists** | **blocked** on recordings | **blocked** on recordings |
 | 3 Shadow navigation and controller | **partial** — FSM, controller, recovery ladder implemented and gated off; deterministic replay works (`--replay`) | **pending** (E-YAW, E-STEER-CAL need physical arming) | **pending** |
 | 4 One-map Live lifecycle | **not started, on purpose** — the plan enables a transition only when its evidence is validated, so `NAVIGATE → DIG` is not wired up while E-ARRIVE is pending | **pending** | **pending** |
@@ -40,7 +40,7 @@ screenshots.
 
 | Gate | Status | What it needs that this machine cannot provide |
 |---|---|---|
-| E-VIEW | pending | A real Roblox client to pin and read back, on each OS, at several DPI/Retina settings. |
+| E-VIEW | pending | Pinning and reading back a real Roblox client on each OS at several DPI/Retina settings. Read-only geometry inspection has been done on macOS (title-bar inset measured, client rect derived, transforms round-trip); the **pin** half needs the owner, because resizing the game window is outside what an unattended agent may do. |
 | E-ANCHOR | pending | Reviewer-labelled avatar control pivot across sessions. |
 | E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded reviewer labelling. |
 | E-DIR-IDEAL | pending | Manual masks plus repeatable aligned-zero outcome trials. |
@@ -76,33 +76,59 @@ planning; none of them passes a gate.
 |---|---|---|
 | macOS title-bar inset for the Roblox window | 28.0 pt, **measured** from the window's own close-button geometry | dashboard **Pin Window** reports `measured` vs `provisional-fallback` |
 | Client rect derived from that inset | `origin=(0, 134) px, size=(3600, 2108) px, scale=2.0` (unpinned window) | `treasure.py --calibrate` |
-| Capture cost, 1280×720 physical px | p50 ~19–23 ms, p95 ~21–33 ms | `treasure.py --capture-probe` |
-| Capture cost, 2560×1440 | p50 ~33–37 ms, p95 ~36–47 ms | same |
-| Capture cost, 3600×2108 (unpinned) | p50 ~70–81 ms, p95 ~82–158 ms | same |
-| Shadow against an unpinned window | releases every tick on `stale-frame`, arrow abstains `unsupported-viewport-size` | Start Shadow without pinning |
+| Backend comparison, 1280×720 canonical | SCK **106–110** unique fps; Quartz window images ~75 ceiling; mss ~58 and not window-specific | `treasure.py --capture-probe` |
+| Full pipeline, capture + consume | 58.0 / 84.8 / 106.2 unique fps at 60 / 90 / 120 Hz requests; 0 duplicates, 0 drops | `treasure.py --capture-probe` |
+| Capture latency | p50 4.6–6.6 ms, p95 6.4–7.8 ms | same |
+| Memory across tiers | RSS 97–108 MB, flat from 60 to 120 Hz | same |
+| Live Shadow, dashboard running | 57 unique fps captured **and** processed, 43 fps preview, end-to-end p50 9.3 ms / p95 11.6 ms | Start Shadow and read the PIPELINE panel |
+| Perception cost | 5.2 ms p50 (was 12.3 ms before deduplicating the segmentation pass and adding ROI tracking) | PIPELINE panel |
+| Capture content | contains only the Roblox client — no desktop, Dock, or padding | screenshot of the Shadow view |
 
-The last two rows together are why the canonical pin matters: capture cost
-scales with pixel count, and only the canonical size leaves room for perception
-inside the 40 ms budget. **E-PERF is still pending** — it covers perception,
-control, preview, and Stop latency as well.
+**E-PERF is still pending.** These are capture, perception, and preview costs on
+one machine with one window size; the gate additionally covers control latency,
+Stop latency, duplicate/stale rates across conditions, and both OSes.
 
 ## Native checks the owner must run
 
-macOS:
+### macOS — E-VIEW, the pin half
+
+The agent could not do this: resizing the running game window is outside what
+it may do unattended, and the whole point of the check is that a **real** pin
+reads back correctly.
 
 1. Grant Accessibility **and** Screen Recording to the launching process.
-2. `.venv/bin/python treasure.py` → **Pin Window** with Roblox open and
-   windowed. Confirm the reported client size is `1280x720` within one pixel
-   and note whether the title-bar inset was `measured` or `provisional-fallback`.
-3. `.venv/bin/python treasure.py --calibrate` → re-derive every
-   `TreasurePixels` value in the canonical client basis, then update
-   `prospector_engine/engine.py` and flip its status off `PENDING`.
-4. Start Shadow and confirm the preview, readiness cards, and event log update
-   with Roblox frontmost and with Tk frontmost.
-5. Only then consider F4/F5 with Roblox focused, watching for a stuck input.
+2. `.venv/bin/python treasure.py`, with Roblox open and windowed (not native
+   fullscreen). The VIEWPORT card should read `adopted noncanonical`.
+3. Press **Pin Window**. Expect the message to report a client of
+   `1280x720 pt`, a backing size of `2560x1440 px` on a 2× display, and whether
+   the title-bar inset was `measured` or `provisional fallback`. The VIEWPORT
+   card should change to `canonical verified`.
+   * **If it reports a clamp instead**, that is the real answer: record the
+     achieved size. Roblox enforces a minimum window size, and 1280×720 points
+     is close to it. The application stays usable in `adopted noncanonical`,
+     and the canonical raster is produced by letterboxing.
+4. `.venv/bin/python treasure.py --calibrate` → re-derive every
+   `TreasurePixels` value. It refuses to suggest baking a value while the
+   viewport is non-canonical, and says so inline.
+5. Start Shadow. Confirm the PIPELINE panel shows `screencapturekit`, at least
+   30 unique fps, and that the SHADOW VIEW contains only the game.
+6. Confirm capture continues while the dashboard itself is frontmost - that is
+   the property the ScreenCaptureKit backend exists for.
+7. Only then consider F4/F5/F6 with Roblox focused, watching for a stuck input.
 
-Windows: everything above, plus 100/125/150/200% DPI, plus confirming
-Per-Monitor V2 is actually in effect (the dashboard shows the mechanism).
+### Windows — everything, from scratch
+
+No code in `platform_win.py` has ever executed. In addition to the macOS list:
+
+1. Generate `requirements-windows.lock` on Windows (see that file's header).
+2. Confirm Per-Monitor V2 is actually in effect - the pin message reports the
+   mechanism that succeeded.
+3. Repeat the geometry and capture checks at 100 / 125 / 150 / 175 / 200%
+   scaling, and on a secondary monitor with a negative origin.
+4. Verify `WindowsPrintWindowSource` returns client content and not a black
+   frame; some GPU-composited windows need
+   Windows Graphics Capture instead, which is the documented next step
+   (DECISIONS.md D-018).
 
 ## Release blocker
 

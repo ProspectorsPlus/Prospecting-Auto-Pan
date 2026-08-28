@@ -152,3 +152,243 @@ def test_every_readiness_card_has_a_label(dashboard: Any) -> None:
         "pixels",
     }
     assert set(dashboard.readiness_labels) == expected
+
+
+# ---------------------------------------------------------------------------
+# The Shadow overlay
+# ---------------------------------------------------------------------------
+
+
+def _observation(**overrides: Any) -> Any:
+    """A synthetic observation with a real frame behind it."""
+    from prospector_engine.contracts import (
+        ArrowObservation,
+        DiagnosticObservation,
+        DirectionObservation,
+        NavigationPhase,
+    )
+    from tests.fakes import make_frame
+
+    frame = overrides.pop("frame", None) or make_frame(7, captured_at_s=0.0)
+    arrow = overrides.pop(
+        "arrow",
+        ArrowObservation(
+            profile_id="yellow_map_v0",
+            track_id=3,
+            bbox_px=(600, 300, 60, 90),
+            centroid_px=(630.0, 345.0),
+            tip_px=(630.0, 300.0),
+            axis_unit_xy=(0.0, -1.0),
+            confidence=0.82,
+            valid=True,
+        ),
+    )
+    direction = overrides.pop(
+        "direction",
+        DirectionObservation(
+            error_deg=32.0,
+            confidence=0.7,
+            cue_id="fusion",
+            cue_disagreement_deg=4.0,
+            valid=True,
+        ),
+    )
+    defaults: dict[str, Any] = {
+        "frame": frame,
+        "processed_at_s": 0.005,
+        "published_at_s": 0.006,
+        "profile_id": "yellow_map_v0",
+        "profile_status": "pending",
+        "strategy_id": "fusion",
+        "arrow": arrow,
+        "candidates": (),
+        "contour_px": ((600, 300), (660, 300), (660, 390), (600, 390)),
+        "anchor_px": (640.0, 430.0),
+        "forward_deg": 0.0,
+        "forward_source": "assumed: screen-up (E-FORWARD PENDING)",
+        "desired_deg": 32.0,
+        "direction": direction,
+        "cues": (("centroid_ray", direction),),
+        "motion": None,
+        "arrival": None,
+        "phase": NavigationPhase.ALIGN,
+        "command": None,
+        "abstain_reason": None,
+        "capture_ms": 4.0,
+        "perception_ms": 5.0,
+        "decision_ms": 0.1,
+    }
+    defaults.update(overrides)
+    return DiagnosticObservation(**defaults)
+
+
+def _canvas_items(dashboard: Any) -> dict[str, Any]:
+    diagnostics = dashboard._diagnostics
+    return diagnostics._items
+
+
+def _visible(dashboard: Any, name: str) -> bool:
+    """Whether an overlay element is on screen. Never created counts as not."""
+    item = _canvas_items(dashboard).get(name)
+    if item is None:
+        return False
+    return bool(dashboard.canvas.itemcget(item, "state") != "hidden")
+
+
+def test_the_overlay_draws_both_direction_arms_and_the_angle(dashboard: Any) -> None:
+    dashboard.root.update_idletasks()
+    diagnostics = dashboard._diagnostics
+
+    assert diagnostics.render(_observation()) is True
+
+    for name in ("forward_arm", "desired_arm", "arc", "angle_text", "anchor_dot"):
+        assert _visible(dashboard, name), name
+    assert "+32.0" in dashboard.canvas.itemcget(_canvas_items(dashboard)["angle_text"], "text")
+
+
+def test_the_overlay_draws_the_arrow_geometry(dashboard: Any) -> None:
+    dashboard.root.update_idletasks()
+    dashboard._diagnostics.render(_observation())
+
+    for name in ("contour", "bbox", "centroid", "tip"):
+        assert _visible(dashboard, name), name
+
+
+def test_an_abstaining_direction_hides_the_desired_arm_and_says_why(dashboard: Any) -> None:
+    from prospector_engine.contracts import DirectionObservation
+
+    dashboard.root.update_idletasks()
+    abstained = DirectionObservation(
+        error_deg=None,
+        confidence=0.0,
+        cue_id="fusion",
+        cue_disagreement_deg=61.0,
+        valid=False,
+        abstain_reason="cues disagree",
+    )
+    observation = _observation(direction=abstained, desired_deg=None)
+
+    dashboard._diagnostics.render(observation)
+
+    assert not _visible(dashboard, "desired_arm")
+    assert not _visible(dashboard, "arc")
+    assert "cues disagree" in dashboard.canvas.itemcget(
+        _canvas_items(dashboard)["no_desired"], "text"
+    )
+    # The reference arm still shows: it is configuration, not a measurement.
+    assert _visible(dashboard, "forward_arm")
+
+
+def test_an_abstaining_arrow_hides_its_geometry_but_keeps_the_caption(dashboard: Any) -> None:
+    from prospector_engine.contracts import ArrowObservation
+
+    dashboard.root.update_idletasks()
+    missing = ArrowObservation(
+        profile_id="yellow_map_v0",
+        track_id=None,
+        bbox_px=None,
+        centroid_px=None,
+        tip_px=None,
+        axis_unit_xy=None,
+        confidence=0.0,
+        valid=False,
+        abstain_reason="no-candidate",
+    )
+    dashboard._diagnostics.render(_observation(arrow=missing, contour_px=(), desired_deg=None))
+
+    for name in ("contour", "bbox", "centroid", "tip"):
+        assert not _visible(dashboard, name), name
+    assert "no-candidate" in dashboard.canvas.itemcget(
+        _canvas_items(dashboard)["caption"], "text"
+    )
+
+
+def test_the_caption_reports_confidence_profile_status_and_timings(dashboard: Any) -> None:
+    dashboard.root.update_idletasks()
+    dashboard._diagnostics.render(_observation())
+
+    text = dashboard.canvas.itemcget(_canvas_items(dashboard)["caption"], "text")
+    assert "yellow_map_v0" in text
+    assert "[pending]" in text
+    assert "conf 0.82" in text
+    assert "perception" in text
+    assert "E-FORWARD PENDING" in text
+
+
+def test_the_same_observation_is_not_redrawn(dashboard: Any) -> None:
+    """Redrawing an unchanged frame would burn the Tk thread for nothing."""
+    dashboard.root.update_idletasks()
+    observation = _observation()
+
+    assert dashboard._diagnostics.render(observation) is True
+    assert dashboard._diagnostics.render(observation) is False
+
+
+def test_canvas_items_are_reused_rather_than_recreated(dashboard: Any) -> None:
+    """No delete-and-rebuild per frame: the item ids must be stable."""
+    from tests.fakes import make_frame
+
+    dashboard.root.update_idletasks()
+    dashboard._diagnostics.render(_observation())
+    first = dict(_canvas_items(dashboard))
+    total_before = len(dashboard.canvas.find_all())
+
+    for sequence in range(8, 14):
+        dashboard._diagnostics.render(
+            _observation(frame=make_frame(sequence, captured_at_s=0.0))
+        )
+
+    assert dict(_canvas_items(dashboard)) == first
+    assert len(dashboard.canvas.find_all()) == total_before
+
+
+def test_rejected_candidates_are_drawn_and_then_hidden_again(dashboard: Any) -> None:
+    from prospector_engine.contracts import ArrowCandidateRecord
+    from tests.fakes import make_frame
+
+    dashboard.root.update_idletasks()
+    rejected = tuple(
+        ArrowCandidateRecord(
+            label=index,
+            area_px=1000,
+            bbox_px=(100 * index, 100, 40, 40),
+            centroid_px=(100.0 * index + 20, 120.0),
+            score=0.2,
+            accepted=False,
+            rejected_reason="not the best candidate",
+        )
+        for index in range(1, 4)
+    )
+    dashboard._diagnostics.render(_observation(candidates=rejected))
+    reject_items = dashboard._diagnostics._reject_items
+    assert len(reject_items) == 3
+    assert all(dashboard.canvas.itemcget(i, "state") != "hidden" for i in reject_items)
+
+    dashboard._diagnostics.render(
+        _observation(frame=make_frame(21, captured_at_s=0.0), candidates=())
+    )
+    assert all(dashboard.canvas.itemcget(i, "state") == "hidden" for i in reject_items)
+
+
+def test_the_metrics_panel_reports_the_pipeline_state(dashboard: Any) -> None:
+    dashboard._render_metrics(dashboard.app.capture.metrics())
+    text = dashboard.metrics_var.get()
+    assert "unique" in text
+    assert "processed" in text
+    assert "preview" in text
+    assert "rss" in text
+
+
+def test_selecting_a_profile_changes_the_running_pipeline(dashboard: Any) -> None:
+    """The selector must reach the worker, not just the next session."""
+    library = dashboard.app.library
+    other = next(
+        profile
+        for profile in library.all()
+        if profile.profile_id != dashboard.app.pipeline.profile.profile_id
+    )
+    dashboard.profile_var.set(f"{other.profile_id} [{other.status.value}]")
+
+    dashboard._on_profile_selected(None)
+
+    assert dashboard.app.pipeline.profile.profile_id == other.profile_id
