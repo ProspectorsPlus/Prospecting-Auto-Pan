@@ -8,6 +8,21 @@ Last updated: 2026-08-28. Development machine: macOS 25.4, arm64, CPython
 3.13.15, Tk 9.0. **No Roblox session was operated and Live was never armed
 during implementation.**
 
+## What changed on 2026-08-28
+
+The capture foundation was rebuilt. In short: coordinate spaces are now types
+rather than conventions, capture is window-specific and event-driven, and Shadow
+shows the reasoning behind every frame.
+
+| Before | After |
+|---|---|
+| A device-pixel rect handed to a logical-unit API; the capture contained the desktop, the Dock, and blank padding | Four named coordinate spaces, transforms that refuse to compose across them, and a capture containing only the Roblox client |
+| Pin requested 1280×720 **device pixels**, became a 640×360-point window, and was clamped | Pin requests 1280×720 **logical** units; a clamp is reported once as a truthful non-canonical state |
+| "Viewport ok" alongside "unsupported viewport size" | One `ViewportState` every consumer reads |
+| ~10–20 Hz polled loops | Push pipeline: **57 unique fps** sustained with perception, **111 fps** capture-only |
+| Preview showed a raw frame; telemetry published `None` for every observation | One `DiagnosticObservation` per frame, drawn as arms, arc, contour, and candidates |
+| Perception 12.3 ms | 5.2 ms (deduplicated segmentation pass, bounded ROI tracking) |
+
 ## Legend
 
 `done` · `partial` · `pending` (gate exists, not run) · `blocked` · `n/a`
