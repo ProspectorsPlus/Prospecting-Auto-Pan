@@ -179,14 +179,32 @@ genuine 120 Hz workload stays at 120; a 60-capped source probes once and stops
 oscillating; a 250 ms transient causes no permanent downshift; sustained
 over-age evidence immediately blocks Live.
 
-### Soak
+### Soak — ten bounded minutes
 
 `.venv/bin/python treasure.py --soak 10`
 
-Ten bounded minutes of the real capture, perception and telemetry path against
-a synthetic source. Results are recorded in the pass report; the check is that
-threads, file descriptors, buffer pool occupancy and the event log stay bounded
-and that the RSS slope after warmup is under the provisional 1 MB/min target.
+Ten minutes of the real capture, perception, navigation and telemetry path
+against a synthetic source. **Passed.**
+
+| Measurement | Result |
+|---|---|
+| Frames processed | 28 513 |
+| Sustained throughput | 45–51 unique fps, processed within 0.1 fps of unique |
+| RSS after warmup | 141.3 MB at 120 s → 141.6 MB at 570 s |
+| RSS slope | **+0.43 MB/min** (target: under 1.0) |
+| Peak RSS | 259 MB, reached during import and never approached again |
+| Threads | 1 before, 1 after |
+| Buffer pool live at exit | 0 of 8 |
+| Capture shutdown | clean |
+| CPU | 39–47 % of one core |
+
+The slope figure is dominated by the first sample; from 120 s onward RSS moved
+0.3 MB in seven and a half minutes, which is flat. Reported as measured rather
+than as the more flattering windowed number.
+
+`peak` and `current` are separate columns on purpose. The previous build showed
+`ru_maxrss` — a peak — labelled as memory now, which would have read as a
+259 MB steady state here instead of 141 MB.
 
 ---
 
