@@ -65,7 +65,10 @@ filterwarnings = ["error::DeprecationWarning:prospector_engine.*"]
 [tool.ruff]
 line-length = 96
 target-version = "py313"
-extend-exclude = [".venv", ".venv-python38-backup", "build", "dist"]
+# Ruff formats Python blocks inside Markdown. The plan and the docs are
+# prose, not source, and TREASURE_NAVIGATION_PLAN.md in particular is
+# authoritative and must not be rewritten by a formatter.
+extend-exclude = [".venv", ".venv-python38-backup", "build", "dist", "*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
