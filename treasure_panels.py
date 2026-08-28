@@ -28,7 +28,7 @@ import sys
 import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
-from typing import Any
+from typing import Any, ClassVar
 
 from prospector_engine.contracts import (
     CaptureMetrics,
@@ -64,9 +64,24 @@ class Tooltip:
     before clicking something that might send input to a game.
     """
 
+    #: Every tooltip ever attached, by widget, so live text can replace the
+    #: text of an existing one instead of stacking a second binding on the
+    #: same widget - which would show two tooltips and leak one per refresh.
+    _BY_WIDGET: ClassVar[dict[tk.Widget, Tooltip]] = {}
+
+    @classmethod
+    def retarget(cls, widget: tk.Widget, text: str) -> None:
+        """Update a widget's tooltip text, attaching one if it has none."""
+        existing = cls._BY_WIDGET.get(widget)
+        if existing is None:
+            cls(widget, text)
+            return
+        existing.text = text
+
     def __init__(self, widget: tk.Widget, text: str, *, delay_ms: int = 350) -> None:
         self.widget = widget
         self.text = text
+        Tooltip._BY_WIDGET[widget] = self
         self._delay_ms = delay_ms
         self._after: str | None = None
         self._window: tk.Toplevel | None = None

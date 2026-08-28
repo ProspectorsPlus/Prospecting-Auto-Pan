@@ -476,11 +476,19 @@ def test_frames_are_not_counted_as_dropped_before_anyone_consumes() -> None:
         assert service.latest() is not None
         assert service.metrics().superseded_frames.session_total == 0
 
-        # Once a consumer exists, real supersedes are counted again.
-        first = service.wait_for_new(0, 1.0)
-        assert first is not None
+        # Reading a frame is not, on its own, being a consumer: automatic
+        # setup and the live prologue both do it, and a session that latched
+        # "someone is consuming" on their behalf is what drove the governor
+        # down to 15 Hz with nothing actually running.
+        assert service.wait_for_new(0, 1.0) is not None
         time.sleep(0.3)
-        assert service.metrics().superseded_frames.session_total >= 1
+        assert service.metrics().superseded_frames.session_total == 0
+
+        # Inside a declared scope, real supersedes are counted again.
+        with service.consuming("test"):
+            assert service.wait_for_new(0, 1.0) is not None
+            time.sleep(0.3)
+            assert service.metrics().superseded_frames.session_total >= 1
     finally:
         service.stop()
 
@@ -499,7 +507,7 @@ def test_consumer_visible_gaps_match_the_slot_drop_count() -> None:
         def __init__(self, sequence: int) -> None:
             self.frame = _Frame(sequence)
 
-    slot.wait_for_new(0, 0.0)  # register a consumer
+    slot.add_consumer()  # scoped registration, not a side effect of reading
     slot.publish(_Envelope(1))  # type: ignore[arg-type]
     taken = slot.wait_for_new(0, 0.0)
     assert taken is not None and taken.frame.sequence == 1

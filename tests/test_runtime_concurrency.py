@@ -386,19 +386,62 @@ def test_start_live_is_refused_from_the_gui(harness: Harness) -> None:
     assert harness.coordinator.arm_token() is None  # the attempt still spends it
 
 
-def test_failed_readiness_spends_the_token(harness: Harness) -> None:
+def test_a_transient_readiness_failure_keeps_the_arm(harness: Harness) -> None:
+    """Pressing the chord a moment before Roblox comes frontmost is normal.
+
+    Spending the arm on it forces another trip to the button for something the
+    user is about to fix by clicking into the game, which is the single most
+    likely way to use this feature.
+    """
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
     harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
     assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-    harness.port.set_focus(False)  # readiness will now fail
+    harness.port.set_focus(False)
 
+    harness.submit(IntentType.START_LIVE, source="hotkey")
+    time.sleep(0.15)
+    assert harness.started == []
+    assert harness.coordinator.mode is not RunMode.LIVE
+    assert harness.coordinator.arm_token() is not None, "a transient miss burned the arm"
+
+    # ...and the same arm works once the transient condition clears.
+    harness.port.set_focus(True)
+    harness.submit(IntentType.START_LIVE, source="hotkey")
+    assert harness.wait_for(lambda: "live" in harness.started)
+    assert harness.coordinator.arm_token() is None, "the arm outlived its use"
+
+
+def test_a_real_readiness_fault_spends_the_token(harness: Harness) -> None:
+    """An unconfirmed release is not something a second press should retry into."""
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+    harness.port.fail("key_up")
+    harness.authority.release_all("injected")
+    harness.port.fail_ops.clear()
+    assert harness.authority.release_uncertain
+
+    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
+    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
     harness.submit(IntentType.START_LIVE, source="hotkey")
     time.sleep(0.15)
 
     assert harness.started == []
     assert harness.coordinator.arm_token() is None
     assert harness.coordinator.mode is not RunMode.LIVE
+
+
+def test_a_non_hotkey_source_always_spends_the_token(harness: Harness) -> None:
+    """Something submitting on the arm's behalf is what the token exists to stop."""
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
+    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
+
+    harness.submit(IntentType.START_LIVE, source="gui")
+    time.sleep(0.15)
+    assert harness.started == []
+    assert harness.coordinator.arm_token() is None
 
 
 def test_an_unsafe_release_latch_blocks_live_but_not_shadow(harness: Harness) -> None:

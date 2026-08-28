@@ -22,8 +22,10 @@ requires a physical arm before it can move anything.
 from __future__ import annotations
 
 import contextlib
+import os
 import queue
-from collections.abc import Callable
+import sys
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -75,6 +77,7 @@ from prospector_engine.navigation import (
     make_shadow_worker,
 )
 from prospector_engine.ports import PlatformPort, create_platform_port, current_platform_name
+from prospector_engine.preflight import InputPreflight, gather
 from prospector_engine.steering import SteeringLimits
 from prospector_engine.telemetry import AppPaths, EventLog, LatestSlot, resolve_app_paths
 from prospector_engine.turning import ControlFingerprint, TurnResponse, TurnResponseCache
@@ -239,6 +242,23 @@ class EngineSetupPort:
         )
 
     # -- perception -------------------------------------------------------
+    @contextlib.contextmanager
+    def consuming(self) -> Iterator[None]:
+        """Declare setup as a frame consumer for as long as it runs.
+
+        Automatic setup really does consume frames and really does run the
+        detector on them, so it registers like any other phase and reports its
+        perception cost. What it must not do is *latch* consumption: reading a
+        few frames used to mark the slot as consumed forever, so after setup
+        finished the governor saw a processed rate of zero against a consumer
+        that no longer existed and downshifted to 15 Hz - under the 30 the
+        steering controller requires. Live then refused to start.
+        """
+        # measured=False: setup polls on its own bounded schedule, and that
+        # cadence is not the pipeline's throughput.
+        with self._capture.consuming("setup", measured=False):
+            yield
+
     def _newest(self) -> CapturedFrame | None:
         envelope = self._capture.wait_for_new(self._sequence, 0.2)
         if envelope is None:
@@ -356,6 +376,11 @@ class Application:
     #: prologue write into the same cell, so the dashboard and the workers
     #: cannot disagree about what has been measured.
     capabilities_provider: Callable[[], NavigationCapabilities]
+    #: The global chord listener, installed by ``main()``. Held here rather
+    #: than as a local in ``main`` so the dashboard can *show* whether it is
+    #: running: a listener that silently is not is indistinguishable from a
+    #: hotkey that does nothing, and that was exactly the confusion.
+    hotkeys: Any = None
 
     @property
     def capabilities(self) -> NavigationCapabilities:
@@ -369,10 +394,55 @@ class Application:
     def library(self) -> Any:
         return self.profiles.library
 
+    def preflight(self) -> InputPreflight:
+        """Everything Live depends on, read once, in one coherent pass.
+
+        Assembled here because this is the only object that can see all of it
+        at once: the platform port's permissions, the listener's health, the
+        coordinator's arm token, the capture cadence and the authority's
+        release state.
+        """
+        port = self.port
+        listener = self.hotkeys
+        return gather(
+            os_name=sys.platform,
+            launcher=_launcher_identity(),
+            accessibility_probe=getattr(port, "event_post_trusted", None),
+            listen_probe=getattr(port, "input_listening_trusted", None),
+            capture_probe=self._capture_permitted,
+            hotkey_running=bool(listener is not None and listener.is_running()),
+            roblox_focused=port.focus_state(),
+            arm_token_present=self.coordinator.armed,
+            processed_fps=self.capture.processed_fps,
+            min_processed_fps=float(SteeringLimits().min_processed_fps),
+            release_uncertain=self.authority.release_uncertain,
+            ledger_empty=self.authority.ledger_empty(),
+        )
+
+    def _capture_permitted(self) -> bool:
+        """Screen Recording, answered by whether frames are actually arriving."""
+        if self.capture.latest() is not None:
+            return True
+        error = self.capture.last_error() or ""
+        return "permission" not in error.lower() and "recording" not in error.lower()
+
     def shutdown(self) -> dict[str, str]:
         report = self.coordinator.shutdown()
         self.deadman.close()
         return report
+
+
+def _launcher_identity() -> str:
+    """Which application owns this process's permissions.
+
+    On macOS a permission is granted to the *launching* application - Terminal,
+    iTerm, or a packaged app - not to Python. Naming it is the difference
+    between "grant permissions" and an instruction someone can follow.
+    """
+    bundle = os.environ.get("__CFBundleIdentifier")  # noqa: SIM112 - Apple spells it so
+    if bundle:
+        return bundle.rsplit(".", 1)[-1].replace("-", " ").title()
+    return os.path.basename(sys.executable)
 
 
 def build_application(profile_id: str = "green_arrow_v1") -> Application:
@@ -477,7 +547,8 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         cancelled: Callable[[], bool], publish: Callable[[SetupProgress], None]
     ) -> SetupProgress:
         machine = make_setup(cancelled, publish)
-        progress = machine.run_observation()
+        with setup_port.consuming():
+            progress = machine.run_observation()
         if progress.ok:
             reference = machine.reference
             state["capabilities"] = replace(

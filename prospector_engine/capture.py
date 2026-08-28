@@ -114,6 +114,12 @@ class CaptureConfig:
     #: than the downshift ratio on purpose: comfortably inside a tier is not
     #: the same as running out of room in it.
     upshift_saturation: float = 0.95
+    #: How long a tier below the Live floor may sit "healthy" before the
+    #: saturation gate is waived and it probes upward anyway. A tier that is
+    #: stable and permanently ineligible is the worst outcome available: Live
+    #: refuses to steer at it, and nothing ever tries to leave. One failed
+    #: probe costs a downshift and is bounded; never probing costs the feature.
+    ineligible_retry_s: float = 15.0
     #: Consecutive bad polls before a downshift. Four polls at the supervisor
     #: interval is a full second of evidence: a resize, a collection pause or
     #: the first cold frames after start are free, a sustained shortfall is not.
@@ -266,7 +272,15 @@ class LatestFrameSlot:
         self._value: FrameEnvelope | None = None
         self._sequence = 0
         self._taken_sequence = 0
-        self._has_consumer = False
+        #: How many consumers are registered *right now*. A count and not a
+        #: flag, and scoped rather than sticky: ``wait_for_new`` used to latch
+        #: this to True for the lifetime of the session, so automatic setup or
+        #: the live prologue reading a few frames left the slot believing a
+        #: consumer existed forever. Every frame published afterwards then
+        #: counted as superseded and the processed rate read a real zero, which
+        #: the governor answered by downshifting 60 -> 30 -> 15 Hz - below the
+        #: 30 fps steering needs. The pipeline talked itself out of running.
+        self._consumers = 0
         self._lock = threading.Condition()
         self.dropped = 0
         self.lifetime_dropped = 0
@@ -292,7 +306,7 @@ class LatestFrameSlot:
             # every frame would otherwise be counted, which reads as a disaster
             # while the pipeline is perfectly healthy.
             if (
-                self._has_consumer
+                self._consumers > 0
                 and self._value is not None
                 and self._sequence > self._taken_sequence
             ):
@@ -312,9 +326,21 @@ class LatestFrameSlot:
 
     @property
     def has_consumer(self) -> bool:
-        """Whether anyone has ever waited on this slot this session."""
+        """Whether anyone is consuming frames *right now*."""
         with self._lock:
-            return self._has_consumer
+            return self._consumers > 0
+
+    def add_consumer(self) -> None:
+        """Register a consumer. Paired with ``remove_consumer``."""
+        with self._lock:
+            self._consumers += 1
+            # Start its supersede accounting from here, not from whatever the
+            # last consumer left behind.
+            self._taken_sequence = self._sequence
+
+    def remove_consumer(self) -> None:
+        with self._lock:
+            self._consumers = max(0, self._consumers - 1)
 
     @property
     def sequence(self) -> int:
@@ -325,9 +351,6 @@ class LatestFrameSlot:
         """Block until a frame newer than ``after_sequence`` is available."""
         deadline = monotonic_s() + timeout_s
         with self._lock:
-            if not self._has_consumer:
-                self._has_consumer = True
-                self._taken_sequence = self._sequence
             while True:
                 if self._value is not None and self._sequence > after_sequence:
                     self._taken_sequence = max(self._taken_sequence, self._sequence)
@@ -341,7 +364,7 @@ class LatestFrameSlot:
         with self._lock:
             self._value = None
             self._taken_sequence = self._sequence
-            self._has_consumer = False
+            self._consumers = 0
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +466,15 @@ class _RateCounter:
         """Start a new measurement epoch. Lifetime survives on purpose."""
         with self._lock:
             self.total = 0
+            self._stamps.clear()
+
+    def reset_window(self) -> None:
+        """Drop the sliding window, keeping both totals.
+
+        For a phase boundary: the *rate* must describe the phase that just
+        started, while the counts still have to account for everything.
+        """
+        with self._lock:
             self._stamps.clear()
 
     def summary(self, label: str) -> RateSummary:
@@ -945,9 +977,15 @@ class CadenceGovernor:
         if healthy_since is None or now_s - healthy_since < config.upshift_after_s:
             return self._tier
         # Only climb when the source is already saturating the current tier, so
-        # we never chase a rate the display cannot produce.
-        if useful_fps < target * config.upshift_saturation:
-            return self._tier
+        # we never chase a rate the display cannot produce - unless this tier is
+        # below the Live floor, where "stable" is not an acceptable resting
+        # place. After ineligible_retry_s of health the gate is waived and it
+        # probes regardless: an ineligible tier must never be terminal.
+        starved = useful_fps < target * config.upshift_saturation
+        if starved:
+            stuck_for = now_s - healthy_since
+            if self._tier.acceptable or stuck_for < config.ineligible_retry_s:
+                return self._tier
         self._probe_from = self._tier
         self._probes += 1
         self._set_tier(self.LADDER[index + 1], "probing the next tier up", now_s)
@@ -1650,6 +1688,9 @@ class CaptureService:
         self._source_rate = _RateCounter()
         self._unique_rate = _RateCounter()
         self._processed_rate = _RateCounter()
+        #: Phases whose processed rate is the pipeline's throughput. Setup
+        #: and the live prologue consume without being counted here.
+        self._measured_consumers = 0
         self._control_rate = _RateCounter()
         self._preview_rate = _RateCounter()
         self._duplicate_rate = _RateCounter()
@@ -1809,6 +1850,50 @@ class CaptureService:
 
     def wait_for_new(self, after_sequence: int, timeout_s: float) -> FrameEnvelope | None:
         return self._slot.wait_for_new(after_sequence, timeout_s)
+
+    @contextlib.contextmanager
+    def consuming(self, reason: str, *, measured: bool = True) -> Iterator[None]:
+        """Register as a frame consumer for the duration of a phase.
+
+        Every phase that reads frames - automatic setup, the live prologue,
+        Shadow, Live - opens one of these, and three things follow:
+
+        * **Consumption is scoped, not latched.** ``wait_for_new`` used to mark
+          the slot consumed for the rest of the session, so a handful of frames
+          read during setup left the governor judging a consumer that no longer
+          existed. Outside every scope the processed rate is not judged at all.
+        * **The window is intentional.** Entering a scope restarts the
+          processed-rate window, so Live's first cadence decision is made on
+          Live's own frames and not on whatever the previous phase left behind.
+        * **Measurement is separate from consumption.** ``measured=False`` says
+          this phase takes frames on its own schedule and its rate is not the
+          pipeline's throughput. Automatic setup and the live prologue poll
+          deliberately slowly; counting their cadence as throughput would judge
+          the pipeline on how fast a *probe* chose to run.
+
+        A phase that is consuming but not measured still gets honest supersede
+        accounting - frames really are being taken - while the governor treats
+        throughput exactly as it does with nobody attached.
+        """
+        del reason  # named for the caller's clarity; nothing here logs it
+        self._slot.add_consumer()
+        self._processed_rate.reset_window()
+        if measured:
+            with self._lock:
+                self._measured_consumers += 1
+        try:
+            yield
+        finally:
+            self._slot.remove_consumer()
+            if measured:
+                with self._lock:
+                    self._measured_consumers = max(0, self._measured_consumers - 1)
+
+    @property
+    def measuring(self) -> bool:
+        """Whether a phase whose rate *is* the pipeline's throughput is running."""
+        with self._lock:
+            return self._measured_consumers > 0
 
     @property
     def processed_fps(self) -> float:
@@ -2106,7 +2191,10 @@ class CaptureService:
                 self._exhausted_rate.tick(now, count=exhausted_now)
 
             before = self._governor.tier
-            consumer = self._slot.has_consumer
+            # Only a *measured* phase gets its processed rate judged. Setup and
+            # the prologue consume on their own schedule, and reading that as
+            # throughput is how the governor talked itself down to 15 Hz.
+            consumer = self.measuring
             recent = self._end_to_end.recent(self._config.recent_window_s, now)
             after = self._governor.update(
                 unique_fps=self._unique_rate.rate(),

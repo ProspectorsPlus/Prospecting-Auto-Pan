@@ -450,6 +450,11 @@ class RuntimeCoordinator:
     def stale_completions(self) -> int:
         return self._stale_completions
 
+    @property
+    def armed(self) -> bool:
+        """Whether a live arm token is currently held and unexpired."""
+        return self.arm_token() is not None
+
     def arm_token(self) -> LiveArmToken | None:
         token = self._arm_token
         if token is not None and token.expired(monotonic_s()):
@@ -856,29 +861,63 @@ class RuntimeCoordinator:
             return
         self._begin_mode(RunMode.SHADOW, intent, IntentType.START_SHADOW)
 
-    def _on_start_live(self, intent: RuntimeIntent) -> None:
-        """Convert the arm token to a single-use proof, then transition.
+    #: Readiness reasons that a second attempt could plausibly satisfy. The
+    #: user clicks into Roblox, or one late frame arrives, and the same arm is
+    #: good again. Everything else - a lost window, a held lease, an
+    #: unconfirmed release - burns the token, because retrying into it would be
+    #: retrying into a fault.
+    TRANSIENT_READINESS_PREFIXES = ("focus:", "capture:")
 
-        The token is consumed *before* invalidation so that a failed readiness
-        check afterwards cannot leave a reusable token behind (plan 3.4).
+    def _on_start_live(self, intent: RuntimeIntent) -> None:
+        """Check readiness and consume the arm token in one atomic step.
+
+        Ordering matters twice over, in opposite directions:
+
+        * A token must never survive a *real* failure, or a stale arm could be
+          replayed into a broken world (plan 3.4).
+        * A token must not be burned by a *transient* one. Pressing the chord a
+          fraction of a second before Roblox comes frontmost is the single most
+          likely way to use this, and spending the arm on it - forcing another
+          trip to the button - made the feature feel broken.
+
+        So one readiness snapshot is taken, bound to this token, and the token
+        is consumed unless the only thing wrong is transient. The arm stays
+        single-use and still expires on its own TTL either way.
         """
         token = self.arm_token()
-        self._arm_token = None
         if token is None:
             self._events.add("live.refused", "no arm token")
             return
         if intent.source != "hotkey":
+            # Not a physical chord. Burn it: something is submitting on the
+            # arm's behalf, which is exactly what the token exists to stop.
+            self._arm_token = None
             self._events.add("live.refused", f"source={intent.source}")
             return
         if token.run_id != self._authority.run_id:
+            self._arm_token = None
             self._events.add("live.refused", "token run mismatch")
             return
-        proof = _ConsumedArmProof(token_id=token.token_id, intent_sequence=intent.sequence)
 
+        # One snapshot, read once, for every decision below.
         readiness = self.readiness()
         if not readiness.input_ok:
+            transient = all(
+                reason.startswith(self.TRANSIENT_READINESS_PREFIXES)
+                for reason in readiness.reasons
+            )
+            if transient and readiness.reasons:
+                self._events.add(
+                    "live.not-yet",
+                    f"{','.join(readiness.reasons)} (arm kept; press the chord again)",
+                )
+                return
+            self._arm_token = None
             self._events.add("live.refused", ",".join(readiness.reasons))
             return
+
+        self._arm_token = None
+        proof = _ConsumedArmProof(token_id=token.token_id, intent_sequence=intent.sequence)
         self._events.add("live.armed", proof.token_id)
         self._begin_mode(RunMode.LIVE, intent, IntentType.START_LIVE)
 

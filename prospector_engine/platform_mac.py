@@ -709,6 +709,35 @@ class MacPlatformPort:
         except Exception:
             return False
 
+    def event_post_trusted(self) -> bool:
+        """Whether this process may *post* synthetic events.
+
+        Distinct from ``accessibility_trusted``: AXIsProcessTrusted answers for
+        the Accessibility API, and posting a CGEvent is governed separately.
+        They are usually granted together and are not the same permission, and
+        conflating them sends someone to the wrong settings pane.
+
+        Preflight only - it neither requests nor posts anything.
+        """
+        try:
+            return bool(Quartz.CGPreflightPostEventAccess())
+        except Exception:
+            # Older systems have no preflight for this; Accessibility is the
+            # closest honest answer rather than a guess of False.
+            return self.accessibility_trusted()
+
+    def input_listening_trusted(self) -> bool:
+        """Whether the global chord listener can hear keys at all.
+
+        Without Input Monitoring the listener starts, stays alive, and never
+        reports a keystroke - which looks exactly like a broken hotkey and is
+        a permission the user has to grant to the *launching* application.
+        """
+        try:
+            return bool(Quartz.CGPreflightListenEventAccess())
+        except Exception:
+            return self.accessibility_trusted()
+
     # -- displays ---------------------------------------------------------
     @staticmethod
     def _scale_for_display(display_id: int) -> float:

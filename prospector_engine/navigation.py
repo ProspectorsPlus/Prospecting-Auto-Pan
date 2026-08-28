@@ -23,6 +23,7 @@ a *session* is what this session can see.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -1380,100 +1381,111 @@ def _run_observer_loop(
     applied = 0
     terminal: tuple[ModeResultKind, str] | None = None
 
-    while not context.cancellation.is_cancelled():
-        if max_ticks is not None and processed >= max_ticks:
-            break
-        envelope = capture.wait_for_new(last_sequence, 0.25)
-        if envelope is None:
-            continue
-        picked_at_s = monotonic_s()
-        frame = envelope.frame
-        if last_sequence and frame.sequence > last_sequence + 1:
-            # Frames existed that we never observed: the slot replaced them
-            # while perception was busy. That is the designed behaviour, but it
-            # has to be counted rather than silently absorbed.
-            capture.note_dropped_observation(frame.sequence - last_sequence - 1)
-        last_sequence = frame.sequence
+    # Registered for exactly as long as this loop runs. Outside the scope the
+    # governor does not judge the processed rate at all, and entering it
+    # restarts the rate window so this mode's first cadence decision is made on
+    # this mode's frames.
+    consuming = getattr(capture, "consuming", None)
+    scope = consuming(map_id) if consuming is not None else contextlib.nullcontext()
+    with scope:
+        while not context.cancellation.is_cancelled():
+            if max_ticks is not None and processed >= max_ticks:
+                break
+            envelope = capture.wait_for_new(last_sequence, 0.25)
+            if envelope is None:
+                continue
+            picked_at_s = monotonic_s()
+            frame = envelope.frame
+            if last_sequence and frame.sequence > last_sequence + 1:
+                # Frames existed that we never observed: the slot replaced them
+                # while perception was busy. That is the designed behaviour, but it
+                # has to be counted rather than silently absorbed.
+                capture.note_dropped_observation(frame.sequence - last_sequence - 1)
+            last_sequence = frame.sequence
 
-        result = pipeline.analyze(frame, map_id=map_id, approach_valid=approach_valid)
-        # One coherent read of the world outside this frame, taken once and
-        # handed in - so the controller cannot consult a value that changed
-        # between two of its own safety checks.
-        health = context.health()
-        navigator.note_health(
-            focus_ok=health.focus_ok,
-            processed_fps=float(getattr(capture, "processed_fps", 999.0)),
-            cursor_safe=health.cursor_safe,
-            geometry_revision=health.geometry_revision,
-            profile_revision=health.profile_revision,
-        )
-        decision_started = monotonic_s()
-        decision = navigator.decide(
-            result.inputs, generation=context.generation, now_s=monotonic_s()
-        )
-        decision_ms = (monotonic_s() - decision_started) * 1000.0
-        processed += 1
-
-        capture.note_perception_ms(result.perception_ms)
-        capture.note_decision_ms(decision_ms)
-        capture.note_end_to_end_ms(frame.age_s(monotonic_s()) * 1000.0)
-
-        # The key is stamped from the coordinator's current world, not from
-        # anything this worker knows, so a cancelled worker's late frame cannot
-        # outrank the session that replaced it.
-        key = context.key_for(frame, pipeline.profile_revision)
-
-        # ACT, THEN PUBLISH. The observation is built after the command has
-        # been proposed or applied, so it can carry what *happened* rather than
-        # what was asked for. Publishing first is what made WOULD_APPLY and
-        # APPLIED indistinguishable in the UI: the packet was already gone by
-        # the time the authority answered, so the overlay drew every request as
-        # though the character were moving.
-        command_view = CommandVisualization.none(live=apply is not None)
-        if apply is not None:
-            command_view = apply(decision, envelope, result)
-            if command_view.outcome is CommandOutcome.APPLIED:
-                applied += 1
-
-        observation = pipeline.diagnostic(
-            frame,
-            result,
-            decision,
-            decision_ms=decision_ms,
-            key=key,
-            control_state=navigator.control_state,
-            blockers=context.blockers,
-            command_view=replace(command_view, key=key),
-        )
-        context.on_observation(observation)
-        context.on_phase(decision.phase)
-        # The trace ring lives on the capture service; narrower stand-ins used
-        # by replay tests do not carry one, and the loop must not care.
-        trace = getattr(capture, "trace", None)
-        if result.timing is not None and trace is not None:
-            tier = getattr(capture, "tier", None)
-            trace.record(
-                FrameTrace(
-                    frame_sequence=frame.sequence,
-                    captured_at_s=frame.captured_at_s,
-                    completed_at_s=frame.completed_at_s,
-                    source_epoch=int(getattr(capture, "source_epoch", 0)),
-                    cadence_hz=int(tier.fps) if tier is not None else 0,
-                    capture_ms=frame.duration_ms,
-                    scheduling_delay_ms=max(0.0, (picked_at_s - frame.completed_at_s) * 1000.0),
-                    perception=result.timing,
-                    decision_ms=decision_ms,
-                    capture_to_observation_ms=(monotonic_s() - frame.captured_at_s) * 1000.0,
-                    settling=bool(getattr(capture, "settling", False)),
-                )
+            result = pipeline.analyze(frame, map_id=map_id, approach_valid=approach_valid)
+            # One coherent read of the world outside this frame, taken once and
+            # handed in - so the controller cannot consult a value that changed
+            # between two of its own safety checks.
+            health = context.health()
+            navigator.note_health(
+                focus_ok=health.focus_ok,
+                processed_fps=float(getattr(capture, "processed_fps", 999.0)),
+                cursor_safe=health.cursor_safe,
+                geometry_revision=health.geometry_revision,
+                profile_revision=health.profile_revision,
             )
+            decision_started = monotonic_s()
+            decision = navigator.decide(
+                result.inputs, generation=context.generation, now_s=monotonic_s()
+            )
+            decision_ms = (monotonic_s() - decision_started) * 1000.0
+            processed += 1
 
-        if decision.phase is NavigationPhase.ARRIVED:
-            terminal = (ModeResultKind.ARRIVED, "arrival confirmed")
-            break
-        if decision.phase is NavigationPhase.ABANDONED:
-            terminal = (ModeResultKind.ABANDONED, decision.reason)
-            break
+            capture.note_perception_ms(result.perception_ms)
+            capture.note_decision_ms(decision_ms)
+            capture.note_end_to_end_ms(frame.age_s(monotonic_s()) * 1000.0)
+
+            # The key is stamped from the coordinator's current world, not from
+            # anything this worker knows, so a cancelled worker's late frame cannot
+            # outrank the session that replaced it.
+            key = context.key_for(frame, pipeline.profile_revision)
+
+            # ACT, THEN PUBLISH. The observation is built after the command has
+            # been proposed or applied, so it can carry what *happened* rather than
+            # what was asked for. Publishing first is what made WOULD_APPLY and
+            # APPLIED indistinguishable in the UI: the packet was already gone by
+            # the time the authority answered, so the overlay drew every request as
+            # though the character were moving.
+            command_view = CommandVisualization.none(live=apply is not None)
+            if apply is not None:
+                command_view = apply(decision, envelope, result)
+                if command_view.outcome is CommandOutcome.APPLIED:
+                    applied += 1
+
+            observation = pipeline.diagnostic(
+                frame,
+                result,
+                decision,
+                decision_ms=decision_ms,
+                key=key,
+                control_state=navigator.control_state,
+                blockers=context.blockers,
+                command_view=replace(command_view, key=key),
+            )
+            context.on_observation(observation)
+            context.on_phase(decision.phase)
+            # The trace ring lives on the capture service; narrower stand-ins used
+            # by replay tests do not carry one, and the loop must not care.
+            trace = getattr(capture, "trace", None)
+            if result.timing is not None and trace is not None:
+                tier = getattr(capture, "tier", None)
+                trace.record(
+                    FrameTrace(
+                        frame_sequence=frame.sequence,
+                        captured_at_s=frame.captured_at_s,
+                        completed_at_s=frame.completed_at_s,
+                        source_epoch=int(getattr(capture, "source_epoch", 0)),
+                        cadence_hz=int(tier.fps) if tier is not None else 0,
+                        capture_ms=frame.duration_ms,
+                        scheduling_delay_ms=max(
+                            0.0, (picked_at_s - frame.completed_at_s) * 1000.0
+                        ),
+                        perception=result.timing,
+                        decision_ms=decision_ms,
+                        capture_to_observation_ms=(
+                            (monotonic_s() - frame.captured_at_s) * 1000.0
+                        ),
+                        settling=bool(getattr(capture, "settling", False)),
+                    )
+                )
+
+            if decision.phase is NavigationPhase.ARRIVED:
+                terminal = (ModeResultKind.ARRIVED, "arrival confirmed")
+                break
+            if decision.phase is NavigationPhase.ABANDONED:
+                terminal = (ModeResultKind.ABANDONED, decision.reason)
+                break
 
     if terminal is not None:
         return (processed, applied, terminal[0], terminal[1])
@@ -1812,7 +1824,19 @@ def make_live_prologue(
         )
         machine = setup_factory(context.cancellation.is_cancelled)
         prior = prior_factory(fingerprint_factory()) if prior_factory is not None else None
-        progress, response = machine.run_control(port, limits=turn_limits, prior=prior)
+        # Consuming, but explicitly not measured: the prologue drives bounded
+        # probes and waits to see their effect, so its frame cadence is a
+        # property of the probe schedule and not of the pipeline. Counting it
+        # as throughput would let a deliberately slow probe downshift the
+        # cadence that Live is about to be judged against.
+        consuming = getattr(context.frames, "consuming", None)
+        scope = (
+            consuming("prologue", measured=False)
+            if consuming is not None
+            else contextlib.nullcontext()
+        )
+        with scope:
+            progress, response = machine.run_control(port, limits=turn_limits, prior=prior)
         port.release_turn()
         if response is None:
             failure = progress.failure

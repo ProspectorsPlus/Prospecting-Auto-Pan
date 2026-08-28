@@ -471,6 +471,8 @@ class Dashboard:
         self.summary_vars: dict[str, tk.StringVar] = {}
         self.summary_labels: dict[str, ttk.Label] = {}
         self.summary_details: dict[str, tk.StringVar] = {}
+        self._preflight_cache: Any = None
+        self._preflight_at_s = 0.0
         cards = [
             ("roblox", "ROBLOX WINDOW", "Whether capture is bound to the game window."),
             ("capture", "CAPTURE", "Frames arriving from the bound window."),
@@ -1091,10 +1093,20 @@ class Dashboard:
             phase if metrics.processed_fps > 0 else "Idle",
             f"{metrics.processed_fps:.0f} fps   p95 {metrics.end_to_end.p95_ms:.0f} ms",
         )
-        if snapshot is None:
-            live_head, live_detail = "Waiting", ""
-        elif snapshot.mode is RunMode.LIVE:
+        preflight = self._preflight()
+        if snapshot is not None and snapshot.mode is RunMode.LIVE:
             live_head, live_detail = "Navigating", "movement is being sent"
+        elif not preflight.ok:
+            # A denied permission or a dead listener outranks every other
+            # explanation: nothing downstream can work, and the fix is a
+            # specific settings pane rather than anything in this window. Only
+            # *faults* reach here - "not armed" and "Roblox is not focused" are
+            # normal preconditions and are reported below in their own words.
+            first = preflight.faults[0]
+            live_head = f"Blocked - {len(preflight.faults)}"
+            live_detail = f"{first.label}: {first.detail}"
+        elif snapshot is None:
+            live_head, live_detail = "Waiting", ""
         else:
             real = [b for b in snapshot.blockers if b.status != "expected"]
             if real:
@@ -1105,6 +1117,34 @@ class Dashboard:
             else:
                 live_head, live_detail = "Ready", f"press {_CHORD_START} in Roblox to navigate"
         self._set_summary("live", live_head, live_detail)
+        Tooltip.retarget(self.summary_labels["live"], self._preflight_tooltip(preflight))
+
+    #: The permission probes are cheap but not free, and nothing they report
+    #: changes between two frames. Read at most this often.
+    PREFLIGHT_INTERVAL_S = 1.0
+
+    def _preflight(self) -> Any:
+        now = monotonic_s()
+        cached = self._preflight_cache
+        if cached is None or now - self._preflight_at_s >= self.PREFLIGHT_INTERVAL_S:
+            self._preflight_cache = self.app.preflight()
+            self._preflight_at_s = now
+        return self._preflight_cache
+
+    @staticmethod
+    def _preflight_tooltip(preflight: Any) -> str:
+        """Every check and, for anything denied, the exact pane that fixes it."""
+        lines = []
+        for capability in preflight.capabilities:
+            mark = {"ok": "OK", "denied": "NO", "unknown": "??", "n/a": "--"}[
+                capability.state.value
+            ]
+            lines.append(f"[{mark}] {capability.label}: {capability.detail}")
+            if capability.remedy:
+                lines.append(f"      {capability.remedy}")
+            if capability.settings_pane:
+                lines.append(f"      {capability.settings_pane}")
+        return "\n".join(lines)
 
     def _set_summary(self, key: str, headline: str, detail: str) -> None:
         if self.summary_vars[key].get() != headline:
@@ -1148,6 +1188,11 @@ def main() -> int:
         app.coordinator.submit(intent)
 
     hotkeys = app.port.create_hotkey_source(submit_from_hotkey)
+    # Held on the application so the dashboard can show whether it is running.
+    # A listener that silently is not - the usual cause being Input Monitoring
+    # not granted to whichever app launched this - is indistinguishable from a
+    # chord that does nothing, and that is the whole confusion.
+    app.hotkeys = hotkeys
     try:
         hotkeys.start()
     except Exception as exc:
