@@ -3,11 +3,13 @@ deadman.py
 pyproject.toml
 treasure.py
 treasure_gui.py
+treasure_overlay.py
 prospector_engine/__init__.py
 prospector_engine/capture.py
 prospector_engine/contracts.py
 prospector_engine/coordinator.py
 prospector_engine/engine.py
+prospector_engine/geometry.py
 prospector_engine/input_authority.py
 prospector_engine/motion.py
 prospector_engine/navigation.py
@@ -27,9 +29,12 @@ prospector_treasure.egg-info/requires.txt
 prospector_treasure.egg-info/top_level.txt
 tests/test_capture_input.py
 tests/test_characterization.py
+tests/test_geometry.py
+tests/test_gui.py
 tests/test_invariants.py
 tests/test_navigation.py
 tests/test_packaging.py
+tests/test_pipeline.py
 tests/test_platform_contract.py
 tests/test_replay.py
 tests/test_runtime_concurrency.py

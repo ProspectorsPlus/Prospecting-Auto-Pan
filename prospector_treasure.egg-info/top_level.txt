@@ -2,3 +2,4 @@ deadman
 prospector_engine
 treasure
 treasure_gui
+treasure_overlay
