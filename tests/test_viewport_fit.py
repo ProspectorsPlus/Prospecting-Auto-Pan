@@ -446,3 +446,91 @@ def test_a_retina_fit_reports_points_and_backing_pixels_separately() -> None:
     assert fit.achieved_client_logical == (1280.0, 720.0)
     assert fit.achieved_client_backing_px == (2560, 1440)
     assert "px" in fit.describe() and "pt" in fit.describe()
+
+
+# ---------------------------------------------------------------------------
+# The guard-versus-source boundary, found natively
+# ---------------------------------------------------------------------------
+#
+# Every defect below produced the same symptom on the real client - automatic
+# setup failing with ``capture_stale`` on a window that was sitting there
+# correctly fitted - and none of them was visible to a test that drove the
+# guard alone. They are pinned here so a fix cannot be undone silently.
+
+
+def test_a_verified_fit_survives_the_next_poll() -> None:
+    """``window_geometry()`` can never report CANONICAL_VERIFIED.
+
+    That verdict belongs to the guard: the port only ever reports the window
+    as it finds it, ADOPTED_NONCANONICAL. ``check()`` compared *full*
+    identities - state included - so every poll after a successful fit
+    compared "verified" against "adopted", called the difference a
+    CAPTURE_MISMATCH, and un-did the fit it had just achieved.
+    """
+    from prospector_engine.capture import ViewportGuard
+    from prospector_engine.geometry import ViewportState
+    from tests.fakes import FakePlatformPort, VirtualClock, make_geometry
+
+    port = FakePlatformPort(VirtualClock(), geometry=make_geometry(size=(1280.0, 720.0)))
+    guard = ViewportGuard(port)
+    guard.connect()
+    fit = guard.fit_and_lock()
+    assert fit.phase.name in {"CANONICAL_VERIFIED", "VERIFIED"}, fit.phase
+    assert guard.geometry.state is ViewportState.CANONICAL_VERIFIED
+
+    for _ in range(10):
+        state = guard.check().state
+        assert state is ViewportState.CANONICAL_VERIFIED, (
+            f"a poll downgraded the verified fit to {state.value}"
+        )
+
+
+def test_polling_an_unchanged_window_does_not_churn_the_revision() -> None:
+    """The revision storm: forty state flips a second, each rebuilding capture."""
+    from prospector_engine.capture import ViewportGuard
+    from tests.fakes import FakePlatformPort, VirtualClock, make_geometry
+
+    port = FakePlatformPort(VirtualClock(), geometry=make_geometry(size=(1280.0, 720.0)))
+    guard = ViewportGuard(port)
+    guard.connect()
+    guard.fit_and_lock()
+    settled = guard.revision
+    for _ in range(20):
+        guard.check()
+    assert guard.revision == settled, "an unchanged window advanced the revision"
+
+
+def test_state_alone_is_not_a_change_of_coordinate_basis() -> None:
+    """State says how we adopted; the rect says how pixels map to points."""
+    from prospector_engine.geometry import ViewportState
+    from tests.fakes import make_geometry
+
+    adopted = make_geometry(size=(1280.0, 720.0))
+    verified = adopted.with_state(ViewportState.CANONICAL_VERIFIED, "fitted")
+    assert verified.same_source(adopted), "an adoption verdict invalidated coordinates"
+    assert verified.coordinate_basis() == adopted.coordinate_basis()
+
+
+def test_a_lost_pin_can_be_re_adopted() -> None:
+    """Losing the adoption used to be permanent.
+
+    One transient bad read un-adopted the viewport, and from then on every
+    check reported "window found but not adopted" however healthy the window
+    became - so every delivered frame was rejected as a mismatch forever.
+    """
+    from prospector_engine.capture import ViewportGuard
+    from prospector_engine.geometry import ViewportGeometry, ViewportState
+    from tests.fakes import FakePlatformPort, VirtualClock, make_geometry
+
+    good = make_geometry(size=(1280.0, 720.0))
+    port = FakePlatformPort(VirtualClock(), geometry=good)
+    guard = ViewportGuard(port)
+    guard.connect()
+
+    port.set_geometry(ViewportGeometry.invalid("one bad read"))
+    assert not guard.check().valid
+
+    port.set_geometry(good)
+    healed = guard.check()
+    assert healed.valid, "a healthy window stayed un-adopted forever"
+    assert healed.state is not ViewportState.UNPINNED

@@ -1146,9 +1146,13 @@ class ViewportGuard:
         display are the same basis, however many times they are re-read.
         """
         previous = self._current
-        changed = previous.identity() != geometry.identity()
+        # Compared on the coordinate basis, not the full identity: a state
+        # change from "adopted as found" to "verified canonical" describes the
+        # same window at the same rect and invalidates no coordinate, so it is
+        # not a revision that consumers must re-key against.
+        changed = previous.coordinate_basis() != geometry.coordinate_basis()
         self._current = geometry
-        self._adopted_identity = geometry.identity() if geometry.valid else None
+        self._adopted_identity = geometry.coordinate_basis() if geometry.valid else None
         if changed:
             self._revision += 1
         return changed
@@ -1416,17 +1420,34 @@ class ViewportGuard:
         fresh = self._port.window_geometry()
         with self._lock:
             adopted = self._adopted_identity
-            if adopted is None:
+            if adopted is None and not fresh.valid:
                 self._current = (
                     fresh
                     if fresh.state is ViewportState.INVALID
                     else ViewportGeometry.unpinned("window found but not adopted")
                 )
                 return self._current
-            if not fresh.valid:
+            if adopted is None:
+                # Nothing adopted, and a perfectly good window in front of
+                # us: adopt it. This branch used to return UNPINNED
+                # unconditionally, which made losing the adoption a
+                # *permanent* state - one transient bad read un-adopted the
+                # viewport (below), and from then on every check reported
+                # "window found but not adopted" however healthy the window
+                # became. Every delivered frame was then rejected as a
+                # mismatch, and automatic setup failed with capture_stale
+                # on a client that was sitting there correctly fitted.
+                #
+                # Re-adopting here is exactly what connect() does - bind to
+                # the client and touch nothing - which is why the capture
+                # supervisor's restart_source() path could already un-stick
+                # it, just a poll later and after a burst of mismatches.
+                changed = self._adopt_locked(fresh, "re-adopted after losing the pin")
+                result = self._current
+            elif not fresh.valid:
                 changed = self._adopt_locked(fresh, "window lost")
                 result = self._current
-            elif fresh.identity() != adopted:
+            elif fresh.coordinate_basis() != adopted:
                 mismatch = fresh.with_state(
                     ViewportState.CAPTURE_MISMATCH,
                     f"window changed since adoption: {fresh.describe()}",
@@ -1434,9 +1455,19 @@ class ViewportGuard:
                 changed = self._adopt_locked(mismatch, "window changed")
                 result = self._current
             else:
+                # Same window, same rect, same display, same scale: nothing to
+                # update, and in particular nothing to *downgrade*. Overwriting
+                # with the fresh read replaced a hard-won CANONICAL_VERIFIED
+                # with the ADOPTED_NONCANONICAL that window_geometry() always
+                # returns - the guard's verdict is not something the port can
+                # report - so a successful fit was undone by the very next
+                # poll, and comparing full identities then called that a
+                # CAPTURE_MISMATCH. The result was a revision storm: the guard
+                # flipped states about forty times a second, the supervisor
+                # rebuilt the source on each flip, and automatic setup could
+                # never gather five consecutive matching frames.
                 changed = False
-                self._current = fresh
-                result = fresh
+                result = self._current
         self._publish(changed, "check")
         return result
 
@@ -1978,8 +2009,22 @@ class CaptureService:
                 self._last_error = f"viewport {geometry.state.value}: {geometry.detail}"
             return False
         source = self._make_source()
+
+        # The callback is bound to *this* source. A push backend keeps
+        # delivering for a while after stop() returns, and those in-flight
+        # frames carry the geometry the old source was built against - the
+        # pre-fit 1800x1053 rect, not the fitted 1280x720 one. Accepting them
+        # poisoned the guard to CAPTURE_MISMATCH on a correctly fitted client,
+        # which restarted the source, which produced another orphan, and
+        # automatic setup could never gather five consecutive matching frames.
+        def deliver(raw: RawFrame, _source: CaptureSource = source) -> None:
+            if self._source is not _source:
+                self._pool.release(raw.bgr)
+                return
+            self._on_raw_frame(raw)
+
         try:
-            source.start(geometry, self._pool, self._on_raw_frame)
+            source.start(geometry, self._pool, deliver)
         except Exception as exc:
             with self._lock:
                 self._last_error = f"source start failed: {exc!r}"
@@ -2048,7 +2093,22 @@ class CaptureService:
                 pull_thread.join(1.0)
             self._stop.clear()
             self._slot.clear()
-            self._guard.connect()
+            # Re-adopt only when the guard has nothing usable. It used to
+            # connect() unconditionally, which re-read the window *while it was
+            # still settling from the fit* and overwrote a just-verified
+            # canonical viewport with the pre-fit adopted_noncanonical one. The
+            # new source then stamped every frame with that stale basis, the
+            # guard's own next read went back to canonical_verified, and the
+            # two disagreed forever: "delivered 1280x720 from
+            # adopted_noncanonical but the viewport is 1280x720
+            # canonical_verified", which is a mismatch of *identity* that no
+            # amount of matching pixels can settle. Automatic setup failed with
+            # capture_stale on a client that was correctly fitted.
+            #
+            # The guard owns the viewport state (plan 5); a source restart is
+            # not an occasion to re-decide it.
+            if not self._guard.geometry.valid:
+                self._guard.connect()
             return self.start()
         finally:
             with self._lock:

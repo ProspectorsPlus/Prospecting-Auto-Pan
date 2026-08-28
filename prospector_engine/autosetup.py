@@ -164,6 +164,13 @@ class SetupPort(Protocol):
 
     def restart_capture(self, reason: str) -> None: ...
 
+    def heal_viewport(self) -> bool:
+        """Re-adopt the client if the guard has lost its pin. No window moves.
+
+        A default so existing ports need not implement it; the real one does.
+        """
+        return False
+
     def capture_sample(self) -> CaptureSample: ...
 
     def profile_vote(self) -> ProfileVote | None: ...
@@ -626,6 +633,14 @@ class AutomaticSetup:
         for attempt, _elapsed in self._poll(self._config.capture_restart_deadline_s):
             sample = self._port.capture_sample()
             if sample.error is not None:
+                # One transient bad read can leave the guard UNPINNED with no
+                # adopted window, even though the frames are the right size.
+                # The capture supervisor heals that on its own poll, but on a
+                # slower interval than this stage's deadline - so ask directly
+                # rather than time out on a condition that was about to fix
+                # itself. Bounded by this loop's own attempt cap and deadline;
+                # re-adopting binds to the client and moves nothing.
+                self._port.heal_viewport()
                 matched = 0
             elif sample.sequence != last_sequence and sample.matches_geometry:
                 last_sequence = sample.sequence

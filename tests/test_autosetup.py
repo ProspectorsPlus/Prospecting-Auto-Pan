@@ -108,6 +108,10 @@ class FakePort:
     arrow_valid: bool = True
     heading_deg: float = 12.0
     heading_jitter: float = 0.0
+    heals: int = 0
+    #: Whether asking to re-adopt actually fixes it, as it does natively
+    #: when the guard lost its pin to one bad read.
+    heal_clears_error: bool = False
     processed_fps: float = 60.0
     sequence: int = 0
     released: list[str] = field(default_factory=list)
@@ -136,6 +140,13 @@ class FakePort:
 
     def restart_capture(self, reason: str) -> None:
         self.restarts.append(reason)
+
+    def heal_viewport(self) -> bool:
+        """Re-adopt after a transient unpin. Records, and clears the error once."""
+        self.heals += 1
+        if self.heal_clears_error:
+            self.capture_error = None
+        return True
 
     def capture_sample(self) -> CaptureSample:
         self.sequence += 1
@@ -533,3 +544,38 @@ def test_a_stage_loop_terminates_even_if_the_clock_never_advances() -> None:
 
     assert progress.stage is SetupStage.FAILED
     assert progress.failure is not None
+
+
+def test_a_transient_unpinned_viewport_is_healed_rather_than_timed_out() -> None:
+    """Observed natively, intermittently, right after a successful fit.
+
+    The frames really are the fitted 1280x720 and the guard reports UNPINNED
+    with no adopted window, so every delivery is rejected as a mismatch and
+    setup used to fail with ``capture_stale`` on a condition the capture
+    supervisor heals a moment later - just on a slower poll than this stage's
+    deadline. Setup asks directly instead of timing out; re-adopting binds to
+    the client and moves no window.
+    """
+    port = FakePort()
+    port.capture_error = (
+        "delivered 1280x720 from canonical_verified but the viewport is unpinned"
+    )
+    port.heal_clears_error = True
+
+    progress = _setup(port).run_observation()
+
+    assert port.heals >= 1, "setup never asked the guard to re-adopt"
+    assert progress.stage is SetupStage.READY, progress.failure
+
+
+def test_a_viewport_that_does_not_heal_still_fails_closed() -> None:
+    """Healing is bounded, not a licence to spin: a real fault still stops."""
+    port = FakePort()
+    port.capture_error = "source stopped"
+    port.heal_clears_error = False
+
+    progress = _setup(port).run_observation()
+
+    assert progress.stage is SetupStage.FAILED
+    assert progress.failure is not None
+    assert progress.failure.kind is SetupFailureKind.CAPTURE_STALE

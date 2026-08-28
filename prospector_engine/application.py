@@ -218,6 +218,24 @@ class EngineSetupPort:
             return
         self._capture.restart_source(reason)
 
+    def heal_viewport(self) -> bool:
+        """Re-adopt the client when the guard has lost its pin.
+
+        Observed natively, intermittently, right after a successful fit: the
+        frames are the fitted 1280x720 and the guard reports UNPINNED with no
+        adopted window, so every delivery is rejected as a mismatch and
+        automatic setup fails with ``capture_stale`` on a condition that heals
+        itself a moment later.
+
+        ``connect()`` binds to the client and touches nothing, so this is safe
+        to call from a polling loop; it returns whether the guard is usable
+        afterwards.
+        """
+        geometry = self._guard.geometry
+        if geometry.valid:
+            return True
+        return self._guard.connect().valid
+
     def capture_sample(self) -> CaptureSample:
         envelope = self._capture.latest()
         geometry = self._guard.geometry

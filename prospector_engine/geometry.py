@@ -487,8 +487,28 @@ class ViewportGeometry:
             ),
         )
 
+    def coordinate_basis(self) -> tuple[object, ...]:
+        """Identity minus the state - what actually maps a pixel to a point.
+
+        ``state`` records *how* the viewport came to be adopted (verified by a
+        fit, or adopted as it was found). It does not participate in any
+        transform: the same window, at the same rect, on the same display, at
+        the same backing scale defines exactly one mapping whichever way it was
+        adopted.
+
+        Keeping ``state`` inside ``same_source`` made a frame captured a
+        moment before a fit was verified unusable against a viewport that had
+        just been verified, even though both described 1280x720 at the same
+        origin. One such in-flight frame poisoned the guard to
+        CAPTURE_MISMATCH, and from then on every *correct* frame mismatched
+        against the poisoned state and poisoned it again - so automatic setup
+        oscillated and failed with capture_stale on a correctly fitted client.
+        """
+        return self.identity()[1:]
+
     def same_source(self, other: ViewportGeometry | None) -> bool:
-        return other is not None and self.identity() == other.identity()
+        """Whether two geometries describe the same coordinate basis."""
+        return other is not None and self.coordinate_basis() == other.coordinate_basis()
 
     @property
     def valid(self) -> bool:
