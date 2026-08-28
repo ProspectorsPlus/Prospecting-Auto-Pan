@@ -399,6 +399,7 @@ def _performance_text(metrics: CaptureMetrics) -> str:
     return "\n".join(
         [
             f"governor   {governor.describe()}",
+            f"ceiling    {metrics.governor.tier.fps} Hz current",
             f"           changes {governor.changes}  probes {governor.probes}  "
             f"failed probes {governor.failed_probes}  "
             f"live eligible {governor.live_eligible}",

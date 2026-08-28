@@ -32,6 +32,7 @@ __all__ = [
     "ArrivalObservation",
     "ArrowCandidateRecord",
     "ArrowObservation",
+    "CadenceMode",
     "CadenceReport",
     "Cancellation",
     "CancellationToken",
@@ -437,6 +438,66 @@ class LatencySummary:
         return (
             f"{self.label} p50 {self.p50_ms:.1f} p95 {self.p95_ms:.1f} p99 {self.p99_ms:.1f} ms"
         )
+
+
+class CadenceMode(Enum):
+    """The cadence choice a person makes, in words rather than in hertz.
+
+    "120 Hz" is a number about the machine; "High" is a decision about what to
+    spend on this. Each mode is a *ceiling* and a starting point - the governor
+    still refuses to hold a tier it is not achieving, so choosing High on a
+    machine that cannot sustain it produces an honest downshift rather than a
+    misleading label.
+    """
+
+    EFFICIENT = "Efficient"
+    BALANCED = "Balanced"
+    HIGH = "High"
+    AUTO = "Auto"
+
+    @property
+    def start_tier(self) -> PerformanceTier:
+        """Where the governor begins.
+
+        ``AUTO`` starts at the preferred 60 and probes upward, rather than
+        starting at 120 and discovering it cannot hold it: an honest climb
+        costs one probe, a hopeful start costs a downshift on every session.
+        """
+        return {
+            CadenceMode.EFFICIENT: PerformanceTier.MINIMUM,
+            CadenceMode.BALANCED: PerformanceTier.STANDARD,
+            CadenceMode.HIGH: PerformanceTier.MAXIMUM,
+            CadenceMode.AUTO: PerformanceTier.STANDARD,
+        }[self]
+
+    @property
+    def max_tier(self) -> PerformanceTier:
+        return {
+            CadenceMode.EFFICIENT: PerformanceTier.MINIMUM,
+            CadenceMode.BALANCED: PerformanceTier.STANDARD,
+            CadenceMode.HIGH: PerformanceTier.MAXIMUM,
+            CadenceMode.AUTO: PerformanceTier.MAXIMUM,
+        }[self]
+
+    @property
+    def description(self) -> str:
+        return {
+            CadenceMode.EFFICIENT: (
+                "30 Hz. The lowest cadence Live will accept, and the least CPU."
+            ),
+            CadenceMode.BALANCED: (
+                "60 Hz. The preferred operating target: fast enough for Live "
+                "with room to spare."
+            ),
+            CadenceMode.HIGH: (
+                "Up to 120 Hz. Opportunistic - held only while the source "
+                "supplies unique frames and perception keeps up."
+            ),
+            CadenceMode.AUTO: (
+                "Starts at 60 and climbs only if the machine proves it can "
+                "sustain more. Recommended."
+            ),
+        }[self]
 
 
 class GovernorState(Enum):

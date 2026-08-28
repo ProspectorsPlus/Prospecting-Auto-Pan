@@ -205,3 +205,72 @@ def test_the_warmup_state_never_produces_a_verdict() -> None:
     assert governor.state is GovernorState.WARMUP
     assert governor.tier is PerformanceTier.STANDARD
     assert not governor.report().live_eligible
+
+
+# ---------------------------------------------------------------------------
+# Cadence modes
+# ---------------------------------------------------------------------------
+
+
+def test_each_cadence_mode_names_a_ceiling_a_person_can_choose() -> None:
+    from prospector_engine.contracts import CadenceMode
+
+    assert CadenceMode.EFFICIENT.max_tier is PerformanceTier.MINIMUM
+    assert CadenceMode.BALANCED.max_tier is PerformanceTier.STANDARD
+    assert CadenceMode.HIGH.max_tier is PerformanceTier.MAXIMUM
+    assert CadenceMode.AUTO.max_tier is PerformanceTier.MAXIMUM
+    for mode in CadenceMode:
+        assert mode.description
+        assert mode.start_tier.fps <= mode.max_tier.fps
+
+
+def test_auto_starts_at_the_preferred_target_and_climbs_rather_than_hoping() -> None:
+    """Starting at 120 costs a downshift every session; climbing costs a probe."""
+    from prospector_engine.contracts import CadenceMode
+
+    assert CadenceMode.AUTO.start_tier is PerformanceTier.STANDARD
+    assert CadenceMode.HIGH.start_tier is PerformanceTier.MAXIMUM
+
+
+def test_a_mode_change_moves_the_ceiling_and_restarts_the_measurement() -> None:
+    from prospector_engine.contracts import CadenceMode
+
+    governor = _governor(start_tier=PerformanceTier.MAXIMUM)
+    _run(governor, polls=10, unique=120.0, processed=118.0)
+    assert governor.tier is PerformanceTier.MAXIMUM
+
+    governor.set_bounds(
+        start=CadenceMode.EFFICIENT.start_tier, ceiling=CadenceMode.EFFICIENT.max_tier
+    )
+
+    assert governor.tier is PerformanceTier.MINIMUM
+    assert governor.state is GovernorState.WARMUP
+    assert governor.report().samples == 0
+
+
+def test_a_lowered_ceiling_is_never_climbed_back_through() -> None:
+    from prospector_engine.contracts import CadenceMode
+
+    governor = _governor(start_tier=PerformanceTier.MAXIMUM)
+    governor.set_bounds(
+        start=CadenceMode.BALANCED.start_tier, ceiling=CadenceMode.BALANCED.max_tier
+    )
+    _run(governor, polls=40, unique=120.0, processed=118.0, start_s=0.0)
+
+    assert governor.tier is PerformanceTier.STANDARD, "the chosen ceiling is a ceiling"
+
+
+def test_raising_the_ceiling_forgets_a_previously_discovered_cap() -> None:
+    """The user changed what they are asking for; an old measurement of the
+    old request no longer applies."""
+    from prospector_engine.contracts import CadenceMode
+
+    governor = _governor(start_tier=PerformanceTier.STANDARD, upshift_after_s=1.0)
+    for step in range(20):
+        governor.update(unique_fps=60.0, processed_fps=60.0, frame_age_ms=5.0, now_s=step * 0.5)
+    assert governor.probes == 1 and governor.tier is PerformanceTier.STANDARD
+
+    governor.set_bounds(start=CadenceMode.HIGH.start_tier, ceiling=CadenceMode.HIGH.max_tier)
+
+    assert governor.tier is PerformanceTier.MAXIMUM
+    assert governor._ceiling_hint is None

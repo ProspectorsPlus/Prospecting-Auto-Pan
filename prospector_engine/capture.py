@@ -34,6 +34,7 @@ from numpy.typing import NDArray
 
 from prospector_engine.contracts import (
     EVIDENCE_MINT_KEY,
+    CadenceMode,
     CadenceReport,
     CapturedFrame,
     CaptureMetrics,
@@ -569,6 +570,7 @@ class CadenceGovernor:
         self._probe_from: PerformanceTier | None = None
         self._ceiling_hint: PerformanceTier | None = None
         self._ceiling_until_s = 0.0
+        self._ceiling = self._config.max_tier
         self._last_processed_ratio = 0.0
         self._last_loss = 0.0
         self._last_p95_age_ms: float | None = None
@@ -594,6 +596,18 @@ class CadenceGovernor:
     @property
     def probes(self) -> int:
         return self._probes
+
+    def set_bounds(self, *, start: PerformanceTier, ceiling: PerformanceTier) -> None:
+        """Move the tier and its ceiling together, for a cadence-mode change.
+
+        The discovered ceiling from any earlier failed probe is cleared: the
+        user has changed what they are asking for, so a measurement of the old
+        request no longer applies.
+        """
+        self._ceiling = ceiling
+        self._ceiling_hint = None
+        self._tier = min(start, ceiling, key=lambda tier: tier.fps)
+        self.reset_epoch(f"cadence bounds: up to {ceiling.fps} Hz")
 
     def reset_epoch(self, reason: str = "") -> None:
         """Drop every measurement. Called on start, source replacement,
@@ -793,7 +807,7 @@ class CadenceGovernor:
     def _maybe_probe(self, useful_fps: float, target: float, now_s: float) -> PerformanceTier:
         config = self._config
         index = self._index()
-        ceiling = self.LADDER.index(config.max_tier)
+        ceiling = self.LADDER.index(self._ceiling)
         if self._ceiling_hint is not None:
             if now_s >= self._ceiling_until_s:
                 # The cap has expired. Conditions change - a laptop cools down,
@@ -1461,6 +1475,7 @@ class CaptureService:
         self._last_error: str | None = None
         self._stale_in_window = 0
         self._exhausted_seen = 0
+        self._cadence_mode = CadenceMode.AUTO
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -1500,6 +1515,27 @@ class CaptureService:
     @property
     def governor(self) -> CadenceGovernor:
         return self._governor
+
+    @property
+    def cadence_mode(self) -> CadenceMode:
+        return self._cadence_mode
+
+    def set_cadence_mode(self, mode: CadenceMode) -> None:
+        """Change the cadence ceiling, and start a fresh measurement epoch.
+
+        A mode change is a discontinuity like any other: averaging a rate
+        across it describes neither side, so the epoch resets and the governor
+        re-earns whatever tier it ends up on.
+        """
+        if mode is self._cadence_mode:
+            return
+        self._cadence_mode = mode
+        self._governor.set_bounds(start=mode.start_tier, ceiling=mode.max_tier)
+        self.reset_epoch(f"cadence mode: {mode.value}")
+        source = self._source
+        if source is not None:
+            with contextlib.suppress(Exception):
+                source.set_target_fps(self._governor.tier.fps)
 
     def reset_epoch(self, reason: str) -> None:
         """Start a new measurement epoch across every rate and the governor.

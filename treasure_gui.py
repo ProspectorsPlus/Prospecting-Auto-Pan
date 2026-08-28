@@ -41,6 +41,7 @@ from typing import Any
 from prospector_engine import __version__
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
+    CadenceMode,
     CaptureMetrics,
     DiagnosticObservation,
     IntentType,
@@ -622,7 +623,7 @@ class Dashboard:
 
         top = ttk.Frame(left, style="Card.TFrame")
         top.grid(row=0, column=0, sticky="ew")
-        top.columnconfigure(1, weight=1)
+        top.columnconfigure(0, weight=1)
         ttk.Label(top, text="SHADOW VIEW", style="Muted.TLabel").grid(
             row=0, column=0, sticky="w"
         )
@@ -636,12 +637,35 @@ class Dashboard:
             style="T.TCombobox",
         )
         overlay.grid(row=0, column=2, sticky="e")
+        ttk.Label(top, text="CADENCE / OVERLAY", style="Muted.TLabel").grid(
+            row=1, column=1, columnspan=2, sticky="e"
+        )
         overlay.bind("<<ComboboxSelected>>", self._on_overlay_selected)
         Tooltip(
             overlay,
             "Minimal draws the forward reference, the desired direction and the "
             "signed turn. Full Diagnostics adds contours, notches, rejected "
             "candidates and the score breakdown.",
+        )
+
+        self.cadence_var = tk.StringVar(value=CadenceMode.AUTO.value)
+        cadence = ttk.Combobox(
+            top,
+            textvariable=self.cadence_var,
+            values=[mode.value for mode in CadenceMode],
+            state="readonly",
+            width=11,
+            style="T.TCombobox",
+        )
+        cadence.grid(row=0, column=1, sticky="e", padx=(0, 8))
+        cadence.bind("<<ComboboxSelected>>", self._on_cadence_selected)
+        Tooltip(
+            cadence,
+            "How much cadence to ask for.\n\n"
+            + "\n".join(f"{mode.value}: {mode.description}" for mode in CadenceMode)
+            + "\n\nThe governor still refuses to hold a tier it is not achieving, "
+            "so asking for more than the machine can sustain produces an honest "
+            "downshift rather than a misleading label.",
         )
 
         self.canvas = tk.Canvas(left, bg=SURFACE_ALT, highlightthickness=0, height=340)
@@ -745,6 +769,13 @@ class Dashboard:
 
     def _recover(self) -> None:
         self._submit(IntentType.RECOVER_RELEASE)
+
+    def _on_cadence_selected(self, _event: Any = None) -> None:
+        for mode in CadenceMode:
+            if mode.value == self.cadence_var.get():
+                self.app.capture.set_cadence_mode(mode)
+                self.app.coordinator.events.add("cadence.mode", mode.value)
+                return
 
     def _on_overlay_selected(self, _event: Any = None) -> None:
         for mode in OverlayMode:

@@ -23,6 +23,7 @@ detector, the lifecycle, the dashboard, and the control path.
 | Profile dropdown read `generic_saturated_v0` while the pipeline ran `yellow_map_v0` | `ProfileAuthority` owns the one profile; labels are derived from stable ids, swaps land at a frame boundary |
 | One button that found *and* resized the window | `Connect Roblox…` (touches nothing) and `Fit & Lock Viewport` (bounded state machine, three stable read-backs) |
 | Governor judged tiers on captured frames; stuck at 15 Hz in one session, 73 fps at 209 % CPU in another | `WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED` judged on **processed** throughput; a failed probe is remembered |
+| Cadence was a number the user could not influence | Efficient / Balanced / High / **Auto** (default), each a ceiling the governor still has to earn |
 | `drop 7055`, cumulative and alarming | Six separated rates, per-session counters with lifetime labelled, "superseded" with its meaning explained |
 | `ru_maxrss` displayed as current memory | Current RSS and peak RSS measured separately |
 | Steering was a bare PD controller with a pixel gain | `ShiftLockController` with a verified control-mode proof, a measured yaw calibration, and W as an evidence-bound lease |
