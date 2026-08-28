@@ -6,6 +6,7 @@
     python treasure.py --self-test    import and contract check, emits no input
     python treasure.py --smoke-test   packaging smoke test, emits no input
     python treasure.py --calibrate    read client-relative pixels under the cursor
+    python treasure.py --capture-probe  measure capture cost, read-only
 
 ``--deadman`` is dispatched **before** Tk, OpenCV, capture, or engine code is
 imported (plan 4.5), so the helper stays small and starts even if the heavy
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Any
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -181,6 +183,82 @@ def _run_smoke_test() -> int:
     return 1 if problems else 0
 
 
+def _run_capture_probe(samples: int = 40) -> int:
+    """Measure capture cost at several client sizes. Read-only.
+
+    It grabs pixels and nothing else: no window is moved and no input is sent.
+    The numbers feed E-PERF planning; a probe is not the gate (plan 7.4).
+    """
+    import statistics
+
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+        ViewportStatus,
+    )
+    from prospector_engine.contracts import ClientRectPhysicalPx, monotonic_s
+    from prospector_engine.ports import create_platform_port
+
+    port = create_platform_port()
+    actual = port.find_client_rect()
+    print("Capture cost probe (read-only; no window is moved, no input is sent)")
+    print(f"  current client rect: {actual.size_px if actual else 'not found'}")
+
+    class _FixedGuard(ViewportGuard):
+        """Pretends a rect is pinned so the probe can price several sizes."""
+
+        def __init__(self, platform_port: Any, rect: ClientRectPhysicalPx) -> None:
+            super().__init__(platform_port)
+            self._fixed = rect
+
+        def check(self) -> ViewportStatus:
+            return ViewportStatus(self._fixed, self._fixed, True, "probe")
+
+        @property
+        def pinned(self) -> ClientRectPhysicalPx | None:
+            return self._fixed
+
+    def measure(size_px: tuple[int, int], label: str) -> None:
+        rect = ClientRectPhysicalPx(
+            origin_px=(0, 0),
+            size_px=size_px,
+            scale=1.0,
+            verified_at_s=monotonic_s(),
+            display_id="probe",
+            valid=True,
+        )
+        service = CaptureService(
+            _FixedGuard(port, rect),
+            EvidenceRegistry("probe"),
+            config=CaptureConfig(target_interval_ms=1),
+        )
+        service.capture_once()  # warm the backend before timing
+        durations = []
+        for _ in range(samples):
+            envelope = service.capture_once()
+            if envelope is not None:
+                durations.append(envelope.frame.duration_ms)
+        service.stop()
+        if not durations:
+            print(f"  {label:>30}: no frames captured (Screen Recording permission?)")
+            return
+        durations.sort()
+        p50 = statistics.median(durations)
+        p95 = durations[max(0, int(len(durations) * 0.95) - 1)]
+        budget = "within" if p95 <= 40.0 else "OVER"
+        print(f"  {label:>30}: p50 {p50:6.1f} ms   p95 {p95:6.1f} ms   [{budget} 40 ms budget]")
+
+    measure((1280, 720), "canonical client 1280x720")
+    measure((2560, 1440), "2x canonical")
+    if actual is not None:
+        measure(actual.size_px, f"current {actual.size_px[0]}x{actual.size_px[1]}")
+    print("\nThese are capture-only costs on this machine. E-PERF, which also covers")
+    print("perception, control, and Stop latency, remains PENDING (STATUS.md).")
+    return 0
+
+
 def _run_calibrate() -> int:
     """Read the client-relative pixel under the cursor.
 
@@ -239,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_self_test()
     if "--smoke-test" in arguments:
         return _run_smoke_test()
+    if "--capture-probe" in arguments:
+        return _run_capture_probe()
     if "--calibrate" in arguments:
         return _run_calibrate()
     from treasure_gui import main as gui_main

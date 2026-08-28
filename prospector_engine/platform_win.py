@@ -130,16 +130,19 @@ def declare_per_monitor_v2() -> str:
     build additionally declares awareness in its manifest; this call is the
     source-run equivalent and is harmless when the manifest already applied.
     """
-    user32 = ctypes.windll.user32
     with contextlib.suppress(Exception):
-        if user32.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(
+            DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        ):
             return "per-monitor-v2"
     with contextlib.suppress(Exception):
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
         return "per-monitor"
     with contextlib.suppress(Exception):
-        user32.SetProcessDPIAware()
+        ctypes.windll.user32.SetProcessDPIAware()
         return "system"
+    # Reached when no DPI API answered - including the cross-platform import
+    # test, where ``ctypes.windll`` does not exist at all.
     return "none"
 
 

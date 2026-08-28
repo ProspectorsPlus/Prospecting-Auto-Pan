@@ -147,3 +147,55 @@ carries a module-level notice that nothing in it has run on Windows.
 cannot resolve `ctypes.windll`, so `pyproject.toml` exempts exactly those two
 Win32-only names for that module and says why. The opposite-OS import test
 covers structure only; every Windows row in §16.3 stays `pending`.
+
+---
+
+## D-010 — 2026-08-27 — Capture cost measured; the canonical pin is what fits
+
+**Decision:** record capture cost as an observed local fact and add
+`treasure.py --capture-probe` so the measurement is reproducible.
+
+**Measured on the development Mac (macOS 25.4, arm64, 2x display), read-only,
+40 samples per size, mss backend:**
+
+| Client size (physical px) | p50 | p95 | 40 ms budget |
+|---|---|---|---|
+| 1280 × 720 (canonical) | ~19–23 ms | ~21–33 ms | within |
+| 2560 × 1440 | ~33–37 ms | ~36–47 ms | over |
+| 3600 × 2108 (this machine's unpinned Roblox window) | ~70–81 ms | ~82–158 ms | over |
+
+**Why it matters:** running Shadow against the *unpinned* window on this
+machine produced decision-time frame ages of 110–160 ms, and the navigator
+correctly released on `stale-frame` every tick. That is the safety machinery
+working, and it is also a concrete reason the canonical pin is not cosmetic:
+capture cost scales with pixel count, and only the canonical size leaves room
+for perception inside the frozen budget.
+
+**Status:** this is capture-only, on one machine, in one run. It is an
+`observed_fact` for planning. **E-PERF is still PENDING** — it also covers
+perception, control, preview, duplicate/stale rate, and Stop latency.
+
+---
+
+## D-011 — 2026-08-27 — Shadow adopts the viewport instead of moving the window
+
+**Decision:** `START_SHADOW` calls `ViewportGuard.adopt_current()` when nothing
+is pinned, rather than refusing or pinning.
+
+**Why:** Shadow only observes, and §3.3 asks it for "a valid capture viewport",
+not a canonical one. Making pure observation require moving the user's Roblox
+window would be a needless side effect. Adoption is read-only, and if the
+adopted rect is not the canonical size the detectors abstain with
+`unsupported-viewport-size` — verified in a real Shadow run on this machine.
+Nothing is silently rescaled.
+
+---
+
+## D-012 — 2026-08-27 — `native` tests are excluded from every default run
+
+**Decision:** `addopts = "-m 'not native'"` in `pyproject.toml`.
+
+**Why:** §16.1 says no test may emit OS input unless it is explicitly marked
+native and physically armed. Making that the default configuration is stronger
+than documenting it, because an agent or a CI runner that types plain `pytest`
+still cannot emit input.

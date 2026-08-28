@@ -399,11 +399,11 @@ Minimum contracts:
 @dataclass(frozen=True)
 class CapturedFrame:
     sequence: int
-    captured_at_s: float       # capture began; conservative pixel-age origin
+    captured_at_s: float  # capture began; conservative pixel-age origin
     completed_at_s: float
     duration_ms: float
     client_rect: ClientRectPhysicalPx
-    bgr: NDArray[np.uint8]       # read-only
+    bgr: NDArray[np.uint8]  # read-only
     duplicate: bool
     capture_error: str | None
 

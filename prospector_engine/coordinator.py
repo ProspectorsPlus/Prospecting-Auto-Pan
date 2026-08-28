@@ -224,6 +224,14 @@ class RuntimeCoordinator:
         self._running = threading.Event()
         self._shutdown_complete = threading.Event()
 
+    def register_worker(self, key: IntentType, factory: WorkerFactory) -> None:
+        """Install or replace the worker for one intent.
+
+        The constructor copies its ``workers`` mapping, so late registration
+        goes through here rather than by mutating the caller's dict.
+        """
+        self._workers[key] = factory
+
     # -- introspection ----------------------------------------------------
     @property
     def mode(self) -> RunMode:
@@ -420,6 +428,16 @@ class RuntimeCoordinator:
         self._events.add("arm.created", f"ttl={self._config.arm_ttl_s:g}s")
 
     def _on_start_shadow(self, intent: RuntimeIntent) -> None:
+        if self._guard.pinned is None:
+            # Shadow only observes, so it adopts the client area as it is
+            # rather than moving the user's window. The rect is still verified;
+            # if it is not the canonical size the detectors abstain with
+            # "unsupported-viewport-size", which is the honest outcome.
+            adopted = self._guard.adopt_current()
+            self._events.add(
+                "viewport.adopted",
+                "none" if adopted is None else f"{adopted.width_px}x{adopted.height_px}",
+            )
         readiness = self.readiness()
         if not readiness.shadow_ok:
             self._events.add("shadow.refused", ",".join(readiness.reasons))

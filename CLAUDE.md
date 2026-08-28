@@ -58,10 +58,16 @@ not silently degrade.
 .venv/bin/python -m ruff format --check .
 .venv/bin/python -m mypy prospector_engine deadman.py
 .venv/bin/python treasure.py --self-test      # imports + contracts, no input
+.venv/bin/python treasure.py --smoke-test     # packaging smoke test, no input
+.venv/bin/python treasure.py --capture-probe  # capture cost, read-only
 ```
 
-Everything above is safe to run unattended. No test emits real OS input
-unless it is marked `native`, and `native` tests are skipped by default.
+Everything above is safe to run unattended. `native` tests are excluded by the
+default `addopts` in `pyproject.toml`, so a plain `pytest` cannot emit OS
+input; opt in with `-m native` only while physically at the machine.
+
+`--capture-probe` and `--calibrate` read pixels. They move no window and send
+no input, but they do need Screen Recording permission.
 
 ## 4. Hard rules for any agent working here
 

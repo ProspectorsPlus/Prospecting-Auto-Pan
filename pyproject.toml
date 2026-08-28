@@ -50,6 +50,10 @@ prospector_engine = ["profiles/*.json", "assets/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `native` tests physically emit OS input or need a real Roblox session, so
+# they are excluded from every default run. Opt in with `-m native` only while
+# physically present at the machine (plan 16.1).
+addopts = "-m 'not native'"
 # Every test is bounded: a hung lease/worker test must fail, not wedge CI.
 timeout = 60
 markers = [

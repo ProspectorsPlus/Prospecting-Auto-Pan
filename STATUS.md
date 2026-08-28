@@ -67,6 +67,25 @@ Because every gate is pending:
 
 ---
 
+## Observed local facts (not gate passes)
+
+These were measured on the development Mac and are reproducible. They inform
+planning; none of them passes a gate.
+
+| Measurement | Value | How to reproduce |
+|---|---|---|
+| macOS title-bar inset for the Roblox window | 28.0 pt, **measured** from the window's own close-button geometry | dashboard **Pin Window** reports `measured` vs `provisional-fallback` |
+| Client rect derived from that inset | `origin=(0, 134) px, size=(3600, 2108) px, scale=2.0` (unpinned window) | `treasure.py --calibrate` |
+| Capture cost, 1280×720 physical px | p50 ~19–23 ms, p95 ~21–33 ms | `treasure.py --capture-probe` |
+| Capture cost, 2560×1440 | p50 ~33–37 ms, p95 ~36–47 ms | same |
+| Capture cost, 3600×2108 (unpinned) | p50 ~70–81 ms, p95 ~82–158 ms | same |
+| Shadow against an unpinned window | releases every tick on `stale-frame`, arrow abstains `unsupported-viewport-size` | Start Shadow without pinning |
+
+The last two rows together are why the canonical pin matters: capture cost
+scales with pixel count, and only the canonical size leaves room for perception
+inside the 40 ms budget. **E-PERF is still pending** — it covers perception,
+control, preview, and Stop latency as well.
+
 ## Native checks the owner must run
 
 macOS:
