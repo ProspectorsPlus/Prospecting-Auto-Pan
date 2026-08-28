@@ -1129,7 +1129,14 @@ class InputAuthority:
     def _translate_navigation(
         self, generation: int, command: NavigationCommand
     ) -> NavigationApplyResult:
-        """Axes -> leases. Anything not commanded this tick is released."""
+        """Axes -> leases. Anything not commanded this tick is released.
+
+        A command is **APPLIED only if every required edge succeeded**. If a
+        forward lease could not be taken, the yaw that would have accompanied
+        it is not emitted either: turning while believing the character is
+        walking is a worse state than doing nothing, and reporting success for
+        a half-applied command is how the two get confused.
+        """
         horizon_ms = min(
             self._config.max_rolling_lease_horizon_ms,
             max(1, int((command.valid_until_s - monotonic_s()) * 1000)),
@@ -1154,6 +1161,7 @@ class InputAuthority:
                 self.release_lease(generation, handle)
 
         held: list[str] = []
+        failed: list[str] = []
         for target, key in wanted.items():
             existing = current.get(target)
             if existing is not None:
@@ -1162,11 +1170,26 @@ class InputAuthority:
                     continue
                 self.release_lease(generation, existing)
             lease = self.acquire_key(generation, key, horizon_ms)
-            if lease is not None:
+            if lease is None:
+                failed.append(target)
+            else:
                 held.append(target)
 
-        if command.yaw_delta_px:
-            self.pointer_delta(generation, command.yaw_delta_px, 0)
+        if failed:
+            # Release what did land, so the character is not left holding half
+            # a command, and say so rather than reporting a success.
+            self.release_all(f"navigation:lease-failed:{','.join(sorted(failed))}")
+            return NavigationApplyResult(
+                NavigationApplyStatus.REJECTED_HEALTH,
+                f"could not acquire {', '.join(sorted(failed))}; released and stopped",
+            )
+
+        if command.yaw_delta_px and not self.pointer_delta(generation, command.yaw_delta_px, 0):
+            self.release_all("navigation:yaw-edge-failed")
+            return NavigationApplyResult(
+                NavigationApplyStatus.REJECTED_HEALTH,
+                "the yaw edge was refused; released and stopped",
+            )
 
         return NavigationApplyResult(
             NavigationApplyStatus.APPLIED, command.reason, leases_held=tuple(sorted(held))

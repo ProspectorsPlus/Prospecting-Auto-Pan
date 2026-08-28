@@ -16,9 +16,11 @@ from hypothesis import strategies as st
 
 from prospector_engine.contracts import (
     ArrowObservation,
+    CommandKind,
     DirectionObservation,
     EvidenceStatus,
     MotionObservation,
+    NavigationCommand,
     NavigationPhase,
 )
 from prospector_engine.motion import (
@@ -51,6 +53,52 @@ ALL_PASSED = NavigationGates(
         if field.startswith("e_")
     },
 )
+
+
+def _calibrated_navigator(gates: NavigationGates | None = None, **overrides: Any) -> Navigator:
+    """A navigator whose yaw calibration is pretended to have passed E-YAW.
+
+    Only a test may do this. Production reaches the same state exactly once:
+    after physically armed yaw pulses on real hardware whose observed rotation
+    perception confirmed. The point of the fixture is to exercise the control
+    law without hardware, not to shortcut the gate.
+    """
+    from prospector_engine.steering import (
+        CalibrationFingerprint,
+        ShiftLockController,
+        YawCalibration,
+    )
+
+    fingerprint = CalibrationFingerprint(
+        os_name="test",
+        backend="fake",
+        client_fingerprint="test-client",
+        camera_sensitivity="default",
+        control_mode="shift-lock",
+        viewport_identity=(),
+        profile_id="test",
+        profile_revision=1,
+        supported_min_fps=30,
+    )
+    calibration = YawCalibration(
+        fingerprint=fingerprint,
+        degrees_per_unit=0.25,
+        positive_is_right=True,
+        min_effective_units=2,
+        linear_range_units=(2, 160),
+        saturation_units=200,
+        response_delay_ms=18.0,
+        repeatability_deg=0.7,
+        reversal_backlash_deg=0.2,
+        linear_fit_r2=0.995,
+        repeats_per_magnitude=10,
+        status=EvidenceStatus.VALIDATED,
+    )
+    return Navigator(
+        gates=gates or ALL_PASSED,
+        controller=ShiftLockController(calibration=calibration),
+        **overrides,
+    )
 
 
 def _direction(error_deg: float | None, confidence: float = 1.0) -> DirectionObservation:
@@ -421,9 +469,10 @@ def _inputs(
     arrival: Any = None,
     motion: MotionObservation | None = None,
     forward_commanded: bool = False,
+    sequence: int = 1,
 ) -> NavigationInputs:
     return NavigationInputs(
-        frame=make_frame(1, captured_at_s=captured_at_s),
+        frame=make_frame(sequence, captured_at_s=captured_at_s),
         arrow=_arrow(arrow_valid),
         direction=_direction(error_deg),
         motion=motion,
@@ -470,8 +519,8 @@ def test_the_arrow_loss_grace_keeps_forward_but_releases_yaw() -> None:
 
 
 def test_a_command_lease_never_outlives_its_evidence() -> None:
-    navigator = Navigator(gates=ALL_PASSED, max_evidence_age_ms=100)
-    decision = navigator.decide(_inputs(error_deg=0.0), generation=1, now_s=0.0)
+    navigator = _calibrated_navigator(max_evidence_age_ms=100)
+    decision = navigator.decide(_inputs(error_deg=30.0), generation=1, now_s=0.0)
 
     assert decision.command is not None
     assert decision.command.valid_until_s <= decision.command.source_captured_at_s + 0.100001
@@ -513,17 +562,23 @@ def test_contact_abandons_while_recovery_is_ungated() -> None:
 
     gates = replace(ALL_PASSED, e_recovery=EvidenceStatus.PENDING)
     monitor = ContactMonitor(CALIBRATED, ContactConfig(sustained_ms=1))
-    navigator = Navigator(gates=gates, contact=monitor)
+    navigator = _calibrated_navigator(gates=gates, contact=monitor)
 
     decision = navigator.decide(
-        _inputs(motion=_motion(0.0), forward_commanded=True, captured_at_s=0.0),
+        _inputs(error_deg=0.5, motion=_motion(0.0), forward_commanded=True, captured_at_s=0.0),
         generation=1,
         now_s=0.0,
     )
     # A fresh frame each tick: the contact must come from sustained low
     # progress, not from the frame going stale underneath it.
     decision = navigator.decide(
-        _inputs(motion=_motion(0.0), forward_commanded=True, captured_at_s=0.5),
+        _inputs(
+            error_deg=0.5,
+            motion=_motion(0.0),
+            forward_commanded=True,
+            captured_at_s=0.5,
+            sequence=2,
+        ),
         generation=1,
         now_s=0.5,
     )
@@ -532,35 +587,85 @@ def test_contact_abandons_while_recovery_is_ungated() -> None:
     assert decision.release
 
 
-def test_an_aligned_arrow_produces_a_forward_command() -> None:
+def test_steering_is_refused_until_the_yaw_calibration_passes() -> None:
+    """Every perception gate passing is still not permission to move a mouse."""
     navigator = Navigator(gates=ALL_PASSED)
+
     decision = navigator.decide(_inputs(error_deg=0.5), generation=1, now_s=0.0)
 
-    assert decision.command is not None
-    assert decision.command.forward_axis == 1
-    assert decision.command.yaw_delta_px == 0
-    assert decision.phase is NavigationPhase.FOLLOW
+    assert decision.command is None
+    assert decision.release
+    assert "not calibrated" in decision.reason
 
 
-def test_a_misaligned_arrow_turns_before_it_walks() -> None:
-    navigator = Navigator(gates=ALL_PASSED)
+def test_an_aligned_arrow_walks_only_after_sustained_alignment() -> None:
+    """W is never taken on the strength of one frame inside the deadband."""
+    navigator = _calibrated_navigator()
+    decisions = [
+        navigator.decide(
+            _inputs(error_deg=0.5, sequence=index + 1, captured_at_s=index * 0.02),
+            generation=1,
+            now_s=index * 0.02,
+        )
+        for index in range(5)
+    ]
+
+    assert all(d.command is None or d.command.forward_axis == 0 for d in decisions[:2])
+    final = decisions[-1]
+    assert final.command is not None
+    assert final.command.forward_axis == 1
+    assert final.command.kind is CommandKind.FOLLOW
+    assert final.phase is NavigationPhase.FOLLOW
+
+
+def test_a_misaligned_arrow_turns_on_the_spot() -> None:
+    navigator = _calibrated_navigator()
     decision = navigator.decide(_inputs(error_deg=45.0), generation=1, now_s=0.0)
 
     assert decision.command is not None
-    assert decision.command.forward_axis == 0
+    assert decision.command.forward_axis == 0, "alignment is stationary"
+    assert decision.command.kind is CommandKind.ALIGN
     assert decision.command.yaw_delta_px > 0
     assert decision.phase is NavigationPhase.ALIGN
+
+
+def test_an_alignment_command_can_never_ask_for_forward_motion() -> None:
+    """Enforced by the contract, not by the caller remembering."""
+    with pytest.raises(ValueError, match="may not command forward"):
+        NavigationCommand(
+            generation=1,
+            source_frame_sequence=1,
+            source_captured_at_s=0.0,
+            forward_axis=1,
+            lateral_axis=0,
+            jump=False,
+            yaw_delta_px=4,
+            issued_at_s=0.0,
+            valid_until_s=0.1,
+            reason="test",
+            kind=CommandKind.ALIGN,
+        )
+
+
+def test_a_frame_authorizes_exactly_one_decision() -> None:
+    """Re-reading a frame must not renew a lease (mission section 11)."""
+    navigator = _calibrated_navigator()
+    first = navigator.decide(_inputs(error_deg=20.0, sequence=7), generation=1, now_s=0.0)
+    second = navigator.decide(_inputs(error_deg=20.0, sequence=7), generation=1, now_s=0.02)
+
+    assert first.command is not None
+    assert second.command is None, "the same frame cannot authorize a second command"
 
 
 @settings(max_examples=100, deadline=None)
 @given(error=st.floats(min_value=-180.0, max_value=180.0, allow_nan=False))
 def test_no_command_ever_asks_for_forward_and_reverse_at_once(error: float) -> None:
-    navigator = Navigator(gates=ALL_PASSED)
+    navigator = _calibrated_navigator()
     decision = navigator.decide(_inputs(error_deg=error), generation=1, now_s=0.0)
     if decision.command is not None:
         assert decision.command.forward_axis in (-1, 0, 1)
         assert decision.command.lateral_axis in (-1, 0, 1)
-        assert abs(decision.command.yaw_delta_px) <= SteeringConfig().max_turn_px_per_tick
+        assert decision.command.kind.may_hold_forward or decision.command.forward_axis == 0
 
 
 def test_the_live_worker_refuses_to_start_while_gates_are_pending() -> None:

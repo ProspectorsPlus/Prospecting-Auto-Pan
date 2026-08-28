@@ -16,8 +16,10 @@ Two rules shape everything here:
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Any, Protocol
 
 import numpy as np
@@ -32,11 +34,18 @@ from prospector_engine.contracts import (
 
 __all__ = [
     "MOTION_ESTIMATORS",
+    "AppliedForward",
     "ContactConfig",
     "ContactEvidence",
     "ContactMonitor",
+    "ForwardCommandLedger",
     "LocomotionBaseline",
     "MotionEstimator",
+    "ProgressConfig",
+    "ProgressGuard",
+    "ProgressState",
+    "ProgressVerdict",
+    "TraversabilityObservation",
     "estimate_block_displacement",
     "estimate_lk_affine",
     "estimate_phase_correlation",
@@ -377,3 +386,358 @@ class ContactMonitor:
         if sustained_ms >= self._config.sustained_ms:
             return ContactEvidence(True, "low-progress-sustained", sustained_ms, observation)
         return ContactEvidence(False, "low-progress-accumulating", sustained_ms, observation)
+
+
+# ---------------------------------------------------------------------------
+# Applied-forward ledger and the progress guard
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AppliedForward:
+    """One interval during which ``W`` was genuinely held.
+
+    *Genuinely* is the operative word. "The navigator asked for forward" and
+    "the input authority accepted a forward lease" are different facts, and
+    only the second one means the character was being told to walk. Judging
+    progress against the first is how a run of rejected commands would look
+    like a wall.
+    """
+
+    started_at_s: float
+    ended_at_s: float | None = None
+
+    def duration_s(self, now_s: float) -> float:
+        return max(0.0, (self.ended_at_s or now_s) - self.started_at_s)
+
+
+class ForwardCommandLedger:
+    """What forward motion was actually applied, and when.
+
+    Bounded: it keeps only the recent window the guard can reason about, so a
+    long session cannot grow it.
+    """
+
+    def __init__(self, window_s: float = 8.0) -> None:
+        self._window_s = window_s
+        self._intervals: deque[AppliedForward] = deque(maxlen=64)
+
+    def note_applied(self, now_s: float, *, forward: bool) -> None:
+        """Record what the authority *accepted*, not what was requested."""
+        open_interval = (
+            self._intervals[-1]
+            if self._intervals and self._intervals[-1].ended_at_s is None
+            else None
+        )
+        if forward and open_interval is None:
+            self._intervals.append(AppliedForward(started_at_s=now_s))
+        elif not forward and open_interval is not None:
+            self._intervals[-1] = replace(open_interval, ended_at_s=now_s)
+        self._trim(now_s)
+
+    def _trim(self, now_s: float) -> None:
+        cutoff = now_s - self._window_s
+        while self._intervals and (self._intervals[0].ended_at_s or now_s) < cutoff:
+            self._intervals.popleft()
+
+    def held_continuously_for(self, now_s: float) -> float:
+        """How long ``W`` has been held without interruption, in seconds."""
+        if not self._intervals or self._intervals[-1].ended_at_s is not None:
+            return 0.0
+        return self._intervals[-1].duration_s(now_s)
+
+    def holding(self) -> bool:
+        return bool(self._intervals) and self._intervals[-1].ended_at_s is None
+
+    def clear(self) -> None:
+        self._intervals.clear()
+
+
+class ProgressState(Enum):
+    """What the guard currently believes about forward progress."""
+
+    UNKNOWN = "unknown"
+    """Not enough evidence. The default, and never a reason to act."""
+
+    PROGRESSING = "progressing"
+    NO_PROGRESS_SUSPECTED = "no_progress_suspected"
+    """Low progress seen, not yet confirmed. Forward releases here."""
+
+    NO_PROGRESS_CONFIRMED = "no_progress_confirmed"
+    """Confirmed from fresh evidence collected *after* forward was released."""
+
+
+@dataclass(frozen=True)
+class ProgressVerdict:
+    """One guard decision, with the evidence and what to do about it."""
+
+    state: ProgressState
+    release_forward: bool
+    confidence: float
+    reason: str
+    sustained_ms: float = 0.0
+    observation: MotionObservation | None = None
+
+    @property
+    def blocked(self) -> bool:
+        return self.state is ProgressState.NO_PROGRESS_CONFIRMED
+
+
+@dataclass(frozen=True)
+class TraversabilityObservation:
+    """The per-frame contract a future 2.5D traversability grid will consume.
+
+    Deliberately produced and recorded now, and deliberately **not** consumed
+    by anything: the grid, the obstacle map and the detour planner are a later
+    phase. What exists here is the input side of that boundary - one honest
+    record per frame of what was commanded, what motion was observed, and how
+    much either can be trusted - so the later work has real data to build on
+    rather than a retrofit.
+
+    Nothing in this pass reads it to make a decision. There is no wiggle, no
+    detour, and no A/D/S/jump anywhere in the control path.
+    """
+
+    at_s: float
+    commanded_heading_deg: float | None
+    commanded_forward: bool
+    motion: MotionObservation | None
+    progress_state: ProgressState
+    confidence: float
+    #: The client-relative point the player was assumed to occupy, so a later
+    #: grid can anchor its cells without re-deriving the anchor.
+    anchor_px: tuple[float, float] | None = None
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class ProgressConfig:
+    """When low progress becomes actionable. All values provisional.
+
+    Two bounds rather than one: a *suspicion* window short enough that the
+    character does not walk into a wall for a second, and a *confirmation*
+    window that only runs after forward has already been released, so the
+    confirmation is never contaminated by the motion it is judging.
+    """
+
+    #: Sustained low progress before forward is released. Short on purpose.
+    suspect_after_ms: int = 350
+    #: Fresh stationary evidence required after release before the guard will
+    #: call it confirmed.
+    confirm_frames: int = 4
+    #: Forward must have been genuinely held at least this long before low
+    #: progress means anything at all.
+    min_applied_forward_ms: int = 250
+    #: How long after a yaw pulse motion evidence stays untrustworthy.
+    post_yaw_holdoff_ms: int = 250
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="TREASURE_NAVIGATION_PLAN.md section 7.4 E-MOTION; mission section 13",
+            note="E-MOTION has not been run; the guard abstains without a baseline",
+        )
+    )
+
+
+class ProgressGuard:
+    """Conservative "is the character actually moving" evidence.
+
+    Three rules, and they are the whole design:
+
+    * **Elapsed time can never declare an obstacle.** Holding ``W`` for two
+      seconds is not evidence of a wall; measured low displacement with high
+      motion confidence and low yaw contamination is.
+    * **Ambiguity abstains.** Low-texture scenes, poor spatial coverage and
+      yaw-contaminated frames produce ``UNKNOWN``, which is not a reason to do
+      anything.
+    * **Release first, confirm second.** A suspicion releases forward
+      immediately and only then gathers the stationary evidence that would
+      confirm it - so the confirmation is not measuring the motion it is
+      trying to judge.
+
+    It recommends releasing. It never recommends a maneuver: there is no
+    recovery ladder, no detour and no jump in this pass.
+    """
+
+    def __init__(
+        self,
+        baseline: LocomotionBaseline = UNCALIBRATED_BASELINE,
+        config: ProgressConfig | None = None,
+        contact: ContactMonitor | None = None,
+    ) -> None:
+        self._baseline = baseline
+        self._config = config or ProgressConfig()
+        self._contact = contact or ContactMonitor(
+            baseline, ContactConfig(sustained_ms=self._config.suspect_after_ms)
+        )
+        self._ledger = ForwardCommandLedger()
+        self._state = ProgressState.UNKNOWN
+        self._confirm_frames = 0
+        self._history: deque[TraversabilityObservation] = deque(maxlen=240)
+
+    @property
+    def state(self) -> ProgressState:
+        return self._state
+
+    @property
+    def ledger(self) -> ForwardCommandLedger:
+        return self._ledger
+
+    @property
+    def baseline(self) -> LocomotionBaseline:
+        return self._baseline
+
+    def history(self) -> tuple[TraversabilityObservation, ...]:
+        """The bounded record a future traversability grid will consume."""
+        return tuple(self._history)
+
+    def reset(self) -> None:
+        self._contact.reset()
+        self._ledger.clear()
+        self._state = ProgressState.UNKNOWN
+        self._confirm_frames = 0
+
+    def note_applied(self, now_s: float, *, forward: bool) -> None:
+        self._ledger.note_applied(now_s, forward=forward)
+
+    def note_yaw(self, at_s: float) -> None:
+        self._contact.note_yaw(at_s)
+
+    def update(
+        self,
+        observation: MotionObservation | None,
+        *,
+        now_s: float,
+        commanded_heading_deg: float | None = None,
+        anchor_px: tuple[float, float] | None = None,
+    ) -> ProgressVerdict:
+        """One guard tick. Every uncertain path returns ``UNKNOWN``."""
+        config = self._config
+        holding = self._ledger.holding()
+        held_ms = self._ledger.held_continuously_for(now_s) * 1000.0
+
+        verdict = self._decide(observation, now_s, holding, held_ms)
+        self._history.append(
+            TraversabilityObservation(
+                at_s=now_s,
+                commanded_heading_deg=commanded_heading_deg,
+                commanded_forward=holding,
+                motion=observation,
+                progress_state=verdict.state,
+                confidence=verdict.confidence,
+                anchor_px=anchor_px,
+                note=verdict.reason,
+            )
+        )
+        del config
+        return verdict
+
+    def _decide(
+        self,
+        observation: MotionObservation | None,
+        now_s: float,
+        holding: bool,
+        held_ms: float,
+    ) -> ProgressVerdict:
+        config = self._config
+        if observation is None:
+            self._state = ProgressState.UNKNOWN
+            return ProgressVerdict(self._state, False, 0.0, "no motion estimate on this frame")
+        if not self._baseline.usable:
+            self._state = ProgressState.UNKNOWN
+            return ProgressVerdict(
+                self._state,
+                False,
+                0.0,
+                "no locomotion baseline: E-MOTION has not been run",
+                observation=observation,
+            )
+
+        if self._state is ProgressState.NO_PROGRESS_SUSPECTED:
+            # Forward is already released. Confirmation is measured from fresh
+            # frames collected after that release, never from the ones that
+            # raised the suspicion.
+            return self._confirm(observation, now_s)
+
+        if not holding:
+            self._contact.reset()
+            self._state = ProgressState.UNKNOWN
+            return ProgressVerdict(
+                self._state, False, 0.0, "forward is not being held", observation=observation
+            )
+        if held_ms < config.min_applied_forward_ms:
+            return ProgressVerdict(
+                ProgressState.UNKNOWN,
+                False,
+                0.0,
+                f"forward has only been held {held_ms:.0f} ms",
+                observation=observation,
+            )
+
+        evidence = self._contact.update(observation, forward_commanded=True, now_s=now_s)
+        if evidence.contact:
+            # Release now; decide afterwards. Walking into something while
+            # deliberating is the outcome this ordering exists to prevent.
+            self._state = ProgressState.NO_PROGRESS_SUSPECTED
+            self._confirm_frames = 0
+            return ProgressVerdict(
+                self._state,
+                True,
+                observation.confidence,
+                "low progress while walking; releasing forward to confirm",
+                sustained_ms=evidence.sustained_ms,
+                observation=observation,
+            )
+        if evidence.reason == "progressing":
+            self._state = ProgressState.PROGRESSING
+            return ProgressVerdict(
+                self._state,
+                False,
+                observation.confidence,
+                evidence.reason,
+                sustained_ms=evidence.sustained_ms,
+                observation=observation,
+            )
+        # Anything else - accumulating, low confidence, poor coverage, yaw
+        # contamination, a post-yaw hold-off - is an absence of evidence, not
+        # evidence of progress. Reporting PROGRESSING here would let a
+        # camera-turn frame vouch for forward motion it cannot see.
+        self._state = ProgressState.UNKNOWN
+        return ProgressVerdict(
+            self._state,
+            False,
+            observation.confidence,
+            f"motion evidence is not conclusive: {evidence.reason}",
+            sustained_ms=evidence.sustained_ms,
+            observation=observation,
+        )
+
+    def _confirm(self, observation: MotionObservation, now_s: float) -> ProgressVerdict:
+        del now_s
+        if not observation.valid or observation.confidence < 0.5:
+            # Ambiguous evidence cannot confirm. The suspicion stands, forward
+            # stays released, and nothing escalates.
+            return ProgressVerdict(
+                self._state,
+                True,
+                observation.confidence,
+                "waiting for usable evidence to confirm",
+                observation=observation,
+            )
+        self._confirm_frames += 1
+        if self._confirm_frames >= self._config.confirm_frames:
+            self._state = ProgressState.NO_PROGRESS_CONFIRMED
+            return ProgressVerdict(
+                self._state,
+                True,
+                observation.confidence,
+                "no forward progress confirmed from stationary evidence",
+                observation=observation,
+            )
+        return ProgressVerdict(
+            self._state,
+            True,
+            observation.confidence,
+            f"confirming ({self._confirm_frames}/{self._config.confirm_frames})",
+            observation=observation,
+        )

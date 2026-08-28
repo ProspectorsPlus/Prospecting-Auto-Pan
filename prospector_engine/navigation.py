@@ -25,6 +25,7 @@ from prospector_engine.contracts import (
     ArrowCandidateRecord,
     ArrowObservation,
     CapturedFrame,
+    CommandKind,
     ControlState,
     CueReading,
     DiagnosticObservation,
@@ -41,6 +42,7 @@ from prospector_engine.contracts import (
 )
 from prospector_engine.coordinator import WorkerContext
 from prospector_engine.motion import ContactMonitor
+from prospector_engine.steering import ShiftLockController, SteeringInputs
 from prospector_engine.vision import (
     ArrivalDetector,
     ArrowProfile,
@@ -449,6 +451,17 @@ class NavigationDecision:
 #: The navigation FSM and the Shift-Lock controller describe the same run from
 #: two angles: one in lifecycle terms, one in "is W held right now" terms. The
 #: mapping is explicit so the two can never drift into disagreeing.
+#: The reverse mapping, used when the controller drives the phase rather than
+#: the other way round.
+_CONTROL_TO_PHASE: dict[ControlState, NavigationPhase] = {
+    ControlState.ACQUIRE: NavigationPhase.ACQUIRE,
+    ControlState.ALIGN: NavigationPhase.ALIGN,
+    ControlState.FOLLOW: NavigationPhase.FOLLOW,
+    ControlState.REACQUIRE: NavigationPhase.REACQUIRE,
+    ControlState.BLOCKED: NavigationPhase.CONTACT,
+    ControlState.SAFE_STOP: NavigationPhase.FAILED,
+}
+
 _PHASE_TO_CONTROL: dict[NavigationPhase, ControlState] = {
     NavigationPhase.ACQUIRE: ControlState.ACQUIRE,
     NavigationPhase.ALIGN: ControlState.ALIGN,
@@ -477,16 +490,36 @@ class Navigator:
         steering: SteeringController | None = None,
         recovery: RecoveryLadder | None = None,
         contact: ContactMonitor | None = None,
+        controller: ShiftLockController | None = None,
         max_evidence_age_ms: int = 100,
     ) -> None:
         self._gates = gates
         self._steering = steering or SteeringController()
         self._recovery = recovery or RecoveryLadder()
         self._contact = contact or ContactMonitor()
+        self._controller = controller or ShiftLockController()
         self._max_evidence_age_ms = max_evidence_age_ms
         self._phase = NavigationPhase.ACQUIRE
         self._last_valid_arrow_s: float | None = None
         self._arrival_latches = 0
+        #: Runtime health the controller consults. Set by the live worker from
+        #: the authority and the capture metrics, so the controller never has
+        #: to reach for something that might be stale.
+        self._focus_ok = True
+        self._processed_fps = 999.0
+        self._cursor_safe = True
+
+    def note_health(
+        self, *, focus_ok: bool, processed_fps: float, cursor_safe: bool = True
+    ) -> None:
+        """Refresh the runtime health the controller is allowed to see."""
+        self._focus_ok = focus_ok
+        self._processed_fps = processed_fps
+        self._cursor_safe = cursor_safe
+
+    @property
+    def controller(self) -> ShiftLockController:
+        return self._controller
 
     @property
     def phase(self) -> NavigationPhase:
@@ -587,22 +620,54 @@ class Navigator:
                 "steering disabled: " + ",".join(self._gates.blocking_reasons()) + " PENDING",
             )
 
-        yaw = self._steering.update(
-            inputs.direction, now_s=now_s, frame_is_duplicate=frame.duplicate
+        return self._steer(inputs, generation=generation, now_s=now_s)
+
+    def _steer(
+        self, inputs: NavigationInputs, *, generation: int, now_s: float
+    ) -> NavigationDecision:
+        """Hand the frame to the Shift-Lock controller and translate its answer.
+
+        The controller decides; this only turns its decision into the one
+        command type the input authority accepts. Splitting them means the
+        control law can be exercised with no authority in sight, which is what
+        the deterministic steering tests do.
+        """
+        frame = inputs.frame
+        decision = self._controller.update(
+            SteeringInputs(
+                arrow=inputs.arrow,
+                direction=inputs.direction,
+                frame_sequence=frame.sequence,
+                frame_age_ms=frame.age_s(now_s) * 1000.0,
+                now_s=now_s,
+                focus_ok=self._focus_ok,
+                viewport_ok=frame.geometry.valid,
+                processed_fps=self._processed_fps,
+                cursor_safe=self._cursor_safe,
+            )
         )
-        aligned = yaw == 0
-        self._phase = NavigationPhase.FOLLOW if aligned else NavigationPhase.ALIGN
+        if decision.release:
+            return self._release(_CONTROL_TO_PHASE[decision.state], decision.reason)
+        if not decision.moves:
+            # A frame that authorized nothing. The existing lease is left to
+            # expire rather than renewed, because renewing it would be reusing
+            # this frame's evidence for a second decision.
+            self._phase = _CONTROL_TO_PHASE[decision.state]
+            return NavigationDecision(self._phase, None, decision.reason)
+
+        self._phase = _CONTROL_TO_PHASE[decision.state]
         return NavigationDecision(
             self._phase,
             self._command(
                 generation,
                 frame,
                 now_s,
-                forward=1 if aligned else 0,
+                forward=decision.forward,
                 lateral=0,
                 jump=False,
-                yaw=yaw,
-                reason="follow" if aligned else "align",
+                yaw=decision.yaw_units,
+                reason=decision.reason,
+                kind=decision.kind,
             ),
             "steering",
         )
@@ -624,6 +689,7 @@ class Navigator:
         jump: bool,
         yaw: int,
         reason: str,
+        kind: CommandKind = CommandKind.FOLLOW,
     ) -> NavigationCommand:
         lease_s = self._steering.config.command_lease_ms / 1000.0
         max_valid_s = frame.captured_at_s + self._max_evidence_age_ms / 1000.0
@@ -638,6 +704,7 @@ class Navigator:
             issued_at_s=now_s,
             valid_until_s=min(now_s + lease_s, max_valid_s),
             reason=reason,
+            kind=kind,
         )
 
 
