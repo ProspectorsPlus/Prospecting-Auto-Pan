@@ -21,17 +21,20 @@ repository state and is not architecture truth.
 | Explicit coordinate spaces (logical / backing / canonical) | implemented and tested |
 | Window-specific capture at 57–110 unique fps | implemented; **ScreenCaptureKit** on macOS |
 | Connect to the Roblox client without resizing it | implemented and tested |
-| Optional bounded *Fit & Lock Viewport* state machine | implemented; **E-VIEW fit half pending** on both OSes |
+| Optional bounded *Fit & Verify Viewport* state machine | implemented; one measured `canonical_verified` on this Mac (2x, one display); **E-VIEW matrix pending** |
 | One coherent stamped frame per decision, keyed by run/generation/revision | implemented |
 | Per-frame diagnostic packet, Minimal and Full Diagnostics overlays | implemented |
 | Single input authority, leases, watchdog, out-of-process deadman | implemented; 10 000 stop races clean |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
 | Standalone dig loop (**F6**) | implemented; **pixels pending reverification** |
 | Shadow observation, telemetry, evidence recorder, dashboard | implemented |
-| Arrow detection by shape and local contrast, with a scored breakdown | implemented; measured on rendered stress frames; **E-PROF pending** |
-| Signed direction from arrowhead topology (no PCA coin-flips) | implemented; **E-DIR-E2E pending** |
-| Offline stratified evaluator with per-stratum confidence bounds | implemented |
-| Cadence governor (WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED) | implemented and tested |
+| Arrow detection by shape and local contrast, one temporal transaction per frame | implemented; **measured on a real-frame corpus** (eval: recall 80 %, 0 false locks, 0 identity switches); **E-PROF pending** |
+| Signed direction from barb asymmetry, notch line, tip and axis, with reversal hysteresis | implemented; eval sign accuracy 91 %, median 10 deg; **E-DIR-E2E pending** |
+| Real-frame corpus, split by contiguous sequence, with a bbox-aware evaluator and a regression gate | implemented (`tests/corpus/real`, `prospector_engine/corpus.py`) |
+| Bounded per-frame trace (capture, scheduling, ROI/full detector, direction, preview, governor) | implemented; exported as JSONL on Stop and by `--shadow-bench` |
+| Offline stratified evaluator with per-stratum confidence bounds | implemented (rendered stress only) |
+| Cadence governor (WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED), judged on a recent window, recovering from DEGRADED | implemented and tested; native: 57 of 57 unique fps with perception at Balanced 60 |
+| Guided commissioning window with keyed, scoped blockers | implemented; every evidence step stays PENDING until its physical procedure |
 | Shift-Lock steering controller and yaw calibration contract | implemented; **refuses to steer**, no calibration exists |
 | Conservative progress guard (may say "stop", never "go around") | implemented; **E-MOTION pending** |
 | Live navigation (steering) | **refuses to run** — it names the pending experiments instead |
@@ -73,14 +76,19 @@ detector — which ranked candidates by area and scored confidence by how close
 that area was to the middle of an allowed range — promoted the grass.
 
 Colour now only *proposes*. What decides is a weighted set of independent
-terms, of which the arrowhead's two-notch topology is necessary rather than
-merely heavy: in every measured view of the real arrow the contour has exactly
-two deep convexity defects of comparable depth with a large gap to the third,
-and terrain does not produce that. Direction comes from the same topology — the
-midpoint of the notches to the tip — which is signed by construction, unlike
-the PCA axis it replaces. See `DECISIONS.md` D-024.
+terms — local contrast (the one soft veto: every measured view of the arrow is
+brighter than what is behind it), the two-notch signature, the barbs beyond
+the notch line, a prominent tip, the outline bands, a locally-measured
+boundary — and an explicit temporal machine: an identity is earned over
+consistent frames, held through brief loss, challenged but never replaced in
+one frame by a distractor, and abstained on ambiguity. Direction is a
+weighted vote of independent polarity cues led by the barb asymmetry, which
+survives perspective and a hidden shaft end. See `DECISIONS.md` D-024, D-030.
 
-Run `treasure.py --detector-report` to reproduce the per-stratum numbers.
+The real-frame corpus in `tests/corpus/real` is what the detector is judged
+on. Run `treasure.py --detector-report --corpus tests/corpus/real --json out.json`
+for the per-sequence and per-stratum numbers with their counts, and
+`treasure.py --detector-report` for the rendered stress strata.
 
 ## Coordinate spaces
 
@@ -140,7 +148,16 @@ on Windows.
 .venv/bin/python treasure.py --calibrate  # client-relative pixel read-out
 .venv/bin/python treasure.py --capture-probe   # measure the pipeline, read-only
 .venv/bin/python treasure.py --replay <session-dir>  # replay a recording
+.venv/bin/python treasure.py --detector-report --corpus tests/corpus/real  # real-frame report
+.venv/bin/python treasure.py --shadow-bench 15 --json bench.json  # native capture + perception
+.venv/bin/python treasure.py --soak 10        # bounded synthetic soak
 ```
+
+Every offline mode is mutually exclusive and bounded: no dashboard, no input
+authority, no deadman helper, a report, an exit status.
+`tests/test_cli_lifecycle.py` runs them as subprocesses and checks exactly
+that. `--shadow-bench` needs a Roblox window on screen; it moves nothing and
+sends nothing.
 
 `--replay` runs a recorded session back through the real perception pipeline
 and navigator. There is no input authority and no platform port anywhere in

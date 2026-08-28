@@ -4,30 +4,29 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28. Development machine: macOS 25.4, arm64, CPython
-3.13.15, Tk 9.0. **No Roblox session was operated and Live was never armed
-during implementation.**
+Last updated: 2026-08-28 (third pass). Development machine: macOS 25.4, arm64,
+CPython 3.13.15, Tk 9.0. **No Roblox session was operated and Live was never
+armed during implementation; no input was sent.** The only thing this pass did
+to the game window was one Fit & Verify resize (read back, then restored to
+its previous size) and read-only capture for the benches and eight corpus
+frames.
 
 ---
 
-## What changed on 2026-08-28 (second pass)
+## What changed on 2026-08-28 (third pass) — regression recovery
 
-The first pass rebuilt capture. This one rebuilt what capture feeds: the
-detector, the lifecycle, the dashboard, and the control path.
+The second pass rebuilt the detector and the dashboard. This one measured
+them on real frames and found that they had regressed, then fixed what the
+measurements said.
 
-| Before | After |
-|---|---|
-| Candidates ranked by **area**; confidence was an area-fit score. In daylight a patch of grass beat the arrow | Nine independent scored terms; the arrowhead's two-notch topology is *necessary*, not merely weighted |
-| Direction from an unsigned PCA axis on a shape whose elongation is 1.3 — silent 180° flips | Signed from notch/tip topology, polarity decided by taper, PCA demoted to a fallback above an anisotropy floor |
-| Preview showed frame 53545 beside a decision panel showing 53542 | One `RuntimeKey` per packet; a consumer draws only what supersedes what it has |
-| Profile dropdown read `generic_saturated_v0` while the pipeline ran `yellow_map_v0` | `ProfileAuthority` owns the one profile; labels are derived from stable ids, swaps land at a frame boundary |
-| One button that found *and* resized the window | `Connect Roblox…` (touches nothing) and `Fit & Lock Viewport` (bounded state machine, three stable read-backs) |
-| Governor judged tiers on captured frames; stuck at 15 Hz in one session, 73 fps at 209 % CPU in another | `WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED` judged on **processed** throughput; a failed probe is remembered |
-| Cadence was a number the user could not influence | Efficient / Balanced / High / **Auto** (default), each a ceiling the governor still has to earn |
-| `drop 7055`, cumulative and alarming | Six separated rates, per-session counters with lifetime labelled, "superseded" with its meaning explained |
-| `ru_maxrss` displayed as current memory | Current RSS and peak RSS measured separately |
-| Steering was a bare PD controller with a pixel gain | `ShiftLockController` with a verified control-mode proof, a measured yaw calibration, and W as an evidence-bound lease |
-| No motion guard | `ProgressGuard`: releases before confirming, abstains on ambiguity, and cannot express a maneuver |
+| Observed regression | Root cause confirmed | Now |
+|---|---|---|
+| Arrow locks onto terrain, HUD and particles; identity changes between objects; direction sign is a coin flip | The two-notch topology was a *precondition* and real outlines are nicked by UI strokes; the boundary term was judged against the frame median and read 0 on flat sand; polarity came from taper about a notch line that a low camera angle inverts; `analyze()` selected the held track while the pipeline took direction and contour from the *first accepted* hypothesis | Stateless `propose` → `fuse` → one `commit` per unique frame; exactly one **selected** candidate feeds everything; ACQUIRE/TRACK/AMBIGUOUS/REACQUIRE/LOST with time-based bounds; polarity led by the **barb asymmetry**; structure is weighted evidence, contrast the only soft veto |
+| 15 unique fps, 8 analysis fps, 264 ms p95 | An ROI miss ran a second stateful full pass on the same screenshot; per-candidate measurement windows up to 1 M px dilated with a 41 px element; a 240-sample p95 kept one old 274 ms sample "current"; two 0.5 s bad polls downshifted; DEGRADED had no path to a probe; zero processed fps fell back to capture fps | Bounded windows, bounded candidates, spaced idle searches; readiness judged on a 2 s recent window with history kept beside it; 1 s of shortfall to downshift; DEGRADED probes after cooldown; settling and SCK reconfiguration acknowledged before judging; a real zero is a zero |
+| Fit & Lock frequently did not visibly resize | `_ax_window()` took `windows[0]` while `_scan_roblox()` picked a different CG window; a move to (0,0) was requested with the resize and a denied move failed the whole call; an OS clamp returned `ok=False` | AX window correlated by frame/title/largest; size only, origin preserved; clamp is `ok=True, clamped=True`, classified by the guard after three stable read-backs; typed `FitCompletion` through the coordinator; progress in the dashboard |
+| 14 static, duplicated blockers | A default `ShiftLockController` was instantiated to ask why it could not steer, so E-YAW appeared three times; "not frontmost" was a permanent failure | Keyed, scoped `LiveBlocker`s recomputed on every read; one row per gate; "not frontmost" is an *expected* condition with an instruction; an 11-step guided commissioning window |
+| `--detector-report` alive for hours in a Tk lifetime | Not reproduced here (the rendered report exits in 72 s) | Every offline mode is mutually exclusive and bounded, and `tests/test_cli_lifecycle.py` proves it as subprocesses: no Tk, no dashboard, no child process, bounded exit |
+| Synthetic soak and rendered fixtures proved nothing about the game | Rendered frames are training stress by plan §7.2 | A **real-frame corpus** (`tests/corpus/real`, 178 frames, 14 sequences, split by contiguous sequence) with a bbox-aware evaluator and a regression gate; a native `--shadow-bench` |
 
 ---
 
@@ -41,233 +40,208 @@ detector, the lifecycle, the dashboard, and the control path.
 
 | Phase | Local implementation / replay | macOS commissioning | Windows commissioning |
 |---|---|---|---|
-| 0A Characterization | **done** — legacy transcript recorded, 14 tests green | n/a | n/a |
-| 0B Platform ports and viewport | **done** — explicit coordinate spaces, connect/fit split, bounded fit state machine, geometry revisions | **partial** — geometry verified read-only; the fit half is **pending** (E-VIEW) | **pending** (E-VIEW) |
-| 0C Input authority and deadman | **done** — ledger, capabilities, watchdog, real helper subprocess, 10 000 stop races clean | **pending** (real up-events, force-kill) | **pending** |
-| 0D Coordinator migration | **done** — priority loop, one worker, atomic keyed packets, terminal packets on stop | n/a | n/a |
-| 0E Bounded legacy services | **done** — dig/reset/dequip/pan-swap typed and bounded | **pending** (owner-observed run) | **pending** |
-| 1 Shadow foundation and GUI | **done** — window-specific capture, governor FSM, redesigned dashboard, overlay modes, diagnostics drawer, bounded recorder | **partial** — Shadow verified against the live client at 57 unique fps in the previous pass; owner-observed session with the new detector **pending** | **pending** |
-| 2 Offline perception | **partial** — production detector, tracker, direction estimator and a stratified evaluator all implemented and measured on rendered stress frames; **no labelled corpus of real frames exists** | **blocked** on recordings | **blocked** on recordings |
-| 3 Shadow navigation and controller | **partial** — Shift-Lock FSM, yaw calibration contract, control-mode proof and progress guard implemented and gated off; closed-loop verified against a simulated camera | **pending** (E-YAW, E-SHIFTLOCK, E-STEER-CAL need physical arming) | **pending** |
-| 4 One-map Live lifecycle | **not started, on purpose** — `NAVIGATE → DIG` stays unwired while E-ARRIVE is pending | **pending** | **pending** |
-| 5 Multi-map lifecycle | **blocked** on E-NEXT_MAP | **pending** | **pending** |
-| 6 Packaging and release | **partial** — spec, build scripts, verifier, smoke test | **pending** (clean native build) | **pending** |
+| 0A Characterization | **done** | n/a | n/a |
+| 0B Platform ports and viewport | **done** — explicit coordinate spaces, connect/fit split, bounded fit machine, AX-window correlation, honest clamps, typed completions | **partial** — one measured `canonical_verified` on this Mac (2x, one display); the DPI/display matrix is **pending** (E-VIEW) | **pending** (E-VIEW) |
+| 0C Input authority and deadman | **done** — unchanged this pass | **pending** | **pending** |
+| 0D Coordinator migration | **done** — plus fit completions as typed queue items | n/a | n/a |
+| 0E Bounded legacy services | **done** | **pending** | **pending** |
+| 1 Shadow foundation and GUI | **done** — bounded per-frame trace, honest governor, guided commissioning, renamed controls | **partial** — native headless Shadow measured at 57 of 57 unique fps (see below); an owner-observed session with a map equipped is **pending** | **pending** |
+| 2 Offline perception | **partial** — detector v2 measured on the real corpus (below); no separately held-out session exists | **blocked** on a second recording | **blocked** |
+| 3 Shadow navigation and controller | **partial** — unchanged this pass; gated off | **pending** | **pending** |
+| 4 One-map Live lifecycle | **not started, on purpose** | **pending** | **pending** |
+| 5 Multi-map lifecycle | **blocked** | **pending** | **pending** |
+| 6 Packaging and release | **partial** | **pending** | **pending** |
 
 ---
 
 ## Experiment gates
 
-Every gate below is **pending**. None has been run, and none may be reported
-as passed on the strength of code review, rendered fixtures, or the supplied
-screenshots.
+None of these is passed. Two moved from "nothing measured" to "measured here,
+not validated".
 
-| Gate | Status | What it needs that this machine cannot provide |
+| Gate | Status | What changed / what it still needs |
 |---|---|---|
-| E-VIEW | pending | Fitting and reading back a real Roblox client on each OS at several DPI/Retina settings. Read-only geometry inspection has been done on macOS; the **fit** half needs the owner, because resizing the game window is outside what an unattended agent may do. |
+| E-VIEW | **partial** | Fit & Verify ran against the live client: `canonical_verified` in 0.35 s, 1280×720 pt / 2560×1440 px, 3/3 stable read-backs, origin preserved, window restored afterwards. One display, one DPI. Needs the DPI/display matrix and Windows. |
 | E-ANCHOR | pending | Reviewer-labelled avatar control pivot across sessions. |
-| E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded reviewer labelling. |
-| E-DIR-IDEAL | pending | Manual masks plus repeatable aligned-zero outcome trials. |
-| E-PROF | pending | Multi-map, multi-session labelled corpus of **real** frames with train/validation/held-out splits. Rendered frames are training stress and may never appear in a held-out split (plan §7.2). |
-| E-DIR-E2E | pending | E-PROF output plus fresh held-out data. |
-| E-ARRIVE | pending | Full approach/fade sequences and long negatives. |
-| E-MOTION | pending | Labelled stationary / blocked / turning / lagging clips at 30–120 FPS, and an open-ground locomotion baseline from physically armed trials. |
-| E-SHIFTLOCK | pending | A repeatable way to *verify* Shift Lock on each OS: either a stable on-screen cue the detector confirms, or a separately armed stationary micro-yaw check. |
-| E-YAW | pending | **Physically armed** yaw pulses on each OS, with the observed rotation confirmed by perception rather than a configured multiplier. |
-| E-STEER-CAL | pending | **Physically armed** manual-target trials to freeze the alignment threshold. |
-| E-STEER-E2E | pending | Guarded open-ground routes with the frozen controller. |
-| E-RECOVERY | pending | Capped private-server trials with labelled obstacles. *(No recovery ladder is in the control path in this pass.)* |
-| E-DIG / E-LIFECYCLE | pending | Labelled dig, pan-full, completion, and interruption episodes. |
-| E-NEXT_MAP | pending | Inventory/equip state evidence. Next-map automation stays off. |
-| E-SKIP_MAP | pending | Separate gate; `ABANDONED` safe-stops until it passes. |
-| E-PERF | pending | Measured p50/p95 capture, perception, control, and **Stop latency in wall-clock milliseconds on real hardware**, across both OSes. |
+| E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded labelling. |
+| E-DIR-IDEAL | pending | Manual masks plus aligned-zero outcome trials. |
+| E-PROF | **pending, with regression evidence** | A real corpus exists and the eval split is a regression gate (`tests/test_corpus.py`). It is one session, one map, one machine, with the previous overlay drawn on most arrows. Needs a second, separately held-out recording of a live session with Shadow running (Start Diagnostic Recording). |
+| E-DIR-E2E | **pending, with regression evidence** | Same corpus; headings are reviewer-read to about ±12°, which cannot certify a 10° p95. |
+| E-ARRIVE | pending | Approach/fade sequences and long negatives. |
+| E-MOTION | pending | Labelled clips and an armed locomotion baseline. |
+| E-SHIFTLOCK | pending | Armed stationary micro-yaw with Shift Lock on and off. |
+| E-YAW | pending | **Physically armed** yaw pulses confirmed by perception. |
+| E-STEER-CAL | pending | Armed manual-target trials. |
+| E-STEER-E2E | pending | Guarded routes. |
+| E-RECOVERY | pending | Not in the control path. |
+| E-DIG / E-LIFECYCLE | pending | Labelled dig episodes. |
+| E-NEXT_MAP / E-SKIP_MAP | pending | Off. |
+| E-PERF | **pending, with native measurements** | Headless Shadow on the live client measured below. Stop latency in wall-clock ms and the dashboard-with-Live path are not measured. |
 
-Because every gate is pending:
-
-- **Live navigation refuses to steer**, twice over: `make_live_worker` names the
-  pending gates, and `ShiftLockController` independently refuses because no yaw
-  calibration exists. Passing every perception gate is still not permission to
-  move a mouse.
-- **Automatic profile classification is off.** Selection is explicit.
-- **Recovery is off**, and no recovery ladder is reachable from the control path.
-- **Next-map automation is off.**
+Because no gate is validated: **Live navigation refuses to steer**, automatic
+profile classification is off, recovery is off, next-map automation is off.
 
 ---
 
 ## Observed local facts (not gate passes)
 
-Measured on the development Mac and reproducible with the command shown. None
-of these passes a gate.
+### Real detector metrics — `tests/corpus/real`, eval split
 
-### Detector, on rendered stress frames
+`.venv/bin/python treasure.py --detector-report --corpus tests/corpus/real --json out.json`
 
-`.venv/bin/python treasure.py --detector-report`
+122 eval frames: 86 arrow-present, 30 arrow-absent (22 from the recording, 8
+live), 6 `unknown` (excluded and counted). Sequences marked `tune` were used
+for every choice; `eval` was only read. Headings are reviewer-read (±12°).
 
-Rendered frames fitted to the owner's seven measured crops. **Training stress
-only** — plan §7.2 forbids synthetic data in a held-out split, so nothing here
-can pass E-PROF or E-DIR-E2E. Six episodes per stratum, 15 headings each, plus
-six arrow-absent frames per episode.
+| Build | Recall | False locks | False acquisitions (recording / live) | Identity switches | Single-frame replacements | Sign accuracy | Median error | p95 error | Perception p50 / p95 |
+|---|---|---|---|---|---|---|---|---|---|
+| f3f7b63 (baseline segmenter, `yellow_map_v0`) | 91.9 % (79/86) | 2 (1.9 %) | 0/22 / not run | 2 | 0 | 61.6 % | 28.2° | 172° | 3.4 / 5.3 ms |
+| 4756ab7 (second pass, HEAD at start) | 52.3 % (45/86) | 8 (7.4 %) | 0/22 / not run | 0 | 0 | 51.6 % | 87.1° | 160° | 11.0 / 51.5 ms |
+| **this pass** (detector v2, `yellow_map_v1`) | **80.2 % (69/86)** | **0** | **0/22 / 3/8** | **0** | **0** | **90.9 % (30/33)** | **10.4°** | 104.6° | **5.2 / 8.3 ms** |
 
-| Stratum | Coverage | Median | p90 | p95 | Bias | Bad >10° | Flips |
-|---|---|---|---|---|---|---|---|
-| day-grass | 100 % | 0.45° | 1.40° | 1.55° | −0.00° | 0 | **0** |
-| day-dirt | 100 % | 0.56° | 1.46° | 1.58° | +0.08° | 0 | **0** |
-| water | 100 % | 0.48° | 1.42° | 1.92° | +0.01° | 0 | **0** |
-| pale-terrain | 100 % | 0.48° | 1.68° | 1.95° | +0.09° | 0 | **0** |
-| night-grass | 100 % | 0.63° | 1.13° | 1.44° | +0.06° | 0 | **0** |
-| small-arrow (45 px) | 100 % | 0.88° | 2.23° | 2.49° | +0.19° | 0 | **0** |
-| large-arrow (210 px) | 100 % | 0.23° | 1.52° | 1.78° | +0.02° | 0 | **0** |
-| foreshortened (0.5×) | 100 % | 0.16° | 1.20° | 1.22° | +0.02° | 0 | **0** |
-| blurred | 100 % | 0.53° | 1.11° | 1.48° | −0.04° | 0 | **0** |
-| translucent (α 0.55) | 93.3 % | 0.32° | 1.52° | 1.78° | −0.04° | 0 | **0** |
-| dim (0.5×) | 100 % | 0.49° | 1.35° | 1.54° | +0.12° | 0 | **0** |
-| **same-colour clutter** | **48.9 %** | 0.54° | 77.5° | 117.6° | +5.13° | 25 % | **4** |
-| **same-colour occlusion** | **51.1 %** | 1.13° | 121.0° | 132.8° | +5.41° | 34.8 % | **10** |
+Per stratum, this pass: pink-crystal 90.9 % (20/22), purple-night 83.3 %
+(5/6), purple-pale 75 % (9/12), sand-same-colour 72.2 % (13/18), open-water
+90 % (9/10), sand-occluded 72.2 % (13/18); no-arrow-ui 7/7 and no-arrow-sand
+15/15 clean. The direction abstains on most occluded frames rather than
+guessing; of 33 frames where it answered, 3 were reversed.
 
 Read this honestly:
 
-- Eleven of thirteen strata meet the accuracy targets outright and produce
-  **zero polarity flips**. They still show as "MISSES" in the report, and
-  correctly so: six episodes cannot support a <0.5 % flip bound, and the
-  evaluator refuses to pretend otherwise. The failure there is sample size.
-- The two same-colour adversarial strata are a **real weakness**, reported
-  rather than averaged away. Solid blobs of the arrow's exact colour, some
-  overlapping the arrow itself, defeat it about half the time. Real terrain may
-  or may not be that adversarial — that is what E-PROF is for.
+- The baseline finds *a fragment of* the arrow more often (its box overlaps
+  the label) and points it wrong four times in ten. This pass finds the whole
+  arrow less often and points it right nine times in ten, with no false
+  locks. The occluded stratum is the weak one.
+- **Tune split** (what the detector was chosen on): recall 55.6 %, 4 false
+  locks — all on the player's yellow hat beside a hidden arrow — sign 100 %
+  (12/12). Reported, not averaged in.
+- The live event scene (rainbow lighting, yellow banners) still acquires a
+  banner or particle in 3 of 8 frames. The fixed HUD bands are excluded by
+  `yellow_map_v1`; the rest is held at the measured count by the gate.
+- Against the production targets (recall ≥ 95 %, precision ≥ 99 %, false
+  locks < 1 %, sign ≥ 99 %, p95 ≤ 10°): false locks and switches meet them;
+  recall, sign and angular error do not, and the sample cannot certify any of
+  the percentages. **PENDING.**
 
-### Detector, on the owner's real crops
+### Native Shadow — `treasure.py --shadow-bench`, live client, Balanced 60
 
-Six of seven detected. The strongly foreshortened one abstains on polarity,
-which is the honest answer for a nearly edge-on arrow. Directions agree with
-eyeballed ground truth to within 6–17°, which is inside the labelling error of
-eyeballing.
+Same machine, same scene (a busy no-arrow view, which is the worst case for
+the search), headless, 15 s per configuration, read-only.
 
-### Perception cost
+| Build | Configuration | fps consumed / unique | processed ÷ unique | capture→observation p50 / p95 / p99 / max | CPU | RSS |
+|---|---|---|---|---|---|---|
+| f3f7b63 | capture only | 78.2 / 78.2 (its 120 Hz tier) | 1.00 | 4.5 / 5.5 / 6.2 / 8.8 ms | 35 % | 108 MB |
+| f3f7b63 | capture + perception | 77.4 / 77.6 | 0.997 | 8.9 / 11.4 / 13.6 / 95 ms | 88 % | 170 MB |
+| 4756ab7 | — | not measured natively; the dashboard read 15 unique / 8 processed fps, p95 264 ms | | | | |
+| this pass, first cut | capture + perception | 32.0 / 32.4 (governor at 30 Hz) | 0.99 | 16.5 / 24.9 / 38.2 / 150 ms | 73 % | 191 MB |
+| **this pass, final** | capture only | 57.8 / 57.8 | 1.00 | 4.6 / 5.6 / 6.3 / 7.2 ms | 27 % | 105 MB |
+| **this pass, final** | capture + perception | **57.0 / 57.2 at 60 Hz** | **0.997** | **9.7 / 17.3 / 19.8 / 25.5 ms** (outside settling; 213 ms at startup) | **86 %** | 181 MB |
 
-| Path | p50 |
-|---|---|
-| Full-frame reacquisition pass | 11–15.5 ms |
-| Tracked region-of-interest pass | 2.2–3.3 ms |
+Against the Balanced-60 targets, headless: ≥ 54 processed fps **met**; ratio
+≥ 0.98 **met**; p95 ≤ 25 ms **met**; p99 ≤ 50 ms **met**; max ≤ 100 ms outside
+settling **met**; superseded 4, pool exhausted 0 **met**. CPU: 86 % against
+the baseline's 88 % at 77 fps, which is about +21 points at equal frame rate
+— at the edge of the +20 criterion. With the dashboard (next table): 57.6
+processed fps **met**, Minimal p95 23.9 ms **met**, Full Diagnostics p95
+25.5 ms **missed by half a millisecond**, and CPU 149–176 % is the dashboard's
+own cost on top; the baseline's dashboard was not measured. Memory was not
+soaked natively (15 s). **E-PERF stays PENDING.**
 
-The pipeline runs a full pass every ~20 frames and the ROI path otherwise. The
-first implementation of the contrast ring took **686 ms** per frame by dilating
-a full-frame mask with a 257-pixel element; bounding the kernel and windowing
-it to the candidate's bounding box is what made it usable.
+### Native dashboard — the real Tk dashboard with Shadow running
 
-### Stop safety
+The dashboard itself, Shadow started through the coordinator, the real Tk
+preview, 15 s per overlay mode, same no-arrow scene. The first run exposed
+the last regression mechanism and is kept in the table.
 
-`.venv/bin/python -m pytest -q tests/test_stop_safety.py`
+| Build / cadence | Overlay | unique / processed / preview fps | tier | end-to-end p50 / p95 / p99 / max (history ring) | CPU | RSS |
+|---|---|---|---|---|---|---|
+| this pass, before the throughput rule (Auto) | Minimal | 29.4 / 29.3 / 29.1 | 30 Hz | 18.9 / 26.8 / 30.8 / 34.2 ms | 142 % | 287 MB |
+| this pass, before the throughput rule (Auto) | Full Diagnostics | 29.3 / 29.2 / 29.2 | 30 Hz | 19.6 / 26.3 / 28.4 / 34.0 ms | 140 % | 287 MB |
+| **this pass, final (Auto)** | Minimal | **82.4 / 82.1 / 24.9** | 90 Hz | **10.9 / 21.9 / 27.2 / 28.4 ms** | 172 % | 283 MB |
+| **this pass, final (Auto)** | Full Diagnostics | 82.1 / 75.0 / 25.2 | 90 Hz | 11.8 / 28.9 / 35.3 / 35.9 ms | 164 % | 288 MB |
+| **this pass, final (Balanced 60)** | Minimal | **57.1 / 57.6 / 24.9** | 60 Hz | **10.4 / 23.9 / 25.7 / 25.8 ms** | 176 % | 292 MB |
+| **this pass, final (Balanced 60)** | Full Diagnostics | 56.9 / 57.2 / 25.0 | 60 Hz | 14.5 / 25.5 / 29.2 / 32.5 ms | 149 % | 281 MB |
+| f3f7b63 dashboard | — | not measured: its metrics API differs and the bench script could not read it; its headless numbers are above | | | | |
 
-- **10 000 deterministic Stop-versus-acquisition races: zero leaked leases,
-  zero input edges after admission closed.**
-- Every watchdog condition — focus lost, focus unknown, viewport invalid,
-  capture stale, window replaced — releases held input.
-- Shadow mode emits exactly zero input edges, asserted against the port
-  transcript.
-- A release is never focus-gated; an unconfirmed release latches and blocks
-  every new press until an explicit release-only handshake succeeds.
+What the first run's trace said: the worker processed 52 frames a second at
+60 Hz with 13 % superseded because the Tk preview at 60 fps competed for the
+interpreter (full passes p50 15.9 ms against 10.3 headless); the governor
+counted the superseded frames as "observation loss 10 %", downshifted to
+30 Hz, and the probe back needed 54. A latest-only pipeline supersedes by
+design, so the governor now judges a tier against the tier below (D-031
+amendment), the preview ticks at 30 fps, and one telemetry publish samples
+metrics once. Full Diagnostics still costs about seven processed frames a
+second at 90 Hz through the overlay's canvas work on the Tk thread; its
+overlay is capped at 20 Hz and skips rather than queues.
 
-Stop *latency in wall-clock milliseconds* is **not** measured here. These tests
-run on a virtual clock and bound the release **work** (edges emitted), not the
-time it takes on real hardware. The <100 ms p95 requirement belongs to E-PERF
-and is pending.
+### Fit & Verify — live client
 
-### Cadence governor
+`before: client 1800x1054 pt at (0,67), backing 3600x2108 px`
+→ `canonical_verified` in 0.35 s, `1280x720 pt / 2560x1440 px (3/3 stable)`,
+origin unchanged → restored to `1800x1053 pt` afterwards (one point of
+title-bar rounding). Accessibility and Screen Recording were already granted
+to this terminal.
 
-`.venv/bin/python -m pytest -q tests/test_governor.py`
+### Rendered stress strata — `treasure.py --detector-report`
 
-All five required traces pass: 120 captured / 57 processed converges to 60; a
-genuine 120 Hz workload stays at 120; a 60-capped source probes once and stops
-oscillating; a 250 ms transient causes no permanent downshift; sustained
-over-age evidence immediately blocks Live.
+Still bounded (exits in 72 s). With the new scoring the rendered
+same-colour-clutter and translucent strata read far lower than the second
+pass reported (1 % and 0 % coverage): the contrast veto and the profile floor
+that fixed the real frames are hostile to a half-transparent rendered arrow
+on pale terrain. Rendered frames are training stress; this is recorded, not
+optimised for.
 
-### Soak — ten bounded minutes
+### Stop safety, governor traces, soak
 
-`.venv/bin/python treasure.py --soak 10`
-
-Ten minutes of the real capture, perception, navigation and telemetry path
-against a synthetic source. **Passed.**
-
-| Measurement | Result |
-|---|---|
-| Frames processed | 28 513 |
-| Sustained throughput | 45–51 unique fps, processed within 0.1 fps of unique |
-| RSS after warmup | 141.3 MB at 120 s → 141.6 MB at 570 s |
-| RSS slope | **+0.43 MB/min** (target: under 1.0) |
-| Peak RSS | 259 MB, reached during import and never approached again |
-| Threads | 1 before, 1 after |
-| Buffer pool live at exit | 0 of 8 |
-| Capture shutdown | clean |
-| CPU | 39–47 % of one core |
-
-The slope figure is dominated by the first sample; from 120 s onward RSS moved
-0.3 MB in seven and a half minutes, which is flat. Reported as measured rather
-than as the more flattering windowed number.
-
-`peak` and `current` are separate columns on purpose. The previous build showed
-`ru_maxrss` — a peak — labelled as memory now, which would have read as a
-259 MB steady state here instead of 141 MB.
+Unchanged tests still pass (10 000 stop races clean; every watchdog condition
+releases; Shadow emits zero input edges). The governor's five required traces
+pass with the new hysteresis. The ten-minute synthetic soak was measured on
+4756ab7's detector and has **not** been rerun with this one; the three-second
+soak in the lifecycle tests passes.
 
 ---
 
 ## Native checks the owner must run
 
-The agent could not do any of these. Each needs a real Roblox session and, for
-the armed ones, a human watching.
+Everything below takes a few minutes and needs Roblox open, windowed, with a
+map equipped so an arrow is on screen. Nothing before step 7 sends input.
 
-### macOS
+### Morning, in order (about five minutes)
 
-1. Grant Accessibility **and** Screen Recording to the launching process.
-2. `.venv/bin/python treasure.py`, with Roblox open and windowed (not native
-   fullscreen). Press **Connect Roblox…**. The ROBLOX card should read
-   `Connected` and the CAPTURE card should show a real frame rate.
-3. Press **Fit & Lock Viewport**. Expect either `canonical_verified` with a
-   client of `1280x720 pt` and a backing size of `2560x1440 px` on a 2× display,
-   or `achieved_clamped` with the real achieved numbers. **A clamp is a valid
-   answer** — record it. Roblox enforces a minimum window size.
-4. `.venv/bin/python treasure.py --calibrate` → re-derive every `TreasurePixels`
-   value. It refuses to suggest baking a value while the viewport is
-   non-canonical, and says so inline.
-5. Start Shadow with the green map equipped. Confirm the detector locks the
-   arrow, that Full Diagnostics shows two notches on it, and that the direction
-   arm points where the arrow points. **This is the E-PROF evidence-gathering
-   step**: run Start Diagnostic Recording alongside it.
-6. Confirm capture continues while the dashboard itself is frontmost.
-7. Only then consider F4/F5/F6 with Roblox focused, watching for a stuck input.
+1. `.venv/bin/python treasure.py`. Press **Connect Roblox** — the ROBLOX card
+   reads `Connected`.
+2. Press **Fit & Verify Viewport**. Watch the ROBLOX card: `Requesting size…`
+   → `Reading back…` → `Canonical 1280x720` or `Resized but OS-clamped to …`.
+   Both are valid; note which.
+3. Select the profile for the map you are on (`Yellow treasure map arrow
+   (real-corpus fit)` for the yellow-arrow maps; green for the green map). The
+   pink-arrow map has no profile yet — see risks.
+4. Press **Start Shadow Analysis**, then **Start Diagnostic Recording**, and
+   walk a normal route for two or three minutes, including turning, passing
+   grass, water, sand, and standing under the arrow. Watch that the jade
+   outline sits on the arrow and the gold arm points where it points; note
+   any moment it locks onto something else. This recording is the held-out
+   session E-PROF needs.
+5. Press **Stop & Release All Input**. A trace file is written beside the
+   logs (`trace-…jsonl`); the recording is under recordings/.
+6. Open **Calibrate Live Control** once and read the eleven steps; nothing
+   there runs anything.
+7. Only then, and only with a hand on F2: the armed procedures for
+   E-SHIFTLOCK and E-YAW in the previous section of this file, unchanged.
 
-### macOS, physically armed (do not run unattended)
-
-8. **E-SHIFTLOCK**: with the character stationary and Shift Lock on, arm and
-   issue one bounded micro-yaw pulse. Confirm the camera rotates and the
-   character does not translate. Repeat with Shift Lock off and confirm the
-   difference is observable. That difference is the verification method.
-9. **E-YAW**: with `W` released, issue bounded positive and negative yaw pulses
-   at several magnitudes, ten repeats each. Record sign, degrees per mouse
-   unit, response delay, minimum effective movement, linear range, saturation,
-   repeatability and reversal backlash. **Confirm each from perception**, not
-   from the number that was sent.
-10. **E-STEER-CAL**: manual-target trials to find the largest alignment
-    threshold that still gives acceptable route outcomes. Freeze it before any
-    held-out perception evaluation.
+Send back: the trace file, the recording directory, and one line about the
+Fit & Verify result.
 
 ### Windows — everything, from scratch
 
-No code in `platform_win.py` has ever executed. In addition to the macOS list:
-
-1. Generate `requirements-windows.lock` on Windows (see that file's header).
-2. Confirm Per-Monitor V2 is actually in effect — the fit message reports the
-   mechanism that succeeded.
-3. Repeat the geometry and capture checks at 100 / 125 / 150 / 175 / 200 %
-   scaling, and on a secondary monitor with a negative origin.
-4. Verify `WindowsPrintWindowSource` returns client content and not a black
-   frame; some GPU-composited windows need Windows Graphics Capture instead,
-   which is the documented next step (DECISIONS.md D-018).
-5. Re-run `mypy` on Windows: `platform_win.py` has two Win32-only names exempted
-   from checking on macOS.
+Unchanged from the previous pass; no line of `platform_win.py` has executed.
+`tests/test_commissioning.py` adds the 100/125/150/200 % backing-scale
+contract at the geometry level only.
 
 ---
 
 ## Release blocker
 
-**G-LICENSE** is unresolved. Nothing may be pushed, tagged, published, or
-described as open source until the owner confirms first-party reuse rights and
-records Treasure's distribution terms.
+**G-LICENSE** is unresolved. Nothing may be pushed to a release, tagged,
+published, or described as open source until the owner confirms first-party
+reuse rights and records Treasure's distribution terms. The feature branch
+`origin/treasure-production-navigation` is the only remote this pass writes.

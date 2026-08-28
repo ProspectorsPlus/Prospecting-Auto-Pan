@@ -333,7 +333,10 @@ class Dashboard:
     #: 60 Hz of numbers, and re-laying out text is the expensive part of Tk.
     #: None of these ever gates Live: preview cadence and control cadence are
     #: separate measurements for exactly this reason.
-    PREVIEW_INTERVAL_MS = 16
+    #: Thirty frames a second is a monitor, not a bottleneck: at sixteen the
+    #: preview paste competed with the perception worker for the interpreter
+    #: and the governor measured the difference as lost frames.
+    PREVIEW_INTERVAL_MS = 33
     STATUS_INTERVAL_MS = 150
     METRICS_INTERVAL_MS = 500
     DRAWER_INTERVAL_MS = 700

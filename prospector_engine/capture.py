@@ -135,10 +135,20 @@ class CaptureConfig:
     #: larger than the STABLE bar: settling into a tier is a cheap decision,
     #: authorizing keyboard output is not.
     min_tier_samples: int = 8
-    #: Processed-to-tier ratio a stable tier must sustain.
+    #: Processed-to-tier ratio a stable tier must sustain, and the ratio of
+    #: the tier below that a shortfall is measured against.
     stable_processed_ratio: float = 0.90
+    #: A probe holds only if it processes this much more than the tier it left.
+    probe_gain: float = 1.10
     #: Share of frames that may go unobserved while still calling a tier stable.
     max_observation_loss: float = 0.02
+    #: Live eligibility: processed-to-tier ratio and superseded share the
+    #: pipeline must keep. Looser than the stable bar on purpose: Live is
+    #: judged on latency budgets, and a latest-only pipeline that processes
+    #: four frames in five at 60 Hz is fresher than one keeping every frame
+    #: at 30 Hz. Provisional (E-PERF PENDING).
+    live_min_processed_ratio: float = 0.80
+    live_max_observation_loss: float = 0.25
     #: Stale frames tolerated inside one supervisor window.
     max_stale_per_window: int = 0
     #: Absolute p95 frame-age ceiling for Live, whatever the tier interval says.
@@ -723,8 +733,8 @@ class CadenceGovernor:
             self._state is GovernorState.STABLE
             and self._tier.acceptable
             and self._samples >= config.min_tier_samples
-            and self._last_processed_ratio >= config.stable_processed_ratio
-            and self._last_loss <= config.max_observation_loss
+            and self._last_processed_ratio >= config.live_min_processed_ratio
+            and self._last_loss <= config.live_max_observation_loss
             and (
                 self._last_p95_age_ms is None
                 or self._last_p95_age_ms <= self._live_age_ceiling_ms()
@@ -802,22 +812,30 @@ class CadenceGovernor:
         self._last_p95_age_ms = p95_age_ms
 
         problems: list[str] = []
-        # A probe is judged against the bar for *keeping* a tier, not the
-        # lower bar for surviving in one. Otherwise a climb "succeeds" at 73%
-        # of the tier it just claimed, which is how a 90 Hz source ends up
-        # labelled 120 Hz.
-        floor = (
-            config.stable_processed_ratio
-            if self._state is GovernorState.PROBE
-            else config.downshift_ratio
-        )
-        if useful_fps < target * floor:
+        # A tier is judged on **processed** throughput against what the tier
+        # below could deliver: 52 processed frames a second at 60 Hz with 13%
+        # superseded is a better pipeline than 29 at 30 Hz with none, because
+        # a latest-only slot supersedes by design. So a shortfall - and
+        # observation loss with it - is a problem only when this tier is no
+        # longer delivering more than the next one down would.
+        index = self._index()
+        below = float(self.LADDER[index - 1].fps) if index > 0 else 0.0
+        # "Ahead" means this tier processes more frames than the tier below
+        # could even deliver: 57 processed at 90 Hz is a 60 Hz pipeline wearing
+        # a 90 Hz label, 52 processed at 60 Hz is not a 30 Hz one.
+        keeps_ahead = useful_fps > below
+        if self._state is GovernorState.PROBE:
+            # A probe holds only if it delivers more than the tier it left.
+            origin = self._probe_from.fps if self._probe_from is not None else below
+            if useful_fps < origin * config.probe_gain:
+                problems.append(f"only {useful_fps:.0f} useful fps of {target:.0f}")
+        elif useful_fps < target * config.downshift_ratio and not keeps_ahead:
             problems.append(f"only {useful_fps:.0f} useful fps of {target:.0f}")
         if frame_age_ms is not None and frame_age_ms > config.max_frame_age_ms:
             problems.append(f"frame age {frame_age_ms:.0f} ms over budget")
         if p95_age_ms is not None and p95_age_ms > config.max_frame_age_ms:
             problems.append(f"p95 age {p95_age_ms:.0f} ms over budget")
-        if self._last_loss > config.max_observation_loss:
+        if self._last_loss > config.max_observation_loss and not keeps_ahead:
             problems.append(f"observation loss {self._last_loss * 100:.0f}%")
         if stale_recent > config.max_stale_per_window:
             problems.append(f"{stale_recent} stale frames")

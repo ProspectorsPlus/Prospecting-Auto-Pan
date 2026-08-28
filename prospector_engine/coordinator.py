@@ -25,6 +25,7 @@ from prospector_engine.contracts import (
     BlockerScope,
     Cancellation,
     CapturedFrame,
+    CaptureMetrics,
     ControlState,
     DiagnosticObservation,
     EvidenceStatus,
@@ -1040,13 +1041,15 @@ class RuntimeCoordinator:
             reasons=tuple(reasons),
         )
 
-    def blockers(self) -> tuple[LiveBlocker, ...]:
+    def blockers(self, metrics: CaptureMetrics | None = None) -> tuple[LiveBlocker, ...]:
         """Every reason Live cannot start right now, keyed and scoped.
 
         Recomputed on every call from the live readiness, the capture
         metrics, and the installed commissioning gates. One entry per code:
         a condition that stops being true disappears, and details that belong
         to one gate live under that gate rather than as separate rows.
+        ``metrics`` lets a caller that already sampled them avoid a second
+        sample; the telemetry publisher runs several times a second.
         """
         found: list[LiveBlocker] = []
         readiness = self.readiness()
@@ -1129,7 +1132,8 @@ class RuntimeCoordinator:
                     "Press Recover Release, then Stop & Release All Input.",
                 )
             )
-        metrics = self._capture.metrics()
+        if metrics is None:
+            metrics = self._capture.metrics()
         if not metrics.live_eligible:
             found.append(
                 LiveBlocker(
@@ -1188,6 +1192,7 @@ class RuntimeCoordinator:
         )
         if metrics.degraded_reason:
             warnings.append(f"DEGRADED: {metrics.degraded_reason}")
+        blockers = self.blockers(metrics)
         observation = self._observations.peek()
         actionable = observation is not None and self._mode.emits_input
         self._hub.publish(
@@ -1212,8 +1217,8 @@ class RuntimeCoordinator:
                 metrics=metrics,
                 fit=self._guard.fit,
                 fit_active=self.fit_active,
-                blockers=self.blockers(),
-                live_blockers=self.live_blockers(),
+                blockers=blockers,
+                live_blockers=tuple(blocker.describe() for blocker in blockers),
                 last_session_note=self._last_session_note,
                 control_state=self._control_state,
                 arm_state=readiness_map.get("arm", "none"),

@@ -739,3 +739,153 @@ latest frames" is reported as **superseded**, because the design intends it and
 calling it a drop alongside genuine failures made a healthy pipeline read as
 catastrophic. Current RSS is measured separately from peak: `ru_maxrss` is a
 peak and was being displayed as "memory now".
+
+---
+
+## D-029 — 2026-08-28 — The detector is judged on a real-frame corpus, split by sequence
+
+**Plan text:** §7.2 forbids rendered frames in a held-out split; §7.4 (E-PROF)
+requires labelled real sessions.
+
+**Decision:** `tests/corpus/real` holds 170 frames extracted from the owner's
+70-second screen recording of the previous dashboard build plus eight frames
+captured read-only from the live client, labelled by a reviewer, split by
+**contiguous sequence** into `tune` (what the detector was chosen on) and
+`eval` (only ever read). `prospector_engine/corpus.py` is the contract: labels
+in canonical 1280x720 pixels, positive absence labels, `unknown` frames
+excluded from every rate and counted, overlay contact marked, and an
+evaluator that scores the **bounding box** as well as the heading so a
+confident lock on the wrong object is a measured number
+(`false_locks`), not something a heading-only evaluator averages away.
+`tests/test_corpus.py` holds the eval-split results as a regression floor.
+
+**Why:** the rendered stress report said eleven of thirteen strata were
+near-perfect while the field build read 52% recall, eight false locks and a
+coin-flip direction sign on the game. The two disagreed because the rendered
+arrow has a clean outline and real outlines are nicked by UI strokes.
+
+**What the corpus is not:** production evidence. One session, one map, one
+machine, one lighting pass per stratum, no separately held-out session, the
+previous build's overlay drawn on most arrows (a favourable bias on
+same-colour sand and an unfavourable one on outline quality), preview
+downscaled then upscaled, WebP compressed. Every rate in `STATUS.md` carries
+its count. E-PROF and E-DIR-E2E stay PENDING.
+
+**Deviation:** none.
+
+---
+
+## D-030 — 2026-08-28 — One temporal transaction per frame; structure is evidence, not a veto
+
+**Plan text:** §8 (tracking) and §7.3 (abstention).
+
+**Decision:** `ArrowDetector` is three stages with a hard boundary:
+stateless `propose()` in full-frame coordinates, `fuse()`, and `commit()`,
+which advances temporal state exactly once per unique frame and returns the
+previous outcome marked `duplicate` for a repeated one. A region miss no
+longer runs a synchronous full pass on the same screenshot; it schedules the
+global search for the next frame. The tracker is an explicit
+ACQUIRE / TRACK / AMBIGUOUS / REACQUIRE / LOST machine with **time-based**
+bounds and frame floors, so the contract is the same at 60 fps live and at a
+corpus replayed at 2.5 fps. Exactly one candidate is `selected` per
+observation and direction, contour, tip and tail derive from it. Association
+runs over every fused hypothesis before presentation truncation. Polarity is
+a weighted vote led by the **barb asymmetry** beyond the notch line - the one
+property that survives perspective and a hidden shaft end - with reversals
+against a held identity refused below a margin.
+
+The two-notch signature, the barbs and the prominent tip are **weighted
+evidence**. Each was tried as a precondition and each cut eval recall by a
+third or more without removing a single false lock, because real outlines
+are nicked and the notch pair is misread on exactly the frames where recall
+matters. Local contrast remains the one soft veto: every measured view of the
+arrow is brighter than what is behind it, and a flat sand patch under a UI
+label scored 0.76 without it.
+
+**Measured (eval split, 4756ab7 -> this pass):** recall 52% -> 80%, false
+locks 8 -> 0, identity switches 0 -> 0, direction sign 52% -> 91%, median
+error 87 deg -> 10 deg, perception p50/p95 11/51 ms -> 5/8 ms. The occluded
+stratum and the live event scene remain the weak strata and are recorded at
+their measured values.
+
+**Deviation:** the plan's "topology is necessary" wording from D-024 is
+withdrawn on this evidence.
+
+---
+
+## D-031 — 2026-08-28 — Readiness is judged on a recent window; history is kept beside it
+
+**Plan text:** §7.4 E-PERF; D-028.
+
+**Decision:** every latency tracker keeps a 240-sample history for
+diagnostics and answers readiness questions - the governor's verdict and
+Live eligibility - from the last two seconds of the current epoch. Epochs
+reset together across every rate and latency window on cadence, source,
+geometry and profile changes. Polls during settling, and while
+ScreenCaptureKit has not acknowledged a reconfiguration, are tagged and
+skipped. A processed rate of zero is a real zero once a consumer is attached.
+DEGRADED probes upward after the cooldown. A downshift needs a full second of
+shortfall. A bounded per-frame trace (`prospector_engine/trace.py`) records
+where every millisecond went and is exported as JSONL on Stop.
+
+**Why:** one 274 ms sample from a resize sat in the ring and blocked Live for
+as long as the ring took to roll over; a two-poll downshift cascaded Auto to
+15 Hz on a startup transient; DEGRADED had no path to a probe; a stalled
+worker read as a healthy 60 Hz pipeline because zero fell back to capture.
+
+**Amendment, same day — a tier is judged against the tier below.** With the
+real dashboard running, the worker processed 52 frames a second at 60 Hz
+with 13 % superseded; the governor called that "observation loss 10 %",
+downshifted to 30 Hz, and the probe back needed 54. A latest-only slot
+supersedes by design, so a shortfall and its loss are problems only when the
+tier no longer processes more frames than the tier below could deliver
+(`useful_fps > below.fps`), and a probe holds if it processes 10 % more than
+the tier it left. D-028's "57 processed at 120 is a 60 Hz pipeline" still
+holds: 57 is not more than 90, so it steps down twice and stops at 60. Live
+eligibility keeps the latency budget and asks for a processed ratio of 0.80
+and superseding under 25 % (provisional, E-PERF PENDING) instead of 0.90 and
+2 %, because a pipeline processing four frames in five at 60 Hz is fresher
+than one keeping every frame at 30 Hz. The preview ticks at 30 fps instead
+of 60: at 60 its paste competed with the worker for the interpreter.
+
+**Deviation:** none.
+
+---
+
+## D-032 — 2026-08-28 — A clamp is an answer; fit completions are typed
+
+**Plan text:** §4.1, D-023.
+
+**Decision:** on macOS the AX window is correlated with the CG window that
+was selected for capture (frame, then title, then largest); only the size is
+set, so the window keeps its origin and a denied move cannot fail a resize;
+`PinResult.ok=False` is reserved for permission, no-window, fullscreen,
+unsettable and API refusals, and a clamp is `ok=True, clamped=True` with the
+achieved geometry for the guard to classify after three stable read-backs.
+The fit thread submits a typed `FitCompletion`; the coordinator loop applies
+it, ignores stale generations, and invalidates geometry only when the
+revision moved.
+
+**Measured:** `canonical_verified` in 0.35 s on the live client (1280x720 pt
+/ 2560x1440 px, origin preserved) on one display at 2x. E-VIEW is now
+**partial**: the fit half has one measured pass here; other DPIs, displays,
+and Windows remain PENDING.
+
+**Deviation:** none.
+
+---
+
+## D-033 — 2026-08-28 — Blockers are keyed and scoped; commissioning is a guided list
+
+**Plan text:** §15 gates; mission section 10 (plain language).
+
+**Decision:** `LiveBlocker(code, scope, status, summary, detail, remedy,
+evidence)` with scopes *shadow readiness*, *current condition*, *native
+commissioning evidence*, *live control eligibility*, recomputed on every read
+and deduplicated by code. E-YAW is one gate row: no default controller is
+instantiated to ask why it cannot steer. "Roblox is not frontmost" is an
+*expected* condition with an instruction. Eleven commissioning steps are
+rendered from live state and gate statuses; none passes from a fake. Controls
+are named for what they do.
+
+**Deviation:** none.
