@@ -41,6 +41,7 @@ if sys.platform != "win32" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM
 
 import numpy as np
 
+from prospector_engine.capture import normalize_into_canonical
 from prospector_engine.contracts import (
     FocusState,
     InputKey,
@@ -796,7 +797,7 @@ class WindowsPrintWindowSource:
         bgra = np.frombuffer(self._buffer, dtype=np.uint8, count=width * height * 4)
         source = bgra.reshape(height, width, 4)[:, :, :3]
         normalize_started = monotonic_s()
-        canonical = _letterbox_into_canonical(source, geometry, self._pool)
+        canonical = normalize_into_canonical(source, geometry, self._pool)
         if canonical is None:
             self._error = "frame buffer pool exhausted"
             return None
@@ -811,28 +812,3 @@ class WindowsPrintWindowSource:
             backend=self.name,
             normalize_ms=normalize_ms,
         )
-
-
-def _letterbox_into_canonical(
-    source_bgr: Any, geometry: ViewportGeometry, pool: Any
-) -> Any | None:
-    """Resize a client image into the canonical raster exactly once."""
-    import cv2
-
-    width, height = geometry.canonical_px
-    target = pool.acquire(height, width) if pool is not None else None
-    if target is None:
-        return None
-    inner_x, inner_y, inner_w, inner_h = geometry.canonical_letterbox_px()
-    inner_w = max(1, min(inner_w, width - max(0, inner_x)))
-    inner_h = max(1, min(inner_h, height - max(0, inner_y)))
-    inner_x, inner_y = max(0, inner_x), max(0, inner_y)
-    if (inner_x, inner_y, inner_w, inner_h) != (0, 0, width, height):
-        target[:] = 0
-    cv2.resize(
-        source_bgr,
-        (inner_w, inner_h),
-        dst=target[inner_y : inner_y + inner_h, inner_x : inner_x + inner_w],
-        interpolation=cv2.INTER_AREA,
-    )
-    return target

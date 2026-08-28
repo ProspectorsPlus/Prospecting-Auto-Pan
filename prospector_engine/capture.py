@@ -61,6 +61,7 @@ __all__ = [
     "LatestFrameSlot",
     "MssCaptureSource",
     "ViewportGuard",
+    "normalize_into_canonical",
 ]
 
 
@@ -646,7 +647,7 @@ class MssCaptureSource:
             return None
         raw = np.asarray(shot)[:, :, :3]
         normalize_started = monotonic_s()
-        canonical = _normalize_to_canonical(raw, geometry, self._pool)
+        canonical = normalize_into_canonical(raw, geometry, self._pool)
         if canonical is None:
             self._error = "buffer pool exhausted"
             return None
@@ -664,14 +665,20 @@ class MssCaptureSource:
         )
 
 
-def _normalize_to_canonical(
+def normalize_into_canonical(
     source_bgr: NDArray[np.uint8], geometry: ViewportGeometry, pool: FrameBufferPool | None
 ) -> NDArray[np.uint8] | None:
     """Letterbox an arbitrary client image into the canonical raster, once.
 
     "Once" is the point: every consumer downstream works in canonical
-    coordinates, so no later stage has to resize, and the transform stored on
-    the geometry is the exact inverse of what happened here.
+    coordinates, so no later stage has to resize, and the letterbox rectangle
+    recorded on the geometry is the exact inverse of what happens here.
+
+    Returns ``None`` when the buffer pool is exhausted, which the caller reports
+    as backpressure rather than growing memory to hide it.
+
+    Shared by every CPU-normalizing backend on both platforms; the
+    ScreenCaptureKit path does the equivalent work on the GPU.
     """
     import cv2
 

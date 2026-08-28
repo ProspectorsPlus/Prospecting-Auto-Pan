@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SHIPPING = [
     ROOT / "treasure.py",
     ROOT / "treasure_gui.py",
+    ROOT / "treasure_overlay.py",
     ROOT / "deadman.py",
     *sorted((ROOT / "prospector_engine").glob("*.py")),
 ]

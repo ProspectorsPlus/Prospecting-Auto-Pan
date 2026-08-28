@@ -14,7 +14,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from prospector_engine.capture import FrameBufferPool, MssCaptureSource, _normalize_to_canonical
+from prospector_engine.capture import (
+    FrameBufferPool,
+    MssCaptureSource,
+    normalize_into_canonical,
+)
 from prospector_engine.geometry import (
     CANONICAL_SIZE_PX,
     Affine2D,
@@ -241,7 +245,7 @@ def test_normalization_places_the_whole_client_and_nothing_else() -> None:
     source = _marked_client(round(client.width), round(client.height))
     pool = FrameBufferPool(4)
 
-    canonical = _normalize_to_canonical(source, geometry, pool)
+    canonical = normalize_into_canonical(source, geometry, pool)
 
     assert canonical is not None
     assert canonical.shape == (720, 1280, 3)
@@ -266,7 +270,7 @@ def test_normalization_places_the_whole_client_and_nothing_else() -> None:
 def test_a_canonical_client_is_copied_without_bars() -> None:
     geometry = make_geometry(size=(1280.0, 720.0))
     source = _marked_client(1280, 720)
-    canonical = _normalize_to_canonical(source, geometry, FrameBufferPool(2))
+    canonical = normalize_into_canonical(source, geometry, FrameBufferPool(2))
 
     assert canonical is not None
     assert geometry.canonical_letterbox_px() == (0, 0, 1280, 720)
@@ -280,7 +284,7 @@ def test_normalization_reports_pool_exhaustion_instead_of_allocating() -> None:
     held = [pool.acquire(720, 1280), pool.acquire(720, 1280)]
     assert all(buffer is not None for buffer in held)
 
-    assert _normalize_to_canonical(_marked_client(1280, 720), geometry, pool) is None
+    assert normalize_into_canonical(_marked_client(1280, 720), geometry, pool) is None
 
 
 def test_the_mss_fallback_asks_for_the_client_rect_in_logical_units() -> None:

@@ -462,3 +462,30 @@ the experiment, not a substitute for it.
 Every candidate direction cue is also evaluated and drawn, not just the selected
 one, so a fusion abstention shows *how much* the cues disagreed rather than
 leaving a blank screen - which is the diagnostic E-DIR-IDEAL actually needs.
+
+---
+
+## D-022 — 2026-08-28 — The overlay renderer is its own module
+
+**Decision.** `DiagnosticCanvas` moved from `treasure_gui.py` into
+`treasure_overlay.py`, taking the palette with it. The dashboard imports both.
+
+**Why.** `treasure_gui.py` had reached 1347 lines holding three separable
+things: application wiring, a canvas renderer, and a dashboard. Plan §13.1 sets
+roughly 800 cohesive lines as the point where a module stops being reviewable
+and asks for the reason to be documented. The renderer is the cleanest seam in
+the file - it takes one `DiagnosticObservation` and a Tk canvas and touches
+nothing else - and splitting it leaves 834 and 559 lines. It stays at the
+repository root rather than inside `prospector_engine` because the engine
+package must remain importable without Tk.
+
+**Also consolidated:** the letterbox-into-canonical helper existed in three
+copies (the mss fallback, the macOS Quartz source, and the Windows PrintWindow
+source). There is now one `normalize_into_canonical` in `capture.py` that all
+three import - three copies of a coordinate transform is exactly the kind of
+thing that drifts apart silently.
+
+`platform_mac.py` (1212) and `capture.py` (1154) stay as they are, for the same
+reason recorded in D-016: each is one ownership boundary the plan assigns
+explicitly, and a module split through the middle of a coordinate contract or a
+capture lifecycle would look like an interface while being an atomic protocol.

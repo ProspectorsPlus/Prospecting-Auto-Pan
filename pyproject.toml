@@ -47,7 +47,7 @@ treasure = "treasure:main"
 
 [tool.setuptools]
 packages = ["prospector_engine"]
-py-modules = ["treasure", "treasure_gui", "deadman"]
+py-modules = ["treasure", "treasure_gui", "treasure_overlay", "deadman"]
 
 [tool.setuptools.package-data]
 prospector_engine = ["profiles/*.json", "assets/**/*"]
