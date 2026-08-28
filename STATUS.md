@@ -4,12 +4,99 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28 (fourth pass). Development machine: macOS 25.4, arm64,
+Last updated: 2026-08-28 (fifth pass). Development machine: macOS 25.4, arm64,
 CPython 3.13.15, Tk 9.0. **No Roblox session was operated and navigation was
-never armed during implementation; no input was sent.** This pass touched the
-game window not at all: Roblox was in native fullscreen on another Space
-throughout, which is exactly the condition the new setup machine is built to
-diagnose, and it did (see below).
+never armed during implementation; no input was sent.** The fifth pass did
+resize the Roblox window, which is the fit stage doing its job, and restored
+it every time — measured below.
+
+---
+
+## What changed on 2026-08-28 (fifth pass) — the setup machine, run natively
+
+Roblox was in native fullscreen for the whole fourth pass, so every native
+check was blocked and the machine could only be observed diagnosing that. It
+is windowed now, and the checks that were owed have been run.
+
+Getting there needed one structural change. The composition root — the wiring
+that decides *what automatic setup is* — lived inside `treasure_gui.py`, which
+imports Tk at the top. So the single most important native question, *does
+Start Navigator reach READY on this machine?*, could not be asked without
+opening a dashboard, and the fourth pass answered it with a throwaway script
+that was never committed and never repeatable.
+
+| Change | Why | Where |
+|---|---|---|
+| `Application`, `build_application`, `EngineSetupPort` and `shift_lock_probe` move out of the Tk module into `prospector_engine/application.py` | one composition root, callable without a user interface; the move also put ~450 lines under `mypy` for the first time and immediately found a real `Any` leak (`make_setup` was annotated `-> Any`, so every `SetupProgress` the setup runner returned was unchecked) | D-042 |
+| `treasure.py --setup-probe` | the real `build_application`, the real coordinator, the real bounded stages, no Tk, no dashboard, no input; stops at the observation half and prints the held-lease ledger so "sends no input" is checkable rather than asserted | `tests/test_cli_lifecycle.py` |
+| The restoring read-back settles | found by the probe on its own first native run — see below | D-043 |
+
+### The bug the probe found in itself, on its first native run
+
+The client started at 1800×1053 pt. Setup fitted it to 1280×720. The restore
+asked for 1800×1053 and **succeeded** — and the single read-back taken
+immediately afterwards reported `1063x610 pt at (18,499)`, a size nobody had
+asked for. A second later the window was exactly 1800×1053 at (0,67), where it
+began.
+
+macOS animates a resize, so a read taken straight after `pin_client_rect`
+lands mid-flight. The fit machine has settled for three stable read-backs
+since D-032 for exactly this reason, which is why the fit stage was never
+wrong about its own result while a fifteen-line restore was. Worth recording
+because of what it *looked* like: a platform defect, and a false geometry
+about to be written into this table.
+
+### Automatic setup, run natively — four consecutive runs
+
+`.venv/bin/python treasure.py --setup-probe`
+
+| Run | Fit requested → achieved | Capture restarts | Stabilized | Terminal stage | Input edges held | Restored to |
+|---|---|---|---|---|---|---|
+| 1 | 1280×720 pt → **1280×720 pt / 2560×1440 px** | 1 | 5 fresh matching frames by 1.27 s | `failed: profile_ambiguous` at 7.49 s | `()` | 1800×1053 pt at (0,67) |
+| 2 | same | 1 | by ~1.0 s | same | `()` | exact |
+| 3 | same | 1 | by ~1.0 s | same | `()` | exact |
+| 4 | same | 1 | by ~1.0 s | same | `()` | exact |
+
+Read this honestly, in both directions.
+
+**What is now observed fact.** The transactional fit works against the live
+client through the production path: requested 1280×720 and achieved it, with
+the origin preserved at (0,67), on four consecutive runs. Exactly **one**
+capture restart per run — the fence works, and no intermediate geometry was
+classified as `CAPTURE_MISMATCH`. Capture re-stabilized in five fresh matching
+frames in about a second. Automatic setup emitted **zero input edges**, every
+run, with the ledger printed as proof. The window was returned to the size it
+was found at, every run.
+
+**What is not.** Setup did **not** reach READY, and no amount of engineering
+here will change that: no treasure map was equipped, so `SELECT_PROFILE`
+correctly refused with `yellow_map_v1 and green_arrow_v1 score within 0.02`
+and the remedy *"Equip a treasure map so its arrow is on screen"*. That is the
+machine being right — on a frame with no arrow, the two profiles genuinely are
+indistinguishable, and a classifier that picked one would be guessing. The
+stages past `SELECT_PROFILE` — `ESTABLISH_REFERENCE`, `SHADOW_QUALIFY` — have
+therefore still never run against real frames, and `CHARACTERIZE_TURN` still
+needs a physical arm. **READY on real frames remains owed by the owner**, and
+the action is one sentence long: equip a map and run `--setup-probe` again.
+
+### Performance was measured and the numbers are not usable
+
+Two other Claude sessions were running on this machine (98 % and 15 % of a
+core), with WindowServer at 47 % and Roblox at 38 %, load average 5.8–7.1.
+Consecutive `--shadow-bench 15` runs disagreed by a factor of five — capture
+read 57.9 fps in one run and 10.5 fps in the next, which is not a property of
+the code. The fourth pass's quieter-machine numbers below stand as the
+reference; nothing from this pass is added to them. **E-PERF stays PENDING.**
+
+Capture alone, via `--capture-probe`, was consistent with the reference: 58.0
+unique fps at 60 Hz, p50 5.3 / p95 7.3 ms, 0 duplicates, 0 superseded.
+
+### Detector: unchanged, and checked
+
+`--detector-report --corpus tests/corpus/real`, eval split: recall **80.2 %**
+(69/86), **0** false locks, **0** identity switches, sign **90.9 %**, median
+**10.4°**, p95 104.6°. Identical to the fourth pass, per sequence and in
+total. No detector code was touched.
 
 ---
 
@@ -57,13 +144,13 @@ measurements said.
 | Phase | Local implementation / replay | macOS commissioning | Windows commissioning |
 |---|---|---|---|
 | 0A Characterization | **done** | n/a | n/a |
-| 0B Platform ports and viewport | **done** — explicit coordinate spaces, connect/fit split, bounded fit machine, AX-window correlation, honest clamps, typed completions | **partial** — one measured `canonical_verified` on this Mac (2x, one display); the DPI/display matrix is **pending** (E-VIEW) | **pending** (E-VIEW) |
+| 0B Platform ports and viewport | **done** — explicit coordinate spaces, connect/fit split, bounded fit machine, AX-window correlation, honest clamps, typed completions | **partial** — repeated fit measured natively on this Mac (2x, one display), stable across four runs with one capture restart each; the DPI/display matrix is **pending** (E-VIEW) | **pending** (E-VIEW) |
 | 0C Input authority and deadman | **done** — unchanged this pass | **pending** | **pending** |
 | 0D Coordinator migration | **done** — plus fit completions as typed queue items | n/a | n/a |
 | 0E Bounded legacy services | **done** | **pending** | **pending** |
 | 1 Observation foundation and GUI | **done** — automatic setup, stable-geometry dashboard, one timer per loop, bounded per-frame trace, honest governor | **partial** — native headless observation measured at 57 of 57 unique fps (third pass); an owner-observed session with a map equipped is **pending** | **pending** |
 | 2 Offline perception | **partial** — detector v2 measured on the real corpus (below); no separately held-out session exists | **blocked** on a second recording | **blocked** |
-| 3 Navigation and controller | **done locally** — one follower, measured turn actuator, wired motion, bounded recovery; 94 simulated routes at 30/60/90/120 fps | **pending** — needs a windowed Roblox session; every native check below is blocked on that | **pending** |
+| 3 Navigation and controller | **done locally** — one follower, measured turn actuator, wired motion, bounded recovery; 94 simulated routes at 30/60/90/120 fps | **pending** — setup now runs natively as far as `SELECT_PROFILE`, which refuses correctly with no map equipped; the stages past it need a map on screen, and the armed ones need a physical arm | **pending** |
 | 4 One-map live lifecycle | **partial** — the armed prologue (control mode, turn characterization) and the follow/recover loop exist and are tested against fakes and a simulated world | **pending** | **pending** |
 | 5 Multi-map lifecycle | **blocked** | **pending** | **pending** |
 | 6 Packaging and release | **partial** | **pending** | **pending** |
@@ -77,7 +164,7 @@ not validated".
 
 | Gate | Status | What changed / what it still needs |
 |---|---|---|
-| E-VIEW | **partial** | Fit & Verify ran against the live client: `canonical_verified` in 0.35 s, 1280×720 pt / 2560×1440 px, 3/3 stable read-backs, origin preserved, window restored afterwards. One display, one DPI. Needs the DPI/display matrix and Windows. |
+| E-VIEW | **partial** | Fit ran against the live client through the production setup path on **four consecutive runs** (fifth pass): 1280×720 pt / 2560×1440 px every time, origin preserved, exactly one capture restart per run, re-stabilized in five fresh matching frames, window restored exactly. One display, one DPI, one OS. Needs the DPI/display matrix and Windows. |
 | E-ANCHOR | pending | Reviewer-labelled avatar control pivot across sessions. The runtime *reference check* (heading stability with the screen anchor, measured jitter recorded) is a different and weaker claim and never presented as this gate. |
 | E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded labelling. |
 | E-DIR-IDEAL | pending | Manual masks plus aligned-zero outcome trials. |

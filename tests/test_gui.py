@@ -889,8 +889,8 @@ def test_the_shift_lock_probe_only_looks(tmp_path: Path) -> None:
 def test_the_pointer_cue_reads_the_control_mode(
     point: Any, verified: bool, needle: str
 ) -> None:
-    from tests.fakes import make_frame
     from prospector_engine.application import shift_lock_probe
+    from tests.fakes import make_frame
 
     sample = shift_lock_probe(lambda: point)(make_frame(1))
 
@@ -899,8 +899,8 @@ def test_the_pointer_cue_reads_the_control_mode(
 
 
 def test_a_pointer_probe_that_raises_cannot_confirm_anything() -> None:
-    from tests.fakes import make_frame
     from prospector_engine.application import shift_lock_probe
+    from tests.fakes import make_frame
 
     def boom() -> tuple[int, int] | None:
         raise OSError("scripted")

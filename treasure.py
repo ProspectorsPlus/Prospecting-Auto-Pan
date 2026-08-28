@@ -958,20 +958,23 @@ def _run_setup_probe(json_path: str | None = None, restore: bool = True) -> int:
     from prospector_engine.contracts import IntentType, SetupStage, monotonic_s
 
     print("Automatic setup probe (no input is sent; the window is restored afterwards)")
+    # Everything after this line is inside the try, because build_application
+    # starts the deadman helper as a child process: anything that raises before
+    # the finally is reached would leave it running.
     application = build_application()
     port = application.port
-    before = port.window_geometry()
-    print(f"  before: {before.describe()}")
-    original = (
-        before.client_logical.size
-        if before.valid and before.client_logical is not None
-        else None
-    )
-
     stages: list[tuple[float, str, str]] = []
     started = monotonic_s()
+    original: tuple[float, float] | None = None
 
     try:
+        before = port.window_geometry()
+        print(f"  before: {before.describe()}")
+        original = (
+            before.client_logical.size
+            if before.valid and before.client_logical is not None
+            else None
+        )
         application.capture.start()
         application.coordinator.start()
         coordinator = application.coordinator
