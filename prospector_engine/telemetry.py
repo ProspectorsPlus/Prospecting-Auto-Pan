@@ -220,6 +220,12 @@ class LoggedEvent:
         return f"{head}   (x{self.count} over {span:.1f}s)"
 
 
+#: Set TREASURE_VERBOSE=1 to mirror every event onto stderr as it happens -
+#: the same stream the GUI's Raw Log tab shows, but pipeable/greppable/
+#: tee-able from a terminal instead of scrolled and screenshotted by hand.
+_VERBOSE = bool(os.environ.get("TREASURE_VERBOSE"))
+
+
 class EventLog:
     """A bounded ring of stable-named events, with identical runs coalesced."""
 
@@ -230,6 +236,9 @@ class EventLog:
 
     def add(self, name: str, detail: str = "") -> None:
         now = monotonic_s()
+        if _VERBOSE:
+            line = f"{name}: {detail}" if detail else name
+            print(line, file=sys.stderr, flush=True)
         with self._lock:
             # The raw stream is kept verbatim for the Raw Log tab; only the
             # readable view coalesces.
