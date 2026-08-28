@@ -81,6 +81,7 @@ from prospector_engine.navigation import (
 from prospector_engine.ports import PlatformPort, create_platform_port, current_platform_name
 from prospector_engine.telemetry import (
     AppPaths,
+    EventLog,
     EvidenceRecorder,
     LatestSlot,
     resolve_app_paths,
@@ -247,9 +248,19 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
     registry = EvidenceRegistry("pending")
     guard = ViewportGuard(port)
     capture = CaptureService(guard, registry)
+    events = EventLog()
 
     def capture_age_s() -> float | None:
         return capture.latest_age_s()
+
+    def on_safety_fault(fault: Any) -> None:
+        # Previously computed and discarded: this is the one place that knows
+        # *why* the watchdog just cancelled a running service (focus lost,
+        # viewport invalid, capture stale, ...), and nothing surfaced it.
+        events.add(
+            "safety.fault",
+            f"{fault.kind.name} gen={fault.generation} {' '.join(fault.evidence)}",
+        )
 
     authority = InputAuthority(
         port,
@@ -260,6 +271,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
             capture_age_s=capture_age_s,
         ),
         config=AuthorityConfig(),
+        on_safety_fault=on_safety_fault,
     )
     registry = EvidenceRegistry(authority.run_id, on_token=authority.register_evidence)
     capture = CaptureService(
@@ -294,6 +306,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         registry=registry,
         workers=workers,
         config=CoordinatorConfig(),
+        events=events,
         paths=paths,
         pipeline_provider=lambda: pipeline,
         profiles=profiles,
