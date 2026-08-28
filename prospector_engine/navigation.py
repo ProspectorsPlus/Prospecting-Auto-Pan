@@ -141,6 +141,10 @@ class NavigationGates:
     e_steer_e2e: EvidenceStatus = EvidenceStatus.PENDING
     e_recovery: EvidenceStatus = EvidenceStatus.PENDING
     e_next_map: EvidenceStatus = EvidenceStatus.PENDING
+    #: Whether the Shift-Lock control mode can be *verified* on this OS and
+    #: profile. Separate from the per-run proof: this gate says the method
+    #: works at all, the proof says the player is in it right now.
+    e_shiftlock: EvidenceStatus = EvidenceStatus.PENDING
 
     def _passed(self, *statuses: EvidenceStatus) -> bool:
         return all(status is EvidenceStatus.VALIDATED for status in statuses)
@@ -154,6 +158,7 @@ class NavigationGates:
             self.e_prof,
             self.e_dir_e2e,
             self.e_yaw,
+            self.e_shiftlock,
             self.e_steer_cal,
             self.e_steer_e2e,
         )
@@ -180,12 +185,31 @@ class NavigationGates:
                 ("E-PROF", self.e_prof),
                 ("E-DIR-E2E", self.e_dir_e2e),
                 ("E-YAW", self.e_yaw),
+                ("E-SHIFTLOCK", self.e_shiftlock),
                 ("E-STEER-CAL", self.e_steer_cal),
                 ("E-STEER-E2E", self.e_steer_e2e),
             )
             if status is not EvidenceStatus.VALIDATED
         ]
         return tuple(pending)
+
+    def explain(self) -> tuple[str, ...]:
+        """The pending gates, in language a person can act on."""
+        wording = {
+            "E-VIEW": "the viewport has not been pinned and read back on this OS",
+            "E-ANCHOR": "the avatar's control anchor has not been labelled",
+            "E-FORWARD": "which way the character faces has not been proven",
+            "E-PROF": "the arrow detector has no labelled corpus for this profile",
+            "E-DIR-E2E": "direction accuracy has not been measured end to end",
+            "E-YAW": "mouse movement has not been calibrated to camera rotation",
+            "E-SHIFTLOCK": "Shift Lock cannot yet be verified on this OS",
+            "E-STEER-CAL": "the alignment deadband has not been frozen",
+            "E-STEER-E2E": "no guarded route has been driven with the frozen controller",
+        }
+        return tuple(
+            f"{name}: {wording.get(name, 'not commissioned')}"
+            for name in self.blocking_reasons()
+        )
 
 
 # ---------------------------------------------------------------------------

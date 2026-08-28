@@ -289,6 +289,7 @@ class RuntimeCoordinator:
         self._fit_thread: threading.Thread | None = None
         self._last_session_note = ""
         self._recording = "off"
+        self._gate_blockers: tuple[str, ...] = ()
         self._worker: threading.Thread | None = None
         self._worker_cancel: Cancellation | None = None
         self._worker_id: str | None = None
@@ -1011,7 +1012,17 @@ class RuntimeCoordinator:
         metrics = self._capture.metrics()
         if not metrics.live_eligible:
             blockers.append(f"Capture cadence is not Live-eligible ({metrics.governor.reason})")
+        blockers.extend(self._gate_blockers)
         return tuple(blockers)
+
+    def set_gate_blockers(self, blockers: tuple[str, ...]) -> None:
+        """Install the evidence gates that are not commissioned.
+
+        Supplied by the application wiring rather than read from here, because
+        which gates apply depends on the OS and profile, and the coordinator
+        has no business knowing about either.
+        """
+        self._gate_blockers = tuple(blockers)
 
     def _publish_telemetry(self) -> None:
         readiness = self.readiness()

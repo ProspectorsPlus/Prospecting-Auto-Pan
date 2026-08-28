@@ -9,6 +9,7 @@
     python treasure.py --capture-probe  measure capture cost, read-only
     python treasure.py --replay DIR   replay a recorded session, emits no input
     python treasure.py --detector-report  stratified detector metrics, no input
+    python treasure.py --soak MINUTES bounded pipeline soak, no input
 
 ``--deadman`` is dispatched **before** Tk, OpenCV, capture, or engine code is
 imported (plan 4.5), so the helper stays small and starts even if the heavy
@@ -264,6 +265,262 @@ def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
     return 0
 
 
+def _run_soak(minutes: float = 10.0) -> int:
+    """Run the full pipeline against a synthetic source and watch what grows.
+
+    Emits no OS input and needs no Roblox: the point is to hold the capture,
+    perception and telemetry machinery under load long enough that a leak
+    becomes visible, which a unit test cannot do.
+    """
+    import gc
+    import threading
+    import time
+
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+        _ProcessUsage,
+    )
+    from prospector_engine.contracts import PerformanceTier
+    from prospector_engine.navigation import NavigationGates, Navigator, PerceptionPipeline
+    from prospector_engine.vision import ArrowSegmenter, load_profiles
+
+    sys.path.insert(0, _HERE)
+    try:
+        from tests.arrow_fixtures import render_scene
+        from tests.fakes import FakeCaptureSource, FakePlatformPort, VirtualClock, make_geometry
+    except ImportError:
+        print("The soak needs the test fixtures; run from a source checkout.")
+        return 2
+
+    profile = load_profiles().get("green_arrow_v1")
+    if profile is None:
+        return 2
+    port = FakePlatformPort(VirtualClock(), geometry=make_geometry(size=(1280.0, 720.0)))
+    guard = ViewportGuard(port)
+    guard.connect()
+
+    frames = [
+        render_scene(heading_deg=float(angle), terrain="grass", scale_px=100.0, seed=angle).bgr
+        for angle in range(0, 360, 30)
+    ]
+    source = FakeCaptureSource(frames=frames)
+    service = CaptureService(
+        guard,
+        EvidenceRegistry("soak"),
+        config=CaptureConfig(start_tier=PerformanceTier.STANDARD),
+        source_factory=lambda: source,
+    )
+    pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+    navigator = Navigator(gates=NavigationGates(os_name=sys.platform, profile_id="soak"))
+    usage = _ProcessUsage()
+
+    threads_before = threading.active_count()
+    if not service.start():
+        print(f"capture failed to start: {service.last_error()}")
+        return 1
+
+    print(f"Soaking for {minutes:g} minutes. No OS input is emitted; no window is touched.")
+    header = f"{'elapsed':>8} {'unique':>7} {'processed':>10} {'rss MB':>8}"
+    print(f"{header} {'peak':>7} {'cpu%':>6}")
+    started = time.monotonic()
+    deadline = started + minutes * 60.0
+    interval = min(30.0, max(2.0, minutes * 60.0 / 8.0))
+    next_report = started + interval
+    baseline_rss = 0.0
+    samples: list[tuple[float, float]] = []
+    last_sequence = 0
+    processed = 0
+    try:
+        while time.monotonic() < deadline:
+            envelope = service.wait_for_new(last_sequence, 0.25)
+            if envelope is None:
+                continue
+            last_sequence = envelope.frame.sequence
+            result = pipeline.analyze(envelope.frame, map_id="soak", approach_valid=False)
+            navigator.decide(result.inputs, generation=1, now_s=time.monotonic())
+            service.note_perception_ms(result.perception_ms)
+            service.note_decision_ms(0.05)
+            processed += 1
+            now = time.monotonic()
+            if now >= next_report:
+                next_report = now + interval
+                gc.collect()
+                sample = usage.sample()
+                metrics = service.metrics()
+                elapsed = now - started
+                if baseline_rss == 0.0 and elapsed >= interval:
+                    baseline_rss = sample.rss_current_mb
+                if baseline_rss:
+                    samples.append((elapsed, sample.rss_current_mb))
+                print(
+                    f"{elapsed:7.0f}s {metrics.unique_fps:7.1f} {metrics.processed_fps:10.1f} "
+                    f"{sample.rss_current_mb:8.1f} {sample.rss_peak_mb:7.1f} "
+                    f"{sample.cpu_percent:6.0f}"
+                )
+    finally:
+        stopped = service.stop(3.0)
+
+    gc.collect()
+    threads_after = threading.active_count()
+    slope = 0.0
+    if len(samples) >= 2:
+        span_minutes = (samples[-1][0] - samples[0][0]) / 60.0
+        slope = (samples[-1][1] - samples[0][1]) / max(span_minutes, 1e-6)
+
+    print()
+    print(f"  frames processed   {processed}")
+    print(f"  threads            {threads_before} before, {threads_after} after")
+    print(f"  capture shutdown   {'clean' if stopped else 'SURVIVOR'}")
+    print(f"  buffer pool live   {service._pool.live} of {service._pool.capacity}")
+    print(f"  RSS slope          {slope:+.2f} MB/min (provisional target: under 1.0)")
+    ok = stopped and threads_after <= threads_before + 1 and slope < 1.0
+    print(f"\n  {'PASS' if ok else 'FAIL'} - this is a local soak, not E-PERF.")
+    return 0 if ok else 1
+
+
+def _run_detector_report(profile_id: str = "green_arrow_v1") -> int:
+    """Measure the detector on rendered stress frames. Emits no input.
+
+    Rendered frames are **training stress, never a held-out split** (plan 7.2),
+    so this can never pass E-PROF or E-DIR-E2E. It exists so a change to the
+    detector can be judged against the same conditions every time, and so the
+    numbers in STATUS.md can be regenerated by anybody.
+    """
+    from dataclasses import asdict
+
+    import numpy as np
+
+    from prospector_engine.arrow import ArrowDetector, DetectorConfig, DirectionEstimator
+    from prospector_engine.contracts import CapturedFrame, freeze_array
+    from prospector_engine.evaluation import DatasetSplit, LabelledFrame, evaluate
+    from prospector_engine.geometry import (
+        DisplayInfo,
+        LogicalRect,
+        ViewportGeometry,
+        ViewportState,
+        WindowIdentity,
+    )
+    from prospector_engine.vision import load_profiles
+
+    sys.path.insert(0, _HERE)
+    try:
+        from tests.arrow_fixtures import render_scene
+    except ImportError:
+        print("The detector report needs the test fixtures; run from a source checkout.")
+        return 2
+
+    profile = load_profiles().get(profile_id)
+    if profile is None:
+        print(f"Unknown profile {profile_id!r}.")
+        return 2
+
+    client = LogicalRect(0.0, 0.0, 1280.0, 720.0)
+    geometry = ViewportGeometry(
+        state=ViewportState.CANONICAL_VERIFIED,
+        window=WindowIdentity(0, 0, "synthetic"),
+        display=DisplayInfo("synthetic", client, 1.0),
+        frame_logical=client,
+        client_logical=client,
+        canonical_px=(1280, 720),
+        detail="rendered stress frame",
+    )
+    strata: dict[str, dict[str, object]] = {
+        "day-grass": {"terrain": "grass", "scale_px": 100.0},
+        "day-dirt": {"terrain": "dirt", "scale_px": 100.0},
+        "water": {"terrain": "water", "scale_px": 100.0},
+        "pale-terrain": {"terrain": "pale", "scale_px": 100.0},
+        "night-grass": {"terrain": "night_grass", "scale_px": 100.0},
+        "small-arrow": {"terrain": "grass", "scale_px": 45.0},
+        "large-arrow": {"terrain": "grass", "scale_px": 210.0},
+        "foreshortened": {"terrain": "dirt", "scale_px": 130.0, "foreshorten": 0.5},
+        "blurred": {"terrain": "grass", "scale_px": 100.0, "blur_px": 7},
+        "translucent": {"terrain": "pale", "scale_px": 110.0, "alpha": 0.55},
+        "dim": {"terrain": "grass", "scale_px": 100.0, "brightness": 0.5},
+        "same-colour-clutter": {"terrain": "dirt", "scale_px": 100.0, "distractors": 5},
+        "same-colour-occlusion": {"terrain": "dirt", "scale_px": 100.0, "occluders": 4},
+    }
+
+    def frame_of(scene: object, sequence: int) -> CapturedFrame:
+        return CapturedFrame(
+            sequence=sequence,
+            captured_at_s=sequence * 0.01,
+            completed_at_s=sequence * 0.01 + 0.002,
+            duration_ms=2.0,
+            geometry=geometry,
+            bgr=freeze_array(np.ascontiguousarray(scene.bgr)),  # type: ignore[attr-defined]
+            backend="synthetic",
+        )
+
+    labelled: list[LabelledFrame] = []
+    episode = 0
+    for name, options in strata.items():
+        for _run in range(6):
+            episode += 1
+            for step, heading in enumerate(range(0, 360, 24)):
+                scene = render_scene(
+                    heading_deg=float(heading), seed=episode * 100 + step, **options
+                )
+                labelled.append(
+                    LabelledFrame(
+                        frame_of(scene, step + 1),
+                        float(heading),
+                        name,
+                        session_id=f"synthetic-{name}",
+                        episode_id=f"ep{episode}",
+                    )
+                )
+            for step in range(6):
+                scene = render_scene(
+                    heading_deg=0.0, seed=episode * 100 + 60 + step, arrow=False, **options
+                )
+                labelled.append(
+                    LabelledFrame(
+                        frame_of(scene, 100 + step),
+                        None,
+                        name,
+                        session_id=f"synthetic-{name}",
+                        episode_id=f"ep{episode}",
+                        arrow_present=False,
+                    )
+                )
+
+    config = DetectorConfig()
+    detector = ArrowDetector(profile, config)
+    estimator = DirectionEstimator(config)
+
+    def predict(frame: CapturedFrame) -> tuple[float | None, bool]:
+        arrow, hypotheses = detector.analyze(frame)
+        if not arrow.valid:
+            return (None, False)
+        accepted = next((h for h in hypotheses if h.accepted), None)
+        observation = estimator.estimate(
+            accepted.features if accepted is not None else None,
+            anchor_px=(640.0, 430.0),
+            forward_deg=0.0,
+            arrow_confidence=arrow.confidence,
+        ).observation
+        if not observation.valid or observation.error_deg is None:
+            return (None, False)
+        return (observation.error_deg, True)
+
+    report = evaluate(
+        DatasetSplit("synthetic-stress", tuple(labelled)),
+        predict,
+        detector_config={key: str(value) for key, value in asdict(config).items()},
+        notes=(
+            "Rendered frames fitted to the owner's measured crops. Training "
+            "stress only: plan 7.2 forbids synthetic data in a held-out split, "
+            "so nothing here can pass E-PROF or E-DIR-E2E.",
+        ),
+    )
+    print(f"Detector report for {profile.profile_id} [{profile.status.value}]\n")
+    print(report.describe())
+    return 0
+
+
 def _run_capture_probe(seconds: float = 4.0) -> int:
     """Measure what the real pipeline sustains. Read-only.
 
@@ -394,6 +651,22 @@ def main(argv: list[str] | None = None) -> int:
         return _run_replay(arguments[index + 1])
     if "--capture-probe" in arguments:
         return _run_capture_probe()
+    if "--detector-report" in arguments:
+        index = arguments.index("--detector-report")
+        profile = (
+            arguments[index + 1]
+            if index + 1 < len(arguments) and not arguments[index + 1].startswith("-")
+            else "green_arrow_v1"
+        )
+        return _run_detector_report(profile)
+    if "--soak" in arguments:
+        index = arguments.index("--soak")
+        minutes = (
+            float(arguments[index + 1])
+            if index + 1 < len(arguments) and not arguments[index + 1].startswith("-")
+            else 10.0
+        )
+        return _run_soak(minutes)
     if "--calibrate" in arguments:
         return _run_calibrate()
     from treasure_gui import main as gui_main

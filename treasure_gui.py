@@ -76,6 +76,7 @@ from prospector_engine.navigation import (
     make_shadow_worker,
 )
 from prospector_engine.ports import PlatformPort, create_platform_port, current_platform_name
+from prospector_engine.steering import ShiftLockController
 from prospector_engine.telemetry import (
     AppPaths,
     EvidenceRecorder,
@@ -286,6 +287,9 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         pipeline_provider=lambda: pipeline,
         profiles=profiles,
     )
+    # The evidence gates and the yaw calibration are both reasons Live cannot
+    # start, and from the user's side they are the same question.
+    coordinator.set_gate_blockers(gates.explain() + ShiftLockController().blocking_reasons())
     return Application(
         port=port,
         guard=guard,
@@ -779,15 +783,10 @@ class Dashboard:
         from tkinter import messagebox
 
         blockers = self.app.coordinator.live_blockers()
-        gates = self.app.gates.blocking_reasons()
         lines: list[str] = []
         if blockers:
-            lines.append("Safety and readiness:")
+            lines.append("Live control is blocked by these checks:")
             lines.extend(f"  - {blocker}" for blocker in blockers)
-        if gates:
-            lines.append("")
-            lines.append("Evidence gates that have not been commissioned:")
-            lines.extend(f"  - {gate}" for gate in gates)
         if not lines:
             lines.append("No blockers. Live control can be enabled.")
         messagebox.showinfo("Live blockers", "\n".join(lines), parent=self.root)
