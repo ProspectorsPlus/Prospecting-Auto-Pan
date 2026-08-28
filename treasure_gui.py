@@ -1406,12 +1406,7 @@ class Dashboard:
         geometry = self.app.guard.geometry
         capabilities = self.app.capabilities
         observation = self._last_observation
-        self.readout_vars["viewport"].set(
-            f"{geometry.canonical_px[0]}x{geometry.canonical_px[1]} "
-            f"{'canonical' if geometry.is_canonical else 'adopted'}"
-            if geometry.valid
-            else "not connected"
-        )
+        self.readout_vars["viewport"].set(self._viewport_text(geometry, snapshot))
         self.readout_vars["profile"].set(
             f"{self.app.profiles.active_id} rev {self.app.profiles.revision}"
         )
@@ -1440,6 +1435,29 @@ class Dashboard:
         self.readout_vars["leases"].set(", ".join(held) if held else "none")
         recovery = observation.plain_summary if observation else ""
         self.readout_vars["recovery"].set(recovery[: self.READOUT_VALUE_CHARS] or "-")
+
+    def _viewport_text(self, geometry: ViewportGeometry, snapshot: Any) -> str:
+        """Requested and achieved, because a clamp is an answer worth reading.
+
+        "1280x720 adopted" hides the interesting case: the window was asked for
+        the canonical size and gave a different one. Both numbers, when they
+        differ.
+        """
+        if not geometry.valid:
+            return "not connected"
+        client = geometry.client_logical
+        achieved = (
+            f"{client.width:g}x{client.height:g}"
+            if client is not None
+            else f"{geometry.canonical_px[0]}x{geometry.canonical_px[1]}"
+        )
+        setup = getattr(snapshot, "setup", None) if snapshot is not None else None
+        requested = getattr(setup, "requested_client_logical", None) if setup else None
+        if requested is not None and client is not None:
+            want = f"{requested[0]:g}x{requested[1]:g}"
+            if want != achieved:
+                return f"{want} -> {achieved} clamped"
+        return f"{achieved} {'canonical' if geometry.is_canonical else 'adopted'}"
 
     def _render_recording_label(self) -> None:
         if self.recorder is None or self._recording_started_s is None:

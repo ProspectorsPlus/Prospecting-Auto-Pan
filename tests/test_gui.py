@@ -909,3 +909,41 @@ def test_a_pointer_probe_that_raises_cannot_confirm_anything() -> None:
 
     assert not sample.verified
     assert "could not be read" in sample.detail
+
+
+def test_the_viewport_row_shows_a_clamp_rather_than_hiding_it(dashboard: Any) -> None:
+    """ "1024x768 adopted" hides the interesting fact: we asked for 1280x720."""
+    from prospector_engine.contracts import SetupProgress, SetupStage
+    from tests.fakes import make_geometry
+
+    clamped = make_geometry(size=(1024.0, 768.0))
+    snapshot = type(
+        "Snap",
+        (),
+        {
+            "setup": SetupProgress(
+                stage=SetupStage.READY,
+                attempt=1,
+                detail="ready",
+                started_at_s=0.0,
+                updated_at_s=1.0,
+                requested_client_logical=(1280.0, 720.0),
+                achieved_client_logical=(1024.0, 768.0),
+            ),
+            "phase": None,
+            "control_state": None,
+        },
+    )()
+
+    text = dashboard._viewport_text(clamped, snapshot)
+
+    assert "1280x720" in text and "1024x768" in text
+    assert "clamped" in text
+
+
+def test_the_viewport_row_says_canonical_when_it_is(dashboard: Any) -> None:
+    from tests.fakes import make_geometry
+
+    text = dashboard._viewport_text(make_geometry(), None)
+
+    assert "1280x720" in text and "canonical" in text
