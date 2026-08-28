@@ -24,6 +24,7 @@ from prospector_engine.contracts import (
     ArrowCandidateRecord,
     ArrowObservation,
     CapturedFrame,
+    ControlState,
     DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
@@ -33,6 +34,7 @@ from prospector_engine.contracts import (
     NavigationCommand,
     NavigationPhase,
     Provenance,
+    RuntimeKey,
     monotonic_s,
 )
 from prospector_engine.coordinator import WorkerContext
@@ -43,6 +45,7 @@ from prospector_engine.vision import (
     ArrowProfile,
     ArrowSegmenter,
     ArrowTracker,
+    ProfileAuthority,
     wrap_deg,
 )
 
@@ -53,9 +56,58 @@ __all__ = [
     "RecoveryLevel",
     "SteeringConfig",
     "SteeringController",
+    "describe_decision",
     "make_live_worker",
     "make_shadow_worker",
 ]
+
+
+#: Rejection reasons rendered as something a person can act on. Anything not
+#: listed falls back to the raw reason, which is still readable - the point is
+#: that the common cases read as English, not that the vocabulary is closed.
+_PLAIN_REJECTIONS: dict[str, str] = {
+    "no-candidate": "No arrow visible",
+    "ambiguous-candidates": "Direction uncertain - two candidates score alike",
+    "candidate-clipped": "Arrow is cut off at the edge of the view",
+    "viewport-invalid": "Roblox window is not usable right now",
+    "unsupported-viewport-size": "This viewport size is not supported by the profile",
+    "shape": "Candidate rejected - terrain-like shape",
+    "contrast": "Candidate rejected - no contrast against its surroundings",
+    "topology": "Candidate rejected - no arrowhead notches",
+    "scale": "Candidate rejected - wrong size for an arrow",
+    "margin": "Direction uncertain - candidates score too closely",
+    "cues disagree": "Direction uncertain - detectors disagree",
+    "polarity": "Direction uncertain - cannot tell which end is the tip",
+}
+
+
+def _plain_reason(reason: str | None) -> str:
+    if not reason:
+        return "No reading"
+    head = reason.split(":", 1)[0]
+    return _PLAIN_REJECTIONS.get(reason) or _PLAIN_REJECTIONS.get(head) or reason
+
+
+def describe_decision(inputs: NavigationInputs, decision: NavigationDecision) -> str:
+    """One sentence a person can act on, composed where the reasoning lives.
+
+    It is built here rather than in the dashboard so the UI cannot paraphrase a
+    decision into a different claim than the one the controller made
+    (mission section 10).
+    """
+    if not inputs.arrow.valid:
+        return _plain_reason(inputs.arrow.abstain_reason)
+    direction = inputs.direction
+    if not direction.valid or direction.error_deg is None:
+        return _plain_reason(direction.abstain_reason)
+    error = wrap_deg(direction.error_deg)
+    command = decision.command
+    if command is not None and command.forward_axis == 1 and command.yaw_delta_px == 0:
+        return "Aligned - move forward"
+    if abs(error) < 1.0:
+        return "Aligned - move forward"
+    side = "right" if error > 0 else "left"
+    return f"Turn {side} {abs(error):.0f} degrees"
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +445,23 @@ class NavigationDecision:
     release: bool = False
 
 
+#: The navigation FSM and the Shift-Lock controller describe the same run from
+#: two angles: one in lifecycle terms, one in "is W held right now" terms. The
+#: mapping is explicit so the two can never drift into disagreeing.
+_PHASE_TO_CONTROL: dict[NavigationPhase, ControlState] = {
+    NavigationPhase.ACQUIRE: ControlState.ACQUIRE,
+    NavigationPhase.ALIGN: ControlState.ALIGN,
+    NavigationPhase.FOLLOW: ControlState.FOLLOW,
+    NavigationPhase.REACQUIRE: ControlState.REACQUIRE,
+    NavigationPhase.CONTACT: ControlState.BLOCKED,
+    NavigationPhase.RECOVERY: ControlState.BLOCKED,
+    NavigationPhase.ARRIVAL_CONFIRM: ControlState.ACQUIRE,
+    NavigationPhase.ARRIVED: ControlState.SAFE_STOP,
+    NavigationPhase.ABANDONED: ControlState.SAFE_STOP,
+    NavigationPhase.FAILED: ControlState.SAFE_STOP,
+}
+
+
 class Navigator:
     """The navigation FSM. Pure decision logic - it emits no input itself.
 
@@ -421,6 +490,11 @@ class Navigator:
     @property
     def phase(self) -> NavigationPhase:
         return self._phase
+
+    @property
+    def control_state(self) -> ControlState:
+        """The Shift-Lock controller's view of the same decision."""
+        return _PHASE_TO_CONTROL.get(self._phase, ControlState.ACQUIRE)
 
     @property
     def arrival_latches(self) -> int:
@@ -627,6 +701,10 @@ class PerceptionPipeline:
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
     strategy: str = "fusion"
     reference: ReferenceFrame = field(default_factory=ReferenceFrame)
+    #: The one authority on the active profile. When present, the pipeline
+    #: applies its staged swap at the top of every frame, which is what makes a
+    #: profile change land on a frame boundary rather than mid-observation.
+    profiles: ProfileAuthority | None = None
     #: Padding around a tracked arrow when searching only a region of interest.
     roi_padding_px: int = 220
     #: Force a full-frame pass this often even while a track holds, so a track
@@ -635,12 +713,49 @@ class PerceptionPipeline:
     _frames_since_full: int = 0
     _roi_hits: int = 0
     _full_passes: int = 0
+    _profile_revision: int = 1
+    _geometry_identity: tuple[object, ...] | None = None
 
     def set_profile(self, profile: ArrowProfile) -> None:
         """Swap the arrow profile and drop any track built from the old one."""
         self.segmenter = ArrowSegmenter(profile)
         self.tracker = ArrowTracker()
+        self.arrival = ArrivalDetector()
         self._frames_since_full = self.full_frame_every  # force a full pass
+
+    @property
+    def profile_revision(self) -> int:
+        """Which profile generation the next observation will belong to."""
+        if self.profiles is not None:
+            return self.profiles.revision
+        return self._profile_revision
+
+    def _sync_profile(self) -> ArrowProfile | None:
+        """Apply a staged profile swap. Called at the top of every frame."""
+        if self.profiles is None:
+            return None
+        applied = self.profiles.apply_pending()
+        if applied is not None:
+            self.set_profile(applied)
+        return applied
+
+    def _sync_geometry(self, frame: CapturedFrame) -> bool:
+        """Drop temporal state when the coordinate basis changes.
+
+        A tracker prediction, an ROI, and a candidate history are all expressed
+        in canonical pixels of one specific viewport. After a resize, a display
+        migration, or a window replacement they describe a place that no longer
+        exists, so they are discarded rather than reinterpreted.
+        """
+        identity = frame.geometry.identity()
+        if self._geometry_identity is not None and identity != self._geometry_identity:
+            self.tracker = ArrowTracker()
+            self.arrival = ArrivalDetector()
+            self._frames_since_full = self.full_frame_every
+            self._geometry_identity = identity
+            return True
+        self._geometry_identity = identity
+        return False
 
     @property
     def roi_hits(self) -> int:
@@ -685,6 +800,10 @@ class PerceptionPipeline:
     ) -> PerceptionResult:
         """Everything derived from one frame, in one pass."""
         started = monotonic_s()
+        # Both of these run *before* any pixel is read, so a profile swap or a
+        # geometry change can never land halfway through an observation.
+        self._sync_profile()
+        self._sync_geometry(frame)
         roi = self._roi_for(frame)
         raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, roi)
         if roi is not None and not raw_arrow.valid:
@@ -745,17 +864,32 @@ class PerceptionPipeline:
         decision: NavigationDecision,
         *,
         decision_ms: float,
+        key: RuntimeKey | None = None,
+        control_state: ControlState | None = None,
+        blockers: tuple[str, ...] = (),
     ) -> DiagnosticObservation:
         """Bind the frame, the geometry, and the decision into one value.
 
         The preview and the controller both read this, so an overlay can never
-        be drawn from observation N over frame N+1.
+        be drawn from observation N over frame N+1. ``key`` stamps the packet
+        with the identity every consumer compares before drawing or acting.
         """
         inputs = result.inputs
+        stamped = key or RuntimeKey(
+            run_id="local",
+            coordinator_generation=0,
+            mode_session_id=0,
+            source_epoch=0,
+            geometry_revision=0,
+            profile_revision=self.profile_revision,
+            frame_sequence=frame.sequence,
+            content_id=frame.content_id,
+        )
         return DiagnosticObservation(
             frame=frame,
             processed_at_s=frame.completed_at_s,
             published_at_s=monotonic_s(),
+            key=stamped,
             profile_id=self.profile.profile_id,
             profile_status=self.profile.status.value,
             strategy_id=self.strategy,
@@ -780,6 +914,9 @@ class PerceptionPipeline:
             capture_ms=frame.duration_ms,
             perception_ms=result.perception_ms,
             decision_ms=decision_ms,
+            control_state=control_state,
+            plain_summary=describe_decision(inputs, decision),
+            blockers=blockers,
         )
 
 
@@ -837,7 +974,18 @@ def _run_observer_loop(
         capture.note_decision_ms(decision_ms)
         capture.note_end_to_end_ms(frame.age_s(monotonic_s()) * 1000.0)
 
-        observation = pipeline.diagnostic(frame, result, decision, decision_ms=decision_ms)
+        observation = pipeline.diagnostic(
+            frame,
+            result,
+            decision,
+            decision_ms=decision_ms,
+            # The key is stamped from the coordinator's current world, not from
+            # anything this worker knows, so a cancelled worker's late frame
+            # cannot outrank the session that replaced it.
+            key=context.key_for(frame, pipeline.profile_revision),
+            control_state=navigator.control_state,
+            blockers=context.blockers,
+        )
         context.on_observation(observation)
         context.on_phase(decision.phase)
 

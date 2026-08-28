@@ -412,13 +412,13 @@ def test_frames_are_not_counted_as_dropped_before_anyone_consumes() -> None:
     try:
         time.sleep(0.4)  # frames flowing, nobody consuming
         assert service.latest() is not None
-        assert service.metrics().dropped_frames == 0
+        assert service.metrics().superseded_frames.session_total == 0
 
-        # Once a consumer exists, real drops are counted again.
+        # Once a consumer exists, real supersedes are counted again.
         first = service.wait_for_new(0, 1.0)
         assert first is not None
         time.sleep(0.3)
-        assert service.metrics().dropped_frames >= 1
+        assert service.metrics().superseded_frames.session_total >= 1
     finally:
         service.stop()
 

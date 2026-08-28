@@ -32,18 +32,24 @@ __all__ = [
     "ArrivalObservation",
     "ArrowCandidateRecord",
     "ArrowObservation",
+    "CadenceReport",
     "Cancellation",
     "CancellationToken",
     "CaptureMetrics",
     "CapturedFrame",
+    "CommandKind",
+    "ControlState",
+    "CueReading",
     "DiagnosticObservation",
     "DigEvidence",
     "DigHandoffResult",
     "DigOutcome",
     "EvidenceStatus",
     "EvidenceToken",
+    "FitPhase",
     "FocusState",
     "FrameEnvelope",
+    "GovernorState",
     "InputKey",
     "InputVocabulary",
     "IntentType",
@@ -54,20 +60,24 @@ __all__ = [
     "NavigationCommand",
     "NavigationPhase",
     "NextMapOutcome",
+    "PacketKind",
     "PanSwapOutcome",
     "PanSwapResult",
     "PerformanceTier",
     "PinResult",
     "Provenance",
+    "RateSummary",
     "RawFrame",
     "ResetOutcome",
     "ResetResult",
     "RunMode",
     "RuntimeIntent",
+    "RuntimeKey",
     "SafetyFault",
     "SafetyFaultKind",
     "ServiceKind",
     "TelemetrySnapshot",
+    "ViewportFit",
     "WorkerCompletion",
     "freeze_array",
     "monotonic_s",
@@ -197,6 +207,98 @@ class PinResult:
     message: str
     geometry: ViewportGeometry | None = None
     requested_client_logical: tuple[float, float] | None = None
+
+
+class FitPhase(Enum):
+    """Where a *Fit & Lock Viewport* attempt has got to.
+
+    Fitting is asynchronous and bounded, because a resize is a request to
+    another process that may be answered late, partially, or not at all. Three
+    of these are terminal, and ``ACHIEVED_CLAMPED`` is a truthful success: the
+    OS or the game refused the exact size, we adopted what we actually got, and
+    nothing downstream is told it is canonical (plan 4.1).
+    """
+
+    IDLE = "idle"
+    REQUESTED = "requested"
+    SETTLING = "settling"
+    CANONICAL_VERIFIED = "canonical_verified"
+    ACHIEVED_CLAMPED = "achieved_clamped"
+    FAILED = "failed"
+
+    @property
+    def terminal(self) -> bool:
+        return self in (
+            FitPhase.CANONICAL_VERIFIED,
+            FitPhase.ACHIEVED_CLAMPED,
+            FitPhase.FAILED,
+            FitPhase.IDLE,
+        )
+
+
+@dataclass(frozen=True)
+class ViewportFit:
+    """One bounded fit attempt, with what was asked for and what was achieved.
+
+    Both sizes are recorded in logical units *and* backing pixels because a
+    Retina client that is 1280x720 points is 2560x1440 pixels, and reporting
+    only one of the two is how the original coordinate bug survived review.
+    """
+
+    phase: FitPhase
+    attempt: int
+    stable_readbacks: int
+    required_readbacks: int
+    requested_client_logical: tuple[float, float] | None
+    achieved_client_logical: tuple[float, float] | None
+    achieved_client_backing_px: tuple[int, int] | None
+    geometry: ViewportGeometry | None
+    detail: str
+    started_at_s: float = 0.0
+    settled_at_s: float | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Whether the client is usable, canonical or not."""
+        return self.phase in (FitPhase.CANONICAL_VERIFIED, FitPhase.ACHIEVED_CLAMPED)
+
+    @property
+    def clamped(self) -> bool:
+        return self.phase is FitPhase.ACHIEVED_CLAMPED
+
+    def describe(self) -> str:
+        if self.requested_client_logical is None:
+            return f"{self.phase.value}: {self.detail}"
+        want = self.requested_client_logical
+        got = self.achieved_client_logical
+        backing = self.achieved_client_backing_px
+        achieved = (
+            "not read back"
+            if got is None
+            else (
+                f"{got[0]:g}x{got[1]:g} pt"
+                + (f" / {backing[0]}x{backing[1]} px" if backing else "")
+            )
+        )
+        return (
+            f"{self.phase.value}: requested {want[0]:g}x{want[1]:g} pt, achieved "
+            f"{achieved} ({self.stable_readbacks}/{self.required_readbacks} stable) - "
+            f"{self.detail}"
+        )
+
+    @classmethod
+    def idle(cls) -> ViewportFit:
+        return cls(
+            phase=FitPhase.IDLE,
+            attempt=0,
+            stable_readbacks=0,
+            required_readbacks=0,
+            requested_client_logical=None,
+            achieved_client_logical=None,
+            achieved_client_backing_px=None,
+            geometry=None,
+            detail="no fit requested; the client was adopted as it is",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -337,25 +439,100 @@ class LatencySummary:
         )
 
 
+class GovernorState(Enum):
+    """The cadence governor's explicit state.
+
+    ``PROBE`` and ``COOLDOWN`` exist so an upward attempt that fails is
+    *remembered*: without them a source capped at 60 Hz oscillates forever
+    between 60 and 90, and every oscillation costs a measurement epoch.
+    """
+
+    WARMUP = "warmup"
+    STABLE = "stable"
+    PROBE = "probe"
+    COOLDOWN = "cooldown"
+    DEGRADED = "degraded"
+
+
+@dataclass(frozen=True)
+class CadenceReport:
+    """Why the governor is where it is, with the evidence it used.
+
+    ``live_eligible`` is the field Live gating reads. It is deliberately not
+    ``state is STABLE``: a tier can be stable and still too slow, and a healthy
+    probe is not yet proven.
+    """
+
+    state: GovernorState
+    tier: PerformanceTier
+    requested_hz: int
+    samples: int
+    processed_ratio: float
+    observation_loss: float
+    p95_age_ms: float | None
+    live_eligible: bool
+    reason: str
+    changes: int = 0
+    probes: int = 0
+    failed_probes: int = 0
+
+    def describe(self) -> str:
+        return (
+            f"{self.state.value} @ {self.tier.fps} Hz "
+            f"(processed {self.processed_ratio * 100:.0f}% of tier, "
+            f"loss {self.observation_loss * 100:.1f}%, n={self.samples}) - {self.reason}"
+        )
+
+
+@dataclass(frozen=True)
+class RateSummary:
+    """One counter reported as both a session total and a rate.
+
+    A bare cumulative number is unreadable after an hour: "7055 dropped" reads
+    as a catastrophe whether it happened in the last second or over a whole
+    session. Counters here are per **session**; anything lifetime says so.
+    """
+
+    label: str
+    session_total: int
+    per_second: float
+    lifetime_total: int = 0
+
+    def describe(self) -> str:
+        return f"{self.session_total} ({self.per_second:.1f}/s)"
+
+
 @dataclass(frozen=True)
 class CaptureMetrics:
     """What the pipeline is actually doing, as opposed to what it was asked to.
 
-    Every FPS field counts **unique useful frames**, never loop iterations: a
-    backend redelivering an unchanged surface must not inflate a number that
-    the governor and the UI both treat as evidence of health.
+    Six independent rates, because conflating them is how "15 fps" and "73 fps"
+    were both true at once in the same session:
+
+    ``requested_hz``   what the source was asked for
+    ``source_fps``     deliveries per second, duplicates included
+    ``unique_fps``     deliveries whose content actually changed
+    ``processed_fps``  frames perception turned into an observation
+    ``control_fps``    observations that produced a control decision
+    ``preview_fps``    frames the dashboard drew
+
+    Every count is per **session** and resets with the measurement epoch;
+    lifetime totals are carried separately and labelled as such.
     """
 
     backend: str
     tier: PerformanceTier
+    requested_hz: int
     source_fps: float
     unique_fps: float
     processed_fps: float
+    control_fps: float
     preview_fps: float
-    duplicate_frames: int
-    dropped_frames: int
-    dropped_observations: int
-    stale_frames: int
+    duplicate_frames: RateSummary
+    superseded_frames: RateSummary
+    dropped_observations: RateSummary
+    stale_frames: RateSummary
+    pool_exhausted: RateSummary
     slot_depth: int
     reacquisitions: int
     frame_age_ms: float | None
@@ -366,19 +543,32 @@ class CaptureMetrics:
     preview: LatencySummary
     end_to_end: LatencySummary
     cpu_percent: float
-    rss_mb: float
+    rss_current_mb: float
+    rss_peak_mb: float
+    governor: CadenceReport
+    epoch: int = 0
     degraded_reason: str | None = None
 
     @property
     def healthy(self) -> bool:
         return self.degraded_reason is None and self.unique_fps >= PerformanceTier.MINIMUM.fps
 
+    @property
+    def live_eligible(self) -> bool:
+        """Whether cadence alone permits Live. Never a claim about anything else."""
+        return self.governor.live_eligible
+
+    @property
+    def observation_loss_ratio(self) -> float:
+        seen = self.processed_fps + self.dropped_observations.per_second
+        return self.dropped_observations.per_second / seen if seen > 0 else 0.0
+
     def summary_line(self) -> str:
         return (
             f"{self.backend} {self.tier.fps}Hz  unique {self.unique_fps:.0f}  "
             f"processed {self.processed_fps:.0f}  preview {self.preview_fps:.0f}  "
             f"lat p95 {self.end_to_end.p95_ms:.0f} ms  cpu {self.cpu_percent:.0f}%  "
-            f"rss {self.rss_mb:.0f} MB"
+            f"rss {self.rss_current_mb:.0f} MB (peak {self.rss_peak_mb:.0f})"
         )
 
 
@@ -514,6 +704,40 @@ class ArrowObservation:
     #: The far end of the principal axis. Drawing tail-to-tip shows the shaft
     #: the direction estimate was taken from, which a bounding box cannot.
     tail_px: tuple[float, float] | None = None
+    #: Per-term confidence breakdown, ordered as the detector scored them.
+    #: Present whether the candidate was accepted or rejected, because "why
+    #: not" is the half of the diagnostic that says what to fix.
+    score_terms: tuple[tuple[str, float], ...] = ()
+    #: How far ahead of the runner-up this candidate scored. A thin margin is
+    #: an abstention, not a win.
+    score_margin: float = 0.0
+    #: Midpoint of the two arrowhead notches - the base of the head, and the
+    #: origin of the well-conditioned signed direction (see D-024).
+    notch_mid_px: tuple[float, float] | None = None
+    #: The two detected notch points, for the Full Diagnostics overlay.
+    notch_px: tuple[tuple[float, float], tuple[float, float]] | None = None
+    #: sqrt(area) / canonical frame height. Scale continuity is checked against
+    #: this rather than raw pixels, so it survives a viewport change.
+    scale_norm: float = 0.0
+    #: How long this identity has been held, in accepted frames.
+    track_age: int = 0
+
+
+@dataclass(frozen=True)
+class CueReading:
+    """One direction cue's answer, kept next to every other cue's.
+
+    ``weight`` is what the robust consensus actually gave it, so a cue that was
+    rejected as an outlier is visibly present with weight zero rather than
+    silently missing.
+    """
+
+    cue_id: str
+    heading_deg: float | None
+    confidence: float
+    weight: float
+    valid: bool
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -524,6 +748,17 @@ class DirectionObservation:
     cue_disagreement_deg: float | None
     valid: bool
     abstain_reason: str | None = None
+    #: Confidence that the *sign* is right, separate from the angle's accuracy.
+    #: An unsigned axis with a perfect magnitude is still a coin flip, and the
+    #: controller must be able to see the difference (mission section 8).
+    sign_confidence: float = 0.0
+    #: Margin in degrees between the accepted polarity and its opposite.
+    sign_margin_deg: float = 0.0
+    #: Every cue that was evaluated, with the weight consensus gave it.
+    cues: tuple[CueReading, ...] = ()
+    #: Ratio of the shape's principal eigenvalues. Below the configured floor
+    #: the axis is ill-conditioned and PCA is not usable as a direction cue.
+    anisotropy: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -555,6 +790,39 @@ class ArrivalObservation:
 # ---------------------------------------------------------------------------
 
 
+class CommandKind(Enum):
+    """What a navigation command is *for*.
+
+    The distinction is a safety boundary, not documentation: an ``ALIGN`` pulse
+    turns the camera with the character stationary, and it may never renew a
+    forward lease. Only ``FOLLOW`` may hold ``W``, and it may only do so inside
+    the validated alignment threshold (mission section 11).
+    """
+
+    RELEASE = "release"
+    ALIGN = "align"
+    FOLLOW = "follow"
+
+    @property
+    def may_hold_forward(self) -> bool:
+        return self is CommandKind.FOLLOW
+
+
+class ControlState(Enum):
+    """The Shift-Lock steering controller's state (mission section 11)."""
+
+    ACQUIRE = "acquire"
+    ALIGN = "align"
+    FOLLOW = "follow"
+    REACQUIRE = "reacquire"
+    BLOCKED = "blocked"
+    SAFE_STOP = "safe_stop"
+
+    @property
+    def holds_forward(self) -> bool:
+        return self is ControlState.FOLLOW
+
+
 @dataclass(frozen=True)
 class NavigationCommand:
     """One bounded, evidence-bound movement intent.
@@ -574,6 +842,7 @@ class NavigationCommand:
     issued_at_s: float
     valid_until_s: float
     reason: str
+    kind: CommandKind = CommandKind.FOLLOW
 
     def __post_init__(self) -> None:
         if self.forward_axis not in (-1, 0, 1):
@@ -582,6 +851,8 @@ class NavigationCommand:
             raise ValueError(f"lateral_axis out of range: {self.lateral_axis}")
         if self.valid_until_s < self.issued_at_s:
             raise ValueError("NavigationCommand expires before it is issued")
+        if not self.kind.may_hold_forward and self.forward_axis != 0:
+            raise ValueError(f"{self.kind.value} command may not command forward motion")
 
     @property
     def is_neutral(self) -> bool:
@@ -625,7 +896,19 @@ class NavigationPhase(Enum):
 
 
 class IntentType(Enum):
-    PIN_WINDOW = auto()
+    #: Bind capture to the Roblox client as it is. Moves nothing, sends
+    #: nothing, and is the recommended path (mission section 4).
+    CONNECT_WINDOW = auto()
+    #: Optional: resize the client to the canonical size and verify what was
+    #: actually achieved. Distinct from CONNECT_WINDOW on purpose - capture
+    #: must never depend on a resize succeeding.
+    FIT_VIEWPORT = auto()
+    #: Retained name for FIT_VIEWPORT, so an existing caller keeps working.
+    PIN_WINDOW = FIT_VIEWPORT
+    #: Swap the active arrow profile by stable id at a frame boundary.
+    SELECT_PROFILE = auto()
+    #: Leave Live but keep observing: releases movement, keeps perception.
+    RETURN_TO_SHADOW = auto()
     START_SHADOW = auto()
     ARM_LIVE_FROM_UI = auto()
     START_LIVE = auto()
@@ -817,6 +1100,100 @@ class ArrowCandidateRecord:
     score: float
     accepted: bool
     rejected_reason: str | None = None
+    #: Every scoring term by name, in the order the detector applied them, so a
+    #: rejection can be read as "shape 0.91, contrast 0.12" rather than a
+    #: single opaque number.
+    score_terms: tuple[tuple[str, float], ...] = ()
+    contour_px: tuple[tuple[int, int], ...] = ()
+
+    def term(self, name: str) -> float | None:
+        for key, value in self.score_terms:
+            if key == name:
+                return value
+        return None
+
+
+class PacketKind(Enum):
+    """Why a dashboard packet exists.
+
+    A ``TRANSITION`` or ``TERMINAL`` packet carries no frame: it is how Stop,
+    a profile swap, or a source replacement reaches the UI as a fact rather
+    than as the absence of an update (mission section 6).
+    """
+
+    FRAME = "frame"
+    TRANSITION = "transition"
+    TERMINAL = "terminal"
+
+
+@dataclass(frozen=True, order=True)
+class RuntimeKey:
+    """The identity every dashboard packet is stamped with.
+
+    Ordering is lexicographic over the whole tuple, which is what lets the UI
+    reject an older or mismatched packet with a single comparison instead of
+    seven ad-hoc checks. A change in any of the first six fields invalidates
+    every in-flight observation, tracker state, and actionable command.
+    """
+
+    run_id: str
+    coordinator_generation: int
+    mode_session_id: int
+    source_epoch: int
+    geometry_revision: int
+    profile_revision: int
+    frame_sequence: int
+    content_id: int | None = None
+
+    @property
+    def session_key(self) -> tuple[str, int, int, int, int, int]:
+        """Everything except the per-frame fields.
+
+        Two packets with different session keys describe different worlds; one
+        may not be drawn over the other, and observations may not cross the
+        boundary (mission section 6).
+        """
+        return (self.run_id, *self.ordinal)
+
+    @property
+    def ordinal(self) -> tuple[int, int, int, int, int]:
+        """The world's position in time.
+
+        Every component is a **monotonic non-decreasing** counter within one
+        process run: the coordinator generation, the mode session, the capture
+        source epoch, the viewport revision, and the profile revision. Because
+        none of them ever goes backwards, a newer world has every component
+        greater than or equal to an older one's and at least one strictly
+        greater - which makes tuple order the correct comparison, and is what
+        lets a straggling frame from a cancelled worker be recognised as old
+        rather than merely different.
+        """
+        return (
+            self.coordinator_generation,
+            self.mode_session_id,
+            self.source_epoch,
+            self.geometry_revision,
+            self.profile_revision,
+        )
+
+    def supersedes(self, other: RuntimeKey | None) -> bool:
+        """Whether this packet may replace ``other`` on screen."""
+        if other is None:
+            return True
+        if self.run_id != other.run_id:
+            # Not from this process run at all. Nothing to compare.
+            return False
+        if self.ordinal == other.ordinal:
+            return self.frame_sequence > other.frame_sequence
+        return self.ordinal > other.ordinal
+
+    def describe(self) -> str:
+        return (
+            f"run {self.run_id} gen {self.coordinator_generation} "
+            f"session {self.mode_session_id} source {self.source_epoch} "
+            f"geometry {self.geometry_revision} profile {self.profile_revision} "
+            f"frame {self.frame_sequence}"
+        )
 
 
 @dataclass(frozen=True)
@@ -835,6 +1212,11 @@ class DiagnosticObservation:
     frame: CapturedFrame
     processed_at_s: float
     published_at_s: float
+
+    #: The identity every consumer compares before drawing or acting. A packet
+    #: whose key does not supersede what is on screen is discarded, which is
+    #: what makes "preview frame 53545, decision frame 53542" impossible.
+    key: RuntimeKey
 
     profile_id: str | None
     profile_status: str
@@ -864,6 +1246,16 @@ class DiagnosticObservation:
     normalize_ms: float = 0.0
     perception_ms: float = 0.0
     decision_ms: float = 0.0
+
+    packet_kind: PacketKind = PacketKind.FRAME
+    #: The steering controller's state, or ``None`` outside a navigation mode.
+    control_state: ControlState | None = None
+    #: One sentence a person can act on: "Turn right 60 degrees". Composed
+    #: where the reasoning lives, so the UI cannot paraphrase it into a
+    #: different claim (mission section 10).
+    plain_summary: str = ""
+    #: Why Live output is blocked right now, in the same plain language.
+    blockers: tuple[str, ...] = ()
 
     @property
     def frame_sequence(self) -> int:
@@ -919,6 +1311,17 @@ class TelemetrySnapshot:
     warnings: tuple[str, ...] = ()
     readiness: Mapping[str, str] = field(default_factory=dict)
     metrics: CaptureMetrics | None = None
+    #: The last fit attempt, so the UI can say "clamped to 1024x768" rather
+    #: than only "non-canonical".
+    fit: ViewportFit | None = None
+    #: Live blockers in plain language, ready to render as a checklist.
+    live_blockers: tuple[str, ...] = ()
+    #: How the previous session ended. Neutral by construction: a clean stop is
+    #: not a fault, and red is reserved for a fault that is happening now.
+    last_session_note: str = ""
+    control_state: ControlState | None = None
+    arm_state: str = "none"
+    recording: str = "off"
 
 
 # ---------------------------------------------------------------------------

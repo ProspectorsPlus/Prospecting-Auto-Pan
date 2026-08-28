@@ -166,6 +166,7 @@ def _observation(**overrides: Any) -> Any:
         DiagnosticObservation,
         DirectionObservation,
         NavigationPhase,
+        RuntimeKey,
     )
     from tests.fakes import make_frame
 
@@ -197,6 +198,16 @@ def _observation(**overrides: Any) -> Any:
         "frame": frame,
         "processed_at_s": 0.005,
         "published_at_s": 0.006,
+        "key": RuntimeKey(
+            run_id="test",
+            coordinator_generation=1,
+            mode_session_id=1,
+            source_epoch=1,
+            geometry_revision=1,
+            profile_revision=1,
+            frame_sequence=frame.sequence,
+            content_id=frame.content_id,
+        ),
         "profile_id": "yellow_map_v0",
         "profile_status": "pending",
         "strategy_id": "fusion",

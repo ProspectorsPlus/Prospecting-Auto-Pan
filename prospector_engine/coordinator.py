@@ -17,21 +17,25 @@ import itertools
 import os
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
     Cancellation,
+    CapturedFrame,
+    ControlState,
     DiagnosticObservation,
     EvidenceStatus,
     IntentType,
     ModeResult,
     ModeResultKind,
     NavigationPhase,
+    PacketKind,
     Provenance,
     RunMode,
     RuntimeIntent,
+    RuntimeKey,
     SafetyFault,
     SafetyFaultKind,
     TelemetrySnapshot,
@@ -79,6 +83,25 @@ class CoordinatorConfig:
             note="30 s arm TTL and bounded joins; stop-latency gate is PENDING",
         )
     )
+
+
+#: Stop reasons that are simply how a session ends. Rendering these in red
+#: taught users to ignore red, which is the opposite of what a fault colour is
+#: for: red is reserved for a fault happening *now* (mission section 10).
+_NEUTRAL_STOPS = ("stop:", "shutdown", "worker-complete", "transition:", "return-to-shadow")
+
+
+def _describe_stop(reason: str) -> str:
+    """Turn an internal stop reason into a neutral historical sentence."""
+    if any(reason.startswith(prefix) for prefix in _NEUTRAL_STOPS):
+        return "Previous session ended normally"
+    if reason.startswith("fault:"):
+        return f"Previous session ended on a safety check ({reason.split(':', 1)[1]})"
+    if reason.startswith("geometry-changed"):
+        return "Previous session ended because the Roblox window changed"
+    if reason.startswith("profile-changed"):
+        return "Previous session ended because the arrow profile changed"
+    return f"Previous session ended: {reason}"
 
 
 @dataclass(frozen=True)
@@ -180,6 +203,14 @@ class WorkerContext:
     #: The live perception pipeline, so a profile change in the UI reaches the
     #: running worker instead of only affecting the next one.
     pipeline: Any = None
+    #: Stamps one frame with the identity every consumer compares before it
+    #: draws or acts. Supplied by the coordinator so a worker cannot invent a
+    #: key that outranks a newer session.
+    key_for: Callable[[CapturedFrame, int], RuntimeKey] = lambda frame, revision: RuntimeKey(
+        "local", 0, 0, 0, 0, revision, frame.sequence
+    )
+    #: Live blockers in plain language, for the packet the UI renders.
+    blockers: tuple[str, ...] = ()
     on_status: Callable[[str], None] = lambda _message: None
     on_phase: Callable[[NavigationPhase | None], None] = lambda _phase: None
     on_observation: Callable[[DiagnosticObservation], None] = lambda _observation: None
@@ -220,6 +251,7 @@ class RuntimeCoordinator:
         events: EventLog | None = None,
         paths: AppPaths | None = None,
         pipeline_provider: Callable[[], Any] | None = None,
+        profiles: Any = None,
     ) -> None:
         self._authority = authority
         self._guard = guard
@@ -231,12 +263,14 @@ class RuntimeCoordinator:
         self._events = events or EventLog()
         self._paths = paths
         self._pipeline_provider = pipeline_provider
+        self._profiles = profiles
         # A dedicated channel, deliberately not the emit-on-change hub: a
         # per-frame observation must publish for every processed frame, and
         # change-suppression would silently drop identical consecutive ones
         # (mission section 7).
         self._observations: LatestSlot[DiagnosticObservation] = LatestSlot()
         self._observation_count = 0
+        self._stale_packets = 0
 
         self._queue: list[_QueueItem] = []
         self._queue_lock = threading.Condition()
@@ -246,8 +280,15 @@ class RuntimeCoordinator:
 
         self._mode = RunMode.IDLE
         self._generation = 0
+        #: Increments on every mode entry *and* every safe stop, so a terminal
+        #: packet always outranks the frames of the session it ends.
+        self._mode_session = 0
         self._phase: NavigationPhase | None = None
+        self._control_state: ControlState | None = None
         self._arm_token: LiveArmToken | None = None
+        self._fit_thread: threading.Thread | None = None
+        self._last_session_note = ""
+        self._recording = "off"
         self._worker: threading.Thread | None = None
         self._worker_cancel: Cancellation | None = None
         self._worker_id: str | None = None
@@ -294,8 +335,66 @@ class RuntimeCoordinator:
         return self._observation_count
 
     def _publish_observation(self, observation: DiagnosticObservation) -> None:
+        """Publish one packet, refusing anything an older world produced.
+
+        A worker that is being cancelled can still be mid-frame when a new
+        session starts. Comparing the key here - rather than trusting arrival
+        order - is what makes a mixed-key dashboard impossible.
+        """
+        current = self._observations.peek()
+        if current is not None and not observation.key.supersedes(current.key):
+            self._stale_packets += 1
+            return
         self._observation_count += 1
         self._observations.publish(observation)
+
+    # -- packet identity --------------------------------------------------
+    def runtime_key(self, frame: CapturedFrame, profile_revision: int) -> RuntimeKey:
+        """Stamp one frame with the identity of the world that produced it."""
+        return RuntimeKey(
+            run_id=self._authority.run_id,
+            coordinator_generation=self._generation,
+            mode_session_id=self._mode_session,
+            source_epoch=self._capture.source_epoch,
+            geometry_revision=self._guard.revision,
+            profile_revision=profile_revision,
+            frame_sequence=frame.sequence,
+            content_id=frame.content_id,
+        )
+
+    @property
+    def stale_packets(self) -> int:
+        """Packets refused because a newer world already exists."""
+        return self._stale_packets
+
+    def publish_transition(
+        self, reason: str, *, terminal: bool = False
+    ) -> DiagnosticObservation | None:
+        """Announce a lifecycle edge as a packet, not as an absent update.
+
+        Stop, a profile swap, a window change, and a source replacement all
+        produce one. It carries the last real frame so the view does not go
+        blank, but ``command`` is ``None`` and the kind says it is frozen -
+        which is what stops a stale picture from ever looking actionable
+        (mission section 6).
+        """
+        previous = self._observations.peek()
+        if previous is None:
+            return None
+        kind = PacketKind.TERMINAL if terminal else PacketKind.TRANSITION
+        packet = replace(
+            previous,
+            key=replace(previous.key, mode_session_id=self._mode_session),
+            packet_kind=kind,
+            command=None,
+            phase=None,
+            control_state=None,
+            plain_summary=reason,
+            published_at_s=monotonic_s(),
+        )
+        self._observations.publish(packet)
+        self._observation_count += 1
+        return packet
 
     @property
     def events(self) -> EventLog:
@@ -480,7 +579,10 @@ class RuntimeCoordinator:
         handler = {
             IntentType.STOP: self._on_stop,
             IntentType.SHUTDOWN: self._on_shutdown,
-            IntentType.PIN_WINDOW: self._on_pin,
+            IntentType.CONNECT_WINDOW: self._on_connect,
+            IntentType.FIT_VIEWPORT: self._on_fit,
+            IntentType.SELECT_PROFILE: self._on_select_profile,
+            IntentType.RETURN_TO_SHADOW: self._on_return_to_shadow,
             IntentType.ARM_LIVE_FROM_UI: self._on_arm,
             IntentType.START_SHADOW: self._on_start_shadow,
             IntentType.START_LIVE: self._on_start_live,
@@ -503,9 +605,80 @@ class RuntimeCoordinator:
         self._safe_stop("shutdown")
         self._shutdown_complete.set()
 
-    def _on_pin(self, intent: RuntimeIntent) -> None:
-        ok, message, _rect = self._guard.pin()
-        self._events.add("viewport.pin", f"{ok}: {message}")
+    def _on_connect(self, intent: RuntimeIntent) -> None:
+        """Bind to the Roblox client without touching it (mission section 4)."""
+        del intent
+        before = self._guard.revision
+        geometry = self._guard.connect()
+        self._events.add("viewport.connect", geometry.describe())
+        if self._guard.revision != before:
+            self._on_geometry_change("connected to the Roblox client")
+
+    def _on_fit(self, intent: RuntimeIntent) -> None:
+        """Run the bounded fit machine off the event loop.
+
+        A resize is a request to another process; waiting for it inline would
+        make Stop unresponsive for as long as the game took to answer, which is
+        exactly the wrong thing to trade away.
+        """
+        del intent
+        if self._fit_thread is not None and self._fit_thread.is_alive():
+            self._events.add("viewport.fit", "already fitting")
+            return
+
+        def _run() -> None:
+            fit = self._guard.fit_and_lock()
+            self._events.add("viewport.fit", fit.describe())
+            self._on_geometry_change(f"viewport fit: {fit.phase.value}")
+
+        self._fit_thread = threading.Thread(target=_run, name="treasure-fit", daemon=True)
+        self._fit_thread.start()
+
+    def _on_geometry_change(self, reason: str) -> None:
+        """A new coordinate basis invalidates everything derived from the old one.
+
+        Live releases first and is blocked from pressing again until the new
+        basis is verified; stale frames, observations, tracker state and any
+        actionable command are dropped rather than reinterpreted.
+        """
+        if self._mode is RunMode.LIVE:
+            self._events.add("viewport.live-released", reason)
+            self._safe_stop(f"geometry-changed:{reason}")
+        self._arm_token = None
+        self._capture.slot.clear()
+        self._capture.reset_epoch(reason)
+        self.publish_transition(f"Viewport changed - {reason}")
+
+    def _on_select_profile(self, intent: RuntimeIntent) -> None:
+        """Stage a profile swap; the pipeline applies it at a frame boundary.
+
+        Changing profile while armed spends the arm, and changing it during
+        Live releases input and safe-stops: the arm token is bound to a
+        specific profile revision, so continuing under a new one would be
+        acting on a permission nobody gave (mission section 7).
+        """
+        authority = self._profiles
+        if authority is None:
+            return
+        pending = authority.pending_id
+        if pending is None:
+            return
+        if self._mode is RunMode.LIVE:
+            self._events.add("profile.live-released", pending)
+            self._safe_stop(f"profile-changed:{pending}")
+        if self._arm_token is not None:
+            self._events.add("arm.invalidated", "profile changed")
+            self._arm_token = None
+        self._events.add("profile.requested", pending)
+        self.publish_transition(f"Profile changing to {pending}")
+
+    def _on_return_to_shadow(self, intent: RuntimeIntent) -> None:
+        """Leave Live but keep observing: release movement, keep perception."""
+        if self._mode is not RunMode.LIVE:
+            return
+        self._events.add("live.return-to-shadow", intent.source)
+        self._safe_stop("return-to-shadow")
+        self.submit(self.next_intent(IntentType.START_SHADOW, "system"))
 
     def _on_arm(self, intent: RuntimeIntent) -> None:
         """Create the one-use arm token. Only a physical UI click reaches here."""
@@ -525,12 +698,12 @@ class RuntimeCoordinator:
 
     def _on_start_shadow(self, intent: RuntimeIntent) -> None:
         if not self._guard.geometry.valid:
-            # Shadow only observes, so it adopts the client area as it is
+            # Shadow only observes, so it connects to the client area as it is
             # rather than moving the user's window. A non-canonical client is
             # letterboxed into the canonical raster and reported as
             # ADOPTED_NONCANONICAL, so nothing downstream mistakes it for a
             # calibrated viewport.
-            adopted = self._guard.adopt_current()
+            adopted = self._guard.connect()
             self._events.add("viewport.adopted", adopted.describe())
         readiness = self.readiness()
         if not readiness.shadow_ok:
@@ -646,6 +819,8 @@ class RuntimeCoordinator:
             ),
             intent=intent,
             pipeline=self._pipeline_provider() if self._pipeline_provider else None,
+            key_for=self.runtime_key,
+            blockers=self.live_blockers(),
             on_status=lambda message: self._events.add("worker.status", message),
             on_phase=self._set_phase,
             on_observation=self._publish_observation,
@@ -737,19 +912,36 @@ class RuntimeCoordinator:
             self._persist_recovery_record(reason, report)
         joined = self._join_worker(self._config.worker_join_deadline_s)
         self._set_phase(None)
+        self.set_control_state(None)
+        self._arm_token = None
         if not joined:
             self._events.add("stop.worker-survivor", reason)
         self._enter(RunMode.SAFE_STOP)
         if (report.ledger_empty and report.release_known_safe) or self._mode is RunMode.SHADOW:
             self._enter(RunMode.IDLE)
+        # After Stop the actionable command is None *immediately*: the packet
+        # goes out here rather than waiting for the next frame, because a stale
+        # command on screen during a stop is exactly the wrong thing to show.
+        self._last_session_note = _describe_stop(reason)
+        self.publish_transition(f"Stopped - {self._last_session_note}", terminal=True)
 
     def _enter(self, mode: RunMode) -> None:
         if mode is not self._mode:
             self._events.add("mode", f"{self._mode.name}->{mode.name}")
+            # Every mode edge is a new world. Bumping the session id here is
+            # what lets a terminal packet outrank the frames it terminates.
+            self._mode_session += 1
         self._mode = mode
 
     def _set_phase(self, phase: NavigationPhase | None) -> None:
         self._phase = phase
+
+    def set_control_state(self, state: ControlState | None) -> None:
+        self._control_state = state
+
+    def set_recording(self, description: str) -> None:
+        """Recorder status, for the header. Diagnostics only; never a gate."""
+        self._recording = description
 
     def clear_observations(self) -> None:
         self._observations.take()
@@ -791,6 +983,36 @@ class RuntimeCoordinator:
             reasons=tuple(reasons),
         )
 
+    def live_blockers(self) -> tuple[str, ...]:
+        """Every reason Live cannot start right now, in plain language.
+
+        This is what the *Review Live Blockers* panel renders. It deliberately
+        mixes safety readiness with evidence gates, because from the user's
+        side "why can I not turn this on" has one answer, not two.
+        """
+        blockers: list[str] = []
+        readiness = self.readiness()
+        if not readiness.viewport_ok:
+            blockers.append(
+                f"Roblox window is not connected ({readiness.viewport_state.value})"
+            )
+        if not readiness.focus_ok:
+            blockers.append("Roblox is not the frontmost window")
+        if not readiness.capture_fresh:
+            blockers.append("No fresh frame from the capture pipeline")
+        if not readiness.watchdog_ok:
+            blockers.append("The safety watchdog is not running")
+        if not readiness.deadman_ok:
+            blockers.append("The release-only deadman helper is unhealthy")
+        if not readiness.ledger_empty:
+            blockers.append("An input is still held from an earlier session")
+        if not readiness.release_known_safe:
+            blockers.append("A previous release could not be confirmed safe")
+        metrics = self._capture.metrics()
+        if not metrics.live_eligible:
+            blockers.append(f"Capture cadence is not Live-eligible ({metrics.governor.reason})")
+        return tuple(blockers)
+
     def _publish_telemetry(self) -> None:
         readiness = self.readiness()
         envelope = self._capture.latest()
@@ -800,8 +1022,6 @@ class RuntimeCoordinator:
             warnings.append(f"RELEASE UNCERTAIN: {self._authority.release_uncertain_reason}")
         if self._capture.stalled():
             warnings.append("capture stalled")
-        if self._last_stop_reason:
-            warnings.append(f"last stop: {self._last_stop_reason}")
         token = self.arm_token()
         readiness_map = readiness.as_map()
         readiness_map["arm"] = (
@@ -821,6 +1041,7 @@ class RuntimeCoordinator:
         if metrics.degraded_reason:
             warnings.append(f"DEGRADED: {metrics.degraded_reason}")
         observation = self._observations.peek()
+        actionable = observation is not None and self._mode.emits_input
         self._hub.publish(
             TelemetrySnapshot(
                 sequence=0,
@@ -831,13 +1052,22 @@ class RuntimeCoordinator:
                 direction=None if observation is None else observation.direction,
                 motion=None if observation is None else observation.motion,
                 arrival=None if observation is None else observation.arrival,
-                command=None if observation is None else observation.command,
+                # A command is only ever reported while a mode that can emit
+                # one is running. After Stop it is None immediately, without
+                # waiting for another frame to overwrite it.
+                command=observation.command if actionable and observation else None,
                 ledger_empty=readiness.ledger_empty,
                 focus=self._authority._health.focus(),
                 frame_age_ms=age_ms,
                 warnings=tuple(warnings),
                 readiness=readiness_map,
                 metrics=metrics,
+                fit=self._guard.fit,
+                live_blockers=self.live_blockers(),
+                last_session_note=self._last_session_note,
+                control_state=self._control_state,
+                arm_state=readiness_map.get("arm", "none"),
+                recording=self._recording,
             )
         )
 

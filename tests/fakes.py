@@ -323,6 +323,20 @@ class FakePlatformPort:
         self.cursor_px: tuple[int, int] | None = (100, 100)
         self.fail_ops: set[str] = set()
         self.pin_calls = 0
+        self.geometry_reads = 0
+        #: Resize model. A real window does not change size the instant it is
+        #: asked: it settles over a few reads, it may be clamped to a minimum,
+        #: and it may refuse outright. All three are scriptable here because
+        #: all three happen with Roblox.
+        self.settle_reads = 0
+        self.min_client_logical: tuple[float, float] | None = None
+        self.pin_should_fail = False
+        #: When set, every read reports a slightly different size, so no three
+        #: consecutive read-backs ever agree. A real window does this while it
+        #: is being animated or fought over by a window manager.
+        self.jitter_px = 0.0
+        self._pending_size: tuple[float, float] | None = None
+        self._settle_countdown = 0
         self._lock = threading.Lock()
 
     # -- test controls ----------------------------------------------------
@@ -367,12 +381,49 @@ class FakePlatformPort:
         return self._focus
 
     def window_geometry(self) -> ViewportGeometry:
-        return self._geometry
+        with self._lock:
+            self.geometry_reads += 1
+            pending = self._pending_size
+            if pending is not None:
+                if self._settle_countdown > 0:
+                    self._settle_countdown -= 1
+                else:
+                    self._pending_size = None
+                    self._geometry = self._resized(pending)
+            if self.jitter_px and self._geometry.client_logical is not None:
+                size = self._geometry.client_logical.size
+                offset = self.jitter_px * (1 if self.geometry_reads % 2 else -1)
+                return self._resized((size[0] + offset, size[1]))
+            return self._geometry
+
+    def _resized(self, size: tuple[float, float]) -> ViewportGeometry:
+        """Apply an achieved size, honouring the scripted OS clamp floor."""
+        floor = self.min_client_logical
+        achieved = (
+            (max(size[0], floor[0]), max(size[1], floor[1])) if floor is not None else size
+        )
+        client = self._geometry.client_logical
+        origin = (client.x, client.y) if client is not None else (0.0, 0.0)
+        display = self._geometry.display
+        return make_geometry(
+            origin=origin,
+            size=achieved,
+            backing_scale=display.backing_scale if display is not None else 1.0,
+            display_id=display.display_id if display is not None else "fake-display",
+            window_id=self._geometry.window.window_id if self._geometry.window else 4242,
+            process_id=self._geometry.window.process_id if self._geometry.window else 999,
+            canonical_px=self._geometry.canonical_px,
+        )
 
     def pin_client_rect(self, size_logical: tuple[float, float]) -> PinResult:
         self.pin_calls += 1
         if not self._geometry.valid:
             return PinResult(False, "no window", self._geometry, size_logical)
+        if self.pin_should_fail:
+            return PinResult(False, "scripted resize refusal", self._geometry, size_logical)
+        with self._lock:
+            self._pending_size = size_logical
+            self._settle_countdown = self.settle_reads
         return PinResult(True, f"pinned {size_logical}", self._geometry, size_logical)
 
     def create_capture_source(self) -> FakeCaptureSource:

@@ -314,8 +314,10 @@ def _run_capture_probe(seconds: float = 4.0) -> int:
             f"  {tier.fps:>3d} Hz request: {consumed / seconds:6.1f} unique fps consumed  "
             f"capture p50 {metrics.capture.p50_ms:4.1f} p95 {metrics.capture.p95_ms:4.1f} ms  "
             f"age {0.0 if metrics.frame_age_ms is None else metrics.frame_age_ms:4.1f} ms  "
-            f"dup {metrics.duplicate_frames}  drop {metrics.dropped_frames}  "
-            f"cpu {metrics.cpu_percent:3.0f}%  rss {metrics.rss_mb:3.0f} MB  [{budget} 40 ms]"
+            f"dup {metrics.duplicate_frames.session_total}  "
+            f"superseded {metrics.superseded_frames.session_total}  "
+            f"cpu {metrics.cpu_percent:3.0f}%  rss {metrics.rss_current_mb:3.0f} MB "
+            f"(peak {metrics.rss_peak_mb:3.0f})  [{budget} 40 ms]"
         )
     print("\nBackend:", port.create_capture_source().name)
     print("These are capture-and-consume costs on this machine. E-PERF, which also")

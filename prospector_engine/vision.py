@@ -15,9 +15,12 @@ positive **clockwise** (to the right), wrapped to (-180, 180].
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
+import threading
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any, Literal
@@ -41,6 +44,7 @@ __all__ = [
     "ArrowProfile",
     "ArrowSegmenter",
     "ArrowTracker",
+    "ProfileAuthority",
     "ProfileLibrary",
     "angle_between_deg",
     "heading_deg",
@@ -132,6 +136,114 @@ class ProfileLibrary:
 
     def all(self) -> tuple[ArrowProfile, ...]:
         return tuple(self._profiles[key] for key in self.ids())
+
+
+class ProfileAuthority:
+    """The single source of truth for which arrow profile is active.
+
+    Three problems this exists to make impossible, all of them observed:
+
+    * The selector showed ``generic_saturated_v0`` while the pipeline was
+      running ``yellow_map_v0``. The UI now renders *from* this object, so it
+      cannot start out of step.
+    * A profile was recovered by splitting a display label on a space. IDs here
+      are stable strings and labels are derived from them, never the reverse.
+    * A swap landed in the middle of an in-flight frame. A request is staged
+      and applied at a frame boundary by :meth:`apply_pending`, which bumps
+      ``revision`` exactly once; every key, track, and ROI is rebuilt from it.
+    """
+
+    def __init__(
+        self,
+        library: ProfileLibrary,
+        active_id: str,
+        *,
+        on_change: Callable[[ArrowProfile, int], None] | None = None,
+    ) -> None:
+        profile = library.get(active_id)
+        if profile is None:
+            available = library.all()
+            if not available:
+                raise ValueError("the profile library is empty")
+            profile = available[0]
+        self._library = library
+        self._active = profile
+        self._pending: ArrowProfile | None = None
+        self._revision = 1
+        self._on_change = on_change
+        self._lock = threading.Lock()
+
+    @property
+    def library(self) -> ProfileLibrary:
+        return self._library
+
+    @property
+    def active(self) -> ArrowProfile:
+        with self._lock:
+            return self._active
+
+    @property
+    def active_id(self) -> str:
+        return self.active.profile_id
+
+    @property
+    def revision(self) -> int:
+        """Bumped once per applied swap. Part of every dashboard packet key."""
+        with self._lock:
+            return self._revision
+
+    @property
+    def pending_id(self) -> str | None:
+        with self._lock:
+            return None if self._pending is None else self._pending.profile_id
+
+    def choices(self) -> tuple[tuple[str, str], ...]:
+        """``(stable_id, display_label)`` pairs, for a selector to render.
+
+        The label is built here from the id and status so no caller ever has to
+        parse one back into the other.
+        """
+        return tuple(
+            (profile.profile_id, f"{profile.display_name} - {profile.status.value}")
+            for profile in self._library.all()
+        )
+
+    def label_for(self, profile_id: str) -> str:
+        for stable_id, label in self.choices():
+            if stable_id == profile_id:
+                return label
+        return profile_id
+
+    def request(self, profile_id: str) -> bool:
+        """Stage a swap by **stable id**. Returns False for an unknown id."""
+        profile = self._library.get(profile_id)
+        if profile is None:
+            return False
+        with self._lock:
+            if profile.profile_id == self._active.profile_id:
+                self._pending = None
+                return True
+            self._pending = profile
+        return True
+
+    def apply_pending(self) -> ArrowProfile | None:
+        """Apply a staged swap at a frame boundary. Returns the new profile.
+
+        Called by the perception pipeline before it touches a frame, so a
+        profile never changes underneath an observation that is half built.
+        """
+        with self._lock:
+            profile = self._pending
+            if profile is None:
+                return None
+            self._pending = None
+            self._active = profile
+            self._revision += 1
+            revision = self._revision
+        if self._on_change is not None:
+            with contextlib.suppress(Exception):
+                self._on_change(profile, revision)
+        return profile
 
 
 def load_profiles(raw: str | None = None) -> ProfileLibrary:

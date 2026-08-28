@@ -775,14 +775,17 @@ class Dashboard:
             f"unique {metrics.unique_fps:5.1f}/s   processed {metrics.processed_fps:5.1f}/s   "
             f"preview {metrics.preview_fps:5.1f}/s\n"
             f"age {0.0 if metrics.frame_age_ms is None else metrics.frame_age_ms:5.1f} ms   "
-            f"dup {metrics.duplicate_frames}   drop {metrics.dropped_frames}   "
-            f"unobserved {metrics.dropped_observations}   "
-            f"stale {metrics.stale_frames}   reacq {metrics.reacquisitions}\n"
+            f"dup {metrics.duplicate_frames.session_total}   "
+            f"superseded {metrics.superseded_frames.describe()}   "
+            f"unobserved {metrics.dropped_observations.session_total}   "
+            f"stale {metrics.stale_frames.session_total}   "
+            f"reacq {metrics.reacquisitions}\n"
             f"capture {metrics.capture.p50_ms:4.1f}/{metrics.capture.p95_ms:4.1f}   "
             f"perception {metrics.perception.p50_ms:4.1f}/{metrics.perception.p95_ms:4.1f}   "
             f"end-to-end {metrics.end_to_end.p50_ms:4.1f}/{metrics.end_to_end.p95_ms:4.1f} ms "
             f"(p50/p95)\n"
-            f"cpu {metrics.cpu_percent:3.0f}%   rss {metrics.rss_mb:4.0f} MB"
+            f"cpu {metrics.cpu_percent:3.0f}%   rss {metrics.rss_current_mb:4.0f} MB "
+            f"(peak {metrics.rss_peak_mb:.0f})"
             + (f"\nDEGRADED: {metrics.degraded_reason}" if metrics.degraded_reason else "")
         )
         self.metrics_label.configure(foreground=colour)

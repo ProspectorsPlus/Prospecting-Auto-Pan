@@ -19,7 +19,9 @@ of acquisition - so a frame that waited cannot look young.
 from __future__ import annotations
 
 import contextlib
-import resource
+import ctypes
+import os
+import sys
 import threading
 import weakref
 from collections import deque
@@ -32,15 +34,20 @@ from numpy.typing import NDArray
 
 from prospector_engine.contracts import (
     EVIDENCE_MINT_KEY,
+    CadenceReport,
     CapturedFrame,
     CaptureMetrics,
     EvidenceStatus,
     EvidenceToken,
+    FitPhase,
     FrameEnvelope,
+    GovernorState,
     LatencySummary,
     PerformanceTier,
     Provenance,
+    RateSummary,
     RawFrame,
+    ViewportFit,
     freeze_array,
     monotonic_s,
 )
@@ -60,9 +67,21 @@ __all__ = [
     "LatencyTracker",
     "LatestFrameSlot",
     "MssCaptureSource",
+    "ProcessSample",
     "ViewportGuard",
     "normalize_into_canonical",
 ]
+
+
+def _sleep(seconds: float) -> None:
+    """Wall-clock wait used only by the bounded viewport fit machine.
+
+    Isolated here so the fit state machine can be driven by a virtual clock in
+    tests without any module-level clock patching.
+    """
+    import time
+
+    time.sleep(max(0.0, seconds))
 
 
 # ---------------------------------------------------------------------------
@@ -88,16 +107,55 @@ class CaptureConfig:
     upshift_after_s: float = 4.0
     #: Fraction of the tier's nominal rate that counts as "keeping up".
     downshift_ratio: float = 0.7
+    #: Fraction of the tier that must be *saturated* before climbing. Higher
+    #: than the downshift ratio on purpose: comfortably inside a tier is not
+    #: the same as running out of room in it.
+    upshift_saturation: float = 0.95
+    #: Consecutive bad polls before a downshift. Two, so one transient is free.
+    downshift_polls: int = 2
+    #: Polls a probe must stay good before it is believed.
+    probe_confirm_polls: int = 2
+    #: How long a failed probe suppresses the next one. Long enough that a
+    #: capped source stops oscillating; short enough that a machine which
+    #: recovers gets its cadence back.
+    probe_cooldown_s: float = 20.0
+    #: How long a *discovered ceiling* is honoured before the governor is
+    #: willing to test it again. A thermally throttled laptop should not be
+    #: capped for the rest of the session, so a cap is a measurement with an
+    #: expiry rather than a permanent verdict.
+    ceiling_retry_after_s: float = 60.0
+    #: Good polls before the state machine will call a tier STABLE.
+    min_stable_polls: int = 2
+    #: Samples before cadence is allowed to *vouch for Live*. Deliberately
+    #: larger than the STABLE bar: settling into a tier is a cheap decision,
+    #: authorizing keyboard output is not.
+    min_tier_samples: int = 8
+    #: Processed-to-tier ratio a stable tier must sustain.
+    stable_processed_ratio: float = 0.90
+    #: Share of frames that may go unobserved while still calling a tier stable.
+    max_observation_loss: float = 0.02
+    #: Stale frames tolerated inside one supervisor window.
+    max_stale_per_window: int = 0
+    #: Absolute p95 frame-age ceiling for Live, whatever the tier interval says.
+    live_max_age_ms: int = 75
     #: Reacquisition backoff. Bounded and capped so a window that is gone for
     #: good costs a retry every few seconds, not a busy loop.
     reacquire_initial_delay_s: float = 0.25
     reacquire_max_delay_s: float = 4.0
     supervisor_interval_s: float = 0.25
+    #: Fit & Lock: stable read-backs required before an achieved client size is
+    #: believed, and the bound on the whole attempt.
+    fit_required_readbacks: int = 3
+    fit_readback_interval_s: float = 0.12
+    fit_deadline_s: float = 3.0
+    fit_max_attempts: int = 2
+    fit_tolerance_logical: float = 1.0
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
-            source="TREASURE_NAVIGATION_PLAN.md section 7.4 E-PERF; DECISIONS.md D-019",
-            note="tier ladder and hysteresis chosen from local measurement; E-PERF is PENDING",
+            source="TREASURE_NAVIGATION_PLAN.md section 7.4 E-PERF; DECISIONS.md D-019, D-023",
+            note="tier ladder, governor hysteresis and fit bounds chosen from local "
+            "measurement; E-PERF and E-VIEW are PENDING",
         )
     )
 
@@ -165,11 +223,16 @@ class FrameBufferPool:
 
 
 class LatestFrameSlot:
-    """Capacity-one, drop-oldest, wake-on-publish.
+    """Capacity-one, latest-wins, wake-on-publish.
 
     ``wait_for_new`` is what makes the pipeline event-driven: a consumer blocks
     until a frame *newer than the one it already saw* exists, so there is no
     polling interval and no backlog to fall behind on.
+
+    A replaced frame is **superseded**, not lost: the design intends it, and
+    calling it a "drop" alongside genuine capture failures is what made a
+    healthy pipeline read as catastrophic ("drop 7055"). The counter keeps its
+    old attribute name for compatibility and is reported under the honest one.
     """
 
     def __init__(self) -> None:
@@ -179,22 +242,42 @@ class LatestFrameSlot:
         self._has_consumer = False
         self._lock = threading.Condition()
         self.dropped = 0
+        self.lifetime_dropped = 0
+        self._on_superseded: Callable[[], None] | None = None
+
+    @property
+    def superseded(self) -> int:
+        """Frames a consumer wanted and never got, this session."""
+        return self.dropped
+
+    def set_supersede_hook(self, hook: Callable[[], None] | None) -> None:
+        self._on_superseded = hook
+
+    def reset_session(self) -> None:
+        with self._lock:
+            self.dropped = 0
 
     def publish(self, envelope: FrameEnvelope) -> None:
+        superseded = False
         with self._lock:
-            # A drop is a frame a *consumer* wanted and never got. With nobody
-            # consuming - Shadow not started, only the preview peeking - every
-            # frame would otherwise be counted as dropped, which reads as a
-            # catastrophe while the pipeline is perfectly healthy.
+            # A supersede only counts when a *consumer* wanted the frame. With
+            # nobody consuming - Shadow not started, only the preview peeking -
+            # every frame would otherwise be counted, which reads as a disaster
+            # while the pipeline is perfectly healthy.
             if (
                 self._has_consumer
                 and self._value is not None
                 and self._sequence > self._taken_sequence
             ):
                 self.dropped += 1
+                self.lifetime_dropped += 1
+                superseded = True
             self._value = envelope
             self._sequence = envelope.frame.sequence
             self._lock.notify_all()
+        if superseded and self._on_superseded is not None:
+            with contextlib.suppress(Exception):
+                self._on_superseded()
 
     def peek(self) -> FrameEnvelope | None:
         with self._lock:
@@ -259,19 +342,28 @@ class LatencyTracker:
 
 
 class _RateCounter:
-    """Events per second over a sliding window, for genuinely-unique counting."""
+    """Events per second over a sliding window, plus session and lifetime totals.
+
+    Three numbers, because they answer three different questions: the rate says
+    what is happening now, the session total says what happened since this run
+    started, and the lifetime total survives an epoch reset so a soak can still
+    account for everything.
+    """
 
     def __init__(self, window_s: float = 2.0) -> None:
         self._window_s = window_s
         self._stamps: deque[float] = deque()
         self._lock = threading.Lock()
         self.total = 0
+        self.lifetime = 0
 
-    def tick(self, now_s: float | None = None) -> None:
+    def tick(self, now_s: float | None = None, count: int = 1) -> None:
         now = now_s if now_s is not None else monotonic_s()
         with self._lock:
-            self.total += 1
-            self._stamps.append(now)
+            self.total += count
+            self.lifetime += count
+            for _ in range(count):
+                self._stamps.append(now)
             self._trim(now)
 
     def _trim(self, now: float) -> None:
@@ -288,31 +380,138 @@ class _RateCounter:
             span = self._stamps[-1] - self._stamps[0]
             return (len(self._stamps) - 1) / span if span > 0 else 0.0
 
+    def reset_session(self) -> None:
+        """Start a new measurement epoch. Lifetime survives on purpose."""
+        with self._lock:
+            self.total = 0
+            self._stamps.clear()
+
+    def summary(self, label: str) -> RateSummary:
+        with self._lock:
+            session, lifetime = self.total, self.lifetime
+        return RateSummary(label, session, self.rate(), lifetime)
+
+
+class _MachTaskBasicInfo(ctypes.Structure):
+    """``mach_task_basic_info`` - the only macOS source of *current* RSS.
+
+    ``getrusage`` reports ``ru_maxrss``, which is the **peak**. Reporting a
+    peak as "memory now" makes a soak test look like it is leaking when it has
+    been flat for an hour, so the two are measured separately.
+    """
+
+    _fields_ = [
+        ("virtual_size", ctypes.c_uint64),
+        ("resident_size", ctypes.c_uint64),
+        ("resident_size_max", ctypes.c_uint64),
+        ("user_time", ctypes.c_uint64),
+        ("system_time", ctypes.c_uint64),
+        ("policy", ctypes.c_int),
+        ("suspend_count", ctypes.c_int),
+    ]
+
+
+class _WindowsCounters(ctypes.Structure):
+    """``PROCESS_MEMORY_COUNTERS`` - current and peak working set on Windows."""
+
+    _fields_ = [
+        ("cb", ctypes.c_uint32),
+        ("PageFaultCount", ctypes.c_uint32),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+        ("PagefileUsage", ctypes.c_size_t),
+        ("PeakPagefileUsage", ctypes.c_size_t),
+    ]
+
+
+@dataclass(frozen=True)
+class ProcessSample:
+    """One resource reading. ``current`` and ``peak`` are different questions."""
+
+    cpu_percent: float
+    rss_current_mb: float
+    rss_peak_mb: float
+
 
 class _ProcessUsage:
-    """CPU percent and RSS from ``resource``, so no extra dependency is needed."""
+    """CPU percent plus current *and* peak RSS, with no extra dependency.
+
+    ``resource`` does not exist on Windows, so it is imported lazily inside the
+    POSIX branch: importing this module must succeed on both platforms, which
+    is the property the cross-platform contract tests rely on.
+    """
+
+    _MACH_TASK_BASIC_INFO = 20
+    _COUNT = ctypes.sizeof(_MachTaskBasicInfo) // ctypes.sizeof(ctypes.c_uint32)
 
     def __init__(self) -> None:
         self._last_cpu_s = self._cpu_seconds()
         self._last_wall_s = monotonic_s()
         self._percent = 0.0
+        self._peak_mb = 0.0
+        self._libc: Any = None
+        if sys.platform == "darwin":
+            with contextlib.suppress(Exception):
+                self._libc = ctypes.CDLL("/usr/lib/libSystem.dylib", use_errno=True)
 
     @staticmethod
     def _cpu_seconds() -> float:
+        if sys.platform == "win32":  # pragma: no cover - exercised only on Windows
+            return float(os.times().user + os.times().system)
+        import resource
+
         usage = resource.getrusage(resource.RUSAGE_SELF)
         return usage.ru_utime + usage.ru_stime
 
-    def sample(self) -> tuple[float, float]:
+    def _rss_mb(self) -> tuple[float, float]:
+        """``(current, peak)`` in megabytes; zeros when the OS will not say."""
+        if sys.platform == "darwin" and self._libc is not None:
+            info = _MachTaskBasicInfo()
+            count = ctypes.c_uint32(self._COUNT)
+            try:
+                task = self._libc.mach_task_self()
+                status = self._libc.task_info(
+                    task,
+                    ctypes.c_uint32(self._MACH_TASK_BASIC_INFO),
+                    ctypes.byref(info),
+                    ctypes.byref(count),
+                )
+            except Exception:  # pragma: no cover - defensive
+                status = -1
+            if status == 0:
+                mb = 1024.0 * 1024.0
+                return (info.resident_size / mb, info.resident_size_max / mb)
+        if sys.platform == "win32":  # pragma: no cover - exercised only on Windows
+            counters = _WindowsCounters()
+            counters.cb = ctypes.sizeof(_WindowsCounters)
+            psapi = ctypes.WinDLL("psapi.dll")  # type: ignore[attr-defined]
+            kernel = ctypes.WinDLL("kernel32.dll")  # type: ignore[attr-defined]
+            if psapi.GetProcessMemoryInfo(
+                kernel.GetCurrentProcess(), ctypes.byref(counters), counters.cb
+            ):
+                mb = 1024.0 * 1024.0
+                return (counters.WorkingSetSize / mb, counters.PeakWorkingSetSize / mb)
+        # POSIX fallback: only the peak is knowable without /proc.
+        import resource
+
+        raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak_mb = raw / (1024 * 1024) if raw > 1 << 22 else raw / 1024
+        return (0.0, peak_mb)
+
+    def sample(self) -> ProcessSample:
         now_wall = monotonic_s()
         now_cpu = self._cpu_seconds()
         elapsed = now_wall - self._last_wall_s
         if elapsed >= 0.25:
             self._percent = 100.0 * (now_cpu - self._last_cpu_s) / elapsed
             self._last_wall_s, self._last_cpu_s = now_wall, now_cpu
-        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # macOS reports bytes, Linux kilobytes.
-        rss_mb = rss / (1024 * 1024) if rss > 1 << 22 else rss / 1024
-        return (self._percent, rss_mb)
+        current, peak = self._rss_mb()
+        self._peak_mb = max(self._peak_mb, peak, current)
+        return ProcessSample(self._percent, current, self._peak_mb)
 
 
 # ---------------------------------------------------------------------------
@@ -323,14 +522,26 @@ class _ProcessUsage:
 class CadenceGovernor:
     """Picks the highest cadence tier the source and machine actually sustain.
 
-    Rules that matter more than the ladder itself:
+    An explicit state machine, because the previous implicit one could not
+    remember a failed climb::
 
-    * A tier is only kept if *unique* frames arrive at a useful fraction of it.
-      Redelivered surfaces never justify staying high.
-    * Downshift is immediate on sustained shortfall; upshift needs a quiet
-      period, so the two cannot oscillate against each other.
-    * A high nominal rate with old frames is always worse than a lower rate
-      with fresh ones, so frame age downshifts regardless of throughput.
+        WARMUP -> STABLE -> PROBE -> COOLDOWN
+                              \\-> DEGRADED
+
+    * **WARMUP** - no verdict yet. An empty measurement window is not evidence.
+    * **STABLE** - the tier is being met. Only from here may a probe start.
+    * **PROBE** - one tier up, on trial. Failing returns to the tier below and
+      enters COOLDOWN, so a 60 Hz-capped source probes 90 once and then stops
+      oscillating instead of retrying every four seconds forever.
+    * **COOLDOWN** - a probe failed recently; no climbing. It expires, so a
+      machine that becomes healthy later still gets its cadence back.
+    * **DEGRADED** - below the 30 Hz Live floor, and saying so.
+
+    A tier is judged on **processed** throughput, not captured: 120 frames
+    delivered and 57 turned into decisions is a 60 Hz pipeline wearing a 120 Hz
+    label. Frame age, observation loss, stale frames, and pool exhaustion all
+    downshift on their own, because a high nominal rate carrying old or
+    unprocessed frames is worse than a lower rate that keeps up.
     """
 
     LADDER: tuple[PerformanceTier, ...] = (
@@ -344,14 +555,33 @@ class CadenceGovernor:
     def __init__(self, config: CaptureConfig | None = None) -> None:
         self._config = config or CaptureConfig()
         self._tier = self._config.start_tier
+        self._state = GovernorState.WARMUP
         self._healthy_since_s: float | None = None
         self._reason: str | None = None
         self._changes = 0
+        self._probes = 0
+        self._failed_probes = 0
         self._consecutive_bad = 0
+        self._consecutive_good = 0
+        self._samples = 0
+        self._cooldown_until_s = 0.0
+        self._probe_started_s: float | None = None
+        self._probe_from: PerformanceTier | None = None
+        self._ceiling_hint: PerformanceTier | None = None
+        self._ceiling_until_s = 0.0
+        self._last_processed_ratio = 0.0
+        self._last_loss = 0.0
+        self._last_p95_age_ms: float | None = None
+        self._stable_since_s: float | None = None
 
+    # -- introspection ----------------------------------------------------
     @property
     def tier(self) -> PerformanceTier:
         return self._tier
+
+    @property
+    def state(self) -> GovernorState:
+        return self._state
 
     @property
     def degraded_reason(self) -> str | None:
@@ -361,59 +591,244 @@ class CadenceGovernor:
     def changes(self) -> int:
         return self._changes
 
+    @property
+    def probes(self) -> int:
+        return self._probes
+
+    def reset_epoch(self, reason: str = "") -> None:
+        """Drop every measurement. Called on start, source replacement,
+        reacquisition, and tier change, because a rate averaged across a
+        discontinuity describes neither side of it."""
+        self._state = GovernorState.WARMUP
+        self._samples = 0
+        self._consecutive_bad = 0
+        self._consecutive_good = 0
+        self._healthy_since_s = None
+        self._stable_since_s = None
+        self._reason = reason or None
+
+    def report(self) -> CadenceReport:
+        return CadenceReport(
+            state=self._state,
+            tier=self._tier,
+            requested_hz=self._tier.fps,
+            samples=self._samples,
+            processed_ratio=round(self._last_processed_ratio, 4),
+            observation_loss=round(self._last_loss, 4),
+            p95_age_ms=self._last_p95_age_ms,
+            live_eligible=self._live_eligible(),
+            reason=self._reason or f"{self._state.value} at {self._tier.fps} Hz",
+            changes=self._changes,
+            probes=self._probes,
+            failed_probes=self._failed_probes,
+        )
+
+    def _live_eligible(self) -> bool:
+        """Cadence permission for Live, and nothing else.
+
+        Deliberately strict: STABLE only, at or above the 30 Hz floor, with the
+        loss and age budgets met and enough samples to mean it.
+        """
+        config = self._config
+        return (
+            self._state is GovernorState.STABLE
+            and self._tier.acceptable
+            and self._samples >= config.min_tier_samples
+            and self._last_processed_ratio >= config.stable_processed_ratio
+            and self._last_loss <= config.max_observation_loss
+            and (
+                self._last_p95_age_ms is None
+                or self._last_p95_age_ms <= self._live_age_ceiling_ms()
+            )
+        )
+
+    def _live_age_ceiling_ms(self) -> float:
+        """Two frame intervals, but never above the absolute Live ceiling."""
+        two_intervals = 2000.0 / float(self._tier.fps)
+        return min(two_intervals, float(self._config.live_max_age_ms))
+
     def _index(self) -> int:
         return self.LADDER.index(self._tier)
 
+    def _set_tier(self, tier: PerformanceTier, reason: str) -> None:
+        if tier is self._tier:
+            return
+        self._tier = tier
+        self._changes += 1
+        self._reason = reason
+        # A tier change is a discontinuity: the old samples describe a
+        # different cadence and must not be averaged across it.
+        self._samples = 0
+        self._consecutive_bad = 0
+        self._consecutive_good = 0
+        self._healthy_since_s = None
+        self._stable_since_s = None
+
+    # -- the update -------------------------------------------------------
     def update(
-        self, *, unique_fps: float, frame_age_ms: float | None, now_s: float
+        self,
+        *,
+        unique_fps: float,
+        frame_age_ms: float | None,
+        now_s: float,
+        processed_fps: float | None = None,
+        p95_age_ms: float | None = None,
+        observation_loss: float = 0.0,
+        stale_recent: int = 0,
+        pool_exhausted_recent: int = 0,
     ) -> PerformanceTier:
+        """One poll. ``processed_fps`` defaults to ``unique_fps`` when the
+        caller has no separate perception measurement (a capture-only probe)."""
+        config = self._config
         target = float(self._tier.fps)
         if unique_fps <= 0.0:
             # No measurement yet - starting up, or between sessions. Judging a
             # tier on an empty window would downshift a healthy pipeline before
             # it has delivered its first frame.
-            return self._tier
-        keeping_up = unique_fps >= target * self._config.downshift_ratio
-        fresh = frame_age_ms is None or frame_age_ms <= self._config.max_frame_age_ms
-
-        if not keeping_up or not fresh:
-            self._healthy_since_s = None
-            self._consecutive_bad += 1
-            # Two consecutive bad polls, so a single transient - a window
-            # resize, a garbage collection, the first frames after start - does
-            # not knock a healthy pipeline down a tier.
-            if self._consecutive_bad >= 2:
-                self._consecutive_bad = 0
-                index = self._index()
-                if index > 0:
-                    self._tier = self.LADDER[index - 1]
-                    self._changes += 1
-            self._reason = (
-                f"unique {unique_fps:.0f}/s below {target:.0f}/s"
-                if not keeping_up
-                else f"frame age {frame_age_ms:.0f} ms over budget"
-            )
-            if self._tier.acceptable:
-                self._reason = None
+            if self._state is not GovernorState.WARMUP:
+                self._state = GovernorState.WARMUP
             return self._tier
 
+        self._samples += 1
+        useful_fps = unique_fps if processed_fps is None else min(unique_fps, processed_fps)
+        self._last_processed_ratio = useful_fps / target if target else 0.0
+        self._last_loss = max(0.0, observation_loss)
+        self._last_p95_age_ms = p95_age_ms
+
+        problems: list[str] = []
+        # A probe is judged against the bar for *keeping* a tier, not the
+        # lower bar for surviving in one. Otherwise a climb "succeeds" at 73%
+        # of the tier it just claimed, which is how a 90 Hz source ends up
+        # labelled 120 Hz.
+        floor = (
+            config.stable_processed_ratio
+            if self._state is GovernorState.PROBE
+            else config.downshift_ratio
+        )
+        if useful_fps < target * floor:
+            problems.append(f"only {useful_fps:.0f} useful fps of {target:.0f}")
+        if frame_age_ms is not None and frame_age_ms > config.max_frame_age_ms:
+            problems.append(f"frame age {frame_age_ms:.0f} ms over budget")
+        if p95_age_ms is not None and p95_age_ms > config.max_frame_age_ms:
+            problems.append(f"p95 age {p95_age_ms:.0f} ms over budget")
+        if self._last_loss > config.max_observation_loss:
+            problems.append(f"observation loss {self._last_loss * 100:.0f}%")
+        if stale_recent > config.max_stale_per_window:
+            problems.append(f"{stale_recent} stale frames")
+        if pool_exhausted_recent > 0:
+            problems.append(f"buffer pool exhausted {pool_exhausted_recent}x")
+
+        if problems:
+            return self._on_bad(problems, now_s)
+        return self._on_good(useful_fps, target, now_s)
+
+    def _on_bad(self, problems: list[str], now_s: float) -> PerformanceTier:
+        self._healthy_since_s = None
+        self._consecutive_good = 0
+        self._consecutive_bad += 1
+        detail = "; ".join(problems)
+
+        # A probe that does not immediately hold is a failed probe: fall back
+        # at once and remember it, rather than spending another whole window.
+        if self._state is GovernorState.PROBE and self._consecutive_bad >= 1:
+            fallback = self._probe_from or self.LADDER[max(0, self._index() - 1)]
+            self._ceiling_hint = fallback
+            self._ceiling_until_s = now_s + self._config.ceiling_retry_after_s
+            self._failed_probes += 1
+            self._set_tier(fallback, f"probe to a higher tier failed: {detail}")
+            self._state = GovernorState.COOLDOWN
+            self._cooldown_until_s = now_s + self._config.probe_cooldown_s
+            self._probe_from = None
+            return self._tier
+
+        # Two consecutive bad polls, so a single transient - a window resize, a
+        # garbage collection, the first frames after start - does not cost a tier.
+        if self._consecutive_bad >= self._config.downshift_polls:
+            self._consecutive_bad = 0
+            index = self._index()
+            if index > 0:
+                self._set_tier(self.LADDER[index - 1], f"downshift: {detail}")
+                self._state = GovernorState.COOLDOWN
+                self._cooldown_until_s = now_s + self._config.probe_cooldown_s
+                self._reason = None if self._tier.acceptable else detail
+                return self._tier
+
+        if not self._tier.acceptable:
+            self._state = GovernorState.DEGRADED
+            self._reason = detail
+        else:
+            self._reason = None if self._state is not GovernorState.DEGRADED else detail
+        return self._tier
+
+    def _on_good(self, useful_fps: float, target: float, now_s: float) -> PerformanceTier:
         self._consecutive_bad = 0
+        self._consecutive_good += 1
         self._reason = None
         if self._healthy_since_s is None:
             self._healthy_since_s = now_s
+
+        if self._state is GovernorState.PROBE:
+            # Hold the probe until it has been good for long enough to mean it.
+            if self._consecutive_good >= self._config.probe_confirm_polls:
+                self._state = GovernorState.STABLE
+                self._stable_since_s = now_s
+                self._probe_from = None
+            return self._tier
+
+        if not self._tier.acceptable:
+            self._state = GovernorState.DEGRADED
+        elif self._consecutive_good >= self._config.min_stable_polls:
+            cooldown_expired = (
+                self._state is GovernorState.COOLDOWN and now_s >= self._cooldown_until_s
+            )
+            unsettled = self._state in (GovernorState.WARMUP, GovernorState.DEGRADED)
+            if cooldown_expired or unsettled:
+                self._state = GovernorState.STABLE
+                self._stable_since_s = now_s
+
+        if self._state is not GovernorState.STABLE:
+            return self._tier
+        return self._maybe_probe(useful_fps, target, now_s)
+
+    def _maybe_probe(self, useful_fps: float, target: float, now_s: float) -> PerformanceTier:
+        config = self._config
         index = self._index()
-        ceiling = self.LADDER.index(self._config.max_tier)
-        if (
-            index < ceiling
-            and now_s - self._healthy_since_s >= self._config.upshift_after_s
-            # Only climb when the source is already saturating the current tier,
-            # so we never chase a rate the display cannot produce.
-            and unique_fps >= target * 0.95
-        ):
-            self._tier = self.LADDER[index + 1]
-            self._changes += 1
-            self._healthy_since_s = now_s
+        ceiling = self.LADDER.index(config.max_tier)
+        if self._ceiling_hint is not None:
+            if now_s >= self._ceiling_until_s:
+                # The cap has expired. Conditions change - a laptop cools down,
+                # another application stops competing - so it is re-measured
+                # rather than believed forever.
+                self._ceiling_hint = None
+            else:
+                ceiling = min(ceiling, self.LADDER.index(self._ceiling_hint))
+        if index >= ceiling:
+            return self._tier
+        if now_s < self._cooldown_until_s:
+            return self._tier
+        healthy_since = self._healthy_since_s
+        if healthy_since is None or now_s - healthy_since < config.upshift_after_s:
+            return self._tier
+        # Only climb when the source is already saturating the current tier, so
+        # we never chase a rate the display cannot produce.
+        if useful_fps < target * config.upshift_saturation:
+            return self._tier
+        self._probe_from = self._tier
+        self._probes += 1
+        self._set_tier(self.LADDER[index + 1], "probing the next tier up")
+        self._state = GovernorState.PROBE
+        self._probe_started_s = now_s
         return self._tier
+
+    def allow_retry_upward(self, now_s: float) -> None:
+        """Forget a discovered ceiling early, on an explicit request.
+
+        The ceiling expires on its own after ``ceiling_retry_after_s``; this is
+        for the cases where the caller *knows* conditions changed, such as a
+        source replacement.
+        """
+        del now_s
+        self._ceiling_hint = None
 
 
 # ---------------------------------------------------------------------------
@@ -428,18 +843,45 @@ class ViewportGuard:
     this. That is why "viewport ok" can no longer coexist with "unsupported
     viewport size": there is a single :class:`ViewportState`, and a client that
     is not canonical says so in the state itself.
+
+    Two distinct operations, deliberately not one button:
+
+    ``connect()``
+        Bind to the Roblox client exactly as it is. It never moves or resizes
+        the user's window, and it is the recommended path - capture must not
+        depend on a resize succeeding.
+
+    ``fit_and_lock()``
+        Optionally ask the OS for a canonical client, then *verify* it: three
+        stable read-backs before the achieved size is believed, a monotonic
+        deadline, and a hard attempt cap so a clamping window can never become
+        a resize loop. A clamp is reported truthfully and the achieved geometry
+        is adopted (plan 4.1, mission section 4).
+
+    ``geometry_revision`` increments on every change of window, display, scale,
+    size, or state. Everything derived from a frame - observations, tracker
+    state, ROI state, actionable commands - is keyed by it, so a resize cannot
+    leave a stale coordinate alive.
     """
 
     def __init__(
         self,
         port: PlatformPort,
         requested_client_logical: tuple[float, float] = (1280.0, 720.0),
+        *,
+        config: CaptureConfig | None = None,
+        on_revision: Callable[[int, str], None] | None = None,
     ) -> None:
         self._port = port
         self._requested = requested_client_logical
+        self._config = config or CaptureConfig()
+        self._on_revision = on_revision
         self._lock = threading.Lock()
         self._current = ViewportGeometry.unpinned()
         self._adopted_identity: tuple[object, ...] | None = None
+        self._revision = 0
+        self._fit = ViewportFit.idle()
+        self._fitting = False
 
     @property
     def requested_client_logical(self) -> tuple[float, float]:
@@ -454,20 +896,49 @@ class ViewportGuard:
     def state(self) -> ViewportState:
         return self.geometry.state
 
-    def pin(self) -> tuple[bool, str, ViewportGeometry]:
-        """Ask the OS for a canonical client. Reports what was actually achieved."""
-        result = self._port.pin_client_rect(self._requested)
-        geometry = result.geometry or self._port.window_geometry()
+    @property
+    def revision(self) -> int:
+        """Bumped whenever the coordinate basis changes. Never decreases."""
         with self._lock:
-            self._current = geometry
-            self._adopted_identity = geometry.identity() if geometry.valid else None
-        return (result.ok, result.message, geometry)
+            return self._revision
 
-    def adopt_current(self) -> ViewportGeometry:
-        """Take the client area as it is, without moving the user's window.
+    @property
+    def fit(self) -> ViewportFit:
+        with self._lock:
+            return self._fit
 
-        Observation and recording should not require resizing someone's game.
-        A non-canonical client is normalized by letterboxing into the canonical
+    @property
+    def fitting(self) -> bool:
+        with self._lock:
+            return self._fitting
+
+    # -- internal ---------------------------------------------------------
+    def _adopt_locked(self, geometry: ViewportGeometry, reason: str) -> bool:
+        """Install ``geometry``; return whether the revision advanced.
+
+        Caller holds ``_lock``. The identity comparison is what decides: two
+        geometries that describe the same window at the same size on the same
+        display are the same basis, however many times they are re-read.
+        """
+        previous = self._current
+        changed = previous.identity() != geometry.identity()
+        self._current = geometry
+        self._adopted_identity = geometry.identity() if geometry.valid else None
+        if changed:
+            self._revision += 1
+        return changed
+
+    def _publish(self, changed: bool, reason: str) -> None:
+        if changed and self._on_revision is not None:
+            with contextlib.suppress(Exception):
+                self._on_revision(self.revision, reason)
+
+    # -- connect ----------------------------------------------------------
+    def connect(self) -> ViewportGeometry:
+        """Bind to the Roblox client as it is. Moves nothing, sends nothing.
+
+        Observation and recording must not require resizing someone's game. A
+        non-canonical client is normalized by letterboxing into the canonical
         raster and reported as ``ADOPTED_NONCANONICAL`` so nothing downstream
         mistakes it for a calibrated viewport.
         """
@@ -478,14 +949,226 @@ class ViewportGuard:
                 "adopted the window as-is; calibrated pixel constants do not apply",
             )
         with self._lock:
-            self._current = geometry
-            self._adopted_identity = geometry.identity() if geometry.valid else None
+            changed = self._adopt_locked(geometry, "connect")
+        self._publish(changed, "connect")
         return geometry
 
+    #: Retained name for the pre-split call. ``connect`` is what this does.
+    adopt_current = connect
+
+    # -- fit and lock -----------------------------------------------------
+    def fit_and_lock(
+        self,
+        *,
+        sleep: Callable[[float], None] | None = None,
+        now: Callable[[], float] | None = None,
+    ) -> ViewportFit:
+        """Resize the client to the canonical size and verify what was achieved.
+
+        Bounded on every axis: at most ``fit_max_attempts`` requests, a
+        monotonic deadline over the whole thing, and three consecutive
+        read-backs that agree before an achieved size is believed. A window
+        that clamps returns ``ACHIEVED_CLAMPED`` with the real numbers rather
+        than being asked again.
+
+        ``sleep``/``now`` are injectable so the state machine is testable
+        without wall-clock time.
+        """
+        wait = sleep if sleep is not None else _sleep
+        clock = now if now is not None else monotonic_s
+        config = self._config
+        with self._lock:
+            if self._fitting:
+                return self._fit
+            self._fitting = True
+        started = clock()
+        deadline = started + config.fit_deadline_s
+        want = self._requested
+        try:
+            attempt = 0
+            last_detail = "no attempt was made"
+            while attempt < config.fit_max_attempts and clock() < deadline:
+                attempt += 1
+                self._set_fit(
+                    FitPhase.REQUESTED, attempt, 0, want, None, None, None, "resize requested"
+                )
+                result = self._port.pin_client_rect(want)
+                last_detail = result.message
+                if not result.ok:
+                    # The request itself was refused - permission, fullscreen,
+                    # no window. Reading the size back would only report that
+                    # nothing changed, which is not the same answer as a clamp.
+                    return self._set_fit(
+                        FitPhase.FAILED,
+                        attempt,
+                        0,
+                        want,
+                        None,
+                        None,
+                        result.geometry or self._port.window_geometry(),
+                        result.message,
+                        started_at_s=started,
+                    )
+                settled = self._settle(attempt, want, deadline, wait, clock)
+                if settled is not None:
+                    return settled
+            fit = self._set_fit(
+                FitPhase.FAILED,
+                attempt,
+                0,
+                want,
+                None,
+                None,
+                self._port.window_geometry(),
+                f"the client size never settled: {last_detail}",
+                started_at_s=started,
+            )
+            return fit
+        finally:
+            with self._lock:
+                self._fitting = False
+
+    def _settle(
+        self,
+        attempt: int,
+        want: tuple[float, float],
+        deadline: float,
+        wait: Callable[[float], None],
+        clock: Callable[[], float],
+    ) -> ViewportFit | None:
+        """Read the client back until it stops moving, or the deadline passes.
+
+        Returns a terminal fit, or ``None`` to let the caller try once more.
+        """
+        config = self._config
+        required = config.fit_required_readbacks
+        stable = 0
+        previous: tuple[float, float] | None = None
+        geometry = self._port.window_geometry()
+        while clock() < deadline:
+            geometry = self._port.window_geometry()
+            client = geometry.client_logical
+            if client is None or not geometry.valid:
+                stable, previous = 0, None
+                self._set_fit(
+                    FitPhase.SETTLING,
+                    attempt,
+                    stable,
+                    want,
+                    None,
+                    None,
+                    geometry,
+                    f"client not readable: {geometry.detail}",
+                )
+                wait(config.fit_readback_interval_s)
+                continue
+            size = (round(client.width, 2), round(client.height, 2))
+            stable = stable + 1 if previous is not None and size == previous else 1
+            previous = size
+            self._set_fit(
+                FitPhase.SETTLING,
+                attempt,
+                stable,
+                want,
+                size,
+                geometry.client_backing_px,
+                geometry,
+                "waiting for the client size to stop moving",
+            )
+            if stable >= required:
+                return self._finish(attempt, want, size, geometry, stable)
+            wait(config.fit_readback_interval_s)
+        return None
+
+    def _finish(
+        self,
+        attempt: int,
+        want: tuple[float, float],
+        size: tuple[float, float],
+        geometry: ViewportGeometry,
+        stable: int,
+    ) -> ViewportFit:
+        """Classify a settled read-back and adopt it."""
+        tolerance = self._config.fit_tolerance_logical
+        exact = abs(size[0] - want[0]) <= tolerance and abs(size[1] - want[1]) <= tolerance
+        if exact:
+            adopted = geometry.with_state(
+                ViewportState.CANONICAL_VERIFIED,
+                f"client verified at {size[0]:g}x{size[1]:g} pt over {stable} read-backs",
+            )
+            phase, detail = (
+                FitPhase.CANONICAL_VERIFIED,
+                f"verified {size[0]:g}x{size[1]:g} pt / "
+                f"{geometry.client_backing_px[0]}x{geometry.client_backing_px[1]} px",
+            )
+        else:
+            adopted = geometry.with_state(
+                ViewportState.ADOPTED_NONCANONICAL,
+                "the OS or the game clamped the request; running on the achieved size",
+            )
+            phase, detail = (
+                FitPhase.ACHIEVED_CLAMPED,
+                f"clamped to {size[0]:g}x{size[1]:g} pt (asked for "
+                f"{want[0]:g}x{want[1]:g}); observation and recording work, "
+                f"calibrated pixel constants do not",
+            )
+        with self._lock:
+            changed = self._adopt_locked(adopted, "fit")
+        self._publish(changed, f"fit:{phase.value}")
+        return self._set_fit(
+            phase,
+            attempt,
+            stable,
+            want,
+            size,
+            adopted.client_backing_px,
+            adopted,
+            detail,
+            settled=True,
+        )
+
+    def _set_fit(
+        self,
+        phase: FitPhase,
+        attempt: int,
+        stable: int,
+        want: tuple[float, float] | None,
+        achieved: tuple[float, float] | None,
+        backing: tuple[int, int] | None,
+        geometry: ViewportGeometry | None,
+        detail: str,
+        *,
+        started_at_s: float = 0.0,
+        settled: bool = False,
+    ) -> ViewportFit:
+        fit = ViewportFit(
+            phase=phase,
+            attempt=attempt,
+            stable_readbacks=stable,
+            required_readbacks=self._config.fit_required_readbacks,
+            requested_client_logical=want,
+            achieved_client_logical=achieved,
+            achieved_client_backing_px=backing,
+            geometry=geometry,
+            detail=detail,
+            started_at_s=started_at_s,
+            settled_at_s=monotonic_s() if settled else None,
+        )
+        with self._lock:
+            self._fit = fit
+        return fit
+
+    def pin(self) -> tuple[bool, str, ViewportGeometry]:
+        """Backwards-compatible one-shot fit. Prefer :meth:`fit_and_lock`."""
+        fit = self.fit_and_lock()
+        geometry = fit.geometry or self.geometry
+        return (fit.phase is FitPhase.CANONICAL_VERIFIED, fit.describe(), geometry)
+
+    # -- lifecycle --------------------------------------------------------
     def invalidate(self, reason: str) -> None:
         with self._lock:
-            self._current = ViewportGeometry.invalid(reason)
-            self._adopted_identity = None
+            changed = self._adopt_locked(ViewportGeometry.invalid(reason), reason)
+        self._publish(changed, f"invalidate:{reason}")
 
     def check(self) -> ViewportGeometry:
         """Re-read the window and detect replacement, resize, or display change."""
@@ -500,16 +1183,21 @@ class ViewportGuard:
                 )
                 return self._current
             if not fresh.valid:
-                self._current = fresh
-                return self._current
-            if fresh.identity() != adopted:
-                self._current = fresh.with_state(
+                changed = self._adopt_locked(fresh, "window lost")
+                result = self._current
+            elif fresh.identity() != adopted:
+                mismatch = fresh.with_state(
                     ViewportState.CAPTURE_MISMATCH,
                     f"window changed since adoption: {fresh.describe()}",
                 )
-                return self._current
-            self._current = fresh
-            return self._current
+                changed = self._adopt_locked(mismatch, "window changed")
+                result = self._current
+            else:
+                changed = False
+                self._current = fresh
+                result = fresh
+        self._publish(changed, "check")
+        return result
 
     def confirm_capture(self, delivered_px: tuple[int, int]) -> ViewportGeometry:
         """Cross-check delivered frame size against the geometry we believe.
@@ -522,12 +1210,15 @@ class ViewportGuard:
             current = self._current
             if not current.valid:
                 return current
-            self._current = current.with_state(
+            mismatch = current.with_state(
                 ViewportState.CAPTURE_MISMATCH,
                 f"delivered {delivered_px[0]}x{delivered_px[1]} but expected "
                 f"{current.canonical_px[0]}x{current.canonical_px[1]}",
             )
-            return self._current
+            changed = self._adopt_locked(mismatch, "capture mismatch")
+            result = self._current
+        self._publish(changed, "capture-mismatch")
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -747,20 +1438,29 @@ class CaptureService:
         self._source_rate = _RateCounter()
         self._unique_rate = _RateCounter()
         self._processed_rate = _RateCounter()
+        self._control_rate = _RateCounter()
         self._preview_rate = _RateCounter()
+        self._duplicate_rate = _RateCounter()
+        self._superseded_rate = _RateCounter()
+        self._unobserved_rate = _RateCounter()
+        self._stale_rate = _RateCounter()
+        self._exhausted_rate = _RateCounter()
 
         self._lock = threading.Lock()
         self._source: CaptureSource | None = None
         self._sequence = 0
-        self._duplicates = 0
         self._duplicate_run = 0
-        self._stale = 0
-        self._dropped_observations = 0
         self._reacquisitions = 0
+        #: Incremented whenever the frame source is created, replaced, or dies.
+        #: Every observation is keyed by it, so frames from a dead source can
+        #: never be drawn over frames from a live one.
+        self._source_epoch = 0
         self._last_content_id: int | None = None
         self._last_signature: int | None = None
         self._last_success_s: float | None = None
         self._last_error: str | None = None
+        self._stale_in_window = 0
+        self._exhausted_seen = 0
 
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -791,6 +1491,41 @@ class CaptureService:
     def running(self) -> bool:
         with self._lock:
             return self._source is not None
+
+    @property
+    def source_epoch(self) -> int:
+        with self._lock:
+            return self._source_epoch
+
+    @property
+    def governor(self) -> CadenceGovernor:
+        return self._governor
+
+    def reset_epoch(self, reason: str) -> None:
+        """Start a new measurement epoch across every rate and the governor.
+
+        Called on start, source replacement, reacquisition, and tier change: a
+        rate averaged across a discontinuity describes neither side of it, and
+        a cumulative counter that survives one is unreadable.
+        """
+        for counter in (
+            self._source_rate,
+            self._unique_rate,
+            self._processed_rate,
+            self._control_rate,
+            self._preview_rate,
+            self._duplicate_rate,
+            self._superseded_rate,
+            self._unobserved_rate,
+            self._stale_rate,
+            self._exhausted_rate,
+        ):
+            counter.reset_session()
+        self._slot.reset_session()
+        with self._lock:
+            self._stale_in_window = 0
+            self._exhausted_seen = self._pool.exhausted
+        self._governor.reset_epoch(reason)
 
     def latest(self) -> FrameEnvelope | None:
         return self._slot.peek()
@@ -829,6 +1564,7 @@ class CaptureService:
 
     def note_decision_ms(self, milliseconds: float) -> None:
         self._decision_latency.record_ms(milliseconds)
+        self._control_rate.tick()
 
     def note_preview_ms(self, milliseconds: float) -> None:
         self._preview_latency.record_ms(milliseconds)
@@ -841,8 +1577,8 @@ class CaptureService:
         which is the only place that difference is visible: the slot knows what
         it replaced, but only the consumer knows what it never saw.
         """
-        with self._lock:
-            self._dropped_observations += max(0, count)
+        if count > 0:
+            self._unobserved_rate.tick(count=count)
 
     def note_end_to_end_ms(self, milliseconds: float) -> None:
         self._end_to_end.record_ms(milliseconds)
@@ -868,7 +1604,10 @@ class CaptureService:
         source.set_target_fps(self._governor.tier.fps)
         with self._lock:
             self._source = source
+            self._source_epoch += 1
             self._last_error = None
+        self.reset_epoch("capture started")
+        self._slot.set_supersede_hook(self._superseded_rate.tick)
         self._stop.clear()
         if not source.is_pushing:
             self._thread = threading.Thread(
@@ -931,7 +1670,7 @@ class CaptureService:
                 pull_thread.join(1.0)
             self._stop.clear()
             self._slot.clear()
-            self._guard.adopt_current()
+            self._guard.connect()
             return self.start()
         finally:
             with self._lock:
@@ -946,13 +1685,13 @@ class CaptureService:
         duplicate = self._is_duplicate(raw)
         with self._lock:
             if duplicate:
-                self._duplicates += 1
                 self._duplicate_run += 1
             else:
                 self._duplicate_run = 0
             self._last_success_s = now
 
         if duplicate:
+            self._duplicate_rate.tick(now)
             self._pool.release(raw.bgr)
             return
 
@@ -1060,15 +1799,29 @@ class CaptureService:
             now = monotonic_s()
             age_ms = None
             envelope = self._slot.peek()
+            stale_now = 0
             if envelope is not None:
                 age_ms = envelope.frame.age_s(now) * 1000.0
                 if age_ms > self._config.max_frame_age_ms:
-                    with self._lock:
-                        self._stale += 1
+                    self._stale_rate.tick(now)
+                    stale_now = 1
+            with self._lock:
+                seen = self._exhausted_seen
+                self._exhausted_seen = self._pool.exhausted
+                exhausted_now = max(0, self._pool.exhausted - seen)
+            if exhausted_now:
+                self._exhausted_rate.tick(now, count=exhausted_now)
 
             before = self._governor.tier
             after = self._governor.update(
-                unique_fps=self._unique_rate.rate(), frame_age_ms=age_ms, now_s=now
+                unique_fps=self._unique_rate.rate(),
+                frame_age_ms=age_ms,
+                now_s=now,
+                processed_fps=self._processed_rate.rate() or None,
+                p95_age_ms=self._end_to_end.summary().p95_ms or None,
+                observation_loss=self._observation_loss(),
+                stale_recent=stale_now,
+                pool_exhausted_recent=exhausted_now,
             )
             if after is not before:
                 source = self._source
@@ -1077,6 +1830,19 @@ class CaptureService:
                         source.set_target_fps(after.fps)
 
             self._maybe_reacquire(now)
+
+    def _observation_loss(self) -> float:
+        """Share of delivered frames that never became an observation.
+
+        Zero while nothing is consuming: with no perception running there is no
+        observation to lose, and reporting 100% loss for an idle pipeline is
+        exactly the sort of alarming nonsense this rewrite exists to remove.
+        """
+        processed = self._processed_rate.rate()
+        if processed <= 0.0:
+            return 0.0
+        missed = self._unobserved_rate.rate()
+        return missed / (processed + missed)
 
     def _reacquire_reason(self) -> str | None:
         """Why the source should be rebuilt, or ``None`` when it is fine."""
@@ -1117,31 +1883,38 @@ class CaptureService:
 
     # -- metrics ----------------------------------------------------------
     def metrics(self) -> CaptureMetrics:
-        cpu, rss = self._usage.sample()
+        usage = self._usage.sample()
         envelope = self._slot.peek()
         age_ms = None if envelope is None else envelope.frame.age_s(monotonic_s()) * 1000.0
         with self._lock:
-            duplicates = self._duplicates
-            stale = self._stale
-            dropped_observations = self._dropped_observations
             reacquisitions = self._reacquisitions
+            epoch = self._source_epoch
         unique = self._unique_rate.rate()
+        report = self._governor.report()
         reason = self._governor.degraded_reason
-        if reason is None and self.running and unique < PerformanceTier.MINIMUM.fps:
+        if reason is None and self.running and 0.0 < unique < PerformanceTier.MINIMUM.fps:
             reason = (
                 f"only {unique:.0f} unique fps; below the {PerformanceTier.MINIMUM.fps} minimum"
             )
         return CaptureMetrics(
             backend=self.backend_name,
-            tier=self._governor.tier,
+            tier=report.tier,
+            requested_hz=report.requested_hz,
             source_fps=self._source_rate.rate(),
             unique_fps=unique,
             processed_fps=self._processed_rate.rate(),
+            control_fps=self._control_rate.rate(),
             preview_fps=self._preview_rate.rate(),
-            duplicate_frames=duplicates,
-            dropped_frames=self._slot.dropped,
-            dropped_observations=dropped_observations,
-            stale_frames=stale,
+            duplicate_frames=self._duplicate_rate.summary("duplicate frames"),
+            superseded_frames=RateSummary(
+                "superseded frames",
+                self._slot.superseded,
+                self._superseded_rate.rate(),
+                self._slot.lifetime_dropped,
+            ),
+            dropped_observations=self._unobserved_rate.summary("unobserved frames"),
+            stale_frames=self._stale_rate.summary("stale frames"),
+            pool_exhausted=self._exhausted_rate.summary("pool exhausted"),
             slot_depth=1 if envelope is not None else 0,
             reacquisitions=reacquisitions,
             frame_age_ms=age_ms,
@@ -1151,8 +1924,11 @@ class CaptureService:
             decision=self._decision_latency.summary(),
             preview=self._preview_latency.summary(),
             end_to_end=self._end_to_end.summary(),
-            cpu_percent=cpu,
-            rss_mb=rss,
+            cpu_percent=usage.cpu_percent,
+            rss_current_mb=usage.rss_current_mb,
+            rss_peak_mb=usage.rss_peak_mb,
+            governor=report,
+            epoch=epoch,
             degraded_reason=reason,
         )
 
