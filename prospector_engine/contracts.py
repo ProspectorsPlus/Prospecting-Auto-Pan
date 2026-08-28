@@ -756,6 +756,20 @@ class ReleaseReport:
     def uncertain(self) -> bool:
         return not self.release_known_safe
 
+    @property
+    def evidence_clean(self) -> bool:
+        """Whether *this* release itself went perfectly.
+
+        Distinct from ``release_known_safe``, which also refuses while an
+        earlier run's uncertainty is still latched. That distinction is what
+        stops a recovery record perpetuating itself: a clean release performed
+        under an inherited latch is still a clean release, and must not write a
+        fresh record saying otherwise.
+
+        Only ``release_known_safe`` may gate Live. This may not.
+        """
+        return not self.failures and self.deadman_acknowledged and self.ledger_empty
+
 
 class NavigationApplyStatus(Enum):
     APPLIED = auto()

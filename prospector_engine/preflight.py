@@ -301,7 +301,20 @@ def run_preflight(inputs: PreflightInputs) -> InputPreflight:
                 if inputs.release_uncertain
                 else "the lease ledger is not empty"
             ),
-            remedy="" if release_ok else "Press Stop & Release, then try again.",
+            # Naming the right control matters: an unconfirmed release latches,
+            # and it can outlive the run that caused it - a previous session
+            # that shut down without a deadman acknowledgement writes a
+            # recovery record, and every later run inherits it. Stop & Release
+            # does not clear that; only the recovery handshake does, because
+            # clearing it requires a release that was positively acknowledged.
+            remedy=""
+            if release_ok
+            else (
+                "Press Recover Release: a previous run could not confirm it let go, "
+                "and that is cleared by an acknowledged release, not by Stop."
+                if inputs.release_uncertain
+                else "Press Stop & Release, then try again."
+            ),
         )
     )
     return InputPreflight(tuple(checks))

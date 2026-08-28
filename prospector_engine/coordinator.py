@@ -567,7 +567,14 @@ class RuntimeCoordinator:
         self._authority.invalidate("shutdown")
         release = self._authority.release_all("shutdown")
         report["release"] = "known-safe" if release.release_known_safe else "uncertain"
-        if not release.release_known_safe:
+        # Persist on *this* release's own evidence, not on release_known_safe,
+        # which also refuses while an earlier run's latch is still set. Using
+        # the latched value made the record self-perpetuating: one uncertain
+        # shutdown wrote a record, every later run inherited it, and every
+        # later shutdown re-wrote it from a release that had actually gone
+        # perfectly - a positive deadman ACK, an empty ledger and no failures.
+        # The machine could then never leave the state on its own.
+        if not release.evidence_clean:
             self._persist_recovery_record("shutdown released with uncertainty", release)
 
         report["worker"] = "joined" if self._join_worker(deadline) else "survivor"

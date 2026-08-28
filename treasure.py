@@ -968,6 +968,14 @@ def _run_setup_probe(json_path: str | None = None, restore: bool = True) -> int:
     original: tuple[float, float] | None = None
 
     try:
+        # Started here for the same reason main() starts it: without a deadman
+        # acknowledgement every release reports "uncertain", and a probe that
+        # printed that would be describing itself rather than the machine.
+        try:
+            application.deadman.start()
+        except Exception as exc:
+            print(f"  deadman unavailable: {exc!r}")
+
         before = port.window_geometry()
         print(f"  before: {before.describe()}")
         original = (

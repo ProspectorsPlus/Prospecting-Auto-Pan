@@ -127,9 +127,20 @@ def test_a_dead_listener_is_a_fault_and_says_which_kind() -> None:
     assert entry is not None and "Input Monitoring" in entry.remedy
 
 
-def test_stuck_input_is_a_fault_and_says_to_press_stop() -> None:
-    report = run_preflight(_inputs(release_uncertain=True))
-    entry = report.get(CapabilityId.RELEASE_HEALTH)
+def test_stuck_input_is_a_fault_and_names_the_control_that_clears_it() -> None:
+    """An unconfirmed release latches, and outlives the run that caused it.
+
+    A session that shut down without a deadman acknowledgement writes a
+    recovery record and every later run inherits it - so telling someone to
+    press Stop, which cannot clear it, sends them in a circle.
+    """
+    stale = run_preflight(_inputs(release_uncertain=True))
+    entry = stale.get(CapabilityId.RELEASE_HEALTH)
+    assert entry is not None and entry.is_fault
+    assert "Recover Release" in entry.remedy
+
+    held = run_preflight(_inputs(ledger_empty=False))
+    entry = held.get(CapabilityId.RELEASE_HEALTH)
     assert entry is not None and entry.is_fault
     assert "Stop" in entry.remedy
 

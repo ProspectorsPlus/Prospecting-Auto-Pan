@@ -401,3 +401,41 @@ def _fresh_frame(rig: Any, _turn: int) -> Any:
     return make_frame(
         _SEQUENCE[0], captured_at_s=monotonic_s(), geometry=rig.port.window_geometry()
     )
+
+
+def test_a_clean_release_under_an_inherited_latch_writes_no_new_record() -> None:
+    """The recovery record used to perpetuate itself.
+
+    One uncertain shutdown wrote a record; every later run inherited the latch
+    at startup; and every later shutdown re-wrote the record from a release
+    that had actually gone perfectly - positive deadman ACK, empty ledger, no
+    failures. Observed on the development machine: a record whose own evidence
+    read ``deadman_acknowledged: True, ledger_empty: True, failures: []`` and
+    which still blocked Live, run after run, with no way out but the handshake.
+
+    ``release_known_safe`` stays the only thing that gates Live. What changes is
+    what gets *persisted*: this release's own evidence.
+    """
+    from prospector_engine.contracts import ReleaseReport
+
+    inherited = ReleaseReport(
+        attempted_edges=("w", "a"),
+        failures=(),
+        deadman_acknowledged=True,
+        ledger_empty=True,
+        # Refused only because an earlier run's uncertainty is still latched.
+        release_known_safe=False,
+        reason="shutdown",
+    )
+    assert inherited.evidence_clean, "a perfect release read as dirty evidence"
+    assert inherited.uncertain, "an inherited latch must still refuse Live"
+
+    genuinely_bad = ReleaseReport(
+        attempted_edges=("w",),
+        failures=("key_up:w",),
+        deadman_acknowledged=False,
+        ledger_empty=False,
+        release_known_safe=False,
+        reason="shutdown",
+    )
+    assert not genuinely_bad.evidence_clean
