@@ -19,6 +19,7 @@ markup, or text was copied from any other project (plan 12).
 from __future__ import annotations
 
 import contextlib
+import math
 import queue
 import sys
 import tkinter as tk
@@ -27,9 +28,13 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Any
 
+import numpy as np
+
 from prospector_engine import __version__
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
+    CaptureMetrics,
+    DiagnosticObservation,
     IntentType,
     ModeResult,
     ModeResultKind,
@@ -50,6 +55,7 @@ from prospector_engine.engine import (
     run_pan_swap,
     run_reset,
 )
+from prospector_engine.geometry import Affine2D
 from prospector_engine.input_authority import (
     AuthorityConfig,
     DeadmanClient,
@@ -188,6 +194,485 @@ def _pixel_info_worker(port: PlatformPort, on_report: Any) -> WorkerFactory:
     return worker
 
 
+class DiagnosticCanvas:
+    """The Shadow view: the frame, with the geometry the decision was made from.
+
+    Two rules shape the implementation:
+
+    * **Nothing is recreated per frame.** The image is a single ``PhotoImage``
+      pasted in place and the overlay is a fixed set of canvas items whose
+      coordinates are updated. Deleting and rebuilding the canvas every frame
+      is what makes a Tk preview feel slow, and it would compete with
+      perception for the GIL.
+    * **The image and the overlay come from the same observation**, which holds
+      its own frame, so the drawing can never lag the picture.
+    """
+
+    #: Reference arm colours. The assumed arm is deliberately dashed and muted:
+    #: E-ANCHOR and E-FORWARD are pending, so it is a hypothesis on screen.
+    FORWARD_COLOUR = "#c3ccd6"
+    DESIRED_COLOUR = GOLD
+    ARROW_COLOUR = JADE
+    REJECT_COLOUR = "#8a4b4b"
+    ARC_COLOUR = "#d0743c"
+
+    ARM_LENGTH_PX = 190.0
+
+    def __init__(self, canvas: tk.Canvas) -> None:
+        self.canvas = canvas
+        self._photo: Any = None
+        self._photo_size: tuple[int, int] = (0, 0)
+        self._scaled: Any = None
+        self._rgb: Any = None
+        self._image_item: int | None = None
+        self._items: dict[str, int] = {}
+        self._reject_items: list[int] = []
+        self._last_sequence = -1
+
+    # -- item helpers -----------------------------------------------------
+    def _line(self, name: str, **options: Any) -> int:
+        if name not in self._items:
+            self._items[name] = self.canvas.create_line(0, 0, 0, 0, **options)
+        return self._items[name]
+
+    def _oval(self, name: str, **options: Any) -> int:
+        if name not in self._items:
+            self._items[name] = self.canvas.create_oval(0, 0, 0, 0, **options)
+        return self._items[name]
+
+    def _text(self, name: str, **options: Any) -> int:
+        if name not in self._items:
+            self._items[name] = self.canvas.create_text(0, 0, **options)
+        return self._items[name]
+
+    def _polygon(self, name: str, **options: Any) -> int:
+        if name not in self._items:
+            self._items[name] = self.canvas.create_polygon(0, 0, 0, 0, 0, 0, **options)
+        return self._items[name]
+
+    def _hide(self, name: str) -> None:
+        item = self._items.get(name)
+        if item is not None:
+            self.canvas.itemconfigure(item, state="hidden")
+
+    def _show(self, name: str) -> None:
+        item = self._items.get(name)
+        if item is not None:
+            self.canvas.itemconfigure(item, state="normal")
+
+    # -- rendering --------------------------------------------------------
+    def render(self, observation: DiagnosticObservation) -> bool:
+        """Draw one observation. Returns False if it was already drawn."""
+        if observation.frame_sequence == self._last_sequence:
+            return False
+        self._last_sequence = observation.frame_sequence
+
+        width = max(64, self.canvas.winfo_width())
+        height = max(64, self.canvas.winfo_height())
+        transform = observation.geometry.preview_from_canonical((width, height))
+        self._draw_image(observation, (width, height), transform)
+        self._draw_overlay(observation, transform)
+        return True
+
+    def render_frame_only(self, frame: Any) -> bool:
+        """Draw a raw frame with no overlay, for before Shadow has started."""
+        if frame.sequence == self._last_sequence:
+            return False
+        self._last_sequence = frame.sequence
+        width = max(64, self.canvas.winfo_width())
+        height = max(64, self.canvas.winfo_height())
+        transform = frame.geometry.preview_from_canonical((width, height))
+        self._paste(frame, (width, height), transform)
+        for name in list(self._items):
+            if name != "caption":
+                self._hide(name)
+        for item in self._reject_items:
+            self.canvas.itemconfigure(item, state="hidden")
+        caption = self._text(
+            "caption",
+            anchor="nw",
+            fill=MUTED,
+            font=("Menlo" if sys.platform == "darwin" else "Consolas", 10),
+            justify="left",
+        )
+        self.canvas.coords(caption, 10, 8)
+        self.canvas.itemconfigure(
+            caption,
+            state="normal",
+            text=(
+                f"frame #{frame.sequence}  {frame.geometry.state.value}\n"
+                "Shadow is not running: no perception, no overlay."
+            ),
+        )
+        self.canvas.tag_raise(caption)
+        return True
+
+    def _draw_image(
+        self,
+        observation: DiagnosticObservation,
+        canvas_px: tuple[int, int],
+        transform: Affine2D,
+    ) -> None:
+        self._paste(observation.frame, canvas_px, transform)
+
+    def _paste(self, frame: Any, canvas_px: tuple[int, int], transform: Affine2D) -> None:
+        """Resize and colour-convert into reused buffers, then paste in place.
+
+        Resizing *before* the colour conversion means the conversion runs over
+        a quarter of the pixels, and both write into buffers allocated once per
+        preview size. ``Image.frombuffer`` needs C-contiguous memory, which a
+        reversed-stride NumPy view is not - hence cv2 rather than ``[..., ::-1]``.
+        """
+        import cv2
+        from PIL import Image, ImageTk
+
+        canonical_w, canonical_h = frame.canonical_size_px
+        target_w = max(1, round(canonical_w * transform.scale_x))
+        target_h = max(1, round(canonical_h * transform.scale_y))
+
+        if self._scaled is None or self._scaled.shape[:2] != (target_h, target_w):
+            self._scaled = np.empty((target_h, target_w, 3), dtype=np.uint8)
+            self._rgb = np.empty((target_h, target_w, 3), dtype=np.uint8)
+        source = np.asarray(frame.bgr)
+        if (target_w, target_h) == (canonical_w, canonical_h):
+            np.copyto(self._scaled, source)
+        else:
+            # INTER_AREA downsamples cleanly; this is a monitor, not an archive,
+            # so the preview must never become the expensive part of a frame.
+            cv2.resize(
+                source, (target_w, target_h), dst=self._scaled, interpolation=cv2.INTER_AREA
+            )
+        cv2.cvtColor(self._scaled, cv2.COLOR_BGR2RGB, dst=self._rgb)
+        image = Image.frombuffer("RGB", (target_w, target_h), self._rgb, "raw", "RGB", 0, 1)
+
+        if self._photo is None or self._photo_size != (target_w, target_h):
+            self._photo = ImageTk.PhotoImage(image)
+            self._photo_size = (target_w, target_h)
+            if self._image_item is not None:
+                self.canvas.delete(self._image_item)
+            self._image_item = self.canvas.create_image(
+                canvas_px[0] // 2, canvas_px[1] // 2, image=self._photo
+            )
+            self.canvas.tag_lower(self._image_item)
+        elif self._image_item is not None:
+            # Paste in place: no new PhotoImage, no canvas item churn.
+            self._photo.paste(image)
+            self.canvas.coords(self._image_item, canvas_px[0] // 2, canvas_px[1] // 2)
+
+    def _draw_overlay(self, observation: DiagnosticObservation, transform: Affine2D) -> None:
+        anchor = observation.anchor_px
+        stale = observation.age_s > 0.25
+
+        # -- direction arms -----------------------------------------------
+        if anchor is None:
+            for name in (
+                "forward_arm",
+                "forward_label",
+                "desired_arm",
+                "arc",
+                "angle_text",
+                "anchor_dot",
+                "no_desired",
+            ):
+                self._hide(name)
+            for index in range(len(observation.cues)):
+                self._hide(f"cue_{index}")
+                self._hide(f"cue_{index}_label")
+        else:
+            anchor_view = transform.apply_point(anchor)
+            dot = self._oval("anchor_dot", outline=BONE, width=2)
+            self.canvas.coords(
+                dot,
+                anchor_view[0] - 4,
+                anchor_view[1] - 4,
+                anchor_view[0] + 4,
+                anchor_view[1] + 4,
+            )
+            self._show("anchor_dot")
+
+            forward_item = self._line(
+                "forward_arm", fill=self.FORWARD_COLOUR, width=4, arrow="last", dash=(7, 5)
+            )
+            self._set_arm(forward_item, anchor, observation.forward_deg, transform)
+            forward_label = self._text(
+                "forward_label", fill=self.FORWARD_COLOUR, font=("Helvetica", 10, "bold")
+            )
+            label_point = (anchor[0], anchor[1] - self.ARM_LENGTH_PX - 16)
+            label_view = transform.apply_point(label_point)
+            self.canvas.coords(forward_label, label_view[0], label_view[1])
+            self.canvas.itemconfigure(forward_label, text="forward (assumed)", state="normal")
+
+            self._draw_cue_arms(observation, anchor, transform)
+            if observation.desired_deg is None:
+                self._hide("desired_arm")
+                self._hide("arc")
+                self._hide("angle_text")
+                marker = self._text(
+                    "no_desired", fill=BAD, font=("Helvetica", 11, "bold"), anchor="w"
+                )
+                marker_view = transform.apply_point((anchor[0] + 16, anchor[1] + 26))
+                self.canvas.coords(marker, marker_view[0], marker_view[1])
+                self.canvas.itemconfigure(
+                    marker,
+                    state="normal",
+                    text=f"no desired direction: {observation.direction.abstain_reason}",
+                )
+            else:
+                self._hide("no_desired")
+                desired_item = self._line(
+                    "desired_arm", fill=self.DESIRED_COLOUR, width=4, arrow="last"
+                )
+                self._set_arm(desired_item, anchor, observation.desired_deg, transform)
+                self._show("desired_arm")
+                self._draw_arc(observation, anchor, transform)
+
+        # -- arrow geometry ------------------------------------------------
+        arrow = observation.arrow
+        if arrow.valid and observation.contour_px:
+            points: list[float] = []
+            for x, y in observation.contour_px:
+                view_x, view_y = transform.apply(float(x), float(y))
+                points.extend((view_x, view_y))
+            polygon = self._polygon("contour", outline=self.ARROW_COLOUR, fill="", width=2)
+            if len(points) >= 6:
+                self.canvas.coords(polygon, *points)
+                self._show("contour")
+            else:
+                self._hide("contour")
+        else:
+            self._hide("contour")
+
+        if arrow.valid and arrow.bbox_px is not None:
+            x, y, w, h = arrow.bbox_px
+            top_left = transform.apply(float(x), float(y))
+            bottom_right = transform.apply(float(x + w), float(y + h))
+            box = self._line("bbox", fill=self.ARROW_COLOUR, width=1, dash=(3, 3))
+            self.canvas.coords(
+                box,
+                top_left[0],
+                top_left[1],
+                bottom_right[0],
+                top_left[1],
+                bottom_right[0],
+                bottom_right[1],
+                top_left[0],
+                bottom_right[1],
+                top_left[0],
+                top_left[1],
+            )
+            self._show("bbox")
+        else:
+            self._hide("bbox")
+
+        if arrow.valid and arrow.centroid_px is not None:
+            cx, cy = transform.apply_point(arrow.centroid_px)
+            centroid = self._oval("centroid", outline=self.ARROW_COLOUR, fill=self.ARROW_COLOUR)
+            self.canvas.coords(centroid, cx - 3, cy - 3, cx + 3, cy + 3)
+            self._show("centroid")
+        else:
+            self._hide("centroid")
+
+        if arrow.valid and arrow.tip_px is not None:
+            tx, ty = transform.apply_point(arrow.tip_px)
+            tip = self._line("tip", fill=GOLD, width=2)
+            self.canvas.coords(tip, tx - 7, ty, tx + 7, ty)
+            tip2 = self._line("tip2", fill=GOLD, width=2)
+            self.canvas.coords(tip2, tx, ty - 7, tx, ty + 7)
+            self._show("tip")
+            self._show("tip2")
+        else:
+            self._hide("tip")
+            self._hide("tip2")
+
+        # -- rejected candidates -------------------------------------------
+        rejected = [c for c in observation.candidates if not c.accepted]
+        while len(self._reject_items) < len(rejected):
+            self._reject_items.append(
+                self.canvas.create_rectangle(
+                    0, 0, 0, 0, outline=self.REJECT_COLOUR, width=1, dash=(2, 4)
+                )
+            )
+        for index, item in enumerate(self._reject_items):
+            if index < len(rejected):
+                x, y, w, h = rejected[index].bbox_px
+                a = transform.apply(float(x), float(y))
+                b = transform.apply(float(x + w), float(y + h))
+                self.canvas.coords(item, a[0], a[1], b[0], b[1])
+                self.canvas.itemconfigure(item, state="normal")
+            else:
+                self.canvas.itemconfigure(item, state="hidden")
+
+        # -- captions -------------------------------------------------------
+        # A backdrop, because white text over a bright game frame is unreadable
+        # and this panel exists to be read.
+        backdrop = self._items.get("caption_bg")
+        if backdrop is None:
+            backdrop = self.canvas.create_rectangle(
+                0, 0, 0, 0, fill=BG, outline="", stipple="gray75"
+            )
+            self._items["caption_bg"] = backdrop
+        caption = self._text(
+            "caption",
+            anchor="nw",
+            fill=MUTED if stale else BONE,
+            font=("Menlo" if sys.platform == "darwin" else "Consolas", 10),
+            justify="left",
+        )
+        self.canvas.coords(caption, 12, 10)
+        self.canvas.itemconfigure(caption, text=self._caption(observation), state="normal")
+        bounds = self.canvas.bbox(caption)
+        if bounds is not None:
+            self.canvas.coords(
+                backdrop, bounds[0] - 6, bounds[1] - 5, bounds[2] + 6, bounds[3] + 5
+            )
+            self.canvas.itemconfigure(backdrop, state="normal")
+        self.canvas.tag_raise(backdrop)
+        self.canvas.tag_raise(caption)
+
+    def _set_arm(
+        self,
+        item: int,
+        anchor: tuple[float, float],
+        heading_deg: float | None,
+        transform: Affine2D,
+        length: float | None = None,
+    ) -> None:
+        if heading_deg is None:
+            self.canvas.itemconfigure(item, state="hidden")
+            return
+        radians = math.radians(heading_deg)
+        reach = self.ARM_LENGTH_PX if length is None else length
+        # Screen-space heading: 0 is up, positive clockwise.
+        end = (
+            anchor[0] + math.sin(radians) * reach,
+            anchor[1] - math.cos(radians) * reach,
+        )
+        start_view = transform.apply_point(anchor)
+        end_view = transform.apply_point(end)
+        self.canvas.coords(item, start_view[0], start_view[1], end_view[0], end_view[1])
+        self.canvas.itemconfigure(item, state="normal")
+
+    CUE_COLOUR = "#4a9bd1"
+
+    def _draw_cue_arms(
+        self,
+        observation: DiagnosticObservation,
+        anchor: tuple[float, float],
+        transform: Affine2D,
+    ) -> None:
+        """One thin arm per candidate cue.
+
+        When the fusion cue abstains because its components disagree, this is
+        what shows *how* they disagree - which is the difference between a
+        useful diagnostic and a blank screen.
+        """
+        for index, (name, cue) in enumerate(observation.cues):
+            key = f"cue_{index}"
+            if not cue.valid or cue.error_deg is None or name == observation.strategy_id:
+                self._hide(key)
+                self._hide(f"{key}_label")
+                continue
+            item = self._line(key, fill=self.CUE_COLOUR, width=1, arrow="last", dash=(2, 3))
+            heading = (observation.forward_deg or 0.0) + cue.error_deg
+            self._set_arm(item, anchor, heading, transform, length=self.ARM_LENGTH_PX * 0.72)
+            radians = math.radians(heading)
+            label_point = (
+                anchor[0] + math.sin(radians) * self.ARM_LENGTH_PX * 0.78,
+                anchor[1] - math.cos(radians) * self.ARM_LENGTH_PX * 0.78,
+            )
+            view = transform.apply_point(label_point)
+            label = self._text(
+                f"{key}_label", fill=self.CUE_COLOUR, font=("Helvetica", 9), anchor="center"
+            )
+            self.canvas.coords(label, view[0], view[1])
+            self.canvas.itemconfigure(
+                label, text=f"{name} {cue.error_deg:+.0f}°", state="normal"
+            )
+
+    def _draw_arc(
+        self,
+        observation: DiagnosticObservation,
+        anchor: tuple[float, float],
+        transform: Affine2D,
+    ) -> None:
+        error = observation.signed_error_deg
+        if error is None:
+            self._hide("arc")
+            self._hide("angle_text")
+            return
+        radius = self.ARM_LENGTH_PX * 0.55
+        points: list[float] = []
+        steps = 24
+        for index in range(steps + 1):
+            heading = (observation.forward_deg or 0.0) + error * (index / steps)
+            radians = math.radians(heading)
+            point = (
+                anchor[0] + math.sin(radians) * radius,
+                anchor[1] - math.cos(radians) * radius,
+            )
+            view = transform.apply_point(point)
+            points.extend(view)
+        arc = self._line("arc", fill=self.ARC_COLOUR, width=2, smooth=True)
+        self.canvas.coords(arc, *points)
+        self._show("arc")
+
+        mid_heading = (observation.forward_deg or 0.0) + error / 2.0
+        mid_radians = math.radians(mid_heading)
+        label_point = (
+            anchor[0] + math.sin(mid_radians) * (radius + 26),
+            anchor[1] - math.cos(mid_radians) * (radius + 26),
+        )
+        label_view = transform.apply_point(label_point)
+        text = self._text("angle_text", fill=self.ARC_COLOUR, font=("Helvetica", 13, "bold"))
+        self.canvas.coords(text, label_view[0], label_view[1])
+        self.canvas.itemconfigure(text, text=f"{error:+.1f}°")
+        self._show("angle_text")
+
+    @staticmethod
+    def _caption(observation: DiagnosticObservation) -> str:
+        arrow = observation.arrow
+        direction = observation.direction
+        lines = [
+            f"frame #{observation.frame_sequence}  age {observation.age_s * 1000:5.1f} ms"
+            f"  {observation.geometry.state.value}",
+            f"profile {observation.profile_id} [{observation.profile_status}]"
+            f"  cue {observation.strategy_id}",
+        ]
+        if arrow.valid:
+            lines.append(f"arrow conf {arrow.confidence:.2f}  track {arrow.track_id}")
+        else:
+            lines.append(f"arrow ABSTAIN: {arrow.abstain_reason}")
+        if direction.valid and direction.error_deg is not None:
+            disagreement = (
+                f"  cue spread {direction.cue_disagreement_deg:.1f}°"
+                if direction.cue_disagreement_deg is not None
+                else ""
+            )
+            lines.append(
+                f"turn {direction.error_deg:+.1f}°  conf {direction.confidence:.2f}"
+                f"{disagreement}"
+            )
+        else:
+            lines.append(f"direction ABSTAIN: {direction.abstain_reason}")
+        agreeing = [
+            f"{name} {cue.error_deg:+.0f}"
+            for name, cue in observation.cues
+            if cue.valid and cue.error_deg is not None
+        ]
+        lines.append("cues: " + (", ".join(agreeing) if agreeing else "all abstained"))
+        lines.append(f"forward ref: {observation.forward_source}")
+        if observation.candidates:
+            rejected = sum(1 for c in observation.candidates if not c.accepted)
+            lines.append(f"candidates {len(observation.candidates)} ({rejected} rejected)")
+        lines.append(
+            f"perception {observation.perception_ms:4.1f} ms"
+            f"  decision {observation.decision_ms:4.1f} ms"
+        )
+        if observation.phase is not None:
+            lines.append(f"phase {observation.phase.name}")
+        return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Application wiring
 # ---------------------------------------------------------------------------
@@ -208,6 +693,10 @@ class Application:
     preview: LatestSlot[Any]
     reports: queue.Queue[str]
     paths: AppPaths
+    #: One pipeline shared with the running worker, so a profile change in the
+    #: UI takes effect on the very next frame instead of the next session.
+    pipeline: PerceptionPipeline
+    library: Any
 
     def shutdown(self) -> dict[str, str]:
         report = self.coordinator.shutdown()
@@ -247,9 +736,10 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
     library = load_profiles()
     profile = library.get(profile_id) or library.all()[0]
     gates = NavigationGates(os_name=current_platform_name(), profile_id=profile.profile_id)
+    pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
 
     def pipeline_factory() -> PerceptionPipeline:
-        return PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+        return pipeline
 
     def report(message: str) -> None:
         # Drop-oldest is fine here: this is a diagnostic read-out, not evidence.
@@ -272,6 +762,7 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
         workers=workers,
         config=CoordinatorConfig(),
         paths=paths,
+        pipeline_provider=lambda: pipeline,
     )
     return Application(
         port=port,
@@ -285,6 +776,8 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
         preview=preview,
         reports=reports,
         paths=paths,
+        pipeline=pipeline,
+        library=library,
     )
 
 
@@ -296,15 +789,19 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
 class Dashboard:
     """The Tk shell. Renders snapshots; never decides anything."""
 
-    PREVIEW_INTERVAL_MS = 100
-    POLL_INTERVAL_MS = 100
+    #: Three independent cadences. The preview is allowed to be fast because it
+    #: is cheap; the status text is deliberately slow because nobody can read
+    #: 60 Hz of numbers, and re-laying out text is the expensive part of Tk.
+    PREVIEW_INTERVAL_MS = 16  # up to ~60 Hz, capped by what actually arrives
+    STATUS_INTERVAL_MS = 150  # ~7 Hz
+    METRICS_INTERVAL_MS = 500
 
     def __init__(self, root: tk.Tk, app: Application) -> None:
         self.root = root
         self.app = app
         self.recorder: EvidenceRecorder | None = None
-        self._preview_image: Any = None
-        self._last_preview_s = 0.0
+        self._diagnostics: DiagnosticCanvas | None = None
+        self._last_observation: DiagnosticObservation | None = None
 
         root.title(f"Treasure Navigator {__version__}")
         root.configure(bg=BG)
@@ -319,7 +816,9 @@ class Dashboard:
         self._build_body()
         self._build_footer()
 
-        root.after(self.POLL_INTERVAL_MS, self._poll)
+        root.after(self.PREVIEW_INTERVAL_MS, self._tick_preview)
+        root.after(self.STATUS_INTERVAL_MS, self._tick_status)
+        root.after(self.METRICS_INTERVAL_MS, self._tick_metrics)
 
     # -- styling ----------------------------------------------------------
     def _style(self) -> None:
@@ -359,8 +858,26 @@ class Dashboard:
         )
         style.map("Stop.TButton", background=[("active", "#b8433f")])
         style.configure(
-            "T.TCombobox", fieldbackground=SURFACE_ALT, background=SURFACE_ALT, foreground=BONE
+            "T.TCombobox",
+            fieldbackground=SURFACE_ALT,
+            background=SURFACE_ALT,
+            foreground=BONE,
+            arrowcolor=BONE,
+            selectbackground=SURFACE_ALT,
+            selectforeground=BONE,
+            padding=(8, 6),
         )
+        style.map(
+            "T.TCombobox",
+            fieldbackground=[("readonly", SURFACE_ALT)],
+            foreground=[("readonly", BONE)],
+            selectbackground=[("readonly", SURFACE_ALT)],
+            selectforeground=[("readonly", BONE)],
+        )
+        self.root.option_add("*TCombobox*Listbox.background", SURFACE_ALT)
+        self.root.option_add("*TCombobox*Listbox.foreground", BONE)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", JADE)
+        self.root.option_add("*TCombobox*Listbox.selectForeground", BG)
 
     def _card(self, parent: tk.Misc, **grid: Any) -> ttk.Frame:
         frame = ttk.Frame(parent, style="Card.TFrame", padding=10)
@@ -467,35 +984,69 @@ class Dashboard:
         left = self._card(body, row=0, column=0)
         left.columnconfigure(0, weight=1)
         left.rowconfigure(1, weight=1)
-        ttk.Label(left, text="LIVE VIEW / EVIDENCE", style="Muted.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        self.canvas = tk.Canvas(left, bg=SURFACE_ALT, highlightthickness=0, height=320)
+        ttk.Label(
+            left, text="SHADOW VIEW - live perception overlay", style="Muted.TLabel"
+        ).grid(row=0, column=0, sticky="w")
+        self.canvas = tk.Canvas(left, bg=SURFACE_ALT, highlightthickness=0, height=380)
         self.canvas.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
-        self.preview_note = ttk.Label(left, text="no frame yet", style="Muted.TLabel")
-        self.preview_note.grid(row=2, column=0, sticky="w", pady=(4, 0))
+        self._diagnostics = DiagnosticCanvas(self.canvas)
+        legend = (
+            "dashed grey = assumed player-forward reference (E-FORWARD PENDING)   "
+            "gold = desired map-arrow direction   orange arc = signed turn   "
+            "jade = detected arrow   dull red = rejected candidates"
+        )
+        ttk.Label(left, text=legend, style="Muted.TLabel", wraplength=760, justify="left").grid(
+            row=2, column=0, sticky="w", pady=(6, 0)
+        )
 
         right = self._card(body, row=0, column=1)
         right.columnconfigure(0, weight=1)
-        right.rowconfigure(2, weight=1)
-        ttk.Label(right, text="DECISION", style="Muted.TLabel").grid(
+        right.rowconfigure(4, weight=1)
+        ttk.Label(right, text="DECISION (this frame)", style="Muted.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        self.decision_var = tk.StringVar(value="idle")
+        self.decision_var = tk.StringVar(value="no observation yet - start Shadow")
         ttk.Label(
             right,
             textvariable=self.decision_var,
             style="Card.TLabel",
-            wraplength=340,
+            font=self.f_mono,
+            wraplength=380,
             justify="left",
         ).grid(row=1, column=0, sticky="w", pady=(4, 8))
+
+        ttk.Label(right, text="PIPELINE", style="Muted.TLabel").grid(
+            row=2, column=0, sticky="w"
+        )
+        self.metrics_var = tk.StringVar(value="capture not started")
+        self.metrics_label = ttk.Label(
+            right,
+            textvariable=self.metrics_var,
+            style="Card.TLabel",
+            font=self.f_mono,
+            wraplength=380,
+            justify="left",
+        )
+        self.metrics_label.grid(row=3, column=0, sticky="w", pady=(4, 8))
+
         self.profile_var = tk.StringVar()
         self._build_profile_selector(right)
 
+        self.warnings_var = tk.StringVar(value="")
+        self.warnings_label = ttk.Label(
+            right,
+            textvariable=self.warnings_var,
+            style="Card.TLabel",
+            wraplength=380,
+            justify="left",
+            foreground=MUTED,
+        )
+        self.warnings_label.grid(row=5, column=0, sticky="w", pady=(8, 0))
+
     def _build_profile_selector(self, parent: ttk.Frame) -> None:
-        library = load_profiles()
+        library = self.app.library
         frame = ttk.Frame(parent, style="Card.TFrame")
-        frame.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        frame.grid(row=4, column=0, sticky="nsew", pady=(8, 0))
         frame.columnconfigure(0, weight=1)
         ttk.Label(frame, text="ARROW PROFILE (explicit selection)", style="Muted.TLabel").grid(
             row=0, column=0, sticky="w"
@@ -569,6 +1120,22 @@ class Dashboard:
         """The one physical arming gesture. Never simulated, never persisted."""
         self._submit(IntentType.ARM_LIVE_FROM_UI)
 
+    def _on_profile_selected(self, _event: Any) -> None:
+        """Swap the profile on the *running* pipeline, not just the next one.
+
+        The dashboard and the worker share one pipeline instance, so the change
+        lands on the very next frame and the observation reports which profile
+        actually produced it.
+        """
+        selected = self.profile_var.get().split(" ")[0]
+        profile = self.app.library.get(selected)
+        if profile is None:
+            return
+        self.app.pipeline.set_profile(profile)
+        self.app.coordinator.events.add(
+            "profile.selected", f"{profile.profile_id} [{profile.status.value}]"
+        )
+
     def _recover(self) -> None:
         self._submit(IntentType.RECOVER_RELEASE)
 
@@ -584,15 +1151,45 @@ class Dashboard:
         self.record_button.configure(text="Record: ON")
 
     # -- rendering --------------------------------------------------------
-    def _poll(self) -> None:
+    def _tick_preview(self) -> None:
+        """Draw the newest observation, if there is a newer one than last time."""
+        started = monotonic_s()
+        observation = self.app.coordinator.observations.peek()
+        if observation is not None and self._diagnostics is not None:
+            drawn = self._diagnostics.render(observation)
+            if drawn:
+                self._last_observation = observation
+                self.app.capture.note_preview_ms((monotonic_s() - started) * 1000.0)
+                if self.recorder is not None:
+                    self.recorder.offer(
+                        observation.frame, {"sequence": observation.frame_sequence}
+                    )
+        elif observation is None:
+            self._render_idle_preview()
+        self.root.after(self.PREVIEW_INTERVAL_MS, self._tick_preview)
+
+    def _render_idle_preview(self) -> None:
+        """Show the raw frame when no observation exists yet (Shadow not started)."""
+        envelope = self.app.preview.peek()
+        if envelope is None or self._diagnostics is None:
+            return
+        started = monotonic_s()
+        if self._diagnostics.render_frame_only(envelope.frame):
+            self.app.capture.note_preview_ms((monotonic_s() - started) * 1000.0)
+
+    def _tick_status(self) -> None:
         snapshot = self.app.coordinator.snapshot()
         if snapshot is not None:
-            self._render(snapshot)
-        self._render_preview()
+            self._render_status(snapshot)
+        self._render_decision()
         self._drain_reports()
-        self.root.after(self.POLL_INTERVAL_MS, self._poll)
+        self.root.after(self.STATUS_INTERVAL_MS, self._tick_status)
 
-    def _render(self, snapshot: TelemetrySnapshot) -> None:
+    def _tick_metrics(self) -> None:
+        self._render_metrics(self.app.capture.metrics())
+        self.root.after(self.METRICS_INTERVAL_MS, self._tick_metrics)
+
+    def _render_status(self, snapshot: TelemetrySnapshot) -> None:
         mode_text = {
             RunMode.IDLE: "OFF",
             RunMode.SHADOW: "SHADOW",
@@ -625,59 +1222,73 @@ class Dashboard:
                 text=f"ARMED {remaining:.0f}s - refocus Roblox, then press F1", fg=GOLD
             )
 
-        lines = [f"mode: {mode_text}"]
-        if snapshot.phase is not None:
-            lines.append(f"phase: {snapshot.phase.name}")
-        if snapshot.frame_age_ms is not None:
-            lines.append(f"frame age: {snapshot.frame_age_ms:.0f} ms")
-        if snapshot.command is not None:
-            lines.append(f"command: {snapshot.command.reason}")
-        result = self.app.coordinator.last_result
-        if result is not None:
-            lines.append(f"last result: {result.kind.name} - {result.detail}")
-        lines.extend(snapshot.warnings)
-        self.decision_var.set("\n".join(lines))
-
         self.events.configure(state="normal")
         self.events.delete("1.0", "end")
-        self.events.insert("1.0", "\n".join(self.app.coordinator.events.as_lines(12)))
+        self.events.insert("1.0", "\n".join(self.app.coordinator.events.as_lines(10)))
         self.events.configure(state="disabled")
 
-    def _render_preview(self) -> None:
-        """Rate-capped, drop-oldest, and greyed with age when stale (plan 11.3)."""
-        now = monotonic_s()
-        if (now - self._last_preview_s) * 1000.0 < self.PREVIEW_INTERVAL_MS:
-            return
-        envelope = self.app.preview.peek()
-        if envelope is None:
-            return
-        self._last_preview_s = now
-        frame = envelope.frame
-        age_ms = frame.age_s(now) * 1000.0
-        try:
-            import numpy as np
-            from PIL import Image, ImageTk
+        warnings = "\n".join(snapshot.warnings)
+        self.warnings_var.set(warnings)
+        self.warnings_label.configure(foreground=BAD if warnings else MUTED)
 
-            width = max(1, self.canvas.winfo_width())
-            height = max(1, self.canvas.winfo_height())
-            rgb = np.asarray(frame.bgr)[:, :, ::-1]
-            image = Image.fromarray(rgb)
-            image.thumbnail((width, height))
-            if age_ms > 250:
-                image = image.convert("L").convert("RGB")
-            self._preview_image = ImageTk.PhotoImage(image)
-            self.canvas.delete("all")
-            self.canvas.create_image(width // 2, height // 2, image=self._preview_image)
-        except Exception as exc:
-            self.preview_note.configure(text=f"preview unavailable: {exc!r}")
+    def _render_decision(self) -> None:
+        observation = self._last_observation
+        if observation is None:
+            self.decision_var.set("no observation yet - start Shadow")
             return
-        stale = " (stale)" if age_ms > 250 else ""
-        self.preview_note.configure(
-            text=f"frame #{frame.sequence}  age {age_ms:.0f} ms{stale}  "
-            f"{frame.client_rect.width_px}x{frame.client_rect.height_px} px"
+        direction = observation.direction
+        arrow = observation.arrow
+        lines = [
+            f"frame #{observation.frame_sequence}   age {observation.age_s * 1000:.0f} ms",
+            f"viewport  {observation.geometry.state.value}",
+            f"profile   {observation.profile_id} [{observation.profile_status}]",
+            f"cue       {observation.strategy_id}",
+        ]
+        if arrow.valid:
+            lines.append(f"arrow     confidence {arrow.confidence:.2f}, track {arrow.track_id}")
+        else:
+            lines.append(f"arrow     ABSTAIN - {arrow.abstain_reason}")
+        if direction.valid and direction.error_deg is not None:
+            lines.append(
+                f"turn      {direction.error_deg:+.1f} deg  "
+                f"(confidence {direction.confidence:.2f})"
+            )
+        else:
+            lines.append(f"direction ABSTAIN - {direction.abstain_reason}")
+        lines.append(f"forward   {observation.forward_source}")
+        if observation.phase is not None:
+            lines.append(f"phase     {observation.phase.name}")
+        if observation.command is not None:
+            lines.append(f"command   {observation.command.reason}")
+        elif observation.abstain_reason:
+            lines.append(f"no command: {observation.abstain_reason}")
+        lines.append(
+            f"timing    capture {observation.capture_ms:.1f}  "
+            f"perception {observation.perception_ms:.1f}  "
+            f"decision {observation.decision_ms:.1f} ms"
         )
-        if self.recorder is not None:
-            self.recorder.offer(frame, {"sequence": frame.sequence})
+        result = self.app.coordinator.last_result
+        if result is not None:
+            lines.append(f"last      {result.kind.name}: {result.detail}")
+        self.decision_var.set("\n".join(lines))
+
+    def _render_metrics(self, metrics: CaptureMetrics) -> None:
+        colour = OK if metrics.healthy else (WARN if metrics.unique_fps > 0 else BAD)
+        self.metrics_var.set(
+            f"{metrics.backend}  tier {metrics.tier.fps} Hz\n"
+            f"unique {metrics.unique_fps:5.1f}/s   processed {metrics.processed_fps:5.1f}/s   "
+            f"preview {metrics.preview_fps:5.1f}/s\n"
+            f"age {0.0 if metrics.frame_age_ms is None else metrics.frame_age_ms:5.1f} ms   "
+            f"dup {metrics.duplicate_frames}   drop {metrics.dropped_frames}   "
+            f"stale {metrics.stale_frames}   reacq {metrics.reacquisitions}\n"
+            f"capture {metrics.capture.p50_ms:4.1f}/{metrics.capture.p95_ms:4.1f}   "
+            f"perception {metrics.perception.p50_ms:4.1f}/{metrics.perception.p95_ms:4.1f}   "
+            f"end-to-end {metrics.end_to_end.p50_ms:4.1f}/{metrics.end_to_end.p95_ms:4.1f} ms "
+            f"(p50/p95)\n"
+            f"cpu {metrics.cpu_percent:3.0f}%   rss {metrics.rss_mb:4.0f} MB"
+            + (f"\nDEGRADED: {metrics.degraded_reason}" if metrics.degraded_reason else "")
+        )
+        self.metrics_label.configure(foreground=colour)
 
     def _drain_reports(self) -> None:
         while True:

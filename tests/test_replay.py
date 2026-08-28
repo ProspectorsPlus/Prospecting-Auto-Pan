@@ -251,58 +251,147 @@ def test_replay_emits_no_os_input_at_all() -> None:
     assert port.transcript == []
 
 
+class _ScriptedCapture:
+    """A capture stand-in with the slot semantics the workers rely on."""
+
+    def __init__(self, envelopes: list[Any]) -> None:
+        self._envelopes = envelopes
+        self.perception_ms: list[float] = []
+        self.decision_ms: list[float] = []
+        self.end_to_end_ms: list[float] = []
+
+    def wait_for_new(self, after_sequence: int, timeout_s: float) -> Any:
+        del timeout_s
+        for envelope in self._envelopes:
+            if envelope.frame.sequence > after_sequence:
+                return envelope
+        time.sleep(0.005)
+        return None
+
+    def note_perception_ms(self, value: float) -> None:
+        self.perception_ms.append(value)
+
+    def note_decision_ms(self, value: float) -> None:
+        self.decision_ms.append(value)
+
+    def note_end_to_end_ms(self, value: float) -> None:
+        self.end_to_end_ms.append(value)
+
+
+def _shadow_context(capture: Any, cancellation: Cancellation, observer: Any) -> Any:
+    from prospector_engine.coordinator import WorkerContext
+
+    observations: list[Any] = []
+    context = WorkerContext(
+        generation=1,
+        mode=None,  # type: ignore[arg-type]
+        worker_id="shadow-test",
+        cancellation=cancellation,
+        frames=capture,  # type: ignore[arg-type]
+        observer=observer,
+        on_observation=observations.append,
+    )
+    return context, observations
+
+
 def test_the_shadow_worker_proposes_without_any_input_capability() -> None:
     """Shadow runs the whole decision path and cannot reach a raw port."""
-    from prospector_engine.coordinator import WorkerContext
     from prospector_engine.input_authority import NoInputSession
 
     clock = VirtualClock()
     port = FakePlatformPort(clock)
     gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
-        gates,
-        max_ticks=5,
-        tick_interval_s=0.0,
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=5
     )
     observer = NoInputSession()
-    context = WorkerContext(
-        generation=1,
-        mode=None,  # type: ignore[arg-type]
-        worker_id="shadow-test",
-        cancellation=Cancellation(),
-        frames=_scripted_frames(6),  # type: ignore[arg-type]
-        observer=observer,
-    )
+    source = _scripted_frames(6)
+    capture = _ScriptedCapture(list(source._envelopes))
+    context, _observations = _shadow_context(capture, Cancellation(), observer)
 
     result = worker(context)
 
     assert result.kind is ModeResultKind.COMPLETED
     assert port.transcript == []
-    # NoInputSession has no path to an authority at all.
     assert not hasattr(observer, "_authority")
     assert not any("apply" in name or "hold" in name for name in dir(observer))
 
 
-def test_a_shadow_worker_stops_promptly_when_cancelled() -> None:
-    from prospector_engine.coordinator import WorkerContext
+def test_every_processed_frame_produces_exactly_one_observation() -> None:
+    """Section 7: the diagnostic must publish per unique frame, never suppressed."""
     from prospector_engine.input_authority import NoInputSession
 
     gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
     worker = make_shadow_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
-        gates,
-        tick_interval_s=0.01,
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=4
+    )
+    source = _scripted_frames(8)
+    capture = _ScriptedCapture(list(source._envelopes))
+    context, observations = _shadow_context(capture, Cancellation(), NoInputSession())
+
+    worker(context)
+
+    assert len(observations) == 4
+    assert [o.frame_sequence for o in observations] == [1, 2, 3, 4]
+    assert len(capture.perception_ms) == 4
+
+
+def test_an_observation_is_bound_to_the_frame_it_came_from() -> None:
+    """The overlay must never be drawn from observation N over frame N+1."""
+    from prospector_engine.input_authority import NoInputSession
+
+    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    worker = make_shadow_worker(
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=3
+    )
+    source = _scripted_frames(5)
+    envelopes = list(source._envelopes)
+    capture = _ScriptedCapture(envelopes)
+    context, observations = _shadow_context(capture, Cancellation(), NoInputSession())
+
+    worker(context)
+
+    for observation, envelope in zip(observations, envelopes, strict=False):
+        assert observation.frame_sequence == envelope.frame.sequence
+        assert observation.captured_at_s == envelope.frame.captured_at_s
+        assert observation.geometry is envelope.frame.geometry
+        assert observation.profile_id == PROFILE.profile_id
+        assert observation.profile_status == PROFILE.status.value
+
+
+def test_the_observation_records_the_reference_arm_as_assumed() -> None:
+    """E-ANCHOR and E-FORWARD are pending, so the arm must say so."""
+    from prospector_engine.input_authority import NoInputSession
+
+    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    worker = make_shadow_worker(
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates, max_ticks=1
+    )
+    source = _scripted_frames(2)
+    capture = _ScriptedCapture(list(source._envelopes))
+    context, observations = _shadow_context(capture, Cancellation(), NoInputSession())
+
+    worker(context)
+
+    assert observations
+    observation = observations[0]
+    assert observation.anchor_px is not None
+    assert observation.forward_deg is not None
+    assert "PENDING" in observation.forward_source
+    assert observation.has_direction_arms
+
+
+def test_a_shadow_worker_stops_promptly_when_cancelled() -> None:
+    from prospector_engine.input_authority import NoInputSession
+
+    gates = NavigationGates(os_name="test", profile_id=PROFILE.profile_id)
+    worker = make_shadow_worker(
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)), gates
     )
     cancellation = Cancellation()
-    context = WorkerContext(
-        generation=1,
-        mode=None,  # type: ignore[arg-type]
-        worker_id="shadow-cancel",
-        cancellation=cancellation,
-        frames=_scripted_frames(1000),  # type: ignore[arg-type]
-        observer=NoInputSession(),
-    )
+    source = _scripted_frames(1000)
+    capture = _ScriptedCapture(list(source._envelopes))
+    context, _observations = _shadow_context(capture, cancellation, NoInputSession())
     threading.Timer(0.1, cancellation.cancel).start()
 
     started = time.monotonic()

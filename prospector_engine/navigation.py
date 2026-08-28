@@ -17,11 +17,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from prospector_engine.contracts import (
     ArrivalObservation,
+    ArrowCandidateRecord,
     ArrowObservation,
     CapturedFrame,
+    DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
     ModeResult,
@@ -37,6 +40,7 @@ from prospector_engine.motion import ContactMonitor
 from prospector_engine.vision import (
     DIRECTION_STRATEGIES,
     ArrivalDetector,
+    ArrowProfile,
     ArrowSegmenter,
     ArrowTracker,
     wrap_deg,
@@ -567,46 +571,215 @@ class Navigator:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class ReferenceFrame:
+    """Where the player is on screen and which way "forward" points.
+
+    Both values are **provisional configuration, not estimates**. E-ANCHOR and
+    E-FORWARD have not been run, so the reference arm the diagnostics draw is
+    labelled as assumed everywhere it appears, and the controller stays gated
+    regardless of how convincing the picture looks.
+
+    Screen-up as forward is the hypothesis plan 7.4 sets out to test after a
+    deterministic camera reset; it is drawn here so a human can judge it, which
+    is precisely what Shadow is for.
+    """
+
+    anchor_canonical_px: tuple[float, float] = (640.0, 430.0)
+    forward_deg: float = 0.0
+    source: str = "assumed: screen-up after camera reset (E-FORWARD PENDING)"
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PENDING,
+            source="TREASURE_NAVIGATION_PLAN.md section 7.4 E-ANCHOR / E-FORWARD",
+            note="drawn for human judgement in Shadow; never treated as validated",
+        )
+    )
+
+    @property
+    def validated(self) -> bool:
+        return self.provenance.status is EvidenceStatus.VALIDATED
+
+
+@dataclass
+class PerceptionResult:
+    """One frame's perception, with the timings that produced it."""
+
+    inputs: NavigationInputs
+    candidates: tuple[ArrowCandidateRecord, ...]
+    contour_px: tuple[tuple[int, int], ...]
+    desired_deg: float | None
+    cues: tuple[tuple[str, DirectionObservation], ...]
+    perception_ms: float
+
+
 @dataclass
 class PerceptionPipeline:
-    """Segmenter + tracker + direction cue, producing one tick's inputs.
+    """Segmenter, tracker, arrival detector, and direction cue for one profile.
 
-    The player anchor and forward reference are *inputs*, not guesses: with
-    E-ANCHOR and E-FORWARD pending, ``forward_deg`` is ``None`` and every
-    direction cue abstains, which is the intended behavior (plan 8).
+    The profile can be swapped at runtime through :meth:`set_profile`, which the
+    dashboard's selector uses; the profile actually used is recorded on every
+    observation so the picture and the label cannot disagree.
     """
 
     segmenter: ArrowSegmenter
     tracker: ArrowTracker = field(default_factory=ArrowTracker)
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
     strategy: str = "fusion"
-    anchor_px: tuple[float, float] | None = None
-    forward_deg: float | None = None
+    reference: ReferenceFrame = field(default_factory=ReferenceFrame)
+    #: Padding around a tracked arrow when searching only a region of interest.
+    roi_padding_px: int = 220
+    #: Force a full-frame pass this often even while a track holds, so a track
+    #: cannot quietly follow the wrong thing forever (plan 8).
+    full_frame_every: int = 20
+    _frames_since_full: int = 0
+    _roi_hits: int = 0
+    _full_passes: int = 0
 
-    def observe(
+    def set_profile(self, profile: ArrowProfile) -> None:
+        """Swap the arrow profile and drop any track built from the old one."""
+        self.segmenter = ArrowSegmenter(profile)
+        self.tracker = ArrowTracker()
+        self._frames_since_full = self.full_frame_every  # force a full pass
+
+    @property
+    def roi_hits(self) -> int:
+        return self._roi_hits
+
+    @property
+    def full_passes(self) -> int:
+        return self._full_passes
+
+    def _roi_for(self, frame: CapturedFrame) -> tuple[int, int, int, int] | None:
+        """A search region around the predicted track, or ``None`` for full frame.
+
+        Returns ``None`` whenever the track is stale or the periodic full-frame
+        pass is due, so acquisition is never permanently confined to where the
+        arrow used to be.
+        """
+        if self._frames_since_full >= self.full_frame_every:
+            return None
+        predicted = self.tracker.predicted()
+        if predicted is None:
+            return None
+        width, height = frame.canonical_size_px
+        pad = self.roi_padding_px
+        x = max(0, int(predicted[0]) - pad)
+        y = max(0, int(predicted[1]) - pad)
+        right = min(width, int(predicted[0]) + pad)
+        bottom = min(height, int(predicted[1]) + pad)
+        if right - x < 32 or bottom - y < 32:
+            return None
+        return (x, y, right - x, bottom - y)
+
+    def set_strategy(self, strategy: str) -> None:
+        if strategy in DIRECTION_STRATEGIES:
+            self.strategy = strategy
+
+    @property
+    def profile(self) -> ArrowProfile:
+        return self.segmenter.profile
+
+    def analyze(
         self, frame: CapturedFrame, *, map_id: str, approach_valid: bool
-    ) -> NavigationInputs:
-        arrow = self.tracker.update(self.segmenter.observe(frame))
-        anchor = self.anchor_px
-        if anchor is None:
-            direction = DirectionObservation(
-                error_deg=None,
-                confidence=0.0,
-                cue_id=self.strategy,
-                cue_disagreement_deg=None,
-                valid=False,
-                abstain_reason="anchor unavailable: E-ANCHOR PENDING",
-            )
+    ) -> PerceptionResult:
+        """Everything derived from one frame, in one pass."""
+        started = monotonic_s()
+        roi = self._roi_for(frame)
+        raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, roi)
+        if roi is not None and not raw_arrow.valid:
+            # An ROI miss is not an abstention: fall back to the full frame
+            # immediately rather than reporting a loss the tracker caused.
+            roi = None
+            raw_arrow, candidates, contour = self.segmenter.observe_detailed(frame, None)
+        if roi is None:
+            self._frames_since_full = 0
+            self._full_passes += 1
         else:
-            direction = DIRECTION_STRATEGIES[self.strategy](arrow, anchor, self.forward_deg)
+            self._frames_since_full += 1
+            self._roi_hits += 1
+        arrow = self.tracker.update(raw_arrow)
+
+        anchor = self.reference.anchor_canonical_px
+        forward = self.reference.forward_deg
+        # Every cue, every frame: the selected one drives the controller, and
+        # the rest are what make a disagreement legible instead of a silent
+        # abstention (plan 7.4 E-DIR-IDEAL).
+        cues = tuple(
+            (name, strategy(arrow, anchor, forward))
+            for name, strategy in DIRECTION_STRATEGIES.items()
+        )
+        direction = dict(cues)[self.strategy]
+
+        desired_deg: float | None = None
+        if arrow.valid and direction.valid and direction.error_deg is not None:
+            desired_deg = wrap_deg(forward + direction.error_deg)
+
         arrival = self.arrival.observe(frame, map_id=map_id, approach_valid=approach_valid)
-        return NavigationInputs(
+        inputs = NavigationInputs(
             frame=frame,
             arrow=arrow,
             direction=direction,
             motion=None,
             arrival=arrival,
             forward_commanded=False,
+        )
+        return PerceptionResult(
+            inputs=inputs,
+            candidates=candidates,
+            contour_px=contour,
+            desired_deg=desired_deg,
+            cues=cues,
+            perception_ms=(monotonic_s() - started) * 1000.0,
+        )
+
+    def observe(
+        self, frame: CapturedFrame, *, map_id: str, approach_valid: bool
+    ) -> NavigationInputs:
+        return self.analyze(frame, map_id=map_id, approach_valid=approach_valid).inputs
+
+    def diagnostic(
+        self,
+        frame: CapturedFrame,
+        result: PerceptionResult,
+        decision: NavigationDecision,
+        *,
+        decision_ms: float,
+    ) -> DiagnosticObservation:
+        """Bind the frame, the geometry, and the decision into one value.
+
+        The preview and the controller both read this, so an overlay can never
+        be drawn from observation N over frame N+1.
+        """
+        inputs = result.inputs
+        return DiagnosticObservation(
+            frame=frame,
+            processed_at_s=frame.completed_at_s,
+            published_at_s=monotonic_s(),
+            profile_id=self.profile.profile_id,
+            profile_status=self.profile.status.value,
+            strategy_id=self.strategy,
+            arrow=inputs.arrow,
+            candidates=result.candidates,
+            contour_px=result.contour_px,
+            anchor_px=self.reference.anchor_canonical_px,
+            forward_deg=self.reference.forward_deg,
+            forward_source=self.reference.source,
+            desired_deg=result.desired_deg,
+            direction=inputs.direction,
+            cues=result.cues,
+            motion=inputs.motion,
+            arrival=inputs.arrival,
+            phase=decision.phase,
+            command=decision.command,
+            abstain_reason=(
+                inputs.arrow.abstain_reason
+                or inputs.direction.abstain_reason
+                or (decision.reason if decision.release else None)
+            ),
+            capture_ms=frame.duration_ms,
+            perception_ms=result.perception_ms,
+            decision_ms=decision_ms,
         )
 
 
@@ -615,12 +788,78 @@ class PerceptionPipeline:
 # ---------------------------------------------------------------------------
 
 
+def _run_observer_loop(
+    context: WorkerContext,
+    pipeline: PerceptionPipeline,
+    navigator: Navigator,
+    *,
+    map_id: str,
+    approach_valid: bool,
+    max_ticks: int | None,
+    apply: Callable[[NavigationDecision, Any], bool] | None,
+) -> tuple[int, int, ModeResultKind, str]:
+    """The shared perception loop for Shadow and Live.
+
+    Event-driven: it blocks on the capture slot until a frame *newer than the
+    one it already processed* exists, so there is no tick interval, no polling,
+    and no way to fall behind into a backlog - a frame that arrives while
+    perception is busy simply replaces the one that was waiting.
+    """
+    capture = context.frames
+    last_sequence = 0
+    processed = 0
+    applied = 0
+    terminal: tuple[ModeResultKind, str] | None = None
+
+    while not context.cancellation.is_cancelled():
+        if max_ticks is not None and processed >= max_ticks:
+            break
+        envelope = capture.wait_for_new(last_sequence, 0.25)
+        if envelope is None:
+            continue
+        frame = envelope.frame
+        last_sequence = frame.sequence
+
+        result = pipeline.analyze(frame, map_id=map_id, approach_valid=approach_valid)
+        decision_started = monotonic_s()
+        decision = navigator.decide(
+            result.inputs, generation=context.generation, now_s=monotonic_s()
+        )
+        decision_ms = (monotonic_s() - decision_started) * 1000.0
+        processed += 1
+
+        capture.note_perception_ms(result.perception_ms)
+        capture.note_decision_ms(decision_ms)
+        capture.note_end_to_end_ms(frame.age_s(monotonic_s()) * 1000.0)
+
+        observation = pipeline.diagnostic(frame, result, decision, decision_ms=decision_ms)
+        context.on_observation(observation)
+        context.on_phase(decision.phase)
+
+        if apply is not None and apply(decision, envelope):
+            applied += 1
+        if decision.phase is NavigationPhase.ARRIVED:
+            terminal = (ModeResultKind.ARRIVED, "arrival confirmed")
+            break
+        if decision.phase is NavigationPhase.ABANDONED:
+            terminal = (ModeResultKind.ABANDONED, decision.reason)
+            break
+
+    if terminal is not None:
+        return (processed, applied, terminal[0], terminal[1])
+    kind = (
+        ModeResultKind.CANCELLED
+        if context.cancellation.is_cancelled()
+        else ModeResultKind.COMPLETED
+    )
+    return (processed, applied, kind, f"{processed} frames processed")
+
+
 def make_shadow_worker(
     pipeline_factory: Callable[[], PerceptionPipeline],
     gates: NavigationGates,
     *,
     max_ticks: int | None = None,
-    tick_interval_s: float = 0.05,
 ) -> Callable[[WorkerContext], ModeResult]:
     """Shadow: the full decision path through a ``NoInputSession``.
 
@@ -628,39 +867,32 @@ def make_shadow_worker(
     """
 
     def worker(context: WorkerContext) -> ModeResult:
-        pipeline = pipeline_factory()
+        pipeline = context.pipeline or pipeline_factory()
         navigator = Navigator(gates=gates)
         observer = context.observer
-        ticks = 0
-        proposed = 0
-        while not context.cancellation.is_cancelled():
-            if max_ticks is not None and ticks >= max_ticks:
-                break
-            ticks += 1
-            envelope = context.frames.latest()
-            if envelope is None:
-                if context.cancellation.wait(tick_interval_s):
-                    break
-                continue
-            inputs = pipeline.observe(envelope.frame, map_id="shadow", approach_valid=False)
-            decision = navigator.decide(
-                inputs, generation=context.generation, now_s=monotonic_s()
-            )
-            context.on_phase(decision.phase)
-            if decision.command is not None and observer is not None:
-                observer.propose(decision.command)
-                proposed += 1
-                context.on_status(f"WOULD_APPLY {decision.command.reason}")
-            else:
+
+        def record(decision: NavigationDecision, envelope: Any) -> bool:
+            del envelope
+            if decision.command is None or observer is None:
                 context.on_status(f"{decision.phase.name}: {decision.reason}")
-            if context.cancellation.wait(tick_interval_s):
-                break
+                return False
+            observer.propose(decision.command)
+            context.on_status(f"WOULD_APPLY {decision.command.reason}")
+            return True
+
+        processed, proposed, kind, detail = _run_observer_loop(
+            context,
+            pipeline,
+            navigator,
+            map_id="shadow",
+            approach_valid=False,
+            max_ticks=max_ticks,
+            apply=record,
+        )
         return ModeResult(
-            ModeResultKind.CANCELLED
-            if context.cancellation.is_cancelled()
-            else ModeResultKind.COMPLETED,
-            f"shadow observed {ticks} ticks, {proposed} proposed commands",
-            evidence=(f"ticks={ticks}", f"proposed={proposed}"),
+            kind,
+            f"shadow observed {processed} frames, {proposed} proposed commands ({detail})",
+            evidence=(f"frames={processed}", f"proposed={proposed}"),
         )
 
     return worker
@@ -669,14 +901,12 @@ def make_shadow_worker(
 def make_live_worker(
     pipeline_factory: Callable[[], PerceptionPipeline],
     gates: NavigationGates,
-    *,
-    tick_interval_s: float = 0.05,
 ) -> Callable[[WorkerContext], ModeResult]:
     """Live navigation. Refuses to steer while its gates are pending.
 
-    This is the whole point of the gate structure: the code path exists, is
-    reviewable, and is exercised in Shadow, but it will not emit a movement
-    command until the evidence for that OS/profile/condition says it may.
+    This is the point of the gate structure: the path exists, is reviewable,
+    and is exercised in Shadow, but it will not emit a movement command until
+    the evidence for that OS, profile, and condition says it may.
     """
 
     def worker(context: WorkerContext) -> ModeResult:
@@ -693,38 +923,31 @@ def make_live_worker(
                 evidence=gates.blocking_reasons(),
             )
 
-        pipeline = pipeline_factory()
+        pipeline = context.pipeline or pipeline_factory()
         navigator = Navigator(gates=gates)
-        applied = 0
-        while not context.cancellation.is_cancelled():
-            envelope = context.frames.latest()
-            if envelope is None:
-                if context.cancellation.wait(tick_interval_s):
-                    break
-                continue
-            inputs = pipeline.observe(envelope.frame, map_id="live", approach_valid=True)
-            decision = navigator.decide(
-                inputs, generation=context.generation, now_s=monotonic_s()
-            )
-            context.on_phase(decision.phase)
+
+        def apply(decision: NavigationDecision, envelope: Any) -> bool:
             if decision.release or decision.command is None:
                 session.release_navigation(decision.reason)
-            else:
-                result = session.apply_navigation_command(
-                    decision.command, envelope.evidence_token
-                )
-                if result.applied:
-                    applied += 1
-                else:
-                    session.release_navigation(f"apply-rejected:{result.detail}")
-            if decision.phase is NavigationPhase.ARRIVED:
-                return ModeResult(ModeResultKind.ARRIVED, "arrival confirmed")
-            if decision.phase is NavigationPhase.ABANDONED:
-                session.release_navigation("abandoned")
-                return ModeResult(ModeResultKind.ABANDONED, decision.reason)
-            if context.cancellation.wait(tick_interval_s):
-                break
+                return False
+            outcome = session.apply_navigation_command(
+                decision.command, envelope.evidence_token
+            )
+            if outcome.applied:
+                return True
+            session.release_navigation(f"apply-rejected:{outcome.detail}")
+            return False
+
+        processed, applied, kind, detail = _run_observer_loop(
+            context,
+            pipeline,
+            navigator,
+            map_id="live",
+            approach_valid=True,
+            max_ticks=None,
+            apply=apply,
+        )
         session.release_navigation("worker-exit")
-        return ModeResult(ModeResultKind.CANCELLED, f"live cancelled after {applied} commands")
+        return ModeResult(kind, f"live: {applied} commands over {processed} frames ({detail})")
 
     return worker

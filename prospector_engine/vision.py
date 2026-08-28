@@ -27,6 +27,7 @@ from numpy.typing import NDArray
 
 from prospector_engine.contracts import (
     ArrivalObservation,
+    ArrowCandidateRecord,
     ArrowObservation,
     CapturedFrame,
     DirectionObservation,
@@ -214,10 +215,23 @@ class ArrowSegmenter:
     def profile(self) -> ArrowProfile:
         return self._profile
 
-    def mask_for(self, frame: CapturedFrame) -> NDArray[Any]:
+    def mask_for(
+        self, frame: CapturedFrame, roi_px: tuple[int, int, int, int] | None = None
+    ) -> NDArray[Any]:
+        """Build the candidate mask, optionally over a region of interest only.
+
+        Restricting to an ROI around a confident track is the single largest
+        saving in the perception budget: a quarter-area ROI costs roughly a
+        quarter of the blur, threshold, morphology, and labelling work. The
+        caller is responsible for periodically going back to the full frame so
+        a track cannot quietly follow the wrong thing forever.
+        """
         import cv2
 
         bgr: NDArray[Any] = np.asarray(frame.bgr)
+        if roi_px is not None:
+            x, y, width, height = roi_px
+            bgr = np.ascontiguousarray(bgr[y : y + height, x : x + width])
         if self._config.blur_ksize > 1:
             k = self._config.blur_ksize | 1
             bgr = np.asarray(cv2.GaussianBlur(bgr, (k, k), 0))
@@ -243,8 +257,14 @@ class ArrowSegmenter:
         else:  # pragma: no cover - guarded by the profile schema
             raise ValueError(f"unknown profile rule {rule!r}")
 
-        for x, y, width, height in self._config.exclusion_regions_px:
-            mask[y : y + height, x : x + width] = 0
+        if roi_px is None:
+            for x, y, width, height in self._config.exclusion_regions_px:
+                mask[y : y + height, x : x + width] = 0
+        else:
+            offset_x, offset_y = roi_px[0], roi_px[1]
+            for x, y, width, height in self._config.exclusion_regions_px:
+                local_x, local_y = x - offset_x, y - offset_y
+                mask[max(0, local_y) : local_y + height, max(0, local_x) : local_x + width] = 0
         if self._config.morph_ksize > 1:
             k = self._config.morph_ksize | 1
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -253,12 +273,16 @@ class ArrowSegmenter:
         result: NDArray[Any] = mask.astype(np.uint8)
         return result
 
-    def candidates(self, frame: CapturedFrame) -> list[ArrowCandidate]:
+    def candidates(
+        self, frame: CapturedFrame, roi_px: tuple[int, int, int, int] | None = None
+    ) -> list[ArrowCandidate]:
         import cv2
 
-        mask = self.mask_for(frame)
+        mask = self.mask_for(frame, roi_px)
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
         height, width = mask.shape[:2]
+        offset_x, offset_y = (roi_px[0], roi_px[1]) if roi_px else (0, 0)
+        full_w, full_h = frame.canonical_size_px
         found: list[ArrowCandidate] = []
         for label in range(1, count):
             area = int(stats[label, cv2.CC_STAT_AREA])
@@ -271,14 +295,30 @@ class ArrowSegmenter:
             aspect = w / h if h else 0.0
             if not self._profile.min_aspect <= aspect <= self._profile.max_aspect:
                 continue
-            clipped = x <= 0 or y <= 0 or x + w >= width or y + h >= height
+            # Clipping is judged against the *full* frame: touching an ROI
+            # edge is expected and says nothing about the arrow.
+            global_x, global_y = x + offset_x, y + offset_y
+            clipped = (
+                global_x <= 0
+                or global_y <= 0
+                or global_x + w >= full_w
+                or global_y + h >= full_h
+            )
+            component = (labels == label).astype(np.uint8) * 255
+            if roi_px is not None:
+                placed = np.zeros((full_h, full_w), dtype=np.uint8)
+                placed[offset_y : offset_y + height, offset_x : offset_x + width] = component
+                component = placed
             found.append(
                 ArrowCandidate(
                     label=label,
                     area_px=area,
-                    bbox_px=(x, y, w, h),
-                    centroid_px=(float(centroids[label][0]), float(centroids[label][1])),
-                    mask=(labels == label).astype(np.uint8) * 255,
+                    bbox_px=(global_x, global_y, w, h),
+                    centroid_px=(
+                        float(centroids[label][0]) + offset_x,
+                        float(centroids[label][1]) + offset_y,
+                    ),
+                    mask=component,
                     touches_exclusion=False,
                     clipped=clipped,
                 )
@@ -286,39 +326,106 @@ class ArrowSegmenter:
         found.sort(key=lambda candidate: candidate.area_px, reverse=True)
         return found
 
-    def observe(self, frame: CapturedFrame) -> ArrowObservation:
-        """Strict global acquisition with an explicit ambiguity abstention."""
-        if frame.capture_error is not None:
-            return _abstain(self._profile.profile_id, f"capture-error:{frame.capture_error}")
-        if not frame.geometry.valid:
-            return _abstain(self._profile.profile_id, "viewport-invalid")
-        if tuple(frame.canonical_size_px) != tuple(self._profile.supported_client_size_px):
-            return _abstain(self._profile.profile_id, "unsupported-viewport-size")
+    def contour_of(self, candidate: ArrowCandidate) -> tuple[tuple[int, int], ...]:
+        """The accepted blob's outline, decimated for drawing.
 
-        found = self.candidates(frame)
+        The overlay draws the real detected shape rather than a bounding box,
+        because a box cannot show *why* a candidate was accepted or what the
+        mask actually latched onto.
+        """
+        import cv2
+
+        contours, _hierarchy = cv2.findContours(
+            candidate.mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            return ()
+        largest = max(contours, key=cv2.contourArea)
+        epsilon = 0.005 * cv2.arcLength(largest, True)
+        simplified = cv2.approxPolyDP(largest, max(1.0, epsilon), True)
+        return tuple((int(point[0][0]), int(point[0][1])) for point in simplified)
+
+    def observe_detailed(
+        self, frame: CapturedFrame, roi_px: tuple[int, int, int, int] | None = None
+    ) -> tuple[ArrowObservation, tuple[ArrowCandidateRecord, ...], tuple[tuple[int, int], ...]]:
+        """Acquisition plus the record of everything considered and rejected.
+
+        "No arrow" and "four arrows, all plausible" look identical in a boolean
+        but need opposite fixes, so the rejected candidates and their reasons
+        come out alongside the decision - derived from the *same* segmentation
+        pass, not a second one.
+        """
+        observation, found = self._analyze(frame, roi_px)
+        records: list[ArrowCandidateRecord] = []
+        contour: tuple[tuple[int, int], ...] = ()
+        accepted_bbox = observation.bbox_px if observation.valid else None
+        for candidate in found:
+            is_accepted = accepted_bbox is not None and candidate.bbox_px == accepted_bbox
+            records.append(
+                ArrowCandidateRecord(
+                    label=candidate.label,
+                    area_px=candidate.area_px,
+                    bbox_px=candidate.bbox_px,
+                    centroid_px=candidate.centroid_px,
+                    score=_confidence_for(candidate, self._profile),
+                    accepted=is_accepted,
+                    rejected_reason=(
+                        None
+                        if is_accepted
+                        else (observation.abstain_reason or "not the best candidate")
+                    ),
+                )
+            )
+            if is_accepted:
+                contour = self.contour_of(candidate)
+        return (observation, tuple(records), contour)
+
+    def observe(
+        self, frame: CapturedFrame, roi_px: tuple[int, int, int, int] | None = None
+    ) -> ArrowObservation:
+        """Strict global acquisition with an explicit ambiguity abstention."""
+        return self._analyze(frame, roi_px)[0]
+
+    def _analyze(
+        self, frame: CapturedFrame, roi_px: tuple[int, int, int, int] | None
+    ) -> tuple[ArrowObservation, list[ArrowCandidate]]:
+        """One segmentation pass, shared by every caller."""
+        if frame.capture_error is not None:
+            return (
+                _abstain(self._profile.profile_id, f"capture-error:{frame.capture_error}"),
+                [],
+            )
+        if not frame.geometry.valid:
+            return (_abstain(self._profile.profile_id, "viewport-invalid"), [])
+        if tuple(frame.canonical_size_px) != tuple(self._profile.supported_client_size_px):
+            return (_abstain(self._profile.profile_id, "unsupported-viewport-size"), [])
+
+        found = self.candidates(frame, roi_px)
         if not found:
-            return _abstain(self._profile.profile_id, "no-candidate")
+            return (_abstain(self._profile.profile_id, "no-candidate"), found)
         best = found[0]
         if len(found) > 1:
             runner_up = found[1]
             ratio = runner_up.area_px / best.area_px if best.area_px else 1.0
             if ratio > 1.0 - self._config.ambiguity_margin:
-                return _abstain(self._profile.profile_id, "ambiguous-candidates")
+                return (_abstain(self._profile.profile_id, "ambiguous-candidates"), found)
         if best.clipped:
-            return _abstain(self._profile.profile_id, "candidate-clipped")
+            return (_abstain(self._profile.profile_id, "candidate-clipped"), found)
 
         axis, tip = _principal_axis_and_tip(best)
-        confidence = _confidence_for(best, self._profile)
-        return ArrowObservation(
-            profile_id=self._profile.profile_id,
-            track_id=None,
-            bbox_px=best.bbox_px,
-            centroid_px=best.centroid_px,
-            tip_px=tip,
-            axis_unit_xy=axis,
-            confidence=confidence,
-            valid=True,
-            abstain_reason=None,
+        return (
+            ArrowObservation(
+                profile_id=self._profile.profile_id,
+                track_id=None,
+                bbox_px=best.bbox_px,
+                centroid_px=best.centroid_px,
+                tip_px=tip,
+                axis_unit_xy=axis,
+                confidence=_confidence_for(best, self._profile),
+                valid=True,
+                abstain_reason=None,
+            ),
+            found,
         )
 
 

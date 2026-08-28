@@ -23,6 +23,7 @@ from typing import Any
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
     Cancellation,
+    DiagnosticObservation,
     EvidenceStatus,
     IntentType,
     ModeResult,
@@ -47,6 +48,7 @@ from prospector_engine.input_authority import (
 from prospector_engine.telemetry import (
     AppPaths,
     EventLog,
+    LatestSlot,
     TelemetryHub,
     clear_recovery_record,
     read_recovery_record,
@@ -175,8 +177,12 @@ class WorkerContext:
     navigation: NavigationInputSession | None = None
     service: ServiceInputSession | None = None
     intent: RuntimeIntent | None = None
+    #: The live perception pipeline, so a profile change in the UI reaches the
+    #: running worker instead of only affecting the next one.
+    pipeline: Any = None
     on_status: Callable[[str], None] = lambda _message: None
     on_phase: Callable[[NavigationPhase | None], None] = lambda _phase: None
+    on_observation: Callable[[DiagnosticObservation], None] = lambda _observation: None
 
 
 #: A mode worker is any callable that takes the narrow context and returns a
@@ -213,6 +219,7 @@ class RuntimeCoordinator:
         hub: TelemetryHub | None = None,
         events: EventLog | None = None,
         paths: AppPaths | None = None,
+        pipeline_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._authority = authority
         self._guard = guard
@@ -223,6 +230,13 @@ class RuntimeCoordinator:
         self._hub = hub or TelemetryHub()
         self._events = events or EventLog()
         self._paths = paths
+        self._pipeline_provider = pipeline_provider
+        # A dedicated channel, deliberately not the emit-on-change hub: a
+        # per-frame observation must publish for every processed frame, and
+        # change-suppression would silently drop identical consecutive ones
+        # (mission section 7).
+        self._observations: LatestSlot[DiagnosticObservation] = LatestSlot()
+        self._observation_count = 0
 
         self._queue: list[_QueueItem] = []
         self._queue_lock = threading.Condition()
@@ -269,6 +283,19 @@ class RuntimeCoordinator:
     @property
     def hub(self) -> TelemetryHub:
         return self._hub
+
+    @property
+    def observations(self) -> LatestSlot[DiagnosticObservation]:
+        """Latest per-frame diagnostic. Capacity one, drop-oldest, never suppressed."""
+        return self._observations
+
+    @property
+    def observation_count(self) -> int:
+        return self._observation_count
+
+    def _publish_observation(self, observation: DiagnosticObservation) -> None:
+        self._observation_count += 1
+        self._observations.publish(observation)
 
     @property
     def events(self) -> EventLog:
@@ -618,8 +645,10 @@ class RuntimeCoordinator:
                 else None
             ),
             intent=intent,
+            pipeline=self._pipeline_provider() if self._pipeline_provider else None,
             on_status=lambda message: self._events.add("worker.status", message),
             on_phase=self._set_phase,
+            on_observation=self._publish_observation,
         )
         self._worker_cancel = cancellation
         self._worker_id = worker_id
@@ -722,6 +751,9 @@ class RuntimeCoordinator:
     def _set_phase(self, phase: NavigationPhase | None) -> None:
         self._phase = phase
 
+    def clear_observations(self) -> None:
+        self._observations.take()
+
     # -- readiness and telemetry -----------------------------------------
     def readiness(self) -> Readiness:
         geometry = self._guard.check()
@@ -788,17 +820,18 @@ class RuntimeCoordinator:
         )
         if metrics.degraded_reason:
             warnings.append(f"DEGRADED: {metrics.degraded_reason}")
+        observation = self._observations.peek()
         self._hub.publish(
             TelemetrySnapshot(
                 sequence=0,
                 mode=self._mode,
                 phase=self._phase,
                 viewport=self._guard.geometry,
-                arrow=None,
-                direction=None,
-                motion=None,
-                arrival=None,
-                command=None,
+                arrow=None if observation is None else observation.arrow,
+                direction=None if observation is None else observation.direction,
+                motion=None if observation is None else observation.motion,
+                arrival=None if observation is None else observation.arrival,
+                command=None if observation is None else observation.command,
                 ledger_empty=readiness.ledger_empty,
                 focus=self._authority._health.focus(),
                 frame_age_ms=age_ms,

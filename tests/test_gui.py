@@ -97,9 +97,12 @@ def _collect_label_text(widget: tk.Misc) -> list[str]:
     return texts
 
 
-def test_the_pending_pixel_status_is_visible_in_the_ui(dashboard: Any) -> None:
+def test_the_shadow_view_explains_what_the_overlay_shows(dashboard: Any) -> None:
     joined = " ".join(_collect_label_text(dashboard.root))
-    assert "PENDING reverification" in joined
+    assert "assumed player-forward reference" in joined
+    assert "E-FORWARD PENDING" in joined
+    assert "desired map-arrow direction" in joined
+    assert "rejected candidates" in joined
 
 
 def test_automatic_profile_classification_is_shown_as_disabled(dashboard: Any) -> None:
@@ -118,7 +121,7 @@ def test_the_recovery_button_is_hidden_until_release_is_uncertain(dashboard: Any
         dashboard.app.coordinator._publish_telemetry()
         snapshot = dashboard.app.coordinator.snapshot()
     assert snapshot is not None
-    dashboard._render(snapshot)
+    dashboard._render_status(snapshot)
     dashboard.root.update_idletasks()
 
     assert dashboard.recover_button.winfo_manager() == "grid"

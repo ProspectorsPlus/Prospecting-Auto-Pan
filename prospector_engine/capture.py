@@ -330,6 +330,7 @@ class CadenceGovernor:
         self._healthy_since_s: float | None = None
         self._reason: str | None = None
         self._changes = 0
+        self._consecutive_bad = 0
 
     @property
     def tier(self) -> PerformanceTier:
@@ -350,15 +351,26 @@ class CadenceGovernor:
         self, *, unique_fps: float, frame_age_ms: float | None, now_s: float
     ) -> PerformanceTier:
         target = float(self._tier.fps)
+        if unique_fps <= 0.0:
+            # No measurement yet - starting up, or between sessions. Judging a
+            # tier on an empty window would downshift a healthy pipeline before
+            # it has delivered its first frame.
+            return self._tier
         keeping_up = unique_fps >= target * self._config.downshift_ratio
         fresh = frame_age_ms is None or frame_age_ms <= self._config.max_frame_age_ms
 
         if not keeping_up or not fresh:
             self._healthy_since_s = None
-            index = self._index()
-            if index > 0:
-                self._tier = self.LADDER[index - 1]
-                self._changes += 1
+            self._consecutive_bad += 1
+            # Two consecutive bad polls, so a single transient - a window
+            # resize, a garbage collection, the first frames after start - does
+            # not knock a healthy pipeline down a tier.
+            if self._consecutive_bad >= 2:
+                self._consecutive_bad = 0
+                index = self._index()
+                if index > 0:
+                    self._tier = self.LADDER[index - 1]
+                    self._changes += 1
             self._reason = (
                 f"unique {unique_fps:.0f}/s below {target:.0f}/s"
                 if not keeping_up
@@ -368,6 +380,7 @@ class CadenceGovernor:
                 self._reason = None
             return self._tier
 
+        self._consecutive_bad = 0
         self._reason = None
         if self._healthy_since_s is None:
             self._healthy_since_s = now_s

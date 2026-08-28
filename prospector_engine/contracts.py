@@ -823,10 +823,10 @@ class DiagnosticObservation:
     expected to check them rather than assume freshness.
     """
 
-    frame_sequence: int
-    content_id: int | None
-    geometry: ViewportGeometry
-    captured_at_s: float
+    #: The exact frame this was derived from. Holding it - rather than a copy
+    #: of its identifiers - is what makes it impossible for the preview to draw
+    #: observation N over frame N+1.
+    frame: CapturedFrame
     processed_at_s: float
     published_at_s: float
 
@@ -843,6 +843,10 @@ class DiagnosticObservation:
     forward_source: str
     desired_deg: float | None
     direction: DirectionObservation
+    #: Every candidate cue evaluated on this frame, not only the selected one.
+    #: Seeing which cues agree is the whole diagnostic value of E-DIR-IDEAL,
+    #: and a fusion abstention is far more informative next to its components.
+    cues: tuple[tuple[str, DirectionObservation], ...]
     motion: MotionObservation | None
     arrival: ArrivalObservation | None
 
@@ -855,8 +859,24 @@ class DiagnosticObservation:
     decision_ms: float = 0.0
 
     @property
+    def frame_sequence(self) -> int:
+        return self.frame.sequence
+
+    @property
+    def content_id(self) -> int | None:
+        return self.frame.content_id
+
+    @property
+    def geometry(self) -> ViewportGeometry:
+        return self.frame.geometry
+
+    @property
+    def captured_at_s(self) -> float:
+        return self.frame.captured_at_s
+
+    @property
     def age_s(self) -> float:
-        return monotonic_s() - self.captured_at_s
+        return monotonic_s() - self.frame.captured_at_s
 
     @property
     def signed_error_deg(self) -> float | None:
