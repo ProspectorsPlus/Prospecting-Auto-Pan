@@ -271,3 +271,31 @@ is not `DIG_PROGRESS` or a successful pan swap.
 reverification (D-006). With the canonical client pin they will simply not
 match, so the service reports `CUE_LOST` and does nothing. That is the correct
 failure — re-derive them with `--calibrate` first.
+
+---
+
+## D-016 — 2026-08-27 — `input_authority.py` stays one module at ~1200 lines
+
+**Plan text:** §13.1 says to split a module "only if it becomes genuinely
+difficult to review (for example, substantially beyond roughly 800 cohesive
+lines…), and document the reason."
+
+**Decision:** keep it as one module, and document *that* instead.
+
+**Why:** §13.1 also assigns this module its contents explicitly — "capability
+sessions, ledger, watchdog, deadman client, global release" — so splitting it
+would contradict the same section. More importantly, those pieces are not
+independent: the lock ordering (`_edge_barrier` → `_lock`), the epoch, the
+admission gate, and the ACK-before-down sequence are one invariant that the
+ledger, the sessions, the watchdog, and the release floor all participate in.
+Putting a module boundary through the middle of it would reintroduce exactly
+the multi-owner ambiguity that bugs B7 and B8 were about, and would make the
+boundary look like an interface when it is really one atomic protocol.
+
+The line count is also inflated by the invariant documentation that makes it
+reviewable at all: roughly a third of the file is docstrings and comments that
+explain the ordering rules and cite the bug IDs.
+
+If it does grow further, the honest seam is `DeadmanClient` — the parent side
+of an out-of-process protocol that shares no state with the authority — not the
+sessions or the ledger.

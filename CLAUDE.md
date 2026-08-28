@@ -130,8 +130,10 @@ no input, but they do need Screen Recording permission.
   exceptions safe-stop at the coordinator boundary; they never escape into
   a thread with a held input.
 - Every retry loop has **both** an attempt cap and a monotonic deadline.
-- Tuned numbers live in typed config with provenance
-  (`prospector_engine/profiles/`), never as bare literals in logic.
+- Tuned numbers live in a frozen config dataclass that carries a
+  `Provenance` field (`AuthorityConfig`, `SteeringConfig`, `TreasurePixels`,
+  …), never as bare literals in logic. Versioned package data lives in
+  `prospector_engine/profiles/`. A test enforces the provenance rule.
 - Docstrings state invariants and failure behavior. Comments explain why a
   constraint exists and cite the bug or experiment ID (`B7`, `E-MOTION`).
 
@@ -158,3 +160,6 @@ condition whose gate passed. Aggregate passes never cover a failing stratum.
 - `DECISIONS.md` — short dated log of local implementation decisions and
   their rationale.
 - `STATUS.md` — per-phase local / macOS / Windows gate status.
+
+Note: `ruff format` rewrites Python blocks inside Markdown, so `*.md` is
+excluded in `pyproject.toml`. The plan must never be reformatted.
