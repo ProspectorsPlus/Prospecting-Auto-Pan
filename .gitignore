@@ -105,3 +105,23 @@ onboarding.log.1
 # live user data of a source run from the windows/ mirror (keeps the
 # tracked sanitized default config pristine)
 windows/.devdata/
+
+# ---- Treasure Navigator ------------------------------------------------------
+# User-owned Python 3.8 venv backup. Listed only so it can never be staged by
+# accident; it is never read, moved, or deleted (plan 2, 18.3).
+.venv-python38-backup/
+.venv/
+
+# Raw evidence recordings stay local. Only manually reviewed, sanitized
+# fixtures may enter git (plan 11.1).
+recordings/
+evidence/
+*.npz
+!tests/fixtures/**/*.npz
+
+# Local evaluation output and frozen-spec working copies.
+evaluation_runs/
+
+# Build output for the packaged app.
+packaging/build/
+packaging/dist/

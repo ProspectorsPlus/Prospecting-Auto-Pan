@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prospector-treasure"
+version = "0.5.0"
+description = "Treasure Navigator - arrow-guided closed-loop Roblox treasure macro"
+readme = "README.md"
+# Observed fact: the suite runs on CPython 3.13.15 (macOS arm64, Tk 9.0) in
+# this worktree. Plan section 17 forbids declaring a support range before it is
+# verified, and the numpy 2.5 stubs this project typechecks against already
+# require 3.12+, so the floor stays at the only interpreter actually exercised.
+# Widening to 3.11/3.12 is PENDING a real run on those interpreters.
+requires-python = ">=3.13"
+license = { text = "UNLICENSED" }   # G-LICENSE (plan 15) is unresolved.
+authors = [{ name = "Prospectors Plus" }]
+classifiers = ["Private :: Do Not Upload"]
+
+dependencies = [
+    "numpy>=1.26",
+    "mss>=9.0",
+    "opencv-python-headless>=4.9",
+    "Pillow>=10.0",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+    "pynput>=1.7; sys_platform == 'darwin'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.2",
+    "hypothesis>=6.90",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "pip-tools>=7.4",
+    "pyinstaller>=6.6",
+]
+
+[project.scripts]
+treasure = "treasure:main"
+
+[tool.setuptools]
+packages = ["prospector_engine"]
+py-modules = ["treasure", "treasure_gui", "deadman"]
+
+[tool.setuptools.package-data]
+prospector_engine = ["profiles/*.json", "assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Every test is bounded: a hung lease/worker test must fail, not wedge CI.
+timeout = 60
+markers = [
+    "native: physically emits OS input or needs real Roblox/hardware; skipped by default",
+    "slow: multi-second deterministic timing test",
+]
+filterwarnings = ["error::DeprecationWarning:prospector_engine.*"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py313"
+extend-exclude = [".venv", ".venv-python38-backup", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF"]
+ignore = [
+    "SIM108",  # ternaries are not always clearer than an if/else block
+    "B008",    # dataclass field defaults are handled by dataclasses
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501"]
+"prospector_engine/platform_win.py" = ["N802"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+exclude = "(^\\.venv|^\\.venv-python38-backup|^build|^dist)"
+
+[[tool.mypy.overrides]]
+# Third-party packages without bundled stubs.
+module = ["mss.*", "cv2.*", "Quartz.*", "ApplicationServices.*", "AppKit.*", "pynput.*", "PIL.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `ctypes.windll` and `ctypes.WINFUNCTYPE` only exist on Windows, so checking
+# this module from macOS reports them as missing attributes. The module is
+# still fully annotated and type-checked; only those two Win32-only names are
+# exempt. Re-run mypy on Windows to check them for real (native gate PENDING).
+module = "prospector_engine.platform_win"
+disable_error_code = ["attr-defined", "untyped-decorator"]

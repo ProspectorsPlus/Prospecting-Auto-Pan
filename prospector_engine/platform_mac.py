@@ -1,503 +1,620 @@
-"""macOS platform layer for the Prospector Engine [Phase 04 C7].
+"""macOS platform port: Quartz input, AX window geometry, pynput hotkeys.
 
-Everything here is macOS-specific I/O: Quartz input synthesis, window lookup,
-retina scale, the pynput hotkey listener, and the calibration-log labeler.
-The engine module re-exports these names into its own namespace, so tests and
-the sim world keep patching the ENGINE module; platform code reads engine
-state and patchable seams (config globals, ``_cursor_point``/``_post``,
-``request_*`` entries) back through ``bind()`` so those patches intercept
-platform behavior too. One engine process binds one engine module at a time
-(sequential fresh-module loads, as the harnesses do, are fine).
+Instance based, with no module-global engine binding and no authoritative held
+input state - both of those belong to :class:`~prospector_engine.input_authority.InputAuthority`
+(bugs B1, B7, B8, B10).
+
+The canonical geometry this port publishes is the Roblox **client area**, not
+the window frame (bug B11). macOS gives us the outer frame; the title-bar
+height is *measured* from the window's own traffic-light geometry rather than
+assumed, with a documented provisional fallback when Accessibility cannot see
+those elements.
 """
+
+from __future__ import annotations
+
+import contextlib
+import os
 import sys
+import threading
+from collections.abc import Callable
+from typing import Any
 
-try:
-    import numpy as np
-    import mss
-    import Quartz
-    import ApplicationServices as _AS
-except ImportError as e:
-    sys.exit(
-        f"Missing dependency: {e}\n"
-        "Install with:\n"
-        "  pip3 install pyobjc-framework-Quartz pyobjc-framework-ApplicationServices "
-        "mss numpy pynput --break-system-packages"
+if sys.platform != "darwin" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"):
+    raise ImportError(
+        "prospector_engine.platform_mac may only be imported on macOS. "
+        "Set TREASURE_ALLOW_CROSS_PLATFORM_IMPORT=1 with mocked Quartz modules "
+        "to run the opposite-OS import contract test (plan 16.3)."
     )
-# [C8] pynput is needed only by the ENGINE's hotkey listener. A host app
-# embedding the calibration sensing library must not die at import time
-# in an install whose pip set lacks pynput (ISS-131): the failure moves
-# to make_listener(), which the engine process reaches at startup --
-# still loud, same message, before any input is sent.
+
 try:
-    from pynput import keyboard
-except ImportError as _pynput_err:
-    keyboard = None
-    _PYNPUT_ERR = _pynput_err
+    import Quartz
+except ImportError as exc:  # pragma: no cover - install-time failure
+    raise ImportError(
+        "prospector_engine.platform_mac requires pyobjc-framework-Quartz "
+        f"({exc}). Install with: pip install -e '.[dev]'"
+    ) from exc
 
-# Use the non-deprecated MSS class when available (falls back on old name).
-_MSS = getattr(mss, "MSS", None) or mss.mss
+from prospector_engine.contracts import (
+    ClientRectPhysicalPx,
+    FocusState,
+    InputKey,
+    InputVocabulary,
+    IntentType,
+    MouseButton,
+    PinResult,
+    Provenance,
+    RuntimeIntent,
+    monotonic_s,
+)
 
-_eng = None
+__all__ = [
+    "MAC_HOTKEY_BINDINGS",
+    "TITLE_BAR_FALLBACK_PT",
+    "MacHotkeySource",
+    "MacPlatformPort",
+    "MacReleaseOnlyPort",
+]
 
+# macOS ANSI virtual keycodes for the whole input vocabulary. These are the
+# same numbers the legacy V3_KEYCODES table used; only the lookup moved.
+_MAC_KEYCODES: dict[InputKey, int] = {
+    InputKey.W: 13,
+    InputKey.A: 0,
+    InputKey.S: 1,
+    InputKey.D: 2,
+    InputKey.SPACE: 49,
+    InputKey.SHIFT: 56,
+    InputKey.ESCAPE: 53,
+    InputKey.DIGIT_1: 18,
+    InputKey.DIGIT_2: 19,
+}
 
-def bind(engine_module):
-    """Receive the engine module; platform code resolves engine state and
-    patchable seams through it at call time."""
-    global _eng
-    _eng = engine_module
+_MAC_BUTTON_EVENTS: dict[MouseButton, tuple[int, int, int, int]] = {
+    # (down, up, dragged, CGMouseButton)
+    MouseButton.LEFT: (
+        Quartz.kCGEventLeftMouseDown,
+        Quartz.kCGEventLeftMouseUp,
+        Quartz.kCGEventLeftMouseDragged,
+        Quartz.kCGMouseButtonLeft,
+    ),
+    MouseButton.RIGHT: (
+        Quartz.kCGEventRightMouseDown,
+        Quartz.kCGEventRightMouseUp,
+        Quartz.kCGEventRightMouseDragged,
+        Quartz.kCGMouseButtonRight,
+    ),
+    MouseButton.MIDDLE: (
+        Quartz.kCGEventOtherMouseDown,
+        Quartz.kCGEventOtherMouseUp,
+        Quartz.kCGEventOtherMouseDragged,
+        Quartz.kCGMouseButtonCenter,
+    ),
+}
 
+TITLE_BAR_FALLBACK_PT = 28.0
+"""Provisional standard-window title-bar height in points.
 
-# --- Keys (macOS ANSI virtual keycodes) --------------------------------------
-KEY_W = 13
-KEY_S = 1
-KEY_A = 0
-KEY_D = 2
-KEY_SHIFT = 56          # left Shift (open Fast Travel)
-KEY_SPACE = 49          # Space (jump; Studio scripts)
-# Hotbar slot number -> macOS virtual keycode (digits 1..0).
-SLOT_KEYCODES = {1: 18, 2: 19, 3: 20, 4: 21, 5: 23,
-                 6: 22, 7: 26, 8: 28, 9: 25, 0: 29}
+Only used when Accessibility cannot expose the window's close button. The
+measured value for the live Roblox client on the development Mac
+(2026-08-27, macOS 25.4, 2x display) was exactly 28.0 pt, derived as
+``2 * (close_button_y - frame_y) + close_button_height``.
+"""
 
-# --- Hotkeys -----------------------------------------------------------------
-# Toggle start/stop = Ctrl + (TOGGLE_VK).  Quit = Esc.
-# F-keys are unreliable on macOS (media keys), so we use a Ctrl chord.
-# TOGGLE_VK is the macOS virtual keycode of the second key: K=40, J=38, P=35.
-TOGGLE_VK = 40          # 'K'  -> Ctrl+K toggles
-TOGGLE_NAME = "Ctrl+K"
-SOFTSTOP_VK = 38        # 'J' -> Ctrl+J = manual soft-stop (test)
-_CODE_VK_MAC = {"KeyA":0,"KeyB":11,"KeyC":8,"KeyD":2,"KeyE":14,"KeyF":3,"KeyG":5,"KeyH":4,"KeyI":34,"KeyJ":38,"KeyK":40,"KeyL":37,"KeyM":46,"KeyN":45,"KeyO":31,"KeyP":35,"KeyQ":12,"KeyR":15,"KeyS":1,"KeyT":17,"KeyU":32,"KeyV":9,"KeyW":13,"KeyX":7,"KeyY":16,"KeyZ":6,"Digit1":18,"Digit2":19,"Digit3":20,"Digit4":21,"Digit5":23,"Digit6":22,"Digit7":26,"Digit8":28,"Digit9":25,"Digit0":29,"Escape":53,"Space":49,"F1":122,"F2":120,"F3":99,"F4":118,"F5":96,"F6":97,"F7":98,"F8":100,"F9":101,"F10":109,"F11":103,"F12":111}
+TITLE_BAR_PROVENANCE = Provenance(
+    status=__import__(
+        "prospector_engine.contracts", fromlist=["EvidenceStatus"]
+    ).EvidenceStatus.PROVISIONAL,
+    source="platform_mac.MacPlatformPort._measure_title_bar_pt fallback",
+    note="measured 28.0 pt on the dev Mac; E-VIEW on macOS is PENDING",
+)
 
+MAC_HOTKEY_BINDINGS: dict[str, IntentType] = {
+    "f1": IntentType.START_LIVE,
+    "f2": IntentType.STOP,
+    "f3": IntentType.PIXEL_INFO,
+    "f4": IntentType.RESET_CHARACTER,
+    "f5": IntentType.PAN_SWAP_TEST,
+}
+"""F1-F5, all five actually bound (bug B4: F5 was advertised but missing)."""
 
-def _code_to_vk(code):
-    return _CODE_VK_MAC.get(code or "")
-
-
-# ---- Retina scale (detection in physical px; CGEvent in points) -------------
-def get_scale(sct):
-    main = sct.monitors[1]
-    bounds = Quartz.CGDisplayBounds(Quartz.CGMainDisplayID())
-    logical_w = bounds.size.width
-    return main["width"] / logical_w if logical_w else 1.0
-
-
-# ---- Window-relative capture (opt-in) ---------------------------------------
-def _scan_roblox():
-    """Shared window scan: largest on-screen window whose owner is 'Roblox'
-    (not Studio). Returns (pid, x, y, w, h) in PHYSICAL pixels, or None."""
-    try:
-        opt = (Quartz.kCGWindowListOptionOnScreenOnly
-               | Quartz.kCGWindowListExcludeDesktopElements)
-        wins = Quartz.CGWindowListCopyWindowInfo(opt, Quartz.kCGNullWindowID)
-        with _MSS() as sct:
-            scale = get_scale(sct)
-        best, area, pid = None, 0, None
-        for w in wins or []:
-            owner = str(w.get("kCGWindowOwnerName", ""))
-            if "roblox" in owner.lower() and "studio" not in owner.lower():
-                b = w.get("kCGWindowBounds", {})
-                ww, hh = b.get("Width", 0), b.get("Height", 0)
-                if ww * hh > area and ww >= 320 and hh >= 240:
-                    area, best, pid = ww * hh, b, w.get("kCGWindowOwnerPID")
-        if best:
-            return (pid, int(best["X"] * scale), int(best["Y"] * scale),
-                    int(best["Width"] * scale), int(best["Height"] * scale))
-    except Exception as e:
-        print(f"[window] lookup failed: {e}")
-    return None
-
-
-def find_window_origin():
-    """(x, y) of the Roblox game viewport's top-left in PHYSICAL pixels, or
-    None if not found."""
-    r = _scan_roblox()
-    return (r[1], r[2]) if r else None
-
-
-def find_roblox_rect():
-    """Roblox game client area as (x, y, w, h) in PHYSICAL pixels, or None."""
-    r = _scan_roblox()
-    return r[1:5] if r else None
-
-
-def _roblox_on_another_space():
-    """True if a Roblox window exists SOMEWHERE (any Space) but _scan_roblox()
-    (on-screen-only) couldn't see it -- the signature of native fullscreen,
-    which runs the app on its own Space and hides its window from on-screen
-    enumeration entirely."""
-    try:
-        wins = Quartz.CGWindowListCopyWindowInfo(
-            Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID)
-        for w in wins or []:
-            owner = str(w.get("kCGWindowOwnerName", ""))
-            if "roblox" in owner.lower() and "studio" not in owner.lower():
-                return True
-    except Exception:
-        pass
-    return False
+_MAC_HOTKEY_VK: dict[str, int] = {"f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96}
 
 
-def pin_window(w=1280, h=720):
-    """Move + resize the Roblox window so it's exactly w x h PHYSICAL pixels
-    at the top-left of the primary screen. Returns (ok: bool, message: str).
-    Uses the Accessibility API (AXUIElementSetAttributeValue) -- the same
-    mechanism window-management tools like Rectangle/Moom use to move
-    third-party windows. Requires the calling process to be Accessibility-
-    trusted (System Settings > Privacy & Security > Accessibility)."""
-    if not _AS.AXIsProcessTrusted():
-        return False, ("Accessibility permission not granted. System Settings > "
-                       "Privacy & Security > Accessibility -- enable it for this "
-                       "app/terminal, then try again.")
-    found = _scan_roblox()
-    if not found or found[0] is None:
-        if _roblox_on_another_space():
-            return False, ("Roblox is running but its window isn't on this "
-                           "screen/Space -- if it's in native fullscreen (the "
-                           "green button, not just maximized), exit fullscreen "
-                           "and try again. Window detection and resizing can't "
-                           "reach a window on a different fullscreen Space.")
-        return False, ("Roblox window not found. Open Roblox (not minimized) "
-                       "and try again.")
-    pid = found[0]
-
-    app = _AS.AXUIElementCreateApplication(int(pid))
-    err, axwins = _AS.AXUIElementCopyAttributeValue(app, _AS.kAXWindowsAttribute, None)
-    if err != _AS.kAXErrorSuccess or not axwins:
-        return False, ("Could not access Roblox's window via Accessibility -- "
-                       "make sure Roblox isn't minimized and try again.")
-    win = axwins[0]
-
-    ferr, is_fs = _AS.AXUIElementCopyAttributeValue(win, "AXFullScreen", None)
-    if ferr == _AS.kAXErrorSuccess and bool(is_fs):
-        return False, ("Roblox is in native fullscreen -- exit fullscreen (the "
-                       "green-button kind, not just maximized) and try again.")
-
-    try:
-        with _MSS() as sct:
-            scale = get_scale(sct)
-    except Exception:
-        scale = 1.0
-    # AX position/size are in POINTS, not physical pixels.
-    pw, ph = w / scale, h / scale
-    pos_val = _AS.AXValueCreate(_AS.kAXValueCGPointType, Quartz.CGPoint(0.0, 0.0))
-    size_val = _AS.AXValueCreate(_AS.kAXValueCGSizeType, Quartz.CGSize(pw, ph))
-    e1 = _AS.AXUIElementSetAttributeValue(win, _AS.kAXPositionAttribute, pos_val)
-    e2 = _AS.AXUIElementSetAttributeValue(win, _AS.kAXSizeAttribute, size_val)
-    if e1 != _AS.kAXErrorSuccess or e2 != _AS.kAXErrorSuccess:
-        return False, f"Failed to move/resize the Roblox window (AX error {e1}/{e2})."
-    return True, f"Roblox window pinned to {w}x{h} at (0,0)."
+def _post(event: Any) -> None:
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
-# ---- Input engine (Quartz CGEvent, HID level) -------------------------------
-HID = Quartz.kCGHIDEventTap
-
-
-def _post(ev):
-    Quartz.CGEventPost(HID, ev)
-
-
-def key_down(code):
-    _eng._HELD_KEYS.add(code)
-    _eng._post(Quartz.CGEventCreateKeyboardEvent(None, code, True))
-
-
-def key_up(code):
-    _eng._HELD_KEYS.discard(code)
-    _eng._post(Quartz.CGEventCreateKeyboardEvent(None, code, False))
-
-
-def _cursor_point():
+def _cursor_point_pt() -> Any:
     return Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
 
 
-def _mouse_event(kind):
-    p = _eng._cursor_point()
-    _eng._post(Quartz.CGEventCreateMouseEvent(None, kind, p, Quartz.kCGMouseButtonLeft))
+class MacReleaseOnlyPort:
+    """The strict release-only backend the deadman helper holds.
+
+    Deliberately has no ``down`` method: there is no code path in this class
+    that can press anything (plan 4.5).
+    """
+
+    def __init__(self) -> None:
+        self._vocabulary = InputVocabulary()
+
+    @property
+    def vocabulary(self) -> InputVocabulary:
+        return self._vocabulary
+
+    def key_code(self, key: InputKey) -> int:
+        return _MAC_KEYCODES[key]
+
+    def raw_key_up(self, code: int) -> None:
+        _post(Quartz.CGEventCreateKeyboardEvent(None, code, False))
+
+    def raw_button_up(self, button: MouseButton) -> None:
+        _, up, _drag, btn = _MAC_BUTTON_EVENTS[button]
+        _post(Quartz.CGEventCreateMouseEvent(None, up, _cursor_point_pt(), btn))
 
 
-def mouse_down():
-    _eng._MOUSE_DOWN = True
-    _eng._mouse_event(Quartz.kCGEventLeftMouseDown)
+class MacPlatformPort:
+    """Full macOS port. Only ``InputAuthority`` and capture may hold one."""
 
+    def __init__(self, *, window_owner_substring: str = "roblox") -> None:
+        self._vocabulary = InputVocabulary()
+        self._owner_substring = window_owner_substring
+        self._lock = threading.Lock()
+        self._last_rect: ClientRectPhysicalPx | None = None
+        self._title_bar_pt: float = TITLE_BAR_FALLBACK_PT
+        self._title_bar_measured = False
 
-def mouse_up():
-    _eng._MOUSE_DOWN = False
-    _eng._mouse_event(Quartz.kCGEventLeftMouseUp)
+    # -- identity ---------------------------------------------------------
+    @property
+    def name(self) -> str:
+        return "macos"
 
+    @property
+    def vocabulary(self) -> InputVocabulary:
+        return self._vocabulary
 
-def drag_alive():
-    """Keep a held LMB 'alive' with a drag event at the current cursor point
-    (a static down can get dropped by the game)."""
-    p = _eng._cursor_point()
-    _eng._post(Quartz.CGEventCreateMouseEvent(
-        None, Quartz.kCGEventLeftMouseDragged, p, Quartz.kCGMouseButtonLeft))
+    def key_code(self, key: InputKey) -> int:
+        return _MAC_KEYCODES[key]
 
+    @property
+    def title_bar_pt(self) -> float:
+        return self._title_bar_pt
 
-def move_cursor(x, y):
-    """Warp the cursor to a PHYSICAL-pixel screen coord (calibration space)."""
-    s = _eng.State.scale or 1.0
-    px, py = x / s, y / s
-    try:
-        Quartz.CGWarpMouseCursorPosition((px, py))
-        _eng._post(Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventMouseMoved, (px, py), Quartz.kCGMouseButtonLeft))
-    except Exception:
-        pass
+    @property
+    def title_bar_measured(self) -> bool:
+        """True when the inset came from AX geometry, not the fallback."""
+        return self._title_bar_measured
 
+    # -- accessibility ----------------------------------------------------
+    @staticmethod
+    def _app_services() -> Any:
+        import ApplicationServices
 
-def move_relative(dx, dy):
-    """Nudge the cursor by (dx, dy) points from wherever it currently sits --
-    screen-position independent, unlike move_cursor() (which targets a
-    calibrated absolute pixel). For free-look camera drags."""
-    p = _eng._cursor_point()
-    x, y = p.x + dx, p.y + dy
-    try:
-        Quartz.CGWarpMouseCursorPosition((x, y))
-        _eng._post(Quartz.CGEventCreateMouseEvent(
-            None, Quartz.kCGEventMouseMoved, (x, y), Quartz.kCGMouseButtonLeft))
-    except Exception:
-        pass
+        return ApplicationServices
 
-
-def scroll_down(steps=3):
-    try:
-        _eng._post(Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitLine, 1, -abs(int(steps))))
-    except Exception:
-        pass
-
-
-# ---- v3 general input (Studio Scripts with declared caps; PPSCRIPT_V3) ------
-# Canonical lowercase key names -> macOS virtual keycodes. One shared name
-# model with platform_win and the Studio VM; unknown names are refused at
-# script load, never guessed here.
-V3_KEYCODES = {
-    "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4,
-    "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35,
-    "q": 12, "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7,
-    "y": 16, "z": 6,
-    "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26,
-    "8": 28, "9": 25,
-    "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97, "f7": 98,
-    "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111, "f13": 105,
-    "f14": 107, "f15": 113, "f16": 106, "f17": 64, "f18": 79, "f19": 80,
-    "up": 126, "down": 125, "left": 123, "right": 124, "space": 49,
-    "enter": 36, "tab": 48, "escape": 53, "backspace": 51, "delete": 117,
-    "home": 115, "end": 119, "pageup": 116, "pagedown": 121,
-    "minus": 27, "equal": 24, "comma": 43, "period": 47, "slash": 44,
-    "backslash": 42, "semicolon": 41, "quote": 39, "bracketleft": 33,
-    "bracketright": 30, "grave": 50,
-    "cmd": 55, "ctrl": 59, "alt": 58, "shift": 56,
-}
-V3_PRIMARY = "cmd"   # the cross-platform "primary" modifier on this platform
-
-
-def v3_keycode(name):
-    return V3_KEYCODES.get(name)
-
-
-def type_char(ch):
-    """One layout-independent unicode character (down + up). The engine paces
-    characters (cancellable sleeps) — this stays a single primitive."""
-    for down in (True, False):
-        ev = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
-        Quartz.CGEventKeyboardSetUnicodeString(ev, len(ch), ch)
-        _eng._post(ev)
-
-
-_V3_BUTTONS = {
-    "left": (Quartz.kCGEventLeftMouseDown, Quartz.kCGEventLeftMouseUp,
-             Quartz.kCGMouseButtonLeft),
-    "right": (Quartz.kCGEventRightMouseDown, Quartz.kCGEventRightMouseUp,
-              Quartz.kCGMouseButtonRight),
-    "middle": (Quartz.kCGEventOtherMouseDown, Quartz.kCGEventOtherMouseUp,
-               Quartz.kCGMouseButtonCenter),
-}
-
-
-def button_down(button, click_state=1):
-    kd, _ku, btn = _V3_BUTTONS[button]
-    p = _eng._cursor_point()
-    ev = Quartz.CGEventCreateMouseEvent(None, kd, p, btn)
-    if click_state > 1:
-        # the OS recognizes a double-click by the event's click-state field
-        Quartz.CGEventSetIntegerValueField(
-            ev, Quartz.kCGMouseEventClickState, int(click_state))
-    _eng._HELD_BUTTONS.add(button)
-    _eng._post(ev)
-
-
-def button_up(button, click_state=1):
-    _kd, ku, btn = _V3_BUTTONS[button]
-    p = _eng._cursor_point()
-    ev = Quartz.CGEventCreateMouseEvent(None, ku, p, btn)
-    if click_state > 1:
-        Quartz.CGEventSetIntegerValueField(
-            ev, Quartz.kCGMouseEventClickState, int(click_state))
-    _eng._HELD_BUTTONS.discard(button)
-    _eng._post(ev)
-
-
-def scroll_lines(amount):
-    """Signed line scroll: positive = up, negative = down (one event)."""
-    try:
-        _eng._post(Quartz.CGEventCreateScrollWheelEvent(
-            None, Quartz.kCGScrollEventUnitLine, 1, int(amount)))
-    except Exception:
-        pass
-
-
-def set_clipboard(text):
-    """Local clipboard write via pbcopy (no new Python dependencies)."""
-    import subprocess
-    p = subprocess.Popen(["pbcopy"], stdin=subprocess.PIPE)
-    p.communicate(str(text).encode("utf-8"), timeout=5)
-
-
-def _applescript_str(s):
-    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def show_popup(title, message):
-    """Native Notification Center bubble -- non-blocking, safe to call from
-    the hotkey listener thread (a fresh subprocess, no UI thread involved)."""
-    import subprocess
-    script = (f"display notification {_applescript_str(message)} "
-              f"with title {_applescript_str(title)}")
-    try:
-        subprocess.run(["osascript", "-e", script], check=False,
-                        timeout=5, capture_output=True)
-    except Exception as e:
-        print(f"[popup] failed: {e}")
-
-
-def fr_move_to(x, y):
-    """Move the cursor toward (x, y) from the calibrated home (screen centre
-    where the cursor rests with shift-lock off), in small steps."""
-    if _eng.State.fr_cur is None:
-        _eng.fr_reset_home()
-    tx, ty = int(x), int(y)
-    cx, cy = _eng.State.fr_cur
-    step = max(1, _eng.FR_MOVE_STEP)
-    s = _eng.State.scale or 1.0
-    while cx != tx or cy != ty:
-        cx += max(-step, min(step, tx - cx))
-        cy += max(-step, min(step, ty - cy))
+    def accessibility_trusted(self) -> bool:
         try:
-            Quartz.CGWarpMouseCursorPosition((cx / s, cy / s))
-            _eng._post(Quartz.CGEventCreateMouseEvent(
-                None, Quartz.kCGEventMouseMoved, (cx / s, cy / s),
-                Quartz.kCGMouseButtonLeft))
+            return bool(self._app_services().AXIsProcessTrusted())
         except Exception:
-            pass
-        _eng.sleep_ms(4)
-    _eng.State.fr_cur = [tx, ty]
-
-
-# ---- Hotkey listener --------------------------------------------------------
-def make_listener():
-    if keyboard is None:
-        sys.exit(
-            f"Missing dependency: {_PYNPUT_ERR}\n"
-            "Install with:\n"
-            "  pip3 install pyobjc-framework-Quartz pyobjc-framework-ApplicationServices "
-            "mss numpy pynput --break-system-packages"
-        )
-    mods = {"ctrl": False, "alt": False, "shift": False}
-    CTRL = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
-    ALT = {keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r}
-    SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
-    binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
-             ("pixel_info", _eng.HOTKEY_PIXEL_INFO),
-             ("reset_character", _eng.HOTKEY_RESET_CHARACTER)]
-
-    def on_press(key):
-        if key in CTRL:
-            mods["ctrl"] = True
-            return
-        if key in ALT:
-            mods["alt"] = True
-            return
-        if key in SHIFT:
-            mods["shift"] = True
-            return
-        # Character keys arrive as KeyCode (has .vk directly). Special keys
-        # (F1, Esc, arrows, ...) arrive as a Key enum member, which has no
-        # .vk of its own -- the real vk lives on Key.xxx.value instead.
-        vk = getattr(key, "vk", None)
-        if vk is None:
-            vk = getattr(getattr(key, "value", None), "vk", None)
-        for name, spec in binds:
-            tv = _eng._code_to_vk((spec or {}).get("code", ""))
-            if tv is None or vk != tv:
-                continue
-            if (bool(spec.get("ctrl")) != mods["ctrl"]
-                    or bool(spec.get("alt")) != mods["alt"]
-                    or bool(spec.get("shift")) != mods["shift"]):
-                continue
-            if name == "start":
-                _eng.request_start()
-            elif name == "stop":
-                _eng.request_stop()
-            elif name == "pixel_info":
-                _eng.request_pixel_info()
-            elif name == "reset_character":
-                _eng.request_reset_character()
-            return
-
-    def on_release(key):
-        if key in CTRL:
-            mods["ctrl"] = False
-        elif key in ALT:
-            mods["alt"] = False
-        elif key in SHIFT:
-            mods["shift"] = False
-
-    return keyboard.Listener(on_press=on_press, on_release=on_release)
-
-
-def calib_key_labeler(label, stop):
-    """Labeler for log_calibration: Ctrl+1..4 tags the sample, Esc stops."""
-    if keyboard is None:
-        sys.exit(f"Missing dependency: {_PYNPUT_ERR}\n"
-                 "Install with:\n"
-                 "  pip3 install pynput --break-system-packages")
-    LABELS = {18: "DIRT", 19: "LAVA", 20: "SHAKE", 21: "DIG"}  # vk of 1,2,3,4
-    ctrl = {"down": False}
-    CTRL_KEYS = {keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r}
-
-    def on_press(key):
-        if key in CTRL_KEYS:
-            ctrl["down"] = True
-            return
-        if key == keyboard.Key.esc:
-            stop["v"] = True
             return False
-        vk = getattr(key, "vk", None)
-        if ctrl["down"] and vk in LABELS:
-            label["v"] = LABELS[vk]
-            print(f"\n[label = {label['v']}]")
 
-    def on_release(key):
-        if key in CTRL_KEYS:
-            ctrl["down"] = False
+    # -- display ----------------------------------------------------------
+    @staticmethod
+    def _scale_for_display(display_id: int) -> float:
+        mode = Quartz.CGDisplayCopyDisplayMode(display_id)
+        if mode is None:
+            return 1.0
+        points_wide = float(Quartz.CGDisplayModeGetWidth(mode))
+        pixels_wide = float(Quartz.CGDisplayModeGetPixelWidth(mode))
+        return pixels_wide / points_wide if points_wide else 1.0
 
-    keyboard.Listener(on_press=on_press, on_release=on_release).start()
+    @staticmethod
+    def _display_for_point_pt(x: float, y: float) -> int:
+        with contextlib.suppress(Exception):
+            err, displays, count = Quartz.CGGetDisplaysWithPoint(
+                Quartz.CGPoint(x, y), 1, None, None
+            )
+            if not err and count:
+                return int(displays[0])
+        return int(Quartz.CGMainDisplayID())
+
+    # -- window lookup ----------------------------------------------------
+    def _scan_roblox(self) -> tuple[int, float, float, float, float] | None:
+        """Largest on-screen Roblox (not Studio) window frame, in POINTS."""
+        try:
+            options = (
+                Quartz.kCGWindowListOptionOnScreenOnly
+                | Quartz.kCGWindowListExcludeDesktopElements
+            )
+            windows = Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID)
+        except Exception:
+            return None
+        best: tuple[int, float, float, float, float] | None = None
+        best_area = 0.0
+        for window in windows or []:
+            owner = str(window.get("kCGWindowOwnerName", ""))
+            lowered = owner.lower()
+            if self._owner_substring not in lowered or "studio" in lowered:
+                continue
+            bounds = window.get("kCGWindowBounds") or {}
+            width = float(bounds.get("Width", 0.0))
+            height = float(bounds.get("Height", 0.0))
+            if width < 320 or height < 240 or width * height <= best_area:
+                continue
+            best_area = width * height
+            best = (
+                int(window.get("kCGWindowOwnerPID") or 0),
+                float(bounds.get("X", 0.0)),
+                float(bounds.get("Y", 0.0)),
+                width,
+                height,
+            )
+        return best
+
+    def roblox_on_another_space(self) -> bool:
+        """A Roblox window exists but is not on screen - the fullscreen signature."""
+        with contextlib.suppress(Exception):
+            windows = Quartz.CGWindowListCopyWindowInfo(
+                Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID
+            )
+            for window in windows or []:
+                owner = str(window.get("kCGWindowOwnerName", "")).lower()
+                if self._owner_substring in owner and "studio" not in owner:
+                    return True
+        return False
+
+    def _ax_window(self, pid: int) -> Any | None:
+        services = self._app_services()
+        app = services.AXUIElementCreateApplication(int(pid))
+        err, windows = services.AXUIElementCopyAttributeValue(
+            app, services.kAXWindowsAttribute, None
+        )
+        if err != services.kAXErrorSuccess or not windows:
+            return None
+        return windows[0]
+
+    def _measure_title_bar_pt(self, window: Any) -> float | None:
+        """Derive the title-bar height from the window's own traffic lights.
+
+        ``2 * (close_button_y - frame_y) + close_button_height`` because the
+        buttons are vertically centred in the bar. Returns ``None`` when AX
+        does not expose them, in which case the caller uses the provisional
+        fallback and says so.
+        """
+        services = self._app_services()
+        try:
+            err, frame_value = services.AXUIElementCopyAttributeValue(
+                window, services.kAXPositionAttribute, None
+            )
+            if err != services.kAXErrorSuccess:
+                return None
+            ok, frame_point = services.AXValueGetValue(
+                frame_value, services.kAXValueCGPointType, None
+            )
+            if not ok:
+                return None
+            err, button = services.AXUIElementCopyAttributeValue(window, "AXCloseButton", None)
+            if err != services.kAXErrorSuccess or button is None:
+                return None
+            err, pos_value = services.AXUIElementCopyAttributeValue(button, "AXPosition", None)
+            if err != services.kAXErrorSuccess:
+                return None
+            err, size_value = services.AXUIElementCopyAttributeValue(button, "AXSize", None)
+            if err != services.kAXErrorSuccess:
+                return None
+            ok_pos, button_point = services.AXValueGetValue(
+                pos_value, services.kAXValueCGPointType, None
+            )
+            ok_size, button_size = services.AXValueGetValue(
+                size_value, services.kAXValueCGSizeType, None
+            )
+            if not (ok_pos and ok_size):
+                return None
+            inset = float(button_point.y) - float(frame_point.y)
+            measured = 2.0 * inset + float(button_size.height)
+            if not 12.0 <= measured <= 80.0:
+                return None
+            return measured
+        except Exception:
+            return None
+
+    # -- PlatformPort: viewport ------------------------------------------
+    def focus_state(self) -> FocusState:
+        """True/False/None per plan 4.3; ``None`` means genuinely unknown."""
+        try:
+            from AppKit import NSWorkspace  # bundled with pyobjc-framework-Cocoa
+        except Exception:
+            return None
+        try:
+            frontmost = NSWorkspace.sharedWorkspace().frontmostApplication()
+        except Exception:
+            return None
+        if frontmost is None:
+            return None
+        name = str(frontmost.localizedName() or "").lower()
+        if "studio" in name:
+            return False
+        return self._owner_substring in name
+
+    def find_client_rect(self) -> ClientRectPhysicalPx | None:
+        found = self._scan_roblox()
+        if found is None:
+            with self._lock:
+                self._last_rect = None
+            return None
+        pid, frame_x_pt, frame_y_pt, frame_w_pt, frame_h_pt = found
+
+        title_bar_pt = TITLE_BAR_FALLBACK_PT
+        measured = False
+        if pid and self.accessibility_trusted():
+            window = self._ax_window(pid)
+            if window is not None:
+                candidate = self._measure_title_bar_pt(window)
+                if candidate is not None:
+                    title_bar_pt = candidate
+                    measured = True
+
+        display_id = self._display_for_point_pt(frame_x_pt, frame_y_pt)
+        scale = self._scale_for_display(display_id)
+
+        client_x_px = round(frame_x_pt * scale)
+        client_y_px = round((frame_y_pt + title_bar_pt) * scale)
+        client_w_px = round(frame_w_pt * scale)
+        client_h_px = round((frame_h_pt - title_bar_pt) * scale)
+
+        invalid_reason: str | None = None
+        if client_w_px <= 0 or client_h_px <= 0:
+            invalid_reason = "non-positive client size"
+
+        rect = ClientRectPhysicalPx(
+            origin_px=(client_x_px, client_y_px),
+            size_px=(max(0, client_w_px), max(0, client_h_px)),
+            scale=scale,
+            verified_at_s=monotonic_s(),
+            display_id=str(display_id),
+            valid=invalid_reason is None,
+            invalid_reason=invalid_reason,
+        )
+        with self._lock:
+            self._title_bar_pt = title_bar_pt
+            self._title_bar_measured = measured
+            self._last_rect = rect
+        return rect
+
+    def pin_client_rect(self, size_px: tuple[int, int]) -> PinResult:
+        """Move/resize Roblox so its **client area** is exactly ``size_px``.
+
+        macOS may legally refuse the requested origin (menu-bar safe area), so
+        the achieved origin is read back and used everywhere rather than being
+        assumed to be (0, 0) (plan 4.1).
+        """
+        services = self._app_services()
+        if not self.accessibility_trusted():
+            return PinResult(
+                False,
+                "Accessibility permission not granted. System Settings > Privacy & "
+                "Security > Accessibility - enable it for this app/terminal, then retry.",
+            )
+        found = self._scan_roblox()
+        if found is None or not found[0]:
+            if self.roblox_on_another_space():
+                return PinResult(
+                    False,
+                    "Roblox is running but not on this Space - exit native fullscreen "
+                    "(the green button) and try again.",
+                )
+            return PinResult(False, "Roblox window not found. Open Roblox (not minimized).")
+        pid = found[0]
+        window = self._ax_window(pid)
+        if window is None:
+            return PinResult(
+                False, "Could not reach Roblox's window via Accessibility (minimized?)."
+            )
+
+        err, is_fullscreen = services.AXUIElementCopyAttributeValue(
+            window, "AXFullScreen", None
+        )
+        if err == services.kAXErrorSuccess and bool(is_fullscreen):
+            return PinResult(
+                False, "Roblox is in native fullscreen - exit fullscreen and retry."
+            )
+
+        measured = self._measure_title_bar_pt(window)
+        title_bar_pt = measured if measured is not None else TITLE_BAR_FALLBACK_PT
+        display_id = self._display_for_point_pt(found[1], found[2])
+        scale = self._scale_for_display(display_id)
+
+        want_w_pt = size_px[0] / scale
+        want_h_pt = size_px[1] / scale + title_bar_pt
+        position = services.AXValueCreate(
+            services.kAXValueCGPointType, Quartz.CGPoint(0.0, 0.0)
+        )
+        size = services.AXValueCreate(
+            services.kAXValueCGSizeType, Quartz.CGSize(want_w_pt, want_h_pt)
+        )
+        err_pos = services.AXUIElementSetAttributeValue(
+            window, services.kAXPositionAttribute, position
+        )
+        err_size = services.AXUIElementSetAttributeValue(
+            window, services.kAXSizeAttribute, size
+        )
+        if services.kAXErrorSuccess not in (err_pos,) or err_size != services.kAXErrorSuccess:
+            return PinResult(
+                False, f"Failed to move/resize Roblox (AX error {err_pos}/{err_size})."
+            )
+
+        rect = self.find_client_rect()
+        if rect is None or not rect.valid:
+            return PinResult(False, "Pinned, but the client rect could not be read back.")
+        dw = abs(rect.width_px - size_px[0])
+        dh = abs(rect.height_px - size_px[1])
+        if dw > 1 or dh > 1:
+            return PinResult(
+                False,
+                f"Client readback {rect.size_px} differs from requested {size_px} "
+                f"by ({dw},{dh}) px - outside the one-pixel contract.",
+                rect,
+            )
+        source = "measured" if self._title_bar_measured else "provisional-fallback"
+        return PinResult(
+            True,
+            f"Client area pinned to {rect.width_px}x{rect.height_px} px at "
+            f"{rect.origin_px} (scale {rect.scale:g}, "
+            f"title bar {title_bar_pt:g} pt, {source}).",
+            rect,
+        )
+
+    # -- PlatformPort: raw edges -----------------------------------------
+    def raw_key_down(self, code: int) -> None:
+        _post(Quartz.CGEventCreateKeyboardEvent(None, code, True))
+
+    def raw_key_up(self, code: int) -> None:
+        _post(Quartz.CGEventCreateKeyboardEvent(None, code, False))
+
+    def raw_button_down(self, button: MouseButton) -> None:
+        down, _up, _drag, btn = _MAC_BUTTON_EVENTS[button]
+        _post(Quartz.CGEventCreateMouseEvent(None, down, _cursor_point_pt(), btn))
+
+    def raw_button_up(self, button: MouseButton) -> None:
+        _down, up, _drag, btn = _MAC_BUTTON_EVENTS[button]
+        _post(Quartz.CGEventCreateMouseEvent(None, up, _cursor_point_pt(), btn))
+
+    def raw_pointer_move_client(self, point_px: tuple[int, int]) -> None:
+        with self._lock:
+            rect = self._last_rect
+        if rect is None:
+            rect = self.find_client_rect()
+        if rect is None or not rect.valid:
+            return
+        screen_x_px, screen_y_px = rect.to_screen_px(point_px)
+        x_pt, y_pt = screen_x_px / rect.scale, screen_y_px / rect.scale
+        with contextlib.suppress(Exception):
+            Quartz.CGWarpMouseCursorPosition((x_pt, y_pt))
+        _post(
+            Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventMouseMoved, (x_pt, y_pt), Quartz.kCGMouseButtonLeft
+            )
+        )
+
+    def raw_pointer_delta(
+        self, dx: int, dy: int, held_button: MouseButton | None = None
+    ) -> None:
+        """Relative HID motion - the only thing that drives Roblox's camera.
+
+        Roblox reads ``kCGMouseEventDeltaX/Y``; a plain absolute move does
+        nothing even while a button is genuinely held. When the authority's
+        ledger holds a button, the delta rides that button's *dragged* event,
+        which is what makes yaw work (plan 12, native yaw detail).
+        """
+        if held_button is not None:
+            _down, _up, dragged, btn = _MAC_BUTTON_EVENTS[held_button]
+            event = Quartz.CGEventCreateMouseEvent(None, dragged, _cursor_point_pt(), btn)
+        else:
+            event = Quartz.CGEventCreateMouseEvent(
+                None, Quartz.kCGEventMouseMoved, _cursor_point_pt(), Quartz.kCGMouseButtonLeft
+            )
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(dx))
+        Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, int(dy))
+        _post(event)
+
+    def raw_scroll_lines(self, lines: int) -> None:
+        _post(
+            Quartz.CGEventCreateScrollWheelEvent(
+                None, Quartz.kCGScrollEventUnitLine, 1, int(lines)
+            )
+        )
+
+    def cursor_client_px(self) -> tuple[int, int] | None:
+        rect = self.find_client_rect()
+        if rect is None or not rect.valid:
+            return None
+        point = _cursor_point_pt()
+        client_x = round(float(point.x) * rect.scale) - rect.origin_px[0]
+        client_y = round(float(point.y) * rect.scale) - rect.origin_px[1]
+        if not rect.contains_client_point((client_x, client_y)):
+            return None
+        return (client_x, client_y)
+
+    # -- PlatformPort: hotkeys -------------------------------------------
+    def create_hotkey_source(self, submit: Callable[[RuntimeIntent], None]) -> MacHotkeySource:
+        return MacHotkeySource(submit, focus_probe=self.focus_state)
 
 
-# Names re-exported into the engine module namespace (per-platform values).
-ENGINE_GLOBALS = {
-    "V3_KEYCODES": V3_KEYCODES, "V3_PRIMARY": V3_PRIMARY,
-    "KEY_W": KEY_W, "KEY_S": KEY_S, "KEY_A": KEY_A, "KEY_D": KEY_D,
-    "KEY_SHIFT": KEY_SHIFT, "KEY_SPACE": KEY_SPACE,
-    "SLOT_KEYCODES": SLOT_KEYCODES,
-    "TOGGLE_VK": TOGGLE_VK, "TOGGLE_NAME": TOGGLE_NAME,
-    "SOFTSTOP_VK": SOFTSTOP_VK, "_CODE_VK_MAC": _CODE_VK_MAC,
-}
+class MacHotkeySource:
+    """Global F1-F5 listener that submits intents and nothing else.
 
-# Leaf seams that were engine-module globals before the fold (the sim world
-# and studio_conformance patch some of them on the engine module).
-PLATFORM_SEAMS = {
-    "_post": _post, "_mouse_event": _mouse_event,
-    "_cursor_point": _cursor_point, "_code_to_vk": _code_to_vk,
-    "keyboard": keyboard, "Quartz": Quartz, "HID": HID,
-}
+    Input-emitting intents are submitted only while Roblox is positively
+    focused (plan 11.2). ``STOP`` is always accepted - a stop that needed
+    focus would be useless exactly when it matters.
+    """
+
+    #: Intents that never require focus.
+    ALWAYS_ALLOWED = frozenset({IntentType.STOP, IntentType.SHUTDOWN, IntentType.PIXEL_INFO})
+
+    def __init__(
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        focus_probe: Callable[[], FocusState],
+    ) -> None:
+        self._submit = submit
+        self._focus_probe = focus_probe
+        self._listener: Any | None = None
+        self._sequence = 0
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        try:
+            from pynput import keyboard
+        except ImportError as exc:  # pragma: no cover - install-time failure
+            raise ImportError(f"Global hotkeys need pynput ({exc}).") from exc
+
+        vk_to_intent = {
+            _MAC_HOTKEY_VK[name]: intent for name, intent in MAC_HOTKEY_BINDINGS.items()
+        }
+
+        def on_press(key: Any) -> None:
+            vk = getattr(key, "vk", None)
+            if vk is None:
+                vk = getattr(getattr(key, "value", None), "vk", None)
+            if not isinstance(vk, int):
+                return
+            intent_type = vk_to_intent.get(vk)
+            if intent_type is None:
+                return
+            self.fire(intent_type)
+
+        listener = keyboard.Listener(on_press=on_press)
+        listener.daemon = True
+        listener.name = "treasure-hotkeys"
+        listener.start()
+        self._listener = listener
+
+    def fire(self, intent_type: IntentType) -> bool:
+        """Submit one hotkey intent if policy allows. Exposed for tests."""
+        if intent_type not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
+            return False
+        with self._lock:
+            self._sequence += 1
+            sequence = self._sequence
+        self._submit(
+            RuntimeIntent(
+                sequence=sequence,
+                intent_type=intent_type,
+                source="hotkey",
+                created_at_s=monotonic_s(),
+            )
+        )
+        return True
+
+    def stop(self) -> None:
+        listener = self._listener
+        self._listener = None
+        if listener is not None:
+            with contextlib.suppress(Exception):
+                listener.stop()
+
+    def is_running(self) -> bool:
+        listener = self._listener
+        return bool(listener is not None and listener.is_alive())

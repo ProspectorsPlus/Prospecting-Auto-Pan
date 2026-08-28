@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "_provenance": {
+    "what": "Per-map arrow colour/contrast candidate profiles.",
+    "status": "Every profile below is PENDING. None has passed E-PROF (plan 7.4).",
+    "consequence": "Production defaults to explicit user selection. Automatic classification stays disabled until a profile is VALIDATED with zero held-out misidentifications and a bounded upper confidence limit in every supported stratum.",
+    "supported_client_size_px": "Profiles are fitted for a 1280x720 CLIENT area. A different viewport size abstains rather than rescaling."
+  },
+  "profiles": [
+    {
+      "profile_id": "yellow_map_v0",
+      "display_name": "Yellow treasure map arrow (candidate)",
+      "rule": "channel_relation",
+      "parameters": {
+        "max_rg_delta": 28,
+        "min_rg": 150,
+        "min_blue_gap": 60
+      },
+      "min_area_px": 900,
+      "max_area_px": 90000,
+      "min_aspect": 0.25,
+      "max_aspect": 4.0,
+      "status": "pending",
+      "supported_client_size_px": [1280, 720],
+      "evaluation_spec_id": null,
+      "provenance": {
+        "status": "pending",
+        "source": "owner-supplied frames: one map, one session, one Mac, one render configuration",
+        "note": "The R~=G relationship is ONE candidate among several (plan 2.2). Seed values only; E-PROF must fit and gate them on labelled splits before this can be selected automatically."
+      }
+    },
+    {
+      "profile_id": "generic_saturated_v0",
+      "display_name": "Generic saturated arrow (HSV candidate)",
+      "rule": "hsv_range",
+      "parameters": {
+        "lower_hsv": [0, 120, 120],
+        "upper_hsv": [179, 255, 255]
+      },
+      "min_area_px": 900,
+      "max_area_px": 90000,
+      "min_aspect": 0.25,
+      "max_aspect": 4.0,
+      "status": "pending",
+      "supported_client_size_px": [1280, 720],
+      "evaluation_spec_id": null,
+      "provenance": {
+        "status": "pending",
+        "source": "plan section 8 candidate list",
+        "note": "Deliberately broad so E-PROF can measure its false-acquisition rate against the narrower candidates. Not intended for production as written."
+      }
+    }
+  ]
+}

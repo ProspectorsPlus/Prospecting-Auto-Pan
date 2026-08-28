@@ -1,0 +1,1161 @@
+{
+  "_provenance": {
+    "what": "Ordered input transcript of the legacy prospector_engine.engine sequences, recorded with every OS edge and every sleep intercepted.",
+    "why": "Phase 0A characterization baseline (plan section 15). The bounded services must reproduce this ordering; they must NOT reproduce defects B2/B3/B5/B6, which are asserted separately.",
+    "recorded_from_commit": "5b81120",
+    "recorded_on": "2026-08-27",
+    "clock": "virtual; t_ms is accumulated intercepted sleep, not wall time",
+    "window_origin_px": [
+      0,
+      0
+    ],
+    "coordinate_basis": "legacy macOS window-FRAME relative physical px; the new client basis differs by the title bar (plan 4.1) and the constants themselves need manual reverification",
+    "regenerate": "not regenerable after Phase 0B - the legacy module is replaced"
+  },
+  "sequences": {
+    "dig_tap": [
+      {
+        "t_ms": 0.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 1.0,
+        "op": "lmb_up",
+        "args": []
+      }
+    ],
+    "dequip_pan": [
+      {
+        "t_ms": 0.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 0.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      }
+    ],
+    "pan_swap": [
+      {
+        "t_ms": 0.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 0.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "key_down",
+        "args": [
+          19
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "key_up",
+        "args": [
+          19
+        ]
+      },
+      {
+        "t_ms": 1350.0,
+        "op": "move_abs_px",
+        "args": [
+          441,
+          194
+        ]
+      },
+      {
+        "t_ms": 1450.0,
+        "op": "move_abs_px",
+        "args": [
+          442,
+          195
+        ]
+      },
+      {
+        "t_ms": 1450.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 1450.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 1650.0,
+        "op": "move_abs_px",
+        "args": [
+          507,
+          254
+        ]
+      },
+      {
+        "t_ms": 1750.0,
+        "op": "move_abs_px",
+        "args": [
+          508,
+          255
+        ]
+      },
+      {
+        "t_ms": 1750.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 1750.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 1850.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1862.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1875.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1887.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1900.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1912.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1925.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1937.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1950.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1962.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1975.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 1987.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2000.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2012.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2025.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2037.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2050.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2062.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2075.0,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2087.5,
+        "op": "scroll",
+        "args": [
+          -1
+        ]
+      },
+      {
+        "t_ms": 2200.0,
+        "op": "move_abs_px",
+        "args": [
+          768,
+          514
+        ]
+      },
+      {
+        "t_ms": 2300.0,
+        "op": "move_abs_px",
+        "args": [
+          769,
+          515
+        ]
+      },
+      {
+        "t_ms": 2300.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 2300.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 2500.0,
+        "op": "move_abs_px",
+        "args": [
+          513,
+          530
+        ]
+      },
+      {
+        "t_ms": 2600.0,
+        "op": "move_abs_px",
+        "args": [
+          514,
+          531
+        ]
+      },
+      {
+        "t_ms": 2600.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 2600.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 2800.0,
+        "op": "move_abs_px",
+        "args": [
+          768,
+          514
+        ]
+      },
+      {
+        "t_ms": 2900.0,
+        "op": "move_abs_px",
+        "args": [
+          769,
+          515
+        ]
+      },
+      {
+        "t_ms": 2900.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 2900.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 3500.0,
+        "op": "key_down",
+        "args": [
+          19
+        ]
+      },
+      {
+        "t_ms": 3500.0,
+        "op": "key_up",
+        "args": [
+          19
+        ]
+      },
+      {
+        "t_ms": 4250.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 4250.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 5250.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            500,
+            547
+          ]
+        ]
+      }
+    ],
+    "reset_character": [
+      {
+        "t_ms": 0.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 0.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 250.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "key_down",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 500.0,
+        "op": "key_up",
+        "args": [
+          18
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "sample_rgb",
+        "args": [
+          [
+            540,
+            523
+          ]
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "key_down",
+        "args": [
+          53
+        ]
+      },
+      {
+        "t_ms": 750.0,
+        "op": "key_up",
+        "args": [
+          53
+        ]
+      },
+      {
+        "t_ms": 1450.0,
+        "op": "move_abs_px",
+        "args": [
+          640,
+          629
+        ]
+      },
+      {
+        "t_ms": 1550.0,
+        "op": "move_abs_px",
+        "args": [
+          641,
+          630
+        ]
+      },
+      {
+        "t_ms": 1550.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 1550.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 2250.0,
+        "op": "move_abs_px",
+        "args": [
+          529,
+          379
+        ]
+      },
+      {
+        "t_ms": 2350.0,
+        "op": "move_abs_px",
+        "args": [
+          530,
+          380
+        ]
+      },
+      {
+        "t_ms": 2350.0,
+        "op": "lmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 2350.0,
+        "op": "lmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 10350.0,
+        "op": "move_abs_px",
+        "args": [
+          640,
+          360
+        ]
+      },
+      {
+        "t_ms": 10750.0,
+        "op": "rmb_down",
+        "args": []
+      },
+      {
+        "t_ms": 10950.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 10966.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 10982.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 10998.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11014.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11030.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11046.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11062.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11078.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11094.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11110.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11126.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11142.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11158.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11174.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11190.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11206.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11222.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11238.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11254.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11270.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11286.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11302.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11318.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11334.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11350.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11366.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11382.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11398.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11414.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11430.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11446.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11462.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11478.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11494.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11510.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11526.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11542.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11558.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11574.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11590.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11606.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11622.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11638.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11654.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11670.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11686.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11702.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11718.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11734.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11750.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11766.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11782.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11798.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11814.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11830.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11846.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11862.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11878.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11894.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11910.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11926.0,
+        "op": "drag_delta",
+        "args": [
+          0.0,
+          12.0
+        ]
+      },
+      {
+        "t_ms": 11942.0,
+        "op": "rmb_up",
+        "args": []
+      },
+      {
+        "t_ms": 12442.0,
+        "op": "move_abs_px",
+        "args": [
+          640,
+          360
+        ]
+      }
+    ]
+  }
+}

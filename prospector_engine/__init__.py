@@ -1,11 +1,14 @@
-"""Prospector Engine -- the one shared runtime both editions run.
+"""Treasure Navigator engine package.
 
-Phase 04 of the Prospector Integration campaign extracts the engine here
-incrementally. At checkpoint C1 this package holds only the protocol
-library (nothing imports it); the runtime itself moves in at C6.
+The public surface stays deliberately small: importing this package must not
+pull in Tk, OpenCV, or any OS-specific module, so both platform test suites and
+the release-only deadman helper can import from it freely (bug B1).
 
-The protocol is PPE1, defined normatively in the Studio repo:
-docs/prospector-integration/reports/phase-02-protocol.md
+Feature-level exports are added only once the corresponding gate passes
+(plan 13.3); until then callers import the module they actually need.
 """
 
-ENGINE_VERSION = "0.4.0"
+__version__ = "0.5.0"
+ENGINE_VERSION = __version__
+
+__all__ = ["ENGINE_VERSION", "__version__"]

@@ -1,518 +1,475 @@
-"""Windows platform layer for the Prospector Engine [Phase 04 C7].
+"""Windows platform port: SendInput, Per-Monitor V2 client geometry, hotkeys.
 
-Everything here is Windows-specific I/O: SendInput scancode key/mouse
-synthesis, EnumWindows window lookup, DPI awareness, the GetAsyncKeyState
-hotkey poller, and the calibration-log labeler. The engine module re-exports
-these names into its own namespace; platform code reads engine state and
-patchable seams back through ``bind()`` (see platform_mac for the contract).
+Instance based, with no ``_eng`` module binding and no held-input set of its
+own (bugs B1, B7, B8). All geometry is the **client** rect in physical pixels,
+which is what ``GetClientRect`` + ``ClientToScreen`` already give a
+Per-Monitor-V2 process.
+
+**Native status: PENDING.** Nothing in this module has been executed on
+Windows during this implementation - the development machine is macOS. It is
+written against the documented Win32 contracts and is covered locally only by
+the mocked-ctypes import/contract test. Plan 16.3's Windows column stays
+``pending`` until the owner runs the native gates.
 """
+
+from __future__ import annotations
+
+import contextlib
+import ctypes
+import os
 import sys
 import threading
-import time
+from collections.abc import Callable
+from ctypes import wintypes
 
-try:
-    import numpy as np
-    import mss
-    import ctypes
-    from ctypes import wintypes
-except ImportError as e:
-    sys.exit(
-        f"Missing dependency: {e}\n"
-        "Install with:\n"
-        "  pip install mss numpy"
+if sys.platform != "win32" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"):
+    raise ImportError(
+        "prospector_engine.platform_win may only be imported on Windows. "
+        "Set TREASURE_ALLOW_CROSS_PLATFORM_IMPORT=1 with a mocked ctypes.windll "
+        "to run the opposite-OS import contract test (plan 16.3)."
     )
 
-# Use the non-deprecated MSS class when available (falls back on old name).
-_MSS = getattr(mss, "MSS", None) or mss.mss
+from prospector_engine.contracts import (
+    ClientRectPhysicalPx,
+    FocusState,
+    InputKey,
+    InputVocabulary,
+    IntentType,
+    MouseButton,
+    PinResult,
+    RuntimeIntent,
+    monotonic_s,
+)
 
-# Make the process DPI-aware so screen capture (mss) and cursor coords line up
-# in real pixels on high-DPI / scaled Windows displays.
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PER_MONITOR_AWARE
-except Exception:
-    try:
-        ctypes.windll.user32.SetProcessDPIAware()
-    except Exception:
-        pass
+__all__ = [
+    "WIN_HOTKEY_BINDINGS",
+    "WindowsHotkeySource",
+    "WindowsPlatformPort",
+    "WindowsReleaseOnlyPort",
+    "declare_per_monitor_v2",
+]
 
-_user32 = ctypes.windll.user32
+# Hardware scancodes - the injection path Roblox actually honours on Windows.
+_WIN_SCANCODES: dict[InputKey, int] = {
+    InputKey.W: 0x11,
+    InputKey.A: 0x1E,
+    InputKey.S: 0x1F,
+    InputKey.D: 0x20,
+    InputKey.SPACE: 0x39,
+    InputKey.SHIFT: 0x2A,
+    InputKey.ESCAPE: 0x01,
+    InputKey.DIGIT_1: 0x02,
+    InputKey.DIGIT_2: 0x03,
+}
 
-_eng = None
-
-
-def bind(engine_module):
-    """Receive the engine module; platform code resolves engine state and
-    patchable seams through it at call time."""
-    global _eng
-    _eng = engine_module
-
-
-# --- Keys (WINDOWS hardware SCANCODES -- used with SendInput SCANCODE flag, the
-#     most reliable way to drive Roblox on Windows). --------------------------
-KEY_W = 0x11            # W
-KEY_S = 0x1F            # S
-KEY_A = 0x1E            # A
-KEY_D = 0x20            # D
-KEY_SHIFT = 0x2A        # left Shift (open Fast Travel)
-KEY_SPACE = 0x39        # Space (jump; Studio scripts)
-# Hotbar slot number -> Windows scancode (digit row 1..0).
-SLOT_KEYCODES = {1: 0x02, 2: 0x03, 3: 0x04, 4: 0x05, 5: 0x06,
-                 6: 0x07, 7: 0x08, 8: 0x09, 9: 0x0A, 0: 0x0B}
-
-# --- Hotkeys (Ctrl+K start/stop, Esc quit) -- polled via GetAsyncKeyState ----
-# These are Windows VIRTUAL-KEY codes (a different namespace from the scancodes
-# above): Ctrl=0x11, K=0x4B, Esc=0x1B.
-VK_CONTROL = 0x11
-VK_K       = 0x4B
-VK_ESC     = 0x1B
-TOGGLE_NAME = "Ctrl+K"
-
-
-# ---- Display scale: with DPI-awareness set above, capture and cursor are both
-#      in physical pixels, so the scale is 1.0 on Windows. --------------------
-def get_scale(sct):
-    return 1.0
-
-
-# ---- Window-relative capture (opt-in) ---------------------------------------
-def find_roblox_rect():
-    """Roblox game client area as (x, y, w, h) in physical px, or None. Scans all
-    visible top-level windows (class WINDOWSCLIENT, or title containing 'Roblox'
-    but not Studio) and picks the largest -- robust to title variations."""
-    r = _scan_roblox()
-    return r[1:5] if r else None
-
-
-def find_window_origin():
-    """(x, y) of the Roblox client top-left, or None. (Back-compat wrapper.)"""
-    r = find_roblox_rect()
-    return (r[0], r[1]) if r else None
-
-
-def _scan_roblox():
-    """Shared EnumWindows scan: largest visible window whose class is
-    WINDOWSCLIENT, or whose title contains 'Roblox' but not 'Studio'. Returns
-    (hwnd, x, y, w, h) in physical px (client area, screen coords), or None."""
-    try:
-        u = ctypes.windll.user32
-        best = []
-
-        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
-        def _cb(hwnd, _lp):
-            try:
-                if not u.IsWindowVisible(hwnd):
-                    return True
-                n = u.GetWindowTextLengthW(hwnd)
-                tb = ctypes.create_unicode_buffer(n + 1)
-                u.GetWindowTextW(hwnd, tb, n + 1)
-                title = tb.value or ""
-                cb = ctypes.create_unicode_buffer(256)
-                u.GetClassNameW(hwnd, cb, 256)
-                cls = cb.value or ""
-                if not (cls == "WINDOWSCLIENT" or
-                        ("Roblox" in title and "Studio" not in title)):
-                    return True
-                rc = wintypes.RECT()
-                if not u.GetClientRect(hwnd, ctypes.byref(rc)):
-                    return True
-                w, h = rc.right - rc.left, rc.bottom - rc.top
-                if w < 320 or h < 240:
-                    return True
-                pt = wintypes.POINT(0, 0)
-                u.ClientToScreen(hwnd, ctypes.byref(pt))
-                best.append((w * h, hwnd, int(pt.x), int(pt.y), int(w), int(h)))
-            except Exception:
-                pass
-            return True
-
-        u.EnumWindows(_cb, 0)
-        if best:
-            best.sort(key=lambda t: t[0], reverse=True)
-            return best[0][1:]
-        return None
-    except Exception as e:
-        print(f"[window] lookup failed: {e}")
-        return None
-
-
-GWL_STYLE      = -16
-GWL_EXSTYLE    = -20
-SW_RESTORE     = 9
-SWP_NOZORDER   = 0x0004
-SWP_NOACTIVATE = 0x0010
-
-
-def pin_window(w=1280, h=720):
-    """Move + resize the Roblox window so its CLIENT area is exactly w x h
-    physical pixels at the top-left of the primary screen. Returns
-    (ok: bool, message: str)."""
-    found = _scan_roblox()
-    if not found:
-        return False, ("Roblox window not found. Open Roblox (not minimized) "
-                       "and try again.")
-    hwnd = found[0]
-    u = ctypes.windll.user32
-    if u.IsIconic(hwnd):
-        u.ShowWindow(hwnd, SW_RESTORE)
-    style = u.GetWindowLongW(hwnd, GWL_STYLE)
-    exstyle = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
-    # Convert the desired CLIENT rect into the OUTER window rect SetWindowPos
-    # needs -- the client area (what find_roblox_rect()/pixel coords use) then
-    # ends up at exactly (0,0) with size w x h regardless of border/title-bar
-    # thickness.
-    rc = wintypes.RECT(0, 0, w, h)
-    if not u.AdjustWindowRectEx(ctypes.byref(rc), style, False, exstyle):
-        return False, "AdjustWindowRectEx failed."
-    outer_w = rc.right - rc.left
-    outer_h = rc.bottom - rc.top
-    ok = u.SetWindowPos(hwnd, 0, rc.left, rc.top, outer_w, outer_h,
-                        SWP_NOZORDER | SWP_NOACTIVATE)
-    if not ok:
-        return False, "SetWindowPos failed."
-    return True, f"Roblox window pinned to {w}x{h} client area at (0,0)."
-
-
-# ---- Input engine (Windows SendInput) ---------------------------------------
-# Keys are sent as hardware SCANCODES (KEYEVENTF_SCANCODE) and mouse via
-# MOUSEEVENTF_* -- the most reliable way to drive Roblox on Windows.
-KEYEVENTF_KEYUP     = 0x0002
-KEYEVENTF_SCANCODE  = 0x0008
-MOUSEEVENTF_LEFTDOWN = 0x0002
-MOUSEEVENTF_LEFTUP   = 0x0004
-MOUSEEVENTF_MOVE     = 0x0001
+KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_SCANCODE = 0x0008
+MOUSEEVENTF_MOVE = 0x0001
 MOUSEEVENTF_WHEEL = 0x0800
-INPUT_MOUSE    = 0
+INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
-ULONG_PTR = ctypes.wintypes.WPARAM
+
+_WIN_BUTTON_FLAGS: dict[MouseButton, tuple[int, int]] = {
+    MouseButton.LEFT: (0x0002, 0x0004),
+    MouseButton.RIGHT: (0x0008, 0x0010),
+    MouseButton.MIDDLE: (0x0020, 0x0040),
+}
+
+GWL_STYLE = -16
+GWL_EXSTYLE = -20
+SW_RESTORE = 9
+SWP_NOZORDER = 0x0004
+SWP_NOACTIVATE = 0x0010
+DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
+
+WIN_HOTKEY_BINDINGS: dict[str, IntentType] = {
+    "f1": IntentType.START_LIVE,
+    "f2": IntentType.STOP,
+    "f3": IntentType.PIXEL_INFO,
+    "f4": IntentType.RESET_CHARACTER,
+    "f5": IntentType.PAN_SWAP_TEST,
+}
+_WIN_HOTKEY_VK: dict[str, int] = {"f1": 0x70, "f2": 0x71, "f3": 0x72, "f4": 0x73, "f5": 0x74}
+
+ULONG_PTR = wintypes.WPARAM
 
 
 class _KEYBDINPUT(ctypes.Structure):
-    _fields_ = [("wVk", ctypes.wintypes.WORD), ("wScan", ctypes.wintypes.WORD),
-                ("dwFlags", ctypes.wintypes.DWORD), ("time", ctypes.wintypes.DWORD),
-                ("dwExtraInfo", ULONG_PTR)]
+    _fields_ = (
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    )
 
 
 class _MOUSEINPUT(ctypes.Structure):
-    _fields_ = [("dx", ctypes.wintypes.LONG), ("dy", ctypes.wintypes.LONG),
-                ("mouseData", ctypes.wintypes.DWORD), ("dwFlags", ctypes.wintypes.DWORD),
-                ("time", ctypes.wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+    _fields_ = (
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ULONG_PTR),
+    )
 
 
-class _INPUTunion(ctypes.Union):
-    _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+class _INPUTUNION(ctypes.Union):
+    _fields_ = (("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT))
 
 
 class _INPUT(ctypes.Structure):
-    _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _INPUTunion)]
-
-
-def _send(inp):
-    _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
-
-
-def key_down(code):
-    _eng._HELD_KEYS.add(code)
-    inp = _INPUT(type=INPUT_KEYBOARD,
-                 u=_INPUTunion(ki=_KEYBDINPUT(0, code, KEYEVENTF_SCANCODE, 0, 0)))
-    _eng._send(inp)
-
-
-def key_up(code):
-    _eng._HELD_KEYS.discard(code)
-    inp = _INPUT(type=INPUT_KEYBOARD,
-                 u=_INPUTunion(ki=_KEYBDINPUT(0, code,
-                              KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0, 0)))
-    _eng._send(inp)
-
-
-class _Point(ctypes.Structure):
-    _fields_ = [("x", ctypes.wintypes.LONG), ("y", ctypes.wintypes.LONG)]
-
-
-def _cursor_point():
-    p = _Point()
-    _user32.GetCursorPos(ctypes.byref(p))
-    return p           # has .x / .y like the macOS point
-
-
-def _mouse_btn(flag):
-    inp = _INPUT(type=INPUT_MOUSE,
-                 u=_INPUTunion(mi=_MOUSEINPUT(0, 0, 0, flag, 0, 0)))
-    _eng._send(inp)
-
-
-def mouse_down():
-    _eng._MOUSE_DOWN = True
-    _eng._mouse_btn(MOUSEEVENTF_LEFTDOWN)
-
-
-def mouse_up():
-    _eng._MOUSE_DOWN = False
-    _eng._mouse_btn(MOUSEEVENTF_LEFTUP)
-
-
-def drag_alive():
-    """Nudge the mouse 0px to keep a held LMB 'alive' (Windows equivalent of the
-    macOS drag keep-alive)."""
-    inp = _INPUT(type=INPUT_MOUSE,
-                 u=_INPUTunion(mi=_MOUSEINPUT(0, 0, 0, MOUSEEVENTF_MOVE, 0, 0)))
-    _eng._send(inp)
-
-
-def move_cursor(x, y):
-    _user32.SetCursorPos(int(x), int(y))
-
-
-def move_relative(dx, dy):
-    """Nudge the cursor by (dx, dy) pixels from wherever it currently sits --
-    screen-position independent, unlike move_cursor(). For free-look camera
-    drags."""
-    _eng._rel_move(dx, dy)
-
-
-def scroll_down(steps=3):
-    data = (-120 * abs(int(steps))) & 0xFFFFFFFF
-    inp = _INPUT(type=INPUT_MOUSE,
-                 u=_INPUTunion(mi=_MOUSEINPUT(0, 0, data, MOUSEEVENTF_WHEEL, 0, 0)))
-    _eng._send(inp)
-
-
-# ---- v3 general input (Studio Scripts with declared caps; PPSCRIPT_V3) ------
-# Canonical lowercase key names -> hardware SCANCODES (same injection path as
-# key_down above). One shared name model with platform_mac and the Studio VM.
-KEYEVENTF_UNICODE = 0x0004
-MOUSEEVENTF_RIGHTDOWN = 0x0008
-MOUSEEVENTF_RIGHTUP = 0x0010
-MOUSEEVENTF_MIDDLEDOWN = 0x0020
-MOUSEEVENTF_MIDDLEUP = 0x0040
-
-V3_KEYCODES = {
-    "a": 0x1E, "b": 0x30, "c": 0x2E, "d": 0x20, "e": 0x12, "f": 0x21,
-    "g": 0x22, "h": 0x23, "i": 0x17, "j": 0x24, "k": 0x25, "l": 0x26,
-    "m": 0x32, "n": 0x31, "o": 0x18, "p": 0x19, "q": 0x10, "r": 0x13,
-    "s": 0x1F, "t": 0x14, "u": 0x16, "v": 0x2F, "w": 0x11, "x": 0x2D,
-    "y": 0x15, "z": 0x2C,
-    "0": 0x0B, "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06,
-    "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A,
-    "f1": 0x3B, "f2": 0x3C, "f3": 0x3D, "f4": 0x3E, "f5": 0x3F, "f6": 0x40,
-    "f7": 0x41, "f8": 0x42, "f9": 0x43, "f10": 0x44, "f11": 0x57, "f12": 0x58,
-    "f13": 0x64, "f14": 0x65, "f15": 0x66, "f16": 0x67, "f17": 0x68,
-    "f18": 0x69, "f19": 0x6A,
-    # extended-bit arrows/navigation ride the same scancode path Roblox
-    # already accepts for the game keys; extended flags handled below.
-    "up": 0x48, "down": 0x50, "left": 0x4B, "right": 0x4D, "space": 0x39,
-    "enter": 0x1C, "tab": 0x0F, "escape": 0x01, "backspace": 0x0E,
-    "delete": 0x53, "home": 0x47, "end": 0x4F, "pageup": 0x49,
-    "pagedown": 0x51,
-    "minus": 0x0C, "equal": 0x0D, "comma": 0x33, "period": 0x34,
-    "slash": 0x35, "backslash": 0x2B, "semicolon": 0x27, "quote": 0x28,
-    "bracketleft": 0x1A, "bracketright": 0x1B, "grave": 0x29,
-    "cmd": 0x5B, "ctrl": 0x1D, "alt": 0x38, "shift": 0x2A,
-}
-V3_PRIMARY = "ctrl"  # the cross-platform "primary" modifier on this platform
-
-# names whose scancodes need the extended-key flag when injected
-_V3_EXTENDED = {"up", "down", "left", "right", "delete", "home", "end",
-                "pageup", "pagedown", "cmd"}
-KEYEVENTF_EXTENDEDKEY = 0x0001
-_V3_EXT_CODES = {V3_KEYCODES[n] for n in _V3_EXTENDED}
-
-
-def v3_keycode(name):
-    return V3_KEYCODES.get(name)
-
-
-def _v3_flags(code, up):
-    f = KEYEVENTF_SCANCODE
-    if code in _V3_EXT_CODES:
-        f |= KEYEVENTF_EXTENDEDKEY
-    if up:
-        f |= KEYEVENTF_KEYUP
-    return f
-
-
-def type_char(ch):
-    """One layout-independent unicode character (down + up) via
-    KEYEVENTF_UNICODE. The engine paces characters."""
-    cu = ord(ch)
-    for up in (False, True):
-        flags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if up else 0)
-        inp = _INPUT(type=INPUT_KEYBOARD,
-                     u=_INPUTunion(ki=_KEYBDINPUT(0, cu, flags, 0, 0)))
-        _eng._send(inp)
-
-
-_V3_BUTTONS = {
-    "left": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
-    "right": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
-    "middle": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-}
-
-
-def button_down(button, click_state=1):
-    _eng._HELD_BUTTONS.add(button)
-    _eng._mouse_btn(_V3_BUTTONS[button][0])
-
-
-def button_up(button, click_state=1):
-    _eng._HELD_BUTTONS.discard(button)
-    _eng._mouse_btn(_V3_BUTTONS[button][1])
-
-
-def scroll_lines(amount):
-    """Signed line scroll: positive = up, negative = down (one wheel event)."""
-    data = (120 * int(amount)) & 0xFFFFFFFF
-    inp = _INPUT(type=INPUT_MOUSE,
-                 u=_INPUTunion(mi=_MOUSEINPUT(0, 0, data, MOUSEEVENTF_WHEEL, 0, 0)))
-    _eng._send(inp)
-
-
-def set_clipboard(text):
-    """Local clipboard write via the standard clip.exe (no new dependencies)."""
-    import subprocess
-    p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=False)
-    p.communicate(str(text).encode("utf-16-le"), timeout=5)
-
-
-def _rel_move(dx, dy):
-    inp = _INPUT(type=INPUT_MOUSE,
-                 u=_INPUTunion(mi=_MOUSEINPUT(int(dx), int(dy), 0,
-                              MOUSEEVENTF_MOVE, 0, 0)))
-    _eng._send(inp)
-
-
-def fr_move_to(x, y):
-    """Move the cursor to (x, y) using RELATIVE deltas from the calibrated home
-    (screen centre where the cursor rests with shift-lock off), in small steps
-    so pointer acceleration can't throw it off."""
-    if _eng.State.fr_cur is None:
-        _eng.fr_reset_home()
-    tx, ty = int(x), int(y)
-    cx, cy = _eng.State.fr_cur
-    step = max(1, _eng.FR_MOVE_STEP)
-    while cx != tx or cy != ty:
-        sx = max(-step, min(step, tx - cx))
-        sy = max(-step, min(step, ty - cy))
-        _eng._rel_move(sx, sy)
-        cx += sx
-        cy += sy
-        _eng.sleep_ms(4)
-    _eng.State.fr_cur = [tx, ty]
-
-
-# ---- Hotkey listener --------------------------------------------------------
-# Hotkeys via GetAsyncKeyState polling (no third-party lib; doesn't conflict with
-# our synthetic input). Ctrl+K toggles start/stop, Esc quits. Returns an object
-# with .start() so main() can use it just like the macOS pynput listener.
-def _key_pressed(vk):
-    return bool(_user32.GetAsyncKeyState(vk) & 0x8000)
-
-
-def _code_to_vk_win(code):
-    code = code or ""
-    if code.startswith("Key") and len(code) == 4:
-        return ord(code[3].upper())
-    if code.startswith("Digit") and len(code) == 6:
-        return ord(code[5])
-    if code == "Escape":
-        return 0x1B
-    if code == "Space":
-        return 0x20
-    if code.startswith("F") and code[1:].isdigit():
-        n = int(code[1:])
-        if 1 <= n <= 12:
-            return 0x70 + (n - 1)
-    return None
-
-
-class _HotkeyPoller:
-    def start(self):
-        threading.Thread(target=self._loop, daemon=True).start()
-
-    def _loop(self):
-        binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
-                 ("pixel_info", _eng.HOTKEY_PIXEL_INFO),
-                 ("reset_character", _eng.HOTKEY_RESET_CHARACTER)]
-        prev = {"start": False, "stop": False, "pixel_info": False,
-                "reset_character": False}
-        while _eng.State.alive:
-            ctrl = _eng._key_pressed(0x11)
-            alt = _eng._key_pressed(0x12)
-            shift = _eng._key_pressed(0x10)
-            for name, spec in binds:
-                vk = _eng._code_to_vk_win((spec or {}).get("code", ""))
-                if vk is None:
-                    prev[name] = False
-                    continue
-                down = (_eng._key_pressed(vk)
-                        and bool(spec.get("ctrl")) == ctrl
-                        and bool(spec.get("alt")) == alt
-                        and bool(spec.get("shift")) == shift)
-                if down and not prev[name]:
-                    if name == "start":
-                        _eng.request_start()
-                    elif name == "stop":
-                        _eng.request_stop()
-                    elif name == "pixel_info":
-                        _eng.request_pixel_info()
-                    elif name == "reset_character":
-                        _eng.request_reset_character()
-                prev[name] = down
-            time.sleep(0.03)
-
-
-def make_listener():
-    return _HotkeyPoller()
-
-
-def show_popup(title, message):
-    """Auto-dismissing topmost message box. Runs in its own thread so the
-    hotkey poller stays responsive while it's up (MessageBoxTimeoutW still
-    blocks whatever thread calls it until dismissed/timed out)."""
-    def _show():
-        try:
-            MB_OK = 0x0
-            MB_TOPMOST = 0x00040000
-            _user32.MessageBoxTimeoutW(0, str(message), str(title),
-                                        MB_OK | MB_TOPMOST, 0, 2500)
-        except Exception as e:
-            print(f"[popup] failed: {e}")
-    threading.Thread(target=_show, daemon=True).start()
-
-
-def calib_key_labeler(label, stop):
-    """Labeler for log_calibration: Ctrl+1..4 tags the sample, Esc stops."""
-    LABELS = {0x31: "DIRT", 0x32: "LAVA", 0x33: "SHAKE", 0x34: "DIG"}  # vk 1..4
-
-    def _poll():
-        while not stop["v"]:
-            if _eng._key_pressed(VK_ESC):
-                stop["v"] = True
-                return
-            if _eng._key_pressed(VK_CONTROL):
-                for vk, name in LABELS.items():
-                    if _eng._key_pressed(vk) and label["v"] != name:
-                        label["v"] = name
-                        print(f"\n[label = {name}]")
-            time.sleep(0.05)
-
-    threading.Thread(target=_poll, daemon=True).start()
-
-
-# Names re-exported into the engine module namespace (per-platform values).
-ENGINE_GLOBALS = {
-    "V3_KEYCODES": V3_KEYCODES, "V3_PRIMARY": V3_PRIMARY,
-    "KEY_W": KEY_W, "KEY_S": KEY_S, "KEY_A": KEY_A, "KEY_D": KEY_D,
-    "KEY_SHIFT": KEY_SHIFT, "KEY_SPACE": KEY_SPACE,
-    "SLOT_KEYCODES": SLOT_KEYCODES,
-    "VK_CONTROL": VK_CONTROL, "VK_K": VK_K, "VK_ESC": VK_ESC,
-    "TOGGLE_NAME": TOGGLE_NAME,
-}
-
-# Leaf seams that were engine-module globals before the fold.
-PLATFORM_SEAMS = {
-    "_send": _send, "_mouse_btn": _mouse_btn, "_cursor_point": _cursor_point,
-    "_rel_move": _rel_move, "_key_pressed": _key_pressed,
-    "_code_to_vk_win": _code_to_vk_win,
-    "ctypes": ctypes, "wintypes": wintypes, "_user32": _user32,
-}
+    _fields_ = (("type", wintypes.DWORD), ("u", _INPUTUNION))
+
+
+def declare_per_monitor_v2() -> str:
+    """Opt this process into Per-Monitor V2 DPI awareness (plan 4.1).
+
+    Returns which mechanism succeeded so the UI can show it. The packaged
+    build additionally declares awareness in its manifest; this call is the
+    source-run equivalent and is harmless when the manifest already applied.
+    """
+    user32 = ctypes.windll.user32
+    with contextlib.suppress(Exception):
+        if user32.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2):
+            return "per-monitor-v2"
+    with contextlib.suppress(Exception):
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return "per-monitor"
+    with contextlib.suppress(Exception):
+        user32.SetProcessDPIAware()
+        return "system"
+    return "none"
+
+
+def _send(inp: _INPUT) -> None:
+    ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+
+def _key_input(scancode: int, up: bool) -> _INPUT:
+    flags = KEYEVENTF_SCANCODE | (KEYEVENTF_KEYUP if up else 0)
+    return _INPUT(type=INPUT_KEYBOARD, u=_INPUTUNION(ki=_KEYBDINPUT(0, scancode, flags, 0, 0)))
+
+
+def _mouse_input(flags: int, dx: int = 0, dy: int = 0, data: int = 0) -> _INPUT:
+    return _INPUT(type=INPUT_MOUSE, u=_INPUTUNION(mi=_MOUSEINPUT(dx, dy, data, flags, 0, 0)))
+
+
+class WindowsReleaseOnlyPort:
+    """Release-only backend for the deadman helper. No down-edge exists here."""
+
+    def __init__(self) -> None:
+        self._vocabulary = InputVocabulary()
+
+    @property
+    def vocabulary(self) -> InputVocabulary:
+        return self._vocabulary
+
+    def key_code(self, key: InputKey) -> int:
+        return _WIN_SCANCODES[key]
+
+    def raw_key_up(self, code: int) -> None:
+        _send(_key_input(code, up=True))
+
+    def raw_button_up(self, button: MouseButton) -> None:
+        _send(_mouse_input(_WIN_BUTTON_FLAGS[button][1]))
+
+
+class WindowsPlatformPort:
+    """Full Windows port. Only ``InputAuthority`` and capture may hold one."""
+
+    def __init__(self, *, window_title_substring: str = "Roblox") -> None:
+        self._vocabulary = InputVocabulary()
+        self._title_substring = window_title_substring
+        self._lock = threading.Lock()
+        self._last_rect: ClientRectPhysicalPx | None = None
+        self._last_hwnd: int | None = None
+        self._dpi_mode = declare_per_monitor_v2()
+
+    @property
+    def name(self) -> str:
+        return "windows"
+
+    @property
+    def vocabulary(self) -> InputVocabulary:
+        return self._vocabulary
+
+    @property
+    def dpi_mode(self) -> str:
+        return self._dpi_mode
+
+    def key_code(self, key: InputKey) -> int:
+        return _WIN_SCANCODES[key]
+
+    # -- window lookup ----------------------------------------------------
+    def _scan_roblox(self) -> tuple[int, int, int, int, int] | None:
+        """Largest visible Roblox client window: ``(hwnd, x, y, w, h)`` physical px."""
+        user32 = ctypes.windll.user32
+        found: list[tuple[int, int, int, int, int, int]] = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def _callback(hwnd: int, _lparam: int) -> bool:
+            with contextlib.suppress(Exception):
+                if not user32.IsWindowVisible(hwnd):
+                    return True
+                length = user32.GetWindowTextLengthW(hwnd)
+                title_buffer = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, title_buffer, length + 1)
+                title = title_buffer.value or ""
+                class_buffer = ctypes.create_unicode_buffer(256)
+                user32.GetClassNameW(hwnd, class_buffer, 256)
+                class_name = class_buffer.value or ""
+                is_client = class_name == "WINDOWSCLIENT" or (
+                    self._title_substring in title and "Studio" not in title
+                )
+                if not is_client:
+                    return True
+                rect = wintypes.RECT()
+                if not user32.GetClientRect(hwnd, ctypes.byref(rect)):
+                    return True
+                width = rect.right - rect.left
+                height = rect.bottom - rect.top
+                if width < 320 or height < 240:
+                    return True
+                point = wintypes.POINT(0, 0)
+                user32.ClientToScreen(hwnd, ctypes.byref(point))
+                found.append(
+                    (
+                        width * height,
+                        int(hwnd),
+                        int(point.x),
+                        int(point.y),
+                        int(width),
+                        int(height),
+                    )
+                )
+            return True
+
+        with contextlib.suppress(Exception):
+            user32.EnumWindows(_callback, 0)
+        if not found:
+            return None
+        found.sort(key=lambda entry: entry[0], reverse=True)
+        return found[0][1:]
+
+    def _dpi_for_window(self, hwnd: int) -> int:
+        with contextlib.suppress(Exception):
+            return int(ctypes.windll.user32.GetDpiForWindow(hwnd))
+        return 96
+
+    def _monitor_id(self, hwnd: int) -> str:
+        with contextlib.suppress(Exception):
+            return str(int(ctypes.windll.user32.MonitorFromWindow(hwnd, 2)))  # NEAREST
+        return "unknown"
+
+    # -- PlatformPort: viewport ------------------------------------------
+    def focus_state(self) -> FocusState:
+        with contextlib.suppress(Exception):
+            foreground = int(ctypes.windll.user32.GetForegroundWindow())
+            if not foreground:
+                return None
+            found = self._scan_roblox()
+            if found is None:
+                return False
+            return foreground == found[0]
+        return None
+
+    def find_client_rect(self) -> ClientRectPhysicalPx | None:
+        found = self._scan_roblox()
+        if found is None:
+            with self._lock:
+                self._last_rect = None
+                self._last_hwnd = None
+            return None
+        hwnd, x_px, y_px, w_px, h_px = found
+        # A Per-Monitor-V2 process already receives physical pixels, so this
+        # scale is reported for diagnostics only and is never used to convert
+        # a coordinate on this platform (contrast platform_mac, where CGEvent
+        # takes points).
+        scale = self._dpi_for_window(hwnd) / 96.0
+        rect = ClientRectPhysicalPx(
+            origin_px=(x_px, y_px),
+            size_px=(w_px, h_px),
+            scale=scale,
+            verified_at_s=monotonic_s(),
+            display_id=self._monitor_id(hwnd),
+            valid=w_px > 0 and h_px > 0,
+            invalid_reason=None if w_px > 0 and h_px > 0 else "non-positive client size",
+        )
+        with self._lock:
+            self._last_rect = rect
+            self._last_hwnd = hwnd
+        return rect
+
+    def pin_client_rect(self, size_px: tuple[int, int]) -> PinResult:
+        user32 = ctypes.windll.user32
+        found = self._scan_roblox()
+        if found is None:
+            return PinResult(False, "Roblox window not found. Open Roblox (not minimized).")
+        hwnd = found[0]
+        with contextlib.suppress(Exception):
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+        exstyle = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        rect = wintypes.RECT(0, 0, size_px[0], size_px[1])
+        dpi = self._dpi_for_window(hwnd)
+        adjusted = False
+        with contextlib.suppress(Exception):
+            adjusted = bool(
+                user32.AdjustWindowRectExForDpi(ctypes.byref(rect), style, False, exstyle, dpi)
+            )
+        if not adjusted and not user32.AdjustWindowRectEx(
+            ctypes.byref(rect), style, False, exstyle
+        ):
+            return PinResult(False, "AdjustWindowRectEx(ForDpi) failed.")
+        outer_w = rect.right - rect.left
+        outer_h = rect.bottom - rect.top
+        if not user32.SetWindowPos(
+            hwnd, 0, rect.left, rect.top, outer_w, outer_h, SWP_NOZORDER | SWP_NOACTIVATE
+        ):
+            return PinResult(False, "SetWindowPos failed.")
+
+        readback = self.find_client_rect()
+        if readback is None or not readback.valid:
+            return PinResult(False, "Pinned, but the client rect could not be read back.")
+        dw = abs(readback.width_px - size_px[0])
+        dh = abs(readback.height_px - size_px[1])
+        if dw > 1 or dh > 1:
+            return PinResult(
+                False,
+                f"Client readback {readback.size_px} differs from requested {size_px} "
+                f"by ({dw},{dh}) px - outside the one-pixel contract.",
+                readback,
+            )
+        return PinResult(
+            True,
+            f"Client area pinned to {readback.width_px}x{readback.height_px} px at "
+            f"{readback.origin_px} (DPI {dpi}, {self._dpi_mode}).",
+            readback,
+        )
+
+    # -- PlatformPort: raw edges -----------------------------------------
+    def raw_key_down(self, code: int) -> None:
+        _send(_key_input(code, up=False))
+
+    def raw_key_up(self, code: int) -> None:
+        _send(_key_input(code, up=True))
+
+    def raw_button_down(self, button: MouseButton) -> None:
+        _send(_mouse_input(_WIN_BUTTON_FLAGS[button][0]))
+
+    def raw_button_up(self, button: MouseButton) -> None:
+        _send(_mouse_input(_WIN_BUTTON_FLAGS[button][1]))
+
+    def raw_pointer_move_client(self, point_px: tuple[int, int]) -> None:
+        with self._lock:
+            rect = self._last_rect
+        if rect is None:
+            rect = self.find_client_rect()
+        if rect is None or not rect.valid:
+            return
+        screen_x_px, screen_y_px = rect.to_screen_px(point_px)
+        with contextlib.suppress(Exception):
+            ctypes.windll.user32.SetCursorPos(int(screen_x_px), int(screen_y_px))
+
+    def raw_pointer_delta(
+        self, dx: int, dy: int, held_button: MouseButton | None = None
+    ) -> None:
+        """Relative motion. ``held_button`` is accepted for API symmetry with
+        macOS but is not needed here: ``MOUSEEVENTF_MOVE`` already delivers a
+        relative delta that Roblox's camera reads while a button is held."""
+        del held_button
+        _send(_mouse_input(MOUSEEVENTF_MOVE, dx=int(dx), dy=int(dy)))
+
+    def raw_scroll_lines(self, lines: int) -> None:
+        data = (120 * int(lines)) & 0xFFFFFFFF
+        _send(_mouse_input(MOUSEEVENTF_WHEEL, data=data))
+
+    def cursor_client_px(self) -> tuple[int, int] | None:
+        rect = self.find_client_rect()
+        if rect is None or not rect.valid:
+            return None
+        point = wintypes.POINT(0, 0)
+        with contextlib.suppress(Exception):
+            ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
+        client_x = int(point.x) - rect.origin_px[0]
+        client_y = int(point.y) - rect.origin_px[1]
+        if not rect.contains_client_point((client_x, client_y)):
+            return None
+        return (client_x, client_y)
+
+    # -- PlatformPort: hotkeys -------------------------------------------
+    def create_hotkey_source(
+        self, submit: Callable[[RuntimeIntent], None]
+    ) -> WindowsHotkeySource:
+        return WindowsHotkeySource(submit, focus_probe=self.focus_state)
+
+
+class WindowsHotkeySource:
+    """``GetAsyncKeyState`` edge-detecting poller for F1-F5 (bug B4).
+
+    Polling avoids conflicting with our own synthetic input and needs no third
+    party library. It submits intents only; it never touches engine state.
+    """
+
+    ALWAYS_ALLOWED = frozenset({IntentType.STOP, IntentType.SHUTDOWN, IntentType.PIXEL_INFO})
+    POLL_INTERVAL_S = 0.03
+
+    def __init__(
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        focus_probe: Callable[[], FocusState],
+    ) -> None:
+        self._submit = submit
+        self._focus_probe = focus_probe
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._sequence = 0
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="treasure-hotkeys", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        user32 = ctypes.windll.user32
+        previous = dict.fromkeys(WIN_HOTKEY_BINDINGS, False)
+        while not self._stop.wait(self.POLL_INTERVAL_S):
+            for name, intent_type in WIN_HOTKEY_BINDINGS.items():
+                pressed = bool(user32.GetAsyncKeyState(_WIN_HOTKEY_VK[name]) & 0x8000)
+                if pressed and not previous[name]:
+                    self.fire(intent_type)
+                previous[name] = pressed
+
+    def fire(self, intent_type: IntentType) -> bool:
+        if intent_type not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
+            return False
+        with self._lock:
+            self._sequence += 1
+            sequence = self._sequence
+        self._submit(
+            RuntimeIntent(
+                sequence=sequence,
+                intent_type=intent_type,
+                source="hotkey",
+                created_at_s=monotonic_s(),
+            )
+        )
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None:
+            thread.join(timeout=1.0)
+
+    def is_running(self) -> bool:
+        thread = self._thread
+        return bool(thread is not None and thread.is_alive())
