@@ -67,6 +67,7 @@ not silently degrade.
 .venv/bin/python treasure.py --soak 10        # bounded pipeline soak, no input
 .venv/bin/python treasure.py --shadow-bench 15 --json bench.json
                                               # native capture + headless perception
+.venv/bin/python treasure.py --setup-probe    # real automatic setup, no input sent
 ```
 
 `--detector-report` (rendered) and `--soak` use the fixtures in `tests/`, and
@@ -74,7 +75,12 @@ not silently degrade.
 three need a source checkout. None touches a window or emits input.
 `--shadow-bench` captures the real Roblox window through the production
 source and runs perception on it; it moves nothing and sends nothing, and
-needs Screen Recording. Every offline mode is mutually exclusive and bounded
+needs Screen Recording. `--setup-probe` runs the production setup machine
+through the real `build_application`, so it *does* resize the Roblox client —
+that is the stage under test — and restores the original client size on the
+way out. It stops at the observation half and prints the held-lease ledger;
+the armed stages that move the camera need a physical arm and are unreachable
+from a command line. Every offline mode is mutually exclusive and bounded
 (`tests/test_cli_lifecycle.py`).
 
 Everything above is safe to run unattended. `native` tests are excluded by the
@@ -123,6 +129,12 @@ no input, but they do need Screen Recording permission.
 
 ## 5. Architecture boundaries
 
+- **One composition root, and it is not the GUI.**
+  `prospector_engine/application.py` wires every object the process owns and
+  imports no user interface. `treasure_gui.py` owns the Tk window and calls
+  `build_application()`; so does `treasure.py --setup-probe`. Never put wiring
+  back in the GUI module — it is what made automatic setup unverifiable
+  without opening a window (D-042).
 - **One input authority.** `prospector_engine/input_authority.py` owns the
   only held-key/button ledger and the only calls into a `PlatformPort`.
   Feature code receives a narrow capability object — `NoInputSession`,

@@ -7,6 +7,7 @@
     python treasure.py --smoke-test   packaging smoke test, emits no input
     python treasure.py --calibrate    read client-relative pixels under the cursor
     python treasure.py --capture-probe  measure capture cost, read-only
+    python treasure.py --setup-probe    run automatic setup, no input sent
     python treasure.py --replay DIR   replay a recorded session, emits no input
     python treasure.py --detector-report [PROFILE] [--corpus DIR] [--json PATH]
                                       detector metrics on rendered stress frames,
@@ -34,6 +35,11 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # imported for types only; the offline modes stay import-light
+    from prospector_engine.geometry import ViewportGeometry
+    from prospector_engine.ports import PlatformPort
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -895,6 +901,158 @@ def _run_capture_probe(seconds: float = 4.0) -> int:
     return 0
 
 
+def _settled_geometry(
+    port: PlatformPort, attempts: int = 20, timeout_s: float = 3.0
+) -> ViewportGeometry:
+    """Read the window back until it stops moving, bounded both ways.
+
+    A resize is asynchronous: macOS animates it, and the first read-back after
+    ``pin_client_rect`` lands mid-flight. Reading once made a *successful*
+    restore report a window size that had never been asked for and did not
+    survive the next second. The fit machine settles for the same reason; this
+    is the small version of it, for a probe that only needs to say what it left
+    behind.
+    """
+    import time
+
+    from prospector_engine.contracts import monotonic_s
+
+    deadline = monotonic_s() + timeout_s
+    previous = port.window_geometry()
+    for _attempt in range(attempts):
+        if monotonic_s() >= deadline:
+            break
+        time.sleep(0.1)
+        current = port.window_geometry()
+        if (
+            current.valid
+            and previous.valid
+            and current.client_logical is not None
+            and previous.client_logical is not None
+            and current.client_logical == previous.client_logical
+        ):
+            return current
+        previous = current
+    return previous
+
+
+def _run_setup_probe(json_path: str | None = None, restore: bool = True) -> int:
+    """Run the real automatic setup against the live client. Sends no input.
+
+    This is what pressing **Start Navigator** does, minus the window: the same
+    ``build_application``, the same coordinator, the same bounded stages. Only
+    the observation half runs. The armed half - control mode and turn
+    characterization - needs a physical arm and is never reached from here, so
+    the run is incapable of emitting an input edge; the held-lease ledger is
+    printed at the end to show that it did not.
+
+    Fitting genuinely resizes the Roblox window, because that is what the stage
+    is. The client size is read before anything starts and restored on the way
+    out, so the probe leaves the machine as it found it. ``--keep`` skips the
+    restore for a session that is about to be used.
+    """
+    import json as _json
+    import time
+
+    from prospector_engine.application import build_application
+    from prospector_engine.contracts import IntentType, SetupStage, monotonic_s
+
+    print("Automatic setup probe (no input is sent; the window is restored afterwards)")
+    application = build_application()
+    port = application.port
+    before = port.window_geometry()
+    print(f"  before: {before.describe()}")
+    original = (
+        before.client_logical.size
+        if before.valid and before.client_logical is not None
+        else None
+    )
+
+    stages: list[tuple[float, str, str]] = []
+    started = monotonic_s()
+
+    try:
+        application.capture.start()
+        application.coordinator.start()
+        coordinator = application.coordinator
+        coordinator.submit(coordinator.next_intent(IntentType.START_NAVIGATOR, "setup-probe"))
+
+        # Bounded by the machine's own deadlines, with a hard ceiling here so a
+        # hung stage cannot hold the terminal.
+        deadline = started + 120.0
+        seen = ""
+        progress = coordinator.setup_progress
+        while monotonic_s() < deadline:
+            progress = coordinator.setup_progress
+            marker = f"{progress.stage.value}/{progress.attempt}/{progress.detail}"
+            if marker != seen:
+                seen = marker
+                stages.append((monotonic_s() - started, progress.stage.value, progress.detail))
+                print(
+                    f"  {monotonic_s() - started:6.2f}s  {progress.stage.value:<20}"
+                    f"  {progress.detail}"
+                )
+            if progress.stage.terminal and not coordinator.setup_active:
+                break
+            time.sleep(0.05)
+
+        held = application.authority.held_targets()
+        print()
+        print(f"  stage:   {progress.stage.value}")
+        if progress.achieved_client_logical is not None:
+            width, height = progress.achieved_client_logical
+            backing = progress.achieved_client_backing_px
+            suffix = f", backing {backing[0]}x{backing[1]} px" if backing else ""
+            print(f"  viewport: achieved {width:.0f}x{height:.0f} pt{suffix}")
+        if progress.profile_id:
+            print(f"  profile: {progress.profile_id}")
+        failure = progress.failure
+        if failure is not None:
+            print(f"  kind:    {failure.kind.value}")
+            print(f"  summary: {failure.summary}")
+            print(f"  remedy:  {failure.remedy}")
+            if failure.detail:
+                print(f"  detail:  {failure.detail}")
+        print(f"  input edges held: {held}")
+
+        if json_path:
+            payload = {
+                "stage": progress.stage.value,
+                "ok": progress.ok,
+                "elapsed_s": round(monotonic_s() - started, 3),
+                "profile_id": progress.profile_id,
+                "achieved_client_logical": progress.achieved_client_logical,
+                "achieved_client_backing_px": progress.achieved_client_backing_px,
+                "failure": None
+                if failure is None
+                else {
+                    "kind": failure.kind.value,
+                    "stage": failure.stage.value,
+                    "summary": failure.summary,
+                    "remedy": failure.remedy,
+                    "detail": failure.detail,
+                },
+                "held_input_edges": list(held),
+                "stages": [
+                    {"at_s": round(at, 3), "stage": name, "detail": detail}
+                    for at, name, detail in stages
+                ],
+            }
+            Path(json_path).write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+            print(f"  wrote {json_path}")
+
+        return 0 if progress.stage is SetupStage.READY else 1
+    finally:
+        application.capture.stop(2.0)
+        application.shutdown()
+        if restore and original is not None:
+            result = port.pin_client_rect(original)
+            if not result.ok:
+                print(f"  restore failed: {result.message}")
+            else:
+                print(f"  restored: {_settled_geometry(port).describe()}")
+
+
 def _run_calibrate() -> int:
     """Read the client-relative pixel under the cursor.
 
@@ -953,6 +1111,7 @@ _MODES = (
     "--smoke-test",
     "--replay",
     "--capture-probe",
+    "--setup-probe",
     "--detector-report",
     "--soak",
     "--shadow-bench",
@@ -1023,6 +1182,10 @@ def main(argv: list[str] | None = None) -> int:
             return _run_replay(session)
         if mode == "--capture-probe":
             return _run_capture_probe()
+        if mode == "--setup-probe":
+            return _run_setup_probe(
+                _option(arguments, "--json"), restore="--keep" not in arguments
+            )
         if mode == "--detector-report":
             corpus = _option(arguments, "--corpus")
             json_path = _option(arguments, "--json")

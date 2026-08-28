@@ -8,8 +8,11 @@ authority (and therefore no deadman child), no surviving child processes, a
 report on stdout, and a meaningful exit status.
 
 Nothing here touches a window or emits input; the native modes
-(``--capture-probe``, ``--shadow-bench``, ``--calibrate``) need a Roblox
-session and are exercised by the owner, not here.
+(``--capture-probe``, ``--setup-probe``, ``--shadow-bench``, ``--calibrate``)
+need a Roblox session and are exercised by the owner, not here. What *is*
+checked for them is that they are registered as exclusive modes, because a
+mode that falls through the dispatch opens the dashboard instead - which for
+``--setup-probe`` would be a window nobody asked for.
 """
 
 from __future__ import annotations
@@ -92,6 +95,16 @@ def test_soak_is_bounded_and_gui_free() -> None:
 
 def test_modes_are_mutually_exclusive() -> None:
     code, output, _elapsed = _run(["--soak", "0.05", "--detector-report"], timeout_s=60.0)
+    assert code == 2
+    assert "Choose one mode" in output
+
+
+def test_setup_probe_is_an_exclusive_mode_not_a_dashboard() -> None:
+    """An unregistered flag falls through to ``gui_main()`` and opens Tk."""
+    import treasure
+
+    assert "--setup-probe" in treasure._MODES
+    code, output, _elapsed = _run(["--setup-probe", "--capture-probe"], timeout_s=60.0)
     assert code == 2
     assert "Choose one mode" in output
 

@@ -1109,3 +1109,60 @@ compared through a cheap key (observation identity, two rates, the packet
 count, the geometry revision, the event-log sequence).
 
 **Deviation:** none.
+
+---
+
+## D-042 — 2026-08-28 — The composition root is not a user interface
+
+**Plan text:** mission sections A, H; §17.
+
+**Decision:** `Application`, `build_application`, `EngineSetupPort` and
+`shift_lock_probe` move out of `treasure_gui.py` into a new
+`prospector_engine/application.py`. The Tk module imports the two names it
+actually needs and owns nothing but the window. Nothing is duplicated: there
+is one composition root, and both front ends call it.
+
+**Why:** the wiring that decides *what automatic setup is* — which port, which
+guard, which capture service, which profile library — lived in a module that
+imports `tkinter` at the top. That had one concrete consequence, and it was
+not a matter of taste: **the most important native check in the project could
+not be run without opening a window.** "Does Start Navigator reach READY on
+this machine?" is the question the whole fourth pass was blocked on, and the
+only way to ask it was a throwaway script that reached into the GUI module —
+so the answer was never committed, never repeatable, and never in CI's reach.
+
+Moving the root made `treasure.py --setup-probe` possible: the real
+`build_application`, the real coordinator, the real bounded stages, no Tk, no
+input. The extraction also put ~450 lines under `mypy` for the first time
+(`treasure_gui.py` is not in the checked set) and immediately found a real
+`Any` leak — `make_setup` was annotated `-> Any`, so every `SetupProgress` the
+setup runner returned was unchecked.
+
+**Deviation:** none.
+
+---
+
+## D-043 — 2026-08-28 — A window read back once has not been read back
+
+**Plan text:** §6.2; mission section B.
+
+**Decision:** `--setup-probe` settles its restoring read-back — polling until
+two consecutive identical client rectangles, bounded by both an attempt cap
+and a monotonic deadline — instead of reading the geometry once after
+`pin_client_rect` returns.
+
+**Why:** measured, on the first native run of the probe. The client started at
+1800×1053 pt, setup fitted it to 1280×720, and the restore asked for
+1800×1053 and *succeeded* — but the single read-back immediately afterwards
+reported `1063x610 pt at (18,499)`, a size that was never requested and did
+not survive the next second. A second later the window was exactly
+1800×1053 at (0,67), where it began.
+
+macOS animates a resize, so the first read lands mid-flight. This is the same
+mechanism the fit machine already handles with three stable read-backs
+(D-032), which is why the fit stage was never wrong about its own result while
+a fifteen-line restore was. The bug was in the probe's reporting rather than
+in the restore, which makes it the more dangerous kind: it would have written
+a false geometry into the evidence table and it looked like a platform defect.
+
+**Deviation:** none.

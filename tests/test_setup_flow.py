@@ -1,7 +1,8 @@
 """The real application, built by the real builder, driven to READY.
 
 This is the test the previous structure could not have: it constructs the
-application through ``build_application`` - the same function ``main()`` calls -
+application through ``build_application`` - the same composition root the Tk
+dashboard and ``--setup-probe`` both call -
 and presses Start Navigator. Nothing is injected. There is no ALL_PASSED gate
 set, no fabricated calibration and no hand-installed capability. If automatic
 setup cannot reach READY on its own, this fails.
@@ -27,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from prospector_engine.application import build_application
 from prospector_engine.contracts import IntentType, RunMode, SetupStage
 from tests.arrow_fixtures import render_scene
 from tests.fakes import (
@@ -49,14 +51,14 @@ def _frames(terrain: str = "grass") -> list[Any]:
 @pytest.fixture
 def application(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
-    import treasure_gui
+    from prospector_engine import application as composition
 
     port = FakePlatformPort(VirtualClock(), geometry=make_geometry())
     port.capture_source = FakeCaptureSource(frames=_frames())
-    monkeypatch.setattr(treasure_gui, "create_platform_port", lambda: port)
-    monkeypatch.setattr(treasure_gui, "DeadmanClient", lambda **_kwargs: FakeDeadmanClient())
+    monkeypatch.setattr(composition, "create_platform_port", lambda: port)
+    monkeypatch.setattr(composition, "DeadmanClient", lambda **_kwargs: FakeDeadmanClient())
 
-    app = treasure_gui.build_application()
+    app = build_application()
     app.port_under_test = port  # type: ignore[attr-defined]
     assert app.capture.start()
     app.coordinator.start()

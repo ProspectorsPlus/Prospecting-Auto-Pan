@@ -171,6 +171,7 @@ on Windows.
 .venv/bin/python treasure.py --smoke-test # packaging smoke test, emits no input
 .venv/bin/python treasure.py --calibrate  # client-relative pixel read-out
 .venv/bin/python treasure.py --capture-probe   # measure the pipeline, read-only
+.venv/bin/python treasure.py --setup-probe     # run automatic setup, sends no input
 .venv/bin/python treasure.py --replay <session-dir>  # replay a recording
 .venv/bin/python treasure.py --detector-report --corpus tests/corpus/real  # real-frame report
 .venv/bin/python treasure.py --shadow-bench 15 --json bench.json  # native capture + perception
@@ -182,6 +183,15 @@ authority, no deadman helper, a report, an exit status.
 `tests/test_cli_lifecycle.py` runs them as subprocesses and checks exactly
 that. `--shadow-bench` needs a Roblox window on screen; it moves nothing and
 sends nothing.
+
+`--setup-probe` is the exception that resizes: it runs the *real* automatic
+setup — the same `build_application`, the same coordinator, the same bounded
+stages the Start Navigator button drives — so the fit stage genuinely sizes the
+Roblox client to 1280x720. It reads the client size first and restores it on
+the way out (`--keep` opts out), it stops at the observation half, and it
+cannot emit an input edge: the armed stages that turn the camera need a
+physical arm and are never reached. It prints the held-lease ledger at the end
+so that claim is checkable rather than asserted.
 
 `--replay` runs a recorded session back through the real perception pipeline
 and navigator. There is no input authority and no platform port anywhere in
