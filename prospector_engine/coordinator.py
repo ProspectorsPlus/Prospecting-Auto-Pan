@@ -932,8 +932,11 @@ class RuntimeCoordinator:
             )
             return
         self._last_result = completion.result
+        detail = completion.result.detail
         self._events.add(
-            "worker.completed", f"{completion.worker_id}:{completion.result.kind.name}"
+            "worker.completed",
+            f"{completion.worker_id}:{completion.result.kind.name}"
+            + (f" - {detail}" if detail else ""),
         )
         self._worker = None
         self._worker_cancel = None
