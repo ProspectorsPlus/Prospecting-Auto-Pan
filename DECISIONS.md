@@ -1166,3 +1166,166 @@ in the restore, which makes it the more dangerous kind: it would have written
 a false geometry into the evidence table and it looked like a platform defect.
 
 **Deviation:** none.
+
+---
+
+## D-044 — 2026-08-28 — The packet is built after the command is acted on
+
+**Plan text:** §6, §10; recovery-pass sections 5 and 6.
+
+**Decision:** `_run_observer_loop` runs capture → perceive → decide → *propose
+or apply* → publish. `DiagnosticObservation` carries a `CommandVisualization`
+whose glyphs come from `NavigationApplyResult.leases_held` on APPLIED and from
+the requested command on WOULD, and from nothing at all on REJECTED, RELEASED
+or a frozen packet.
+
+**Why:** `context.on_observation()` ran *before* `apply()`, so the packet was
+already published by the time the authority answered. The UI could not
+distinguish WOULD_APPLY from APPLIED because the information did not exist yet
+— every requested command was drawn as though the character were moving. A
+command asking for W and a right turn, applied with only `w` actually held, now
+draws W and no turn.
+
+`CommandStage` states the rest plainly: `OS_EDGE_POSTED` and
+`AUTHORITY_APPLIED` are not success. `CGEventPost` returning without raising is
+evidence that the call returned. Only `GAME_MOTION_CONFIRMED` — perception
+seeing the world move — is success, and an applied command the motion estimator
+contradicts is labelled **NO MOTION** rather than ACTIVE.
+
+**Deviation:** none.
+
+---
+
+## D-045 — 2026-08-28 — Minimal means minimal, and a frozen packet is dead
+
+**Plan text:** §11.2; recovery-pass section 6.
+
+**Decision:** every detector internal — cue arms, cue labels, outlier text, the
+contour, bbox, centroid, shaft, tip and notches — is Full Diagnostics only.
+`set_mode` hides what is already on screen instead of waiting for a redraw. A
+`TRANSITION` or `TERMINAL` packet keeps its picture in one flat grey, loses
+every internal, and clears the action layer.
+
+**Why:** `_draw_cue_arms` was called unconditionally and the bbox, centroid,
+shaft and tip were never gated at all, which is the blue rays and "(outlier)"
+text over a route in the reported screenshot. Waiting for a redraw is wrong
+precisely when it matters: a stopped run has no next frame.
+
+That last point needed a second fix the test found. Full Diagnostics throttles
+overlay redraws to 20 Hz, so a Stop landing inside that window kept **ACTIVE**
+on screen until the next frame — which never came. A frozen packet is never
+throttled.
+
+**Deviation:** none.
+
+---
+
+## D-046 — 2026-08-28 — Ctrl+Option chords, from one registry
+
+**Plan text:** §11.2; recovery-pass section 4.
+
+**Decision:** `prospector_engine/bindings.py` holds the only binding table and
+the only chord state machine. Primary bindings are Ctrl+Option (macOS) /
+Ctrl+Alt (Windows) + N/O/X/R/P/D/I. F1–F6 keep working as legacy aliases
+derived from the same registry and are advertised nowhere.
+
+**Why:** the bindings were declared twice with a virtual-key table beside each,
+and spelled out a third time in the GUI and README. F1 is Help in most
+applications, the row is brightness and volume by default on a Mac, and one
+unmodified keypress starting a character walking is a slip away.
+
+**Shift is in no chord** because Roblox binds Shift Lock to it: a start chord
+that toggled the camera mode the navigator depends on would be fighting itself.
+
+`ChordRecognizer` is shared rather than reimplemented per platform, because the
+rules that are easy to get wrong are identical on both: rising edges only (an
+autorepeating chord must not submit eighty intents a second), both modifier
+sides, and state cleared on focus changes so a key-up delivered to another
+application cannot leave Ctrl held forever. macOS adapts pynput events; Windows
+turns polled `GetAsyncKeyState` levels into the same edges.
+
+**Deviation:** none.
+
+---
+
+## D-047 — 2026-08-28 — Consumption is scoped; measurement is separate
+
+**Plan text:** §6.3, §7.4; recovery-pass section 3.
+
+**Decision:** `LatestFrameSlot` counts registered consumers instead of latching
+a flag, `CaptureService.consuming(reason, measured=...)` scopes it, and only a
+*measured* phase has its processed rate judged by the governor. Entering a
+scope resets the rate window. A tier below the Live floor may not rest there:
+after `ineligible_retry_s` of health the saturation gate is waived.
+
+**Why:** `wait_for_new` set `_has_consumer` and never cleared it. Automatic
+setup and the live prologue each read a handful of frames, which marked the
+slot consumed for the rest of the session; neither ticks the processed-rate
+counter. After setup finished the governor saw a consumer that no longer
+existed reporting zero processed fps, called it a stalled worker, and walked
+the cadence 60 → 30 → 15 Hz. `SteeringLimits.min_processed_fps` is 30, so Live
+refused to steer — for a reason the pipeline had invented about itself.
+
+Instrumenting setup instead was tried first and is worse: setup polls on a
+deliberately slow bounded schedule, so counting its cadence as throughput
+judges the pipeline on how slowly a probe chose to run, and `SHADOW_QUALIFY`
+then failed its own fps floor.
+
+**Deviation:** none.
+
+---
+
+## D-048 — 2026-08-28 — State is a verdict, not a coordinate basis
+
+**Plan text:** §5, §6.2.
+
+**Decision:** `ViewportGeometry.coordinate_basis()` is the identity without
+`state`. `same_source`, `ViewportGuard.check()` and `_adopt_locked` all compare
+the basis. `check()` re-adopts a healthy window when nothing is adopted, never
+overwrites its own verdict with a fresh read that agrees with it, and
+`restart_source` re-adopts only when the guard holds nothing usable. Each
+capture source's callback is bound to that source; frames from a superseded one
+are released.
+
+**Why:** measured against the live client, where automatic setup failed
+intermittently with `capture_stale` on a correctly fitted window.
+`window_geometry()` can only ever report `ADOPTED_NONCANONICAL` — the port
+reports the window as it finds it, and `CANONICAL_VERIFIED` is the *guard's*
+verdict about it. Comparing full identities therefore compared "verified"
+against "adopted" on every poll after a successful fit, called the difference a
+`CAPTURE_MISMATCH`, and undid the fit it had just achieved; the unchanged
+branch separately downgraded the verdict by overwriting it. Together they
+produced a revision storm — about forty state flips a second, the supervisor
+rebuilding the source on each — while in-flight frames from stopped sources
+carried the pre-fit rect and poisoned the guard again.
+
+Measured: `capture_stale` on 4 of 6 native runs before, 0 of 6 after.
+
+**Deviation:** none.
+
+---
+
+## D-049 — 2026-08-28 — A recovery record may not write its own successor
+
+**Plan text:** §4.4.
+
+**Decision:** `ReleaseReport.evidence_clean` — no failures, a positive deadman
+acknowledgement, an empty ledger — is what `shutdown()` persists on.
+`release_known_safe` is unchanged and remains the only thing that gates Live.
+
+**Why:** observed on this machine. The persisted record's own evidence read
+`deadman_acknowledged: True, ledger_empty: True, failures: []`, and it still
+blocked Live run after run. `release_known_safe` means *this release was clean
+**and** no earlier uncertainty is latched*, so a run that inherited a record
+re-wrote one at shutdown from a release that had gone perfectly, and the next
+run inherited that. One uncertain shutdown poisoned the machine permanently.
+
+An inherited latch must still refuse to navigate — that part was right. It must
+not manufacture its own successor.
+
+The preflight's remedy was also wrong in a way that mattered: Stop & Release
+cannot clear a recovery record, because clearing it requires a positively
+acknowledged release, which is the Recover Release handshake. It named the one
+control guaranteed to leave the user where they started.
+
+**Deviation:** none.

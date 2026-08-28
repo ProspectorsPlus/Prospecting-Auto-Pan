@@ -4,11 +4,107 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28 (fifth pass). Development machine: macOS 25.4, arm64,
+Last updated: 2026-08-28 (sixth pass, recovery). Development machine: macOS 25.4, arm64,
 CPython 3.13.15, Tk 9.0. **No Roblox session was operated and navigation was
 never armed during implementation; no input was sent.** The fifth pass did
 resize the Roblox window, which is the fit stage doing its job, and restored
 it every time — measured below.
+
+---
+
+## What changed on 2026-08-28 (sixth pass) — merge, Live, chords, overlay
+
+The fifth pass did structural work and did not touch the four systems that
+were actually broken. This one does, and merges the friend branch.
+
+### origin/Treasure, merged
+
+Nine commits, merged rather than rebased. One conflict, in `treasure_gui.py`,
+and it was semantic: the fifth pass had moved the composition root out to
+`prospector_engine/application.py`, so git saw "deleted here, modified there"
+for the whole `build_application` block — the shape of conflict where a hand
+resolution quietly drops someone's work. Their three edits were ported into the
+new root by hand and each of the nine is now pinned by a behavioural test
+(`tests/test_integration_merge.py`): first-capture reacquisition, UNPINNED
+healing, `on_safety_fault`, worker completion reasons, `TREASURE_VERBOSE`,
+`savePatel.md`, and the egg-info untracking.
+
+### Root causes confirmed and fixed
+
+| Reported | Confirmed mechanism | Fix |
+|---|---|---|
+| The UI cannot tell WOULD_APPLY from APPLIED | `context.on_observation()` ran *before* `apply()`, so the packet was published before the authority answered | act, then publish; `CommandVisualization` reads `leases_held` (D-044) |
+| No purple command renderer | there was none | purple action layer, dark underlay under a vivid stroke, boxed key labels, dashed WOULD / solid ACTIVE (D-044) |
+| MINIMAL calls `_draw_cue_arms` unconditionally | it did — and the bbox, centroid, shaft and tip were never gated at all | all internals are Full-only; `set_mode` hides what is already drawn (D-045) |
+| A TERMINAL packet still draws a live-looking field | frozen packets kept every vector, and Full's 20 Hz overlay throttle could keep **ACTIVE** on screen with no next frame to clear it | frozen packets go flat grey, lose every internal, clear the action layer, and are never throttled (D-045) |
+| macOS and Windows only implement F1–F6 | two tables, declared twice, spelled out a third time in the GUI | one registry, Ctrl+Option / Ctrl+Alt chords, shared `ChordRecognizer` (D-046) |
+| "0 useful fps" then downshifts to 15 Hz | `wait_for_new` latched `_has_consumer` forever; setup and the prologue read frames without ticking the processed rate; the governor read a real zero against a consumer that no longer existed and walked 60 → 30 → 15 Hz, under the 30 steering requires | scoped consumers, measurement separated from consumption, no resting below the Live floor (D-047) |
+| Arm tokens spent on transient failures | the token was consumed before the readiness check by design | focus and capture freshness keep the arm; a real fault still spends it |
+
+### Two defects only the live client showed
+
+**Automatic setup failed intermittently with `capture_stale` on a correctly
+fitted window.** `window_geometry()` can only ever report
+`ADOPTED_NONCANONICAL`; `CANONICAL_VERIFIED` is the guard's verdict. Comparing
+full identities compared the verdict against the reading on every poll after a
+successful fit and called it a mismatch, while the unchanged branch separately
+overwrote the verdict. The result was a revision storm — about forty state
+flips a second, the supervisor rebuilding the source on each — with in-flight
+frames from stopped sources carrying the pre-fit rect and re-poisoning the
+guard. Measured: `capture_stale` on **4 of 6** native runs before, **0 of 6**
+after (D-048).
+
+**A recovery record that could never be escaped.** The persisted record's own
+evidence read `deadman_acknowledged: True, ledger_empty: True, failures: []`
+and it still blocked Live, run after run: `shutdown()` persisted on
+`release_known_safe`, which is also false while an *earlier* run's latch is
+set, so every run re-wrote the record from a perfectly clean release. One
+uncertain shutdown poisoned the machine permanently. The preflight's remedy
+compounded it by naming Stop & Release, which cannot clear a record (D-049).
+
+### Permissions, measured — the failure was never a permission
+
+`AXIsProcessTrusted`, `CGPreflightPostEventAccess` and
+`CGPreflightListenEventAccess` all read **True** for this launcher (Terminal).
+`prospector_engine/preflight.py` now reports them as typed capabilities,
+separating *faults* (a denied permission, a dead listener, stuck input) from
+*preconditions* (not armed, Roblox not focused, cadence too low), and naming
+the launcher that owns the grant and the exact System Settings pane.
+
+### Native, this pass
+
+`.venv/bin/python treasure.py --setup-probe`, six consecutive runs after the
+fixes: fit requested and achieved **1280×720 pt / 2560×1440 px** every time,
+origin preserved at (0,67), one capture restart, **zero input edges held**,
+window restored to 1800×1053 every time. All six stop at `SELECT_PROFILE` with
+`profile_ambiguous` — the correct answer, because **no treasure map is
+equipped**: on a frame with no arrow, `yellow_map_v1` and `green_arrow_v1`
+genuinely are indistinguishable (within 0.02) and a classifier that picked one
+would be guessing.
+
+### What the owner still owes — and it is short
+
+Everything below needs a physical human at the machine. **No agent may
+simulate the arm or the start chord** (CLAUDE.md rule 1).
+
+1. Equip a treasure map so its arrow is on screen.
+2. `treasure.py --setup-probe` → expect **READY**. This is the first time
+   `ESTABLISH_REFERENCE` and `SHADOW_QUALIFY` will have run on real frames.
+3. Open the dashboard. Confirm the INPUT SAFETY card reads *Ready to arm*, and
+   that its tooltip shows the hotkey listener **running**.
+4. Click **Enable Live Control**, focus Roblox, press **Ctrl+Option+N**.
+5. Watch the prologue characterize the turn actuator, then the route.
+6. Press **Ctrl+Option+X** to stop, from an unfocused window as well.
+
+Record, for each: the chord being received, the token consumed, the Live worker
+entered, cadence eligible, the turn characterization outcome, the requested
+command, the OS edge result, the `NavigationApplyResult`, the leases actually
+held, **whether the character moved**, and the release after Stop. An internal
+`APPLIED` with no observed movement is **not** a pass — the overlay now says
+`NO MOTION` for exactly that case.
+
+Windows has still never executed a line of `platform_win.py`. The chord poller
+is contract-tested from macOS in a subprocess only.
 
 ---
 
