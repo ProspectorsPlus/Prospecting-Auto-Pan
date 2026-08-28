@@ -795,10 +795,12 @@ class WindowsPrintWindowSource:
             return None
         bgra = np.frombuffer(self._buffer, dtype=np.uint8, count=width * height * 4)
         source = bgra.reshape(height, width, 4)[:, :, :3]
+        normalize_started = monotonic_s()
         canonical = _letterbox_into_canonical(source, geometry, self._pool)
         if canonical is None:
             self._error = "frame buffer pool exhausted"
             return None
+        normalize_ms = (monotonic_s() - normalize_started) * 1000.0
         self._error = None
         return RawFrame(
             bgr=canonical,
@@ -807,6 +809,7 @@ class WindowsPrintWindowSource:
             presented_at_s=monotonic_s(),
             content_id=None,  # GDI offers no presentation identity
             backend=self.name,
+            normalize_ms=normalize_ms,
         )
 
 

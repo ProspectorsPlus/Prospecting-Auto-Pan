@@ -398,3 +398,53 @@ def test_a_healthy_source_is_never_reacquired() -> None:
         assert service.metrics().reacquisitions == 0
     finally:
         service.stop()
+
+
+def test_frames_are_not_counted_as_dropped_before_anyone_consumes() -> None:
+    """With Shadow not started, "dropped" would otherwise read as a disaster."""
+    import time
+
+    from tests.fakes import FakeCaptureSource
+
+    source = FakeCaptureSource()
+    service, _port, _guard = _service(source, supervisor_interval_s=0.05)  # type: ignore[misc]
+    assert service.start()
+    try:
+        time.sleep(0.4)  # frames flowing, nobody consuming
+        assert service.latest() is not None
+        assert service.metrics().dropped_frames == 0
+
+        # Once a consumer exists, real drops are counted again.
+        first = service.wait_for_new(0, 1.0)
+        assert first is not None
+        time.sleep(0.3)
+        assert service.metrics().dropped_frames >= 1
+    finally:
+        service.stop()
+
+
+def test_consumer_visible_gaps_match_the_slot_drop_count() -> None:
+    """The two counters describe the same events from opposite ends."""
+    from prospector_engine.capture import LatestFrameSlot
+
+    slot = LatestFrameSlot()
+
+    class _Frame:
+        def __init__(self, sequence: int) -> None:
+            self.sequence = sequence
+
+    class _Envelope:
+        def __init__(self, sequence: int) -> None:
+            self.frame = _Frame(sequence)
+
+    slot.wait_for_new(0, 0.0)  # register a consumer
+    slot.publish(_Envelope(1))  # type: ignore[arg-type]
+    taken = slot.wait_for_new(0, 0.0)
+    assert taken is not None and taken.frame.sequence == 1
+
+    for sequence in range(2, 6):
+        slot.publish(_Envelope(sequence))  # type: ignore[arg-type]
+    latest = slot.wait_for_new(1, 0.0)
+
+    assert latest is not None and latest.frame.sequence == 5
+    assert slot.dropped == 3  # frames 2, 3 and 4 were never seen

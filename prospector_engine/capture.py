@@ -175,14 +175,21 @@ class LatestFrameSlot:
         self._value: FrameEnvelope | None = None
         self._sequence = 0
         self._taken_sequence = 0
+        self._has_consumer = False
         self._lock = threading.Condition()
         self.dropped = 0
 
     def publish(self, envelope: FrameEnvelope) -> None:
         with self._lock:
-            # A drop is a frame that was replaced before any consumer saw it -
-            # not merely a slot that was occupied, which is the normal state.
-            if self._value is not None and self._sequence > self._taken_sequence:
+            # A drop is a frame a *consumer* wanted and never got. With nobody
+            # consuming - Shadow not started, only the preview peeking - every
+            # frame would otherwise be counted as dropped, which reads as a
+            # catastrophe while the pipeline is perfectly healthy.
+            if (
+                self._has_consumer
+                and self._value is not None
+                and self._sequence > self._taken_sequence
+            ):
                 self.dropped += 1
             self._value = envelope
             self._sequence = envelope.frame.sequence
@@ -201,6 +208,9 @@ class LatestFrameSlot:
         """Block until a frame newer than ``after_sequence`` is available."""
         deadline = monotonic_s() + timeout_s
         with self._lock:
+            if not self._has_consumer:
+                self._has_consumer = True
+                self._taken_sequence = self._sequence
             while True:
                 if self._value is not None and self._sequence > after_sequence:
                     self._taken_sequence = max(self._taken_sequence, self._sequence)
@@ -214,6 +224,7 @@ class LatestFrameSlot:
         with self._lock:
             self._value = None
             self._taken_sequence = self._sequence
+            self._has_consumer = False
 
 
 # ---------------------------------------------------------------------------
@@ -634,10 +645,12 @@ class MssCaptureSource:
             self._error = f"mss grab failed: {exc!r}"
             return None
         raw = np.asarray(shot)[:, :, :3]
+        normalize_started = monotonic_s()
         canonical = _normalize_to_canonical(raw, geometry, self._pool)
         if canonical is None:
             self._error = "buffer pool exhausted"
             return None
+        normalize_ms = (monotonic_s() - normalize_started) * 1000.0
         self._sequence += 1
         self._error = None
         return RawFrame(
@@ -647,6 +660,7 @@ class MssCaptureSource:
             presented_at_s=monotonic_s(),
             content_id=None,  # mss has no source-side frame identity
             backend=self.name,
+            normalize_ms=normalize_ms,
         )
 
 
@@ -813,9 +827,15 @@ class CaptureService:
         self._preview_latency.record_ms(milliseconds)
         self._preview_rate.tick()
 
-    def note_dropped_observation(self) -> None:
+    def note_dropped_observation(self, count: int = 1) -> None:
+        """Frames that existed but were never turned into an observation.
+
+        Reported by the perception consumer from gaps in the frame sequence,
+        which is the only place that difference is visible: the slot knows what
+        it replaced, but only the consumer knows what it never saw.
+        """
         with self._lock:
-            self._dropped_observations += 1
+            self._dropped_observations += max(0, count)
 
     def note_end_to_end_ms(self, milliseconds: float) -> None:
         self._end_to_end.record_ms(milliseconds)
@@ -952,6 +972,8 @@ class CaptureService:
 
         self._unique_rate.tick(now)
         self._capture_latency.record_ms((raw.presented_at_s - raw.captured_at_s) * 1000.0)
+        if raw.normalize_ms:
+            self._normalize_latency.record_ms(raw.normalize_ms)
 
         with self._lock:
             self._sequence += 1

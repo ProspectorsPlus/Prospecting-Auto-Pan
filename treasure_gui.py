@@ -472,6 +472,15 @@ class DiagnosticCanvas:
         else:
             self._hide("centroid")
 
+        if arrow.valid and arrow.tip_px is not None and arrow.tail_px is not None:
+            tail_view = transform.apply_point(arrow.tail_px)
+            tip_view = transform.apply_point(arrow.tip_px)
+            shaft = self._line("shaft", fill=GOLD, width=2, arrow="last")
+            self.canvas.coords(shaft, tail_view[0], tail_view[1], tip_view[0], tip_view[1])
+            self._show("shaft")
+        else:
+            self._hide("shaft")
+
         if arrow.valid and arrow.tip_px is not None:
             tx, ty = transform.apply_point(arrow.tip_px)
             tip = self._line("tip", fill=GOLD, width=2)
@@ -1280,6 +1289,7 @@ class Dashboard:
             f"preview {metrics.preview_fps:5.1f}/s\n"
             f"age {0.0 if metrics.frame_age_ms is None else metrics.frame_age_ms:5.1f} ms   "
             f"dup {metrics.duplicate_frames}   drop {metrics.dropped_frames}   "
+            f"unobserved {metrics.dropped_observations}   "
             f"stale {metrics.stale_frames}   reacq {metrics.reacquisitions}\n"
             f"capture {metrics.capture.p50_ms:4.1f}/{metrics.capture.p95_ms:4.1f}   "
             f"perception {metrics.perception.p50_ms:4.1f}/{metrics.perception.p95_ms:4.1f}   "

@@ -818,6 +818,11 @@ def _run_observer_loop(
         if envelope is None:
             continue
         frame = envelope.frame
+        if last_sequence and frame.sequence > last_sequence + 1:
+            # Frames existed that we never observed: the slot replaced them
+            # while perception was busy. That is the designed behaviour, but it
+            # has to be counted rather than silently absorbed.
+            capture.note_dropped_observation(frame.sequence - last_sequence - 1)
         last_sequence = frame.sequence
 
         result = pipeline.analyze(frame, map_id=map_id, approach_valid=approach_valid)

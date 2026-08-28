@@ -283,6 +283,9 @@ class RawFrame:
     presented_at_s: float
     content_id: int | None
     backend: str
+    #: CPU time spent cropping, letterboxing, and scaling into the canonical
+    #: raster. Zero for backends that do it on the GPU (ScreenCaptureKit).
+    normalize_ms: float = 0.0
 
     @property
     def size_px(self) -> tuple[int, int]:
@@ -508,6 +511,9 @@ class ArrowObservation:
     confidence: float
     valid: bool
     abstain_reason: str | None = None
+    #: The far end of the principal axis. Drawing tail-to-tip shows the shaft
+    #: the direction estimate was taken from, which a bounding box cannot.
+    tail_px: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -855,6 +861,7 @@ class DiagnosticObservation:
     abstain_reason: str | None
 
     capture_ms: float = 0.0
+    normalize_ms: float = 0.0
     perception_ms: float = 0.0
     decision_ms: float = 0.0
 

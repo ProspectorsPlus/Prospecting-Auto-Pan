@@ -412,7 +412,7 @@ class ArrowSegmenter:
         if best.clipped:
             return (_abstain(self._profile.profile_id, "candidate-clipped"), found)
 
-        axis, tip = _principal_axis_and_tip(best)
+        axis, tip, tail = _principal_axis_and_tip(best)
         return (
             ArrowObservation(
                 profile_id=self._profile.profile_id,
@@ -424,6 +424,7 @@ class ArrowSegmenter:
                 confidence=_confidence_for(best, self._profile),
                 valid=True,
                 abstain_reason=None,
+                tail_px=tail,
             ),
             found,
         )
@@ -457,7 +458,7 @@ def _confidence_for(candidate: ArrowCandidate, profile: ArrowProfile) -> float:
 
 def _principal_axis_and_tip(
     candidate: ArrowCandidate,
-) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+) -> tuple[tuple[float, float] | None, tuple[float, float] | None, tuple[float, float] | None]:
     """PCA axis plus the farthest mask point along it, as a tip estimate.
 
     The sign of a PCA axis is arbitrary, so it is resolved by taking whichever
@@ -466,7 +467,7 @@ def _principal_axis_and_tip(
     """
     points = np.column_stack(np.nonzero(candidate.mask))  # (row, col)
     if points.shape[0] < 8:
-        return None, None
+        return None, None, None
     xy = np.column_stack((points[:, 1], points[:, 0])).astype(np.float64)
     mean = xy.mean(axis=0)
     centred = xy - mean
@@ -476,18 +477,20 @@ def _principal_axis_and_tip(
     positive = projections[projections > 0]
     negative = projections[projections < 0]
     if positive.size == 0 or negative.size == 0:
-        return None, None
+        return None, None, None
     # The arrowhead end is narrower but reaches farther; pick the longer reach.
     if abs(positive.max()) < abs(negative.min()):
         axis = -axis
         projections = -projections
     norm = float(np.hypot(axis[0], axis[1]))
     if norm < 1e-9:
-        return None, None
+        return None, None, None
     unit = (float(axis[0] / norm), float(axis[1] / norm))
     tip_index = int(np.argmax(projections))
+    tail_index = int(np.argmin(projections))
     tip = (float(xy[tip_index][0]), float(xy[tip_index][1]))
-    return unit, tip
+    tail = (float(xy[tail_index][0]), float(xy[tail_index][1]))
+    return unit, tip, tail
 
 
 # ---------------------------------------------------------------------------
@@ -559,6 +562,7 @@ class ArrowTracker:
             confidence=observation.confidence,
             valid=True,
             abstain_reason=None,
+            tail_px=observation.tail_px,
         )
 
 

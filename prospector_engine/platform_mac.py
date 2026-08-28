@@ -274,10 +274,12 @@ class MacQuartzWindowSource:
             self._error = f"short image buffer: {raw.size} < {needed}"
             return None
         bgra = raw[:needed].reshape(height, bytes_per_row // 4, 4)[:, :width, :3]
+        normalize_started = monotonic_s()
         canonical = _letterbox_into_canonical(bgra, geometry, self._pool)
         if canonical is None:
             self._error = "frame buffer pool exhausted"
             return None
+        normalize_ms = (monotonic_s() - normalize_started) * 1000.0
         self._counter += 1
         self._error = None
         return RawFrame(
@@ -287,6 +289,7 @@ class MacQuartzWindowSource:
             presented_at_s=monotonic_s(),
             content_id=None,
             backend=self.name,
+            normalize_ms=normalize_ms,
         )
 
 
