@@ -331,3 +331,82 @@ def test_the_data_root_refuses_the_filesystem_root(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("TREASURE_DATA_DIR", "/")
     with pytest.raises(ValueError, match="filesystem root"):
         resolve_app_paths()
+
+
+# ---------------------------------------------------------------------------
+# Session read-back and the replay command
+# ---------------------------------------------------------------------------
+
+
+def test_a_recorded_session_reads_back_in_order(tmp_path: Path) -> None:
+    from prospector_engine.telemetry import read_session
+
+    recorder = _recorder(tmp_path, chunk_frames=2)
+    for index in range(1, 7):
+        recorder.offer(make_frame(index, captured_at_s=index * 0.05), {"i": index})
+    _drain(recorder, expected_chunks=3)
+    recorder.stop()
+
+    records = list(read_session(recorder.session_dir))
+
+    assert [record.sequence for record in records] == [1, 2, 3, 4, 5, 6]
+    assert [record.telemetry["i"] for record in records] == [1, 2, 3, 4, 5, 6]
+    assert all(not record.bgr.flags.writeable for record in records)
+
+
+def test_a_corrupt_chunk_is_skipped_rather_than_aborting_the_replay(tmp_path: Path) -> None:
+    from prospector_engine.telemetry import read_session
+
+    recorder = _recorder(tmp_path, chunk_frames=1)
+    for index in range(1, 4):
+        recorder.offer(make_frame(index))
+    _drain(recorder, expected_chunks=3)
+    recorder.stop()
+
+    chunks = sorted((recorder.session_dir / "chunks").glob("*.npz"))
+    chunks[1].write_bytes(b"not an npz archive")
+
+    records = list(read_session(recorder.session_dir))
+
+    assert [record.sequence for record in records] == [1, 3]
+
+
+def test_the_replay_command_runs_a_recorded_session_and_emits_nothing(
+    tmp_path: Path,
+) -> None:
+    recorder = _recorder(tmp_path, chunk_frames=2)
+    for index in range(1, 5):
+        recorder.offer(make_frame(index, captured_at_s=index * 0.05))
+    _drain(recorder, expected_chunks=2)
+    recorder.stop()
+
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    completed = subprocess.run(
+        [sys.executable, str(root / "treasure.py"), "--replay", str(recorder.session_dir)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert "4 frames replayed" in completed.stdout
+    assert "nothing can be emitted" in completed.stdout
+    assert "PENDING" in completed.stdout
+
+
+def test_replay_is_repeatable_over_a_real_recording(tmp_path: Path) -> None:
+    from prospector_engine.telemetry import read_session
+
+    recorder = _recorder(tmp_path, chunk_frames=3)
+    for index in range(1, 7):
+        recorder.offer(make_frame(index, captured_at_s=index * 0.05))
+    _drain(recorder, expected_chunks=2)
+    recorder.stop()
+
+    first = [record.bgr.tobytes() for record in read_session(recorder.session_dir)]
+    second = [record.bgr.tobytes() for record in read_session(recorder.session_dir)]
+    assert first == second

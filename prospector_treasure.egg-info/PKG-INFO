@@ -1,3 +1,28 @@
+Metadata-Version: 2.4
+Name: prospector-treasure
+Version: 0.5.0
+Summary: Treasure Navigator - arrow-guided closed-loop Roblox treasure macro
+Author: Prospectors Plus
+License: UNLICENSED
+Classifier: Private :: Do Not Upload
+Requires-Python: >=3.13
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.26
+Requires-Dist: mss>=9.0
+Requires-Dist: opencv-python-headless>=4.9
+Requires-Dist: Pillow>=10.0
+Requires-Dist: pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
+Requires-Dist: pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
+Requires-Dist: pynput>=1.7; sys_platform == "darwin"
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-timeout>=2.2; extra == "dev"
+Requires-Dist: hypothesis>=6.90; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: pip-tools>=7.4; extra == "dev"
+Requires-Dist: pyinstaller>=6.6; extra == "dev"
+
 # Treasure Navigator
 
 An arrow-guided Roblox *Treasure* macro: pin the client area, watch the
@@ -74,14 +99,7 @@ on Windows.
 .venv/bin/python treasure.py --self-test  # imports and contracts, emits no input
 .venv/bin/python treasure.py --smoke-test # packaging smoke test, emits no input
 .venv/bin/python treasure.py --calibrate  # client-relative pixel read-out
-.venv/bin/python treasure.py --capture-probe   # capture cost, read-only
-.venv/bin/python treasure.py --replay <session-dir>  # replay a recording
 ```
-
-`--replay` runs a recorded session back through the real perception pipeline
-and navigator. There is no input authority and no platform port anywhere in
-that path, so it cannot emit anything; it uses recorded timestamps, so a slow
-replay does not make every frame look stale.
 
 ### Live mode requires a physical human action
 

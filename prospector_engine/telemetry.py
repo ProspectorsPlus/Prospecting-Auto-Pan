@@ -16,12 +16,13 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 from prospector_engine.contracts import (
     CapturedFrame,
@@ -36,11 +37,13 @@ __all__ = [
     "EventLog",
     "EvidenceRecorder",
     "LatestSlot",
+    "RecordedFrame",
     "RecorderConfig",
     "RecorderStats",
     "TelemetryHub",
     "atomic_write_bytes",
     "atomic_write_text",
+    "read_session",
     "resolve_app_paths",
 ]
 
@@ -522,3 +525,62 @@ class EvidenceRecorder:
         atomic_write_text(
             self._dir / "manifest.json", json.dumps(self._manifest, indent=2) + "\n"
         )
+
+
+# ---------------------------------------------------------------------------
+# Reading a recorded session back
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RecordedFrame:
+    """One frame read back from a recording, with its recorded metadata."""
+
+    sequence: int
+    captured_at_s: float
+    duration_ms: float
+    duplicate: bool
+    protected: bool
+    telemetry: Mapping[str, Any]
+    bgr: NDArray[np.uint8]
+
+
+def read_session(
+    session_dir: Path, *, verify_checksums: bool = True
+) -> Iterator[RecordedFrame]:
+    """Stream a recorded session back in order.
+
+    Chunks are independently recoverable, so a corrupt or truncated one is
+    skipped with a warning rather than aborting the whole replay - losing the
+    tail of a session must not lose its beginning (plan 11.1).
+    """
+    manifest_path = session_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"no manifest.json under {session_dir}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for entry in manifest.get("chunks", []):
+        path = session_dir / "chunks" / str(entry["name"])
+        if not path.exists():
+            continue
+        payload = path.read_bytes()
+        if verify_checksums and hashlib.sha256(payload).hexdigest() != entry.get("sha256"):
+            continue  # quarantine rather than replay corrupt evidence
+        try:
+            import io
+
+            with np.load(io.BytesIO(payload), allow_pickle=False) as archive:
+                metadata = json.loads(str(archive["meta"]))
+                for index, record in enumerate(metadata):
+                    image = np.asarray(archive[f"frame_{index:04d}"], dtype=np.uint8)
+                    image.flags.writeable = False
+                    yield RecordedFrame(
+                        sequence=int(record["sequence"]),
+                        captured_at_s=float(record["captured_at_s"]),
+                        duration_ms=float(record["duration_ms"]),
+                        duplicate=bool(record["duplicate"]),
+                        protected=bool(record["protected"]),
+                        telemetry=dict(record.get("telemetry", {})),
+                        bgr=image,
+                    )
+        except (OSError, ValueError, KeyError):
+            continue

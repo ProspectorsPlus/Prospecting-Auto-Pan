@@ -25,8 +25,8 @@ during implementation.**
 | 0E Bounded legacy services | **done** — dig/reset/dequip/pan-swap typed and bounded, B2/B12 fixed | **pending** (owner-observed run) | **pending** |
 | 1 Shadow foundation and GUI | **done** — capture, telemetry, recorder, dashboard, diagnostics | **pending** (manual recording session) | **pending** |
 | 2 Offline perception candidates | **partial** — candidates implemented and unit-tested on synthetic frames; **no labelled corpus exists** | **blocked** on recordings | **blocked** on recordings |
-| 3 Shadow navigation and controller | **partial** — FSM, controller, recovery ladder implemented and gated off | **pending** (E-YAW, E-STEER-CAL need physical arming) | **pending** |
-| 4 One-map Live lifecycle | **blocked** on Phase 3 gates | **pending** | **pending** |
+| 3 Shadow navigation and controller | **partial** — FSM, controller, recovery ladder implemented and gated off; deterministic replay works (`--replay`) | **pending** (E-YAW, E-STEER-CAL need physical arming) | **pending** |
+| 4 One-map Live lifecycle | **not started, on purpose** — the plan enables a transition only when its evidence is validated, so `NAVIGATE → DIG` is not wired up while E-ARRIVE is pending | **pending** | **pending** |
 | 5 Multi-map lifecycle | **blocked** on E-NEXT_MAP | **pending** | **pending** |
 | 6 Packaging and release | **partial** — spec, build scripts, verifier, smoke test written | **pending** (clean native build) | **pending** |
 

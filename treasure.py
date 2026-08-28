@@ -7,6 +7,7 @@
     python treasure.py --smoke-test   packaging smoke test, emits no input
     python treasure.py --calibrate    read client-relative pixels under the cursor
     python treasure.py --capture-probe  measure capture cost, read-only
+    python treasure.py --replay DIR   replay a recorded session, emits no input
 
 ``--deadman`` is dispatched **before** Tk, OpenCV, capture, or engine code is
 imported (plan 4.5), so the helper stays small and starts even if the heavy
@@ -183,6 +184,74 @@ def _run_smoke_test() -> int:
     return 1 if problems else 0
 
 
+def _run_replay(session_dir: str, profile_id: str = "yellow_map_v0") -> int:
+    """Replay a recorded session through the real decision path.
+
+    Emits **no** OS input: there is no authority and no port in this path at
+    all. It is how a recorded route is re-examined after the fact, and how the
+    same frames are shown to produce the same decisions (plan 15, phase 3).
+    """
+    from pathlib import Path
+
+    from prospector_engine.contracts import CapturedFrame, ClientRectPhysicalPx, monotonic_s
+    from prospector_engine.navigation import NavigationGates, Navigator, PerceptionPipeline
+    from prospector_engine.telemetry import read_session
+    from prospector_engine.vision import ArrowSegmenter, load_profiles
+
+    profile = load_profiles().get(profile_id)
+    if profile is None:
+        print(f"Unknown profile {profile_id!r}.")
+        return 2
+    gates = NavigationGates(os_name=sys.platform, profile_id=profile.profile_id)
+    navigator = Navigator(gates=gates)
+    pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profile))
+
+    print(f"Replaying {session_dir} with profile {profile.profile_id} [{profile.status.value}]")
+    print("  no input authority exists in this path; nothing can be emitted.\n")
+    counts: dict[str, int] = {}
+    frames = 0
+    for record in read_session(Path(session_dir)):
+        frames += 1
+        rect = ClientRectPhysicalPx(
+            origin_px=(0, 0),
+            size_px=(record.bgr.shape[1], record.bgr.shape[0]),
+            scale=1.0,
+            verified_at_s=record.captured_at_s,
+            display_id="replay",
+            valid=True,
+        )
+        frame = CapturedFrame(
+            sequence=record.sequence,
+            captured_at_s=record.captured_at_s,
+            completed_at_s=record.captured_at_s + record.duration_ms / 1000.0,
+            duration_ms=record.duration_ms,
+            client_rect=rect,
+            bgr=record.bgr,
+            duplicate=record.duplicate,
+        )
+        decision = navigator.decide(
+            pipeline.observe(frame, map_id="replay", approach_valid=False),
+            generation=1,
+            # Replay uses recorded time, not wall time, so a slow replay cannot
+            # make every frame look stale.
+            now_s=record.captured_at_s,
+        )
+        key = f"{decision.phase.name}: {decision.reason}"
+        counts[key] = counts.get(key, 0) + 1
+
+    if not frames:
+        print("  no frames found (empty or unreadable session).")
+        return 1
+    print(f"  {frames} frames replayed at {monotonic_s():.0f}s monotonic\n")
+    for key, count in sorted(counts.items(), key=lambda item: -item[1]):
+        print(f"  {count:6d}  {key}")
+    print("\nDecision counts only. Metrics against a frozen evaluation spec are")
+    print(
+        "PENDING - no gate has been frozen (prospector_engine/profiles/evaluation_spec.json)."
+    )
+    return 0
+
+
 def _run_capture_probe(samples: int = 40) -> int:
     """Measure capture cost at several client sizes. Read-only.
 
@@ -317,6 +386,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_self_test()
     if "--smoke-test" in arguments:
         return _run_smoke_test()
+    if "--replay" in arguments:
+        index = arguments.index("--replay")
+        if index + 1 >= len(arguments):
+            print("--replay needs a recorded session directory")
+            return 2
+        return _run_replay(arguments[index + 1])
     if "--capture-probe" in arguments:
         return _run_capture_probe()
     if "--calibrate" in arguments:
