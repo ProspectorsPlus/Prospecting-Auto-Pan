@@ -22,12 +22,15 @@ from typing import Any
 
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
+    BlockerScope,
     Cancellation,
     CapturedFrame,
     ControlState,
     DiagnosticObservation,
     EvidenceStatus,
+    FitCompletion,
     IntentType,
+    LiveBlocker,
     ModeResult,
     ModeResultKind,
     NavigationPhase,
@@ -287,9 +290,11 @@ class RuntimeCoordinator:
         self._control_state: ControlState | None = None
         self._arm_token: LiveArmToken | None = None
         self._fit_thread: threading.Thread | None = None
+        self._fit_generation = 0
+        self._stale_fits = 0
         self._last_session_note = ""
         self._recording = "off"
-        self._gate_blockers: tuple[str, ...] = ()
+        self._gate_blockers: tuple[LiveBlocker, ...] = ()
         self._worker: threading.Thread | None = None
         self._worker_cancel: Cancellation | None = None
         self._worker_id: str | None = None
@@ -556,6 +561,8 @@ class RuntimeCoordinator:
                     self._handle_fault(payload)
                 elif isinstance(payload, WorkerCompletion):
                     self._handle_completion(payload)
+                elif isinstance(payload, FitCompletion):
+                    self._handle_fit_completion(payload)
             except Exception as exc:
                 # Any uncaught error at this boundary safe-stops (plan 17).
                 self._events.add("coordinator.error", repr(exc))
@@ -632,17 +639,57 @@ class RuntimeCoordinator:
         exactly the wrong thing to trade away.
         """
         del intent
-        if self._fit_thread is not None and self._fit_thread.is_alive():
+        if self.fit_active:
             self._events.add("viewport.fit", "already fitting")
             return
+        self._fit_generation += 1
+        generation = self._fit_generation
+        revision_before = self._guard.revision
+        guard = self._guard
 
         def _run() -> None:
-            fit = self._guard.fit_and_lock()
-            self._events.add("viewport.fit", fit.describe())
-            self._on_geometry_change(f"viewport fit: {fit.phase.value}")
+            # The thread owns nothing. It submits a typed completion and the
+            # coordinator loop applies it, so no worker thread ever mutates
+            # coordinator, capture or arm state.
+            fit = guard.fit_and_lock()
+            self._submit_fit_completion(FitCompletion(generation, fit, revision_before))
 
         self._fit_thread = threading.Thread(target=_run, name="treasure-fit", daemon=True)
         self._fit_thread.start()
+
+    @property
+    def fit_active(self) -> bool:
+        thread = self._fit_thread
+        return thread is not None and thread.is_alive()
+
+    @property
+    def stale_fits(self) -> int:
+        return self._stale_fits
+
+    def _submit_fit_completion(self, completion: FitCompletion) -> None:
+        with self._queue_lock:
+            heapq.heappush(
+                self._queue,
+                _QueueItem(self.PRIORITY_ORDINARY, next(self._order), completion),
+            )
+            self._queue_lock.notify()
+
+    def _handle_fit_completion(self, completion: FitCompletion) -> None:
+        """Apply a finished fit on the coordinator's own thread.
+
+        A completion from an earlier fit generation is ignored: it describes a
+        request that was superseded. Geometry is invalidated only if the guard's
+        revision actually moved, so a fit that changed nothing costs nothing.
+        """
+        if completion.generation != self._fit_generation:
+            self._stale_fits += 1
+            self._events.add("viewport.fit-stale", completion.fit.describe())
+            return
+        self._events.add("viewport.fit", completion.fit.describe())
+        if self._guard.revision != completion.revision_before:
+            self._on_geometry_change(f"viewport fit: {completion.fit.phase.value}")
+        else:
+            self.publish_transition(f"Viewport fit finished: {completion.fit.phase.value}")
 
     def _on_geometry_change(self, reason: str) -> None:
         """A new coordinate basis invalidates everything derived from the old one.
@@ -993,39 +1040,120 @@ class RuntimeCoordinator:
             reasons=tuple(reasons),
         )
 
-    def live_blockers(self) -> tuple[str, ...]:
-        """Every reason Live cannot start right now, in plain language.
+    def blockers(self) -> tuple[LiveBlocker, ...]:
+        """Every reason Live cannot start right now, keyed and scoped.
 
-        This is what the *Review Live Blockers* panel renders. It deliberately
-        mixes safety readiness with evidence gates, because from the user's
-        side "why can I not turn this on" has one answer, not two.
+        Recomputed on every call from the live readiness, the capture
+        metrics, and the installed commissioning gates. One entry per code:
+        a condition that stops being true disappears, and details that belong
+        to one gate live under that gate rather than as separate rows.
         """
-        blockers: list[str] = []
+        found: list[LiveBlocker] = []
         readiness = self.readiness()
         if not readiness.viewport_ok:
-            blockers.append(
-                f"Roblox window is not connected ({readiness.viewport_state.value})"
+            found.append(
+                LiveBlocker(
+                    "VIEWPORT",
+                    BlockerScope.SHADOW,
+                    "blocking",
+                    f"Roblox window is not usable ({readiness.viewport_state.value})",
+                    "Capture is not bound to a usable Roblox client area.",
+                    "Press Connect Roblox with Roblox open and windowed.",
+                )
             )
         if not readiness.focus_ok:
-            blockers.append("Roblox is not the frontmost window")
+            found.append(
+                LiveBlocker(
+                    "FOCUS",
+                    BlockerScope.RUNTIME,
+                    "expected",
+                    "Roblox is not the frontmost window",
+                    "Expected while you look at this dashboard. Shadow keeps running; "
+                    "Live only starts when Roblox has focus at the moment F1 is pressed.",
+                    "Focus Roblox before pressing F1.",
+                )
+            )
         if not readiness.capture_fresh:
-            blockers.append("No fresh frame from the capture pipeline")
+            found.append(
+                LiveBlocker(
+                    "CAPTURE",
+                    BlockerScope.SHADOW,
+                    "blocking",
+                    "No fresh frame from the capture pipeline",
+                    "The newest frame is older than the freshness budget, or none has arrived.",
+                    "Connect Roblox; if connected, check Screen Recording permission.",
+                )
+            )
         if not readiness.watchdog_ok:
-            blockers.append("The safety watchdog is not running")
+            found.append(
+                LiveBlocker(
+                    "WATCHDOG",
+                    BlockerScope.LIVE,
+                    "blocking",
+                    "The safety watchdog is not running",
+                    "Held input cannot be released automatically without it.",
+                    "Restart the application.",
+                )
+            )
         if not readiness.deadman_ok:
-            blockers.append("The release-only deadman helper is unhealthy")
+            found.append(
+                LiveBlocker(
+                    "DEADMAN",
+                    BlockerScope.LIVE,
+                    "blocking",
+                    "The release-only deadman helper is unhealthy",
+                    "The helper process that releases input if this one dies is not answering.",
+                    "Restart the application.",
+                )
+            )
         if not readiness.ledger_empty:
-            blockers.append("An input is still held from an earlier session")
+            found.append(
+                LiveBlocker(
+                    "LEDGER",
+                    BlockerScope.LIVE,
+                    "blocking",
+                    "An input is still held from an earlier session",
+                    "The input ledger is not empty.",
+                    "Press Stop & Release All Input.",
+                )
+            )
         if not readiness.release_known_safe:
-            blockers.append("A previous release could not be confirmed safe")
+            found.append(
+                LiveBlocker(
+                    "RELEASE",
+                    BlockerScope.LIVE,
+                    "blocking",
+                    "A previous release could not be confirmed safe",
+                    "The last release did not complete every edge; nothing new is pressed "
+                    "until an explicit release-only handshake succeeds.",
+                    "Press Recover Release, then Stop & Release All Input.",
+                )
+            )
         metrics = self._capture.metrics()
         if not metrics.live_eligible:
-            blockers.append(f"Capture cadence is not Live-eligible ({metrics.governor.reason})")
-        blockers.extend(self._gate_blockers)
-        return tuple(blockers)
+            found.append(
+                LiveBlocker(
+                    "CADENCE",
+                    BlockerScope.LIVE,
+                    "blocking",
+                    "Capture cadence is not Live-eligible",
+                    f"{metrics.governor.reason}. Judged on the last "
+                    f"{self._capture.config.recent_window_s:g} s of processed frames.",
+                    "Start Shadow Analysis and let the cadence settle.",
+                )
+            )
+        found.extend(self._gate_blockers)
+        deduped: dict[str, LiveBlocker] = {}
+        for blocker in found:
+            deduped.setdefault(blocker.code, blocker)
+        return tuple(deduped.values())
 
-    def set_gate_blockers(self, blockers: tuple[str, ...]) -> None:
-        """Install the evidence gates that are not commissioned.
+    def live_blockers(self) -> tuple[str, ...]:
+        """The blockers as one line each, for the header and the event log."""
+        return tuple(blocker.describe() for blocker in self.blockers())
+
+    def set_gate_blockers(self, blockers: tuple[LiveBlocker, ...]) -> None:
+        """Install the commissioning gates that are not passed.
 
         Supplied by the application wiring rather than read from here, because
         which gates apply depends on the OS and profile, and the coordinator
@@ -1083,6 +1211,8 @@ class RuntimeCoordinator:
                 readiness=readiness_map,
                 metrics=metrics,
                 fit=self._guard.fit,
+                fit_active=self.fit_active,
+                blockers=self.blockers(),
                 live_blockers=self.live_blockers(),
                 last_session_note=self._last_session_note,
                 control_state=self._control_state,

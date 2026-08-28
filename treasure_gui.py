@@ -73,11 +73,12 @@ from prospector_engine.input_authority import (
 from prospector_engine.navigation import (
     NavigationGates,
     PerceptionPipeline,
+    commissioning_blockers,
+    commissioning_steps,
     make_live_worker,
     make_shadow_worker,
 )
 from prospector_engine.ports import PlatformPort, create_platform_port, current_platform_name
-from prospector_engine.steering import ShiftLockController
 from prospector_engine.telemetry import (
     AppPaths,
     EvidenceRecorder,
@@ -99,7 +100,15 @@ from treasure_overlay import (
     DiagnosticCanvas,
     OverlayMode,
 )
-from treasure_panels import AnalysisPanel, DiagnosticsDrawer, Tooltip, mono_font, summary_colour
+from treasure_panels import (
+    AnalysisPanel,
+    CommissioningWindow,
+    DiagnosticsDrawer,
+    Tooltip,
+    fit_progress_text,
+    mono_font,
+    summary_colour,
+)
 
 #: The header badge, in the vocabulary the mission specifies. Each says what is
 #: happening to the game, not what the code is doing.
@@ -291,7 +300,9 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
     )
     # The evidence gates and the yaw calibration are both reasons Live cannot
     # start, and from the user's side they are the same question.
-    coordinator.set_gate_blockers(gates.explain() + ShiftLockController().blocking_reasons())
+    # One keyed blocker per pending gate. No default controller is built just
+    # to ask it why it cannot steer: its calibration is the E-YAW gate.
+    coordinator.set_gate_blockers(commissioning_blockers(gates))
     return Application(
         port=port,
         guard=guard,
@@ -340,6 +351,7 @@ class Dashboard:
         self._diagnostics: DiagnosticCanvas | None = None
         self._last_observation: DiagnosticObservation | None = None
         self._overlay_mode = OverlayMode.MINIMAL
+        self._commissioning: CommissioningWindow | None = None
 
         root.title(f"Treasure Navigator {__version__}")
         root.configure(bg=BG)
@@ -465,7 +477,10 @@ class Dashboard:
         )
         self.mode_label.grid(row=0, column=1, sticky="e", padx=(0, 14))
         self.stop_button = ttk.Button(
-            header, text="Stop & Release  (F2)", style="Stop.TButton", command=self._stop
+            header,
+            text="Stop & Release All Input  (F2)",
+            style="Stop.TButton",
+            command=self._stop,
         )
         self.stop_button.grid(row=0, column=2, sticky="e")
         Tooltip(
@@ -513,50 +528,49 @@ class Dashboard:
         self.connect_button = self._control(
             row,
             0,
-            "Connect Roblox...",
+            "Connect Roblox",
             self._connect,
             "Binds capture to the Roblox window. Does not resize it or send input.",
         )
         self.fit_button = self._control(
             row,
             1,
-            "Fit & Lock Viewport",
+            "Fit & Verify Viewport",
             self._fit,
-            "Optionally resizes the Roblox client and verifies the achieved geometry. "
-            "Not required: connecting is the recommended path.",
+            "Asks the OS to resize the Roblox client to 1280x720 and reads back what "
+            "was achieved. A clamp is a valid answer. Not required for Shadow.",
         )
         self.shadow_button = self._control(
             row,
             2,
-            "Start Shadow",
+            "Start Shadow Analysis",
             self._shadow,
             "Runs detection and navigation decisions without sending any game input.",
         )
-        self.blockers_button = self._control(
+        self.collect_button = self._control(
             row,
             3,
-            "Review Live Blockers",
+            "Collect Calibration Evidence",
+            self._collect_evidence,
+            "Opens the guided commissioning steps 3-6 and starts a bounded diagnostic "
+            "recording of real frames. Sends no input.",
+        )
+        self.blockers_button = self._control(
+            row,
+            4,
+            "Calibrate Live Control",
             self._show_blockers,
-            "Lists, in plain language, every safety and calibration check that is "
-            "not yet satisfied.",
+            "Opens the guided commissioning window: every step, what is done, what is "
+            "pending, and exactly why Live is not yet enabled. Runs nothing by itself.",
         )
         self.arm_button = self._control(
             row,
-            4,
+            5,
             "Enable Live Control...",
             self._arm,
             "Temporarily authorizes keyboard and camera output after all required "
             "checks pass. It does not begin movement. After arming, focus Roblox "
             "and press F1.",
-        )
-        self.record_button = self._control(
-            row,
-            5,
-            "Start Diagnostic Recording",
-            self._toggle_record,
-            "Stores a bounded set of Roblox frames, observations, decisions, "
-            "commands, and events for debugging. It does not enable Live or send "
-            "input.",
         )
 
         second = ttk.Frame(self.root, style="T.TFrame", padding=(10, 4))
@@ -576,6 +590,18 @@ class Dashboard:
             justify="left",
         )
         self.live_guide.grid(row=0, column=0, sticky="ew", padx=4)
+        self.record_button = ttk.Button(
+            second,
+            text="Start Diagnostic Recording",
+            style="T.TButton",
+            command=self._toggle_record,
+        )
+        self.record_button.grid(row=0, column=3, sticky="ew", padx=4)
+        Tooltip(
+            self.record_button,
+            "Stores a bounded set of Roblox frames, observations, decisions, "
+            "commands, and events for debugging. It does not enable Live or send input.",
+        )
         self.return_button = ttk.Button(
             second, text="Return to Shadow", style="T.TButton", command=self._return_to_shadow
         )
@@ -811,17 +837,38 @@ class Dashboard:
                 self._submit(IntentType.SELECT_PROFILE)
                 return
 
-    def _show_blockers(self) -> None:
-        from tkinter import messagebox
+    def _commissioning_rows(self) -> tuple[Any, tuple[Any, ...], str]:
+        """What the commissioning window renders, read fresh from the runtime."""
+        viewport = self.app.guard.geometry
+        steps = commissioning_steps(
+            self.app.gates,
+            connected=viewport.valid,
+            viewport_canonical=viewport.is_canonical,
+            viewport_usable=viewport.state.can_capture,
+        )
+        blockers = self.app.coordinator.blockers()
+        focus_note = ""
+        if any(b.code == "FOCUS" for b in blockers):
+            focus_note = (
+                "Roblox is not frontmost: expected while you read this. Shadow keeps "
+                "running. Focus Roblox before pressing F1."
+            )
+        return (steps, blockers, focus_note)
 
-        blockers = self.app.coordinator.live_blockers()
-        lines: list[str] = []
-        if blockers:
-            lines.append("Live control is blocked by these checks:")
-            lines.extend(f"  - {blocker}" for blocker in blockers)
-        if not lines:
-            lines.append("No blockers. Live control can be enabled.")
-        messagebox.showinfo("Live blockers", "\n".join(lines), parent=self.root)
+    def _show_blockers(self) -> None:
+        if self._commissioning is not None and self._commissioning.alive:
+            self._commissioning.window.lift()
+            self._commissioning.refresh()
+            return
+        self._commissioning = CommissioningWindow(
+            self.root, self.fonts, self._commissioning_rows
+        )
+
+    def _collect_evidence(self) -> None:
+        """Steps 3-6: open the guide and record real frames. Never sends input."""
+        self._show_blockers()
+        if self.recorder is None:
+            self._toggle_record()
 
     def _toggle_record(self) -> None:
         if self.recorder is not None:
@@ -938,10 +985,18 @@ class Dashboard:
         self.shadow_button.configure(
             text="Shadow running - no input"
             if snapshot.mode is RunMode.SHADOW
-            else "Start Shadow"
+            else "Start Shadow Analysis"
         )
-        blockers = snapshot.live_blockers
-        self.blockers_button.configure(text=f"Review Live Blockers ({len(blockers)})")
+        pending = sum(1 for b in snapshot.blockers if b.status != "expected")
+        self.blockers_button.configure(
+            text=f"Calibrate Live Control ({pending} open)"
+            if pending
+            else "Calibrate Live Control"
+        )
+        self.fit_button.configure(
+            state="disabled" if snapshot.fit_active else "normal",
+            text="Fitting viewport..." if snapshot.fit_active else "Fit & Verify Viewport",
+        )
 
         if snapshot.mode is RunMode.LIVE:
             self.live_guide.configure(text="Live navigation running.", fg=GOLD)
@@ -969,14 +1024,17 @@ class Dashboard:
         viewport = self.app.guard.geometry
         connected = viewport.valid
         focus = snapshot.focus if snapshot else None
+        fit = snapshot.fit if snapshot else None
+        fit_active = bool(snapshot.fit_active) if snapshot else False
         self._set_summary(
             "roblox",
             "Connected" if connected else "Disconnected",
             (
-                f"{'verified' if viewport.is_canonical else 'custom'} viewport   "
-                f"focus {'yes' if focus else 'no' if focus is False else 'unknown'}"
+                f"{'canonical' if viewport.is_canonical else 'custom'} viewport   "
+                f"focus {'yes' if focus else 'no' if focus is False else 'unknown'}\n"
+                f"{fit_progress_text(fit, fit_active)}"
                 if connected
-                else "press Connect Roblox..."
+                else "press Connect Roblox"
             ),
         )
         self._set_summary(
@@ -997,9 +1055,13 @@ class Dashboard:
             live_head, live_detail = "Waiting", ""
         elif snapshot.mode is RunMode.LIVE:
             live_head, live_detail = "Running", "movement is being sent to Roblox"
-        elif snapshot.live_blockers:
-            live_head = f"Blocked - {len(snapshot.live_blockers)} checks"
-            live_detail = snapshot.live_blockers[0]
+        elif snapshot.blockers:
+            real = [b for b in snapshot.blockers if b.status != "expected"]
+            live_head = (
+                f"Blocked - {len(real)} open" if real else "Ready when Roblox is focused"
+            )
+            first = real[0] if real else snapshot.blockers[0]
+            live_detail = f"{first.code}: {first.summary}"
         elif snapshot.arm_state not in ("none", "-"):
             live_head, live_detail = "Armed", "focus Roblox, then press F1"
         else:

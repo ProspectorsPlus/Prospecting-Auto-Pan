@@ -23,6 +23,7 @@ Colour semantics, applied consistently:
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import tkinter as tk
 from tkinter import ttk
@@ -34,7 +35,18 @@ from prospector_engine.contracts import (
     PacketKind,
     TelemetrySnapshot,
 )
-from treasure_overlay import BAD, BONE, INFO, MUTED, OK, SURFACE_ALT, WARN
+from treasure_overlay import (
+    BAD,
+    BG,
+    BONE,
+    GOLD,
+    INFO,
+    MUTED,
+    OK,
+    SURFACE,
+    SURFACE_ALT,
+    WARN,
+)
 
 __all__ = ["AnalysisPanel", "DiagnosticsDrawer", "Disclosure", "Tooltip", "mono_font"]
 
@@ -155,7 +167,7 @@ class AnalysisPanel:
         ttk.Label(self.frame, text="CURRENT ANALYSIS", style="Muted.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        self.headline_var = tk.StringVar(value="Not running - press Start Shadow")
+        self.headline_var = tk.StringVar(value="Not running - press Start Shadow Analysis")
         self.headline = ttk.Label(
             self.frame,
             textvariable=self.headline_var,
@@ -201,7 +213,7 @@ class AnalysisPanel:
 
     def render(self, observation: DiagnosticObservation | None) -> None:
         if observation is None:
-            self.headline_var.set("Not running - press Start Shadow")
+            self.headline_var.set("Not running - press Start Shadow Analysis")
             self.headline.configure(foreground=MUTED)
             for variable in self.value_vars.values():
                 variable.set("-")
@@ -361,7 +373,7 @@ class DiagnosticsDrawer:
 
 def _perception_text(observation: DiagnosticObservation | None) -> str:
     if observation is None:
-        return "No observation yet. Start Shadow to run perception."
+        return "No observation yet. Start Shadow Analysis to run perception."
     lines = [_frame_details(observation), ""]
     arrow = observation.arrow
     if arrow.valid:
@@ -517,3 +529,133 @@ def summary_colour(text: str) -> str:
 
 def card(parent: tk.Misc) -> ttk.Frame:
     return ttk.Frame(parent, style="Card.TFrame", padding=(10, 8))
+
+
+# ---------------------------------------------------------------------------
+# Fit & Verify progress and the commissioning window
+# ---------------------------------------------------------------------------
+
+
+def fit_progress_text(fit: Any, active: bool) -> str:
+    """One line for the viewport card: what the fit is doing, or what it got."""
+    from prospector_engine.contracts import FitPhase
+
+    if fit is None or fit.phase is FitPhase.IDLE:
+        return "not fitted (connect only is fine for Shadow)"
+    if fit.phase is FitPhase.REQUESTED:
+        return "Requesting size..." if active else "requested"
+    if fit.phase is FitPhase.SETTLING:
+        stage = "Waiting for OS..." if fit.stable_readbacks == 0 else "Reading back..."
+        return f"{stage} ({fit.stable_readbacks}/{fit.required_readbacks} stable)"
+    if fit.phase is FitPhase.CANONICAL_VERIFIED:
+        got = fit.achieved_client_logical
+        return (
+            f"Canonical {got[0]:g}x{got[1]:g}" if got else "Canonical 1280x720"
+        ) + " - E-VIEW native evidence still PENDING"
+    if fit.phase is FitPhase.ACHIEVED_CLAMPED:
+        got = fit.achieved_client_logical
+        size = f"{got[0]:g}x{got[1]:g}" if got else "an achieved size"
+        return f"Resized but OS-clamped to {size} - usable for Shadow, not canonical"
+    detail = fit.detail.lower()
+    if "accessibility" in detail:
+        return "Accessibility permission denied - enable it for this terminal or app"
+    if "fullscreen" in detail or "space" in detail:
+        return "Fullscreen/Space limitation - exit fullscreen and retry"
+    if "not found" in detail or "not settable" in detail or "minimized" in detail:
+        return "Wrong/unsupported window state - open Roblox windowed and retry"
+    return f"Fit failed: {fit.detail}"
+
+
+class CommissioningWindow:
+    """The guided path to Live, grouped by what each blocker is about.
+
+    Replaces the flat message box of fourteen repeated lines. Rows are
+    recomputed from the coordinator on every refresh, so a condition that
+    stops being true disappears, and nothing here can pass a step from a
+    fake: evidence rows read gate statuses that only physical procedures set.
+    """
+
+    REFRESH_MS = 700
+
+    def __init__(self, parent: tk.Misc, fonts: dict[str, Any], provider: Any) -> None:
+        self._provider = provider
+        self.window = tk.Toplevel(parent)
+        self.window.title("Commissioning - the path to Live control")
+        self.window.configure(bg=BG)
+        self.window.geometry("860x640")
+        self.window.minsize(640, 420)
+        self._fonts = fonts
+        self.text = tk.Text(
+            self.window,
+            bg=SURFACE,
+            fg=BONE,
+            insertbackground=BONE,
+            font=fonts["mono"],
+            wrap="word",
+            padx=12,
+            pady=10,
+            relief="flat",
+        )
+        self.text.pack(fill="both", expand=True, padx=10, pady=10)
+        self.text.tag_configure("h", foreground=GOLD, font=fonts["headline"])
+        self.text.tag_configure("done", foreground=OK)
+        self.text.tag_configure("pending", foreground=WARN)
+        self.text.tag_configure("blocked", foreground=BAD)
+        self.text.tag_configure("expected", foreground=MUTED)
+        self.text.tag_configure("muted", foreground=MUTED)
+        self._alive = True
+        self.window.protocol("WM_DELETE_WINDOW", self.close)
+        self.refresh()
+
+    @property
+    def alive(self) -> bool:
+        return self._alive
+
+    def close(self) -> None:
+        self._alive = False
+        with contextlib.suppress(tk.TclError):
+            self.window.destroy()
+
+    def refresh(self) -> None:
+        if not self._alive:
+            return
+        steps, blockers, focus_note = self._provider()
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("end", "Guided commissioning\n", "h")
+        self.text.insert(
+            "end",
+            "Each step is either read from the running state or from an evidence gate. "
+            "No step passes from a fake, a fixture, or a checkbox.\n\n",
+            "muted",
+        )
+        for step, state, note in steps:
+            marker = {"done": "[x]", "pending": "[ ]", "blocked": "[-]"}[state]
+            self.text.insert("end", f"{marker} {step.number:>2}. {step.title}\n", state)
+            self.text.insert("end", f"        {step.control}  -  {note}\n", "muted")
+        self.text.insert("end", "\nWhy Live cannot be enabled right now\n", "h")
+        if focus_note:
+            self.text.insert("end", focus_note + "\n\n", "expected")
+        grouped: dict[str, list[Any]] = {}
+        for blocker in blockers:
+            grouped.setdefault(blocker.scope.value, []).append(blocker)
+        if not blockers:
+            self.text.insert("end", "No blockers. Live control can be enabled.\n", "done")
+        for scope, rows in grouped.items():
+            self.text.insert("end", f"\n{scope.upper()}\n", "h")
+            for blocker in rows:
+                tag = (
+                    "expected"
+                    if blocker.status == "expected"
+                    else ("pending" if blocker.status == "pending" else "blocked")
+                )
+                self.text.insert("end", f"  {blocker.code:<12} {blocker.summary}\n", tag)
+                self.text.insert("end", f"               {blocker.detail}\n", "muted")
+                self.text.insert("end", f"               Do: {blocker.remedy}\n", "muted")
+                if blocker.evidence:
+                    self.text.insert(
+                        "end", f"               Evidence: {blocker.evidence}\n", "muted"
+                    )
+        self.text.configure(state="disabled")
+        with contextlib.suppress(tk.TclError):
+            self.window.after(self.REFRESH_MS, self.refresh)

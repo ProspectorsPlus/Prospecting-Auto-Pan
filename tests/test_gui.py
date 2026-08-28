@@ -83,12 +83,14 @@ def test_there_is_no_clickable_start_live_reset_or_pan_test(dashboard: Any) -> N
 
 def test_the_offered_controls_say_what_they_do_to_the_game(dashboard: Any) -> None:
     texts = set(_button_texts(dashboard.root))
-    assert "Connect Roblox..." in texts
-    assert "Fit & Lock Viewport" in texts, "connecting and resizing are separate operations"
-    assert "Start Shadow" in texts
+    assert "Connect Roblox" in texts
+    assert "Fit & Verify Viewport" in texts, "connecting and resizing are separate operations"
+    assert "Start Shadow Analysis" in texts
+    assert "Collect Calibration Evidence" in texts
+    assert any(text.startswith("Calibrate Live Control") for text in texts)
     assert "Enable Live Control..." in texts, "'Arm Live' did not say what arming does"
     assert "Start Diagnostic Recording" in texts, "'Record: off' described a mechanism"
-    assert any(text.startswith("Review Live Blockers") for text in texts)
+    assert any(text.startswith("Stop & Release All Input") for text in texts)
 
 
 def test_live_and_service_hotkeys_are_shown_as_guidance(dashboard: Any) -> None:
@@ -158,7 +160,7 @@ def test_the_four_top_summaries_are_present(dashboard: Any) -> None:
 
 def test_the_analysis_panel_leads_with_plain_language(dashboard: Any) -> None:
     dashboard.analysis.render(None)
-    assert "Start Shadow" in dashboard.analysis.headline_var.get()
+    assert "Start Shadow Analysis" in dashboard.analysis.headline_var.get()
 
     observation = _observation()
     dashboard.analysis.render(observation)

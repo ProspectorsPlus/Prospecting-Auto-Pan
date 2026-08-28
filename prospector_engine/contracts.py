@@ -209,6 +209,12 @@ class PinResult:
     message: str
     geometry: ViewportGeometry | None = None
     requested_client_logical: tuple[float, float] | None = None
+    #: The request was accepted and the OS or the game answered with a
+    #: different size. Not a refusal: ``ok`` stays True and the viewport
+    #: guard classifies the settled read-back.
+    clamped: bool = False
+    #: The mechanism that produced the result, for the fit message.
+    mechanism: str = ""
 
 
 class FitPhase(Enum):
@@ -1069,6 +1075,58 @@ class WorkerCompletion:
     result: ModeResult
 
 
+@dataclass(frozen=True)
+class FitCompletion:
+    """A finished Fit & Verify attempt, handed to the serialized coordinator.
+
+    The fit thread never touches coordinator, capture or arm state itself:
+    it submits this and the coordinator loop applies it, ignoring a stale
+    generation and invalidating geometry only if the revision moved.
+    """
+
+    generation: int
+    fit: ViewportFit
+    revision_before: int
+
+
+class BlockerScope(Enum):
+    """What a Live blocker is a statement about.
+
+    Four different questions that one flat list used to blur together:
+    whether Shadow can run at all, what the machine is doing right now,
+    which native commissioning evidence is missing, and whether keyboard and
+    camera output may be enabled this minute.
+    """
+
+    SHADOW = "shadow readiness"
+    RUNTIME = "current condition"
+    EVIDENCE = "native commissioning evidence"
+    LIVE = "live control eligibility"
+
+
+@dataclass(frozen=True)
+class LiveBlocker:
+    """One keyed reason Live cannot be enabled, recomputed on every read.
+
+    ``status`` is ``blocking`` (must change), ``expected`` (a normal state of
+    affairs while using the dashboard, such as Roblox not being frontmost),
+    or ``pending`` (an evidence gate that has not been run). Exactly one
+    blocker exists per ``code``; details that belong to the same gate are
+    grouped under it rather than listed as separate permanent blockers.
+    """
+
+    code: str
+    scope: BlockerScope
+    status: str
+    summary: str
+    detail: str
+    remedy: str
+    evidence: str = ""
+
+    def describe(self) -> str:
+        return f"{self.code}: {self.summary}"
+
+
 # ---------------------------------------------------------------------------
 # Bounded service outcomes (plan 10)
 # ---------------------------------------------------------------------------
@@ -1399,6 +1457,11 @@ class TelemetrySnapshot:
     fit: ViewportFit | None = None
     #: Live blockers in plain language, ready to render as a checklist.
     live_blockers: tuple[str, ...] = ()
+    #: The same reasons as keyed, scoped objects; the plain strings above are
+    #: derived from these and kept for the header line.
+    blockers: tuple[LiveBlocker, ...] = ()
+    #: A Fit & Verify attempt is in flight.
+    fit_active: bool = False
     #: How the previous session ended. Neutral by construction: a clean stop is
     #: not a fault, and red is reserved for a fault that is happening now.
     last_session_note: str = ""

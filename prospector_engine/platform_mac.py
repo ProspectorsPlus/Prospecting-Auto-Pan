@@ -790,15 +790,88 @@ class MacPlatformPort:
                     return True
         return False
 
-    def _ax_window(self, pid: int) -> Any | None:
+    def _ax_windows(self, pid: int) -> list[Any]:
         services = self._app_services()
         app = services.AXUIElementCreateApplication(int(pid))
         error, windows = services.AXUIElementCopyAttributeValue(
             app, services.kAXWindowsAttribute, None
         )
         if error != services.kAXErrorSuccess or not windows:
+            return []
+        return list(windows)
+
+    def _ax_frame(self, window: Any) -> tuple[float, float, float, float] | None:
+        """``(x, y, width, height)`` of an AX window in points, or ``None``."""
+        services = self._app_services()
+        try:
+            error, position_value = services.AXUIElementCopyAttributeValue(
+                window, services.kAXPositionAttribute, None
+            )
+            if error != services.kAXErrorSuccess:
+                return None
+            error, size_value = services.AXUIElementCopyAttributeValue(
+                window, services.kAXSizeAttribute, None
+            )
+            if error != services.kAXErrorSuccess:
+                return None
+            ok_point, point = services.AXValueGetValue(
+                position_value, services.kAXValueCGPointType, None
+            )
+            ok_size, size = services.AXValueGetValue(
+                size_value, services.kAXValueCGSizeType, None
+            )
+            if not (ok_point and ok_size):
+                return None
+            return (float(point.x), float(point.y), float(size.width), float(size.height))
+        except Exception:
             return None
-        return windows[0]
+
+    def _ax_title(self, window: Any) -> str:
+        services = self._app_services()
+        try:
+            error, title = services.AXUIElementCopyAttributeValue(window, "AXTitle", None)
+            return str(title or "") if error == services.kAXErrorSuccess else ""
+        except Exception:
+            return ""
+
+    def _ax_window_for(
+        self, identity: WindowIdentity, frame_logical: LogicalRect
+    ) -> tuple[Any | None, str]:
+        """The AX window that *is* the CG window ``_scan_roblox`` selected.
+
+        ``windows[0]`` is whatever Accessibility lists first, which for a
+        process with several windows - a crash handler, a dialog, the game -
+        need not be the one being captured. Correlate by frame first, then by
+        title, and fall back to the largest, saying which rule matched.
+        """
+        windows = self._ax_windows(identity.process_id)
+        if not windows:
+            return (None, "no AX windows")
+        target = (frame_logical.x, frame_logical.y, frame_logical.width, frame_logical.height)
+        framed = [(window, self._ax_frame(window)) for window in windows]
+        for window, frame in framed:
+            if frame is None:
+                continue
+            if all(abs(frame[i] - target[i]) <= 4.0 for i in range(4)):
+                return (window, "frame match")
+        if identity.title:
+            for window in windows:
+                if self._ax_title(window) == identity.title:
+                    return (window, "title match")
+        with_frames = [(window, frame) for window, frame in framed if frame is not None]
+        if with_frames:
+            largest = max(with_frames, key=lambda item: item[1][2] * item[1][3])
+            return (largest[0], "largest window")
+        return (windows[0], "first window")
+
+    def _ax_window(self, pid: int) -> Any | None:
+        """The AX window of the CG window currently selected, or ``None``."""
+        found = self._scan_roblox()
+        if found is None or found[0].process_id != int(pid):
+            windows = self._ax_windows(pid)
+            return windows[0] if windows else None
+        window, _how = self._ax_window_for(found[0], found[1])
+        return window
 
     def _measure_title_bar_pt(self, window: Any) -> float | None:
         """Derive the title-bar height from the window's own traffic lights.
@@ -951,14 +1024,15 @@ class MacPlatformPort:
                 self.window_geometry(),
                 size_logical,
             )
-        identity, _frame = found
-        window = self._ax_window(identity.process_id)
+        identity, frame_logical = found
+        window, how = self._ax_window_for(identity, frame_logical)
         if window is None:
             return PinResult(
                 False,
-                "Could not reach Roblox's window through Accessibility.",
+                f"Could not reach Roblox's window through Accessibility ({how}).",
                 self.window_geometry(),
                 size_logical,
+                mechanism="AX",
             )
 
         error, is_fullscreen = services.AXUIElementCopyAttributeValue(
@@ -967,71 +1041,90 @@ class MacPlatformPort:
         if error == services.kAXErrorSuccess and bool(is_fullscreen):
             return PinResult(
                 False,
-                "Roblox is in native fullscreen - exit fullscreen and retry.",
+                "Roblox is in native fullscreen - exit fullscreen (or leave its Space) "
+                "and retry.",
                 self.window_geometry(),
                 size_logical,
+                mechanism="AX",
             )
+        try:
+            error, settable = services.AXUIElementIsAttributeSettable(
+                window, services.kAXSizeAttribute, None
+            )
+            if error == services.kAXErrorSuccess and not settable:
+                return PinResult(
+                    False,
+                    "Roblox's window size is not settable through Accessibility in this "
+                    "state (a modal or a fullscreen Space). Return to a normal window "
+                    "and retry.",
+                    self.window_geometry(),
+                    size_logical,
+                    mechanism="AX",
+                )
+        except Exception:
+            pass  # older frameworks do not expose the check; the set below decides
 
         measured = self._measure_title_bar_pt(window)
         title_bar_pt = measured if measured is not None else TITLE_BAR_FALLBACK_PT
         want_width = float(size_logical[0])
         want_height = float(size_logical[1]) + title_bar_pt
 
-        position = services.AXValueCreate(
-            services.kAXValueCGPointType, Quartz.CGPoint(0.0, 0.0)
-        )
+        # Size only. The window stays where the user put it: a move is a
+        # separate request, is not needed for capture, and a denied move must
+        # never turn a successful resize into a failure.
         size = services.AXValueCreate(
             services.kAXValueCGSizeType, Quartz.CGSize(want_width, want_height)
-        )
-        error_position = services.AXUIElementSetAttributeValue(
-            window, services.kAXPositionAttribute, position
         )
         error_size = services.AXUIElementSetAttributeValue(
             window, services.kAXSizeAttribute, size
         )
-        if error_position != services.kAXErrorSuccess or error_size != services.kAXErrorSuccess:
+        if error_size != services.kAXErrorSuccess:
             return PinResult(
                 False,
-                f"Failed to move or resize Roblox (AX errors {error_position}/{error_size}).",
+                f"Accessibility refused the resize (AX error {error_size}). Check that "
+                "this terminal or app is enabled under Privacy & Security > Accessibility.",
                 self.window_geometry(),
                 size_logical,
+                mechanism=f"AXSize via {how}",
             )
 
         geometry = self.window_geometry()
         if not geometry.valid or geometry.client_logical is None:
             return PinResult(
                 False,
-                "Pinned, but the client rect could not be read back.",
+                "The resize was accepted, but the client rect could not be read back.",
                 geometry,
                 size_logical,
+                mechanism=f"AXSize via {how}",
             )
         client = geometry.client_logical
         delta_w = abs(client.width - size_logical[0])
         delta_h = abs(client.height - size_logical[1])
-        if delta_w > 1.0 or delta_h > 1.0:
-            # Reported once, then accepted as a truthful non-canonical state.
-            # Roblox enforces a minimum window size, so a request below it is
-            # clamped and retrying would loop forever (DECISIONS.md D-017).
-            return PinResult(
-                False,
-                f"Requested a {size_logical[0]:g}x{size_logical[1]:g} pt client but the OS "
-                f"gave {client.width:g}x{client.height:g} pt "
-                f"(off by {delta_w:g}x{delta_h:g}). Running non-canonical: observation and "
-                f"recording work, calibrated pixel constants do not.",
-                geometry.with_state(
-                    ViewportState.ADOPTED_NONCANONICAL, "clamped by the OS or the application"
-                ),
-                size_logical,
-            )
+        clamped = delta_w > 1.0 or delta_h > 1.0
         source = "measured" if self._title_bar_measured else "provisional fallback"
+        if clamped:
+            # A clamp is an answer, not a refusal: Roblox enforces a minimum
+            # window size and the display bounds the maximum. The viewport
+            # guard reads the settled size back and classifies it.
+            message = (
+                f"Asked for a {size_logical[0]:g}x{size_logical[1]:g} pt client; the OS or "
+                f"the game answered {client.width:g}x{client.height:g} pt "
+                f"(off by {delta_w:g}x{delta_h:g}). Title bar {title_bar_pt:g} pt ({source})."
+            )
+        else:
+            message = (
+                f"Client resized to {client.width:g}x{client.height:g} pt at "
+                f"({client.x:g},{client.y:g}); backing {geometry.client_backing_px[0]}x"
+                f"{geometry.client_backing_px[1]} px at {geometry.backing_scale:g}x, "
+                f"title bar {title_bar_pt:g} pt ({source})."
+            )
         return PinResult(
             True,
-            f"Client pinned to {client.width:g}x{client.height:g} pt at "
-            f"({client.x:g},{client.y:g}); backing {geometry.client_backing_px[0]}x"
-            f"{geometry.client_backing_px[1]} px at {geometry.backing_scale:g}x, "
-            f"title bar {title_bar_pt:g} pt ({source}).",
+            message,
             geometry,
             size_logical,
+            clamped=clamped,
+            mechanism=f"AXSize via {how}",
         )
 
     def create_capture_source(self) -> Any:

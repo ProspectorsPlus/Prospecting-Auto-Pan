@@ -27,8 +27,12 @@ from prospector_engine.capture import (
 from prospector_engine.contracts import IntentType, PerformanceTier, RunMode
 from prospector_engine.coordinator import CoordinatorConfig, RuntimeCoordinator
 from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
-from prospector_engine.navigation import NavigationGates, PerceptionPipeline, make_shadow_worker
-from prospector_engine.steering import ShiftLockController
+from prospector_engine.navigation import (
+    NavigationGates,
+    PerceptionPipeline,
+    commissioning_blockers,
+    make_shadow_worker,
+)
 from prospector_engine.vision import ArrowSegmenter, ProfileAuthority, load_profiles
 from tests.arrow_fixtures import render_scene
 from tests.fakes import (
@@ -90,7 +94,7 @@ def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     )
     # Wired exactly as the application does it, so the blockers a user would
     # see are the blockers this test sees.
-    coordinator.set_gate_blockers(gates.explain() + ShiftLockController().blocking_reasons())
+    coordinator.set_gate_blockers(commissioning_blockers(gates))
     assert capture.start()
     coordinator.start()
     yield {

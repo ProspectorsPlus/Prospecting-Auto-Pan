@@ -32,6 +32,7 @@ from prospector_engine.contracts import (
     ArrivalObservation,
     ArrowCandidateRecord,
     ArrowObservation,
+    BlockerScope,
     CapturedFrame,
     CommandKind,
     ControlState,
@@ -39,6 +40,7 @@ from prospector_engine.contracts import (
     DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
+    LiveBlocker,
     ModeResult,
     ModeResultKind,
     MotionObservation,
@@ -62,12 +64,16 @@ from prospector_engine.vision import (
 )
 
 __all__ = [
+    "COMMISSIONING_STEPS",
+    "CommissioningStep",
     "NavigationGates",
     "Navigator",
     "RecoveryLadder",
     "RecoveryLevel",
     "SteeringConfig",
     "SteeringController",
+    "commissioning_blockers",
+    "commissioning_steps",
     "describe_decision",
     "make_live_worker",
     "make_shadow_worker",
@@ -219,6 +225,231 @@ class NavigationGates:
             f"{name}: {wording.get(name, 'not commissioned')}"
             for name in self.blocking_reasons()
         )
+
+
+@dataclass(frozen=True)
+class CommissioningStep:
+    """One step of the guided path from a fresh install to Live control.
+
+    ``gates`` names the evidence gates the step satisfies. A step with no
+    gates is a runtime check (connect, fit) judged from live state. No step
+    is ever passed by a rendered fixture or a fake: ``commissioning_steps``
+    reads gate statuses that only physical procedures may set.
+    """
+
+    number: int
+    title: str
+    control: str
+    what: str
+    gates: tuple[str, ...]
+
+
+COMMISSIONING_STEPS: tuple[CommissioningStep, ...] = (
+    CommissioningStep(
+        1,
+        "Connect to the intended Roblox window",
+        "Connect Roblox",
+        "Bind capture to the game window without touching it.",
+        (),
+    ),
+    CommissioningStep(
+        2,
+        "Fit or verify the viewport",
+        "Fit & Verify Viewport",
+        "Resize to the canonical 1280x720 client, or record the achieved size. "
+        "Either way Shadow can run; calibrated pixel constants need canonical.",
+        ("E-VIEW",),
+    ),
+    CommissioningStep(
+        3,
+        "Label or verify the player anchor",
+        "Collect Calibration Evidence",
+        "Reviewer-labelled avatar control pivot across sessions.",
+        ("E-ANCHOR",),
+    ),
+    CommissioningStep(
+        4,
+        "Verify the forward reference after a camera reset",
+        "Collect Calibration Evidence",
+        "Physically armed bounded W pulses with blinded reviewer labelling.",
+        ("E-FORWARD",),
+    ),
+    CommissioningStep(
+        5,
+        "Select the arrow profile and collect a corpus",
+        "Collect Calibration Evidence",
+        "Record real frames of this map with Shadow running; label; evaluate on a "
+        "held-out session.",
+        ("E-PROF",),
+    ),
+    CommissioningStep(
+        6,
+        "Measure direction end to end",
+        "Collect Calibration Evidence",
+        "Held-out direction accuracy against the frozen detector.",
+        ("E-DIR-E2E",),
+    ),
+    CommissioningStep(
+        7,
+        "Verify Shift Lock",
+        "Calibrate Live Control",
+        "One armed stationary micro-yaw with Shift Lock on and off; the difference is "
+        "the verification.",
+        ("E-SHIFTLOCK",),
+    ),
+    CommissioningStep(
+        8,
+        "Calibrate yaw",
+        "Calibrate Live Control",
+        "Sign, degrees per mouse unit and the minimum effective delta from armed "
+        "pulses confirmed by perception.",
+        ("E-YAW",),
+    ),
+    CommissioningStep(
+        9,
+        "Freeze the alignment deadband",
+        "Calibrate Live Control",
+        "Manual-target trials to fix the largest threshold that still gives acceptable "
+        "route outcomes.",
+        ("E-STEER-CAL",),
+    ),
+    CommissioningStep(
+        10,
+        "Run a guarded owner-observed route",
+        "Calibrate Live Control",
+        "Open-ground routes with the frozen controller, a human watching, Stop in reach.",
+        ("E-STEER-E2E",),
+    ),
+    CommissioningStep(
+        11,
+        "Review the evidence and enable Live",
+        "Enable Live Control",
+        "Every gate validated for this OS and profile, then the physical arm.",
+        (),
+    ),
+)
+
+_GATE_WORDING: dict[str, tuple[str, str]] = {
+    "E-VIEW": (
+        "the viewport has not been pinned and read back on this OS",
+        "Press Fit & Verify Viewport with Roblox windowed; a clamp is a valid answer.",
+    ),
+    "E-ANCHOR": (
+        "the avatar's control anchor has not been labelled",
+        "Record Shadow frames and label the control pivot across sessions.",
+    ),
+    "E-FORWARD": (
+        "which way the character faces has not been proven",
+        "Armed bounded W pulses with blinded labelling (owner present).",
+    ),
+    "E-PROF": (
+        "the arrow detector has no held-out corpus for this profile",
+        "Record this map with Shadow running, label, evaluate a held-out session.",
+    ),
+    "E-DIR-E2E": (
+        "direction accuracy has not been measured end to end",
+        "Evaluate the frozen detector on a fresh held-out recording.",
+    ),
+    "E-YAW": (
+        "mouse movement has not been calibrated to camera rotation",
+        "Armed yaw pulses, ten repeats per magnitude, confirmed by perception.",
+    ),
+    "E-SHIFTLOCK": (
+        "Shift Lock cannot yet be verified on this OS",
+        "Armed stationary micro-yaw with Shift Lock on and off.",
+    ),
+    "E-STEER-CAL": (
+        "the alignment deadband has not been frozen",
+        "Manual-target trials, then freeze the threshold before any held-out evaluation.",
+    ),
+    "E-STEER-E2E": (
+        "no guarded route has been driven with the frozen controller",
+        "Guarded open-ground routes with the owner watching.",
+    ),
+}
+
+
+def commissioning_blockers(gates: NavigationGates) -> tuple[LiveBlocker, ...]:
+    """One keyed blocker per pending gate, with its remedy and step number.
+
+    The E-YAW calibration used to appear three times - the gate, the missing
+    degrees-per-unit, the missing sign - because a default controller was
+    instantiated solely to ask it why it could not steer. One gate, one row.
+    """
+    step_of = {gate: step.number for step in COMMISSIONING_STEPS for gate in step.gates}
+    blockers: list[LiveBlocker] = []
+    for code in gates.blocking_reasons():
+        summary, remedy = _GATE_WORDING.get(code, ("not commissioned", "See STATUS.md."))
+        step = step_of.get(code)
+        blockers.append(
+            LiveBlocker(
+                code=code,
+                scope=BlockerScope.EVIDENCE,
+                status="pending",
+                summary=summary,
+                detail=(
+                    f"{code} is PENDING for {gates.os_name}/{gates.profile_id}. It passes "
+                    "only through its physical procedure on real hardware; no test or "
+                    "fixture can set it."
+                ),
+                remedy=f"Step {step}: {remedy}" if step else remedy,
+                evidence="STATUS.md - Experiment gates",
+            )
+        )
+    return tuple(blockers)
+
+
+def _gate_status(gates: NavigationGates, code: str) -> EvidenceStatus:
+    attribute = "e_" + code[2:].lower().replace("-", "_")
+    status: EvidenceStatus = getattr(gates, attribute)
+    return status
+
+
+def commissioning_steps(
+    gates: NavigationGates,
+    *,
+    connected: bool,
+    viewport_canonical: bool,
+    viewport_usable: bool,
+) -> tuple[tuple[CommissioningStep, str, str], ...]:
+    """Every step with its state (``done``, ``pending``, ``blocked``) and a note.
+
+    Runtime steps read live state; evidence steps read gate statuses. Nothing
+    here can mark an evidence step done from anything but a VALIDATED gate,
+    and a canonical viewport is reported separately from E-VIEW's native
+    commissioning evidence.
+    """
+    rows: list[tuple[CommissioningStep, str, str]] = []
+    for step in COMMISSIONING_STEPS:
+        if step.number == 1:
+            state = "done" if connected else "pending"
+            rows.append((step, state, "connected" if connected else "not connected"))
+        elif step.number == 2:
+            validated = gates.e_view is EvidenceStatus.VALIDATED
+            if not connected:
+                rows.append((step, "blocked", "connect first"))
+            elif viewport_canonical:
+                evidence = "recorded" if validated else "PENDING"
+                note = f"canonical 1280x720 achieved; E-VIEW native evidence {evidence}"
+                rows.append((step, "done" if validated else "pending", note))
+            elif viewport_usable:
+                rows.append(
+                    (step, "pending", "usable for Shadow at the achieved size; not canonical")
+                )
+            else:
+                rows.append((step, "blocked", "viewport not usable"))
+        elif step.number == 11:
+            done = gates.steering_enabled
+            note = "all gates validated" if done else "gates pending"
+            rows.append((step, "done" if done else "blocked", note))
+        else:
+            statuses = [(gate, _gate_status(gates, gate)) for gate in step.gates]
+            if all(status is EvidenceStatus.VALIDATED for _gate, status in statuses):
+                rows.append((step, "done", "validated"))
+            else:
+                note = ", ".join(f"{gate} {status.value}" for gate, status in statuses)
+                rows.append((step, "pending", note))
+    return tuple(rows)
 
 
 # ---------------------------------------------------------------------------
