@@ -607,3 +607,23 @@ def test_the_deadband_never_goes_below_the_measured_actuator_resolution() -> Non
     decision = controller.update(_inputs(5.0))
 
     assert not decision.plan.moves, "a 5 degree request must not fire a 8 degree actuator"
+
+
+def test_a_collapsed_direction_confidence_releases_rather_than_creeping() -> None:
+    """Scaling is right for an uncertain estimate, not for a collapsed one."""
+    controller = _controller()
+    controller.update(_inputs(30.0, sequence=1, confidence=0.9))
+
+    decision = controller.update(_inputs(30.0, sequence=2, now_s=0.1, confidence=0.05))
+
+    assert decision.release
+    assert decision.state is ControlState.REACQUIRE
+    assert "confidence collapsed" in decision.reason
+
+
+def test_a_merely_uncertain_direction_still_steers_but_smaller() -> None:
+    confident = _controller().update(_inputs(30.0, confidence=0.95))
+    unsure = _controller().update(_inputs(30.0, confidence=0.45))
+
+    assert unsure.plan.moves and not unsure.release
+    assert abs(unsure.plan.expected_deg) < abs(confident.plan.expected_deg)

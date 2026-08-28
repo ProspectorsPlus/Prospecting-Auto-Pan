@@ -792,7 +792,14 @@ class Navigator:
                 focus_ok=self._focus_ok,
                 viewport_ok=frame.geometry.valid,
                 processed_fps=self._processed_fps,
-                cursor_safe=self._cursor_safe,
+                # The pointer only matters while it *is* the actuator. Holding
+                # an arrow key does not drag anything out of the window, so a
+                # pointer parked on the dashboard is not a fault there.
+                cursor_safe=(
+                    True
+                    if self._follower.backend is TurnBackend.ARROW_KEYS
+                    else self._cursor_safe
+                ),
                 geometry_revision=self._geometry_revision,
                 profile_revision=self._profile_revision,
             )

@@ -257,6 +257,29 @@ Real Tk, real dashboard, 200 samples per loop, no capture and no worker:
 most expensive thing the window did and ran unconditionally; it now renders
 only when it is visible *and* something changed.
 
+### Pipeline latency — synthetic source, 20 s, this pass
+
+The whole path: capture service, coordinator, observation worker, real
+detector, real navigator. Synthetic frames, because Roblox was unreachable;
+the numbers are about the *pipeline*, not about the game.
+
+```
+tier requested 90 Hz     governor stable
+source 76.1   unique 76.1   processed 76.1   control 76.1   fps
+duplicates 0   superseded 3   unobserved 3   slot depth 1
+capture     p50  0.00 ms   p95  0.00   max  0.00   (the fake source is free)
+perception  p50  5.53 ms   p95  7.99   max 14.33
+decision    p50  0.02 ms   p95  0.03   max  0.14
+end-to-end  p50  5.68 ms   p95  8.15   max 14.51
+frame age   2.0 ms         cpu 77 %    rss 188 MB (peak 268)
+```
+
+Unique, processed and control rates are equal and the slot depth is one: the
+control loop is taking the newest frame and building no backlog. Three
+superseded frames in twenty seconds is the latest-only slot doing its job, not
+loss. Perception is the whole cost; the decision is two hundredths of a
+millisecond.
+
 ### Synthetic soak — 90 s, this pass
 
 ```

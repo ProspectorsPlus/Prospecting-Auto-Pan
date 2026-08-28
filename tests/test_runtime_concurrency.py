@@ -570,3 +570,114 @@ def test_a_stop_that_cannot_confirm_release_writes_a_record(
     finally:
         rig.port.fail_ops.clear()
         rig.close()
+
+
+# ---------------------------------------------------------------------------
+# The pointer probe is read-only, and unknown means unsafe
+# ---------------------------------------------------------------------------
+
+
+def test_the_cursor_probe_is_a_callable_not_a_port() -> None:
+    """The coordinator must never hold something that can emit input."""
+    import inspect
+
+    from prospector_engine.coordinator import RuntimeCoordinator
+
+    signature = inspect.signature(RuntimeCoordinator.__init__)
+    assert "cursor_probe" in signature.parameters
+    assert "port" not in signature.parameters
+    source = inspect.getsource(RuntimeCoordinator._cursor_safe)
+    assert "raw_" not in source and "acquire" not in source
+
+
+@pytest.mark.parametrize(
+    ("point", "expected"),
+    [
+        ((640, 360), True),
+        ((200, 360), True),
+        ((10, 360), False),
+        ((640, 10), False),
+        (None, False),
+    ],
+)
+def test_the_safe_region_is_the_middle_of_the_client(
+    point: Any, expected: bool, tmp_path: Any, monkeypatch: Any
+) -> None:
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+    )
+    from prospector_engine.coordinator import CoordinatorConfig, RuntimeCoordinator
+    from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
+    from tests.fakes import FakeDeadmanClient, FakePlatformPort, VirtualClock, make_geometry
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    port = FakePlatformPort(VirtualClock(), geometry=make_geometry())
+    guard = ViewportGuard(port)
+    guard.connect()
+    registry = EvidenceRegistry("cursor")
+    capture = CaptureService(guard, registry, config=CaptureConfig())
+    authority = InputAuthority(
+        port,
+        deadman=FakeDeadmanClient(),
+        health=HealthSources(
+            focus=port.focus_state,
+            client_rect=lambda: guard.geometry,
+            capture_age_s=capture.latest_age_s,
+        ),
+        config=AuthorityConfig(),
+        run_id="cursor",
+    )
+    coordinator = RuntimeCoordinator(
+        authority=authority,
+        guard=guard,
+        capture=capture,
+        registry=registry,
+        workers={},
+        config=CoordinatorConfig(),
+        cursor_probe=lambda: point,
+    )
+
+    assert coordinator._cursor_safe() is expected
+
+
+def test_a_probe_that_raises_is_unsafe_rather_than_fatal(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
+    from prospector_engine.coordinator import RuntimeCoordinator
+    from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
+    from tests.fakes import FakeDeadmanClient, FakePlatformPort, VirtualClock, make_geometry
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    port = FakePlatformPort(VirtualClock(), geometry=make_geometry())
+    guard = ViewportGuard(port)
+    guard.connect()
+    registry = EvidenceRegistry("cursor")
+    capture = CaptureService(guard, registry)
+
+    def boom() -> tuple[int, int] | None:
+        raise OSError("scripted")
+
+    coordinator = RuntimeCoordinator(
+        authority=InputAuthority(
+            port,
+            deadman=FakeDeadmanClient(),
+            health=HealthSources(
+                focus=port.focus_state,
+                client_rect=lambda: guard.geometry,
+                capture_age_s=capture.latest_age_s,
+            ),
+            config=AuthorityConfig(),
+            run_id="cursor",
+        ),
+        guard=guard,
+        capture=capture,
+        registry=registry,
+        workers={},
+        cursor_probe=boom,
+    )
+
+    assert coordinator._cursor_safe() is False

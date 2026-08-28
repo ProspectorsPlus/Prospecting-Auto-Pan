@@ -279,6 +279,7 @@ class RuntimeCoordinator:
         pipeline_provider: Callable[[], Any] | None = None,
         profiles: Any = None,
         setup_runner: SetupRunner | None = None,
+        cursor_probe: Callable[[], tuple[int, int] | None] | None = None,
     ) -> None:
         self._authority = authority
         self._guard = guard
@@ -292,6 +293,9 @@ class RuntimeCoordinator:
         self._pipeline_provider = pipeline_provider
         self._profiles = profiles
         self._setup_runner = setup_runner
+        # A read-only pointer probe, not a port: the coordinator must never
+        # hold something that could emit input (plan 4.2).
+        self._cursor_probe = cursor_probe
         self._setup_progress = SetupProgress.idle()
         self._setup_thread: threading.Thread | None = None
         self._setup_cancel = threading.Event()
@@ -985,16 +989,46 @@ class RuntimeCoordinator:
         self._worker = thread
         thread.start()
 
+    #: Fraction of the client the pointer must stay inside while mouse yaw is
+    #: the actuator. Matches ``SteeringLimits.safe_region_fraction``; kept here
+    #: as a number rather than an import so the coordinator does not depend on
+    #: the steering module.
+    CURSOR_SAFE_FRACTION = 0.72
+
     def _worker_health(self) -> WorkerHealth:
-        """One coherent read of focus, geometry and profile for a worker tick."""
+        """One coherent read of focus, geometry, profile and pointer safety."""
         focus = self._authority.describe_readiness().get("focus")
         profiles = self._profiles
         return WorkerHealth(
             focus_ok=focus == "ok",
-            cursor_safe=True,
+            cursor_safe=self._cursor_safe(),
             geometry_revision=self._guard.revision,
             profile_revision=profiles.revision if profiles is not None else 0,
         )
+
+    def _cursor_safe(self) -> bool:
+        """Whether the pointer is inside the safe region of the client.
+
+        A pointer drifting to the edge while a yaw drag is in flight is how a
+        drag ends up outside the window entirely. Unknown is *unsafe*: the
+        follower releases and the pointer is recentred before anything resumes.
+        A backend that does not use the pointer ignores this (see
+        ``Navigator._steer``).
+        """
+        probe = self._cursor_probe
+        if probe is None:
+            return True
+        try:
+            point = probe()
+        except Exception:
+            return False
+        if point is None:
+            return False
+        width, height = self._guard.geometry.canonical_px
+        margin = (1.0 - self.CURSOR_SAFE_FRACTION) / 2.0
+        return width * margin <= point[0] <= width * (
+            1.0 - margin
+        ) and height * margin <= point[1] <= height * (1.0 - margin)
 
     def _join_worker(self, timeout_s: float) -> bool:
         thread = self._worker

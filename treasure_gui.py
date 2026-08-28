@@ -598,6 +598,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         pipeline_provider=lambda: pipeline,
         profiles=profiles,
         setup_runner=run_setup,
+        cursor_probe=port.cursor_client_px,
     )
     application = Application(
         port=port,

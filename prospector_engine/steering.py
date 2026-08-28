@@ -196,6 +196,12 @@ class SteeringLimits:
     #: forward lease. One frame of noise should not stop a walk; a second of
     #: blindness must.
     arrow_loss_grace_frames: int = 2
+    #: Direction confidence below which the controller releases rather than
+    #: scaling the correction down. Confidence *scaling* is right for an
+    #: estimate that is merely uncertain; a collapsed one is not evidence at
+    #: all, and steering on it is steering on noise. Set well below the range
+    #: accepted readings occupy on the real-frame corpus (0.7-0.9).
+    min_direction_confidence: float = 0.35
 
     #: Fraction of the client the cursor must stay inside. Outside it, yaw and
     #: W release and the pointer is recentred before anything resumes.
@@ -457,6 +463,11 @@ class ArrowFollowerController:
             return self._release(
                 ControlState.ALIGN,
                 f"direction abstained: {inputs.direction.abstain_reason}",
+            )
+        if inputs.direction.confidence < limits.min_direction_confidence:
+            return self._release(
+                ControlState.REACQUIRE,
+                f"direction confidence collapsed to {inputs.direction.confidence:.2f}",
             )
 
         self._consumed_sequence = inputs.frame_sequence

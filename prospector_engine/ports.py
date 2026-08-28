@@ -213,7 +213,7 @@ class PlatformPort(Protocol):
 
     # -- read-only diagnostics -------------------------------------------
     def cursor_client_px(self) -> tuple[int, int] | None:
-        """Cursor position in client-relative physical pixels, or ``None``.
+        """Cursor position in **canonical** client coordinates, or ``None``.
 
         Read-only, added for the calibration read-out and the F3 pixel probe
         (DECISIONS.md D-003). It emits nothing, so it is safe outside an input

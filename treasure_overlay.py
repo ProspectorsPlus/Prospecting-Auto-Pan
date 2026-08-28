@@ -105,8 +105,10 @@ class DiagnosticCanvas:
       its own frame, so the drawing can never lag the picture.
     """
 
-    #: Reference arm colours. The assumed arm is deliberately dashed and muted:
-    #: E-ANCHOR and E-FORWARD are pending, so it is a hypothesis on screen.
+    #: Reference arm colours. The forward arm is deliberately dashed and muted:
+    #: automatic setup checks that the heading holds still with this anchor, but
+    #: E-ANCHOR and E-FORWARD - the offline labelling of the avatar's true pivot
+    #: - are still pending, so it stays a hypothesis on screen.
     FORWARD_COLOUR = "#c3ccd6"
     DESIRED_COLOUR = GOLD
     ARROW_COLOUR = JADE
@@ -338,7 +340,9 @@ class DiagnosticCanvas:
             label_point = (anchor[0], anchor[1] - self.ARM_LENGTH_PX - 16)
             label_view = transform.apply_point(label_point)
             self.canvas.coords(forward_label, label_view[0], label_view[1])
-            self.canvas.itemconfigure(forward_label, text="forward (assumed)", state="normal")
+            self.canvas.itemconfigure(
+                forward_label, text="forward (screen anchor)", state="normal"
+            )
 
             self._draw_cue_arms(observation, anchor, transform)
             if observation.desired_deg is None:
