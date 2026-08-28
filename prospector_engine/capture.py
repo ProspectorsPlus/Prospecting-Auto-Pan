@@ -2057,6 +2057,13 @@ class CaptureService:
             return f"viewport changed: {geometry.detail}"
         if geometry.state is ViewportState.INVALID:
             return f"window lost: {geometry.detail}"
+        if geometry.state is ViewportState.UNPINNED:
+            # A running source only exists after an earlier successful
+            # adopt, so UNPINNED here is check() having lost its adopted
+            # identity to one transient bad read, not "never connected."
+            # guard.connect() (inside restart_source) re-adopts if the
+            # window is actually fine; nothing else ever un-poisons this.
+            return f"viewport lost its pin: {geometry.detail}"
         health = source.health()
         if health is not None:
             return f"source unhealthy: {health}"
