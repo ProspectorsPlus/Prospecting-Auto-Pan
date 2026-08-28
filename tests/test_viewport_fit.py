@@ -291,3 +291,158 @@ def test_a_retina_client_reports_logical_points_and_backing_pixels_separately() 
 
     assert fit.achieved_client_logical == (1280.0, 720.0)
     assert fit.achieved_client_backing_px == (2560, 1440)
+
+
+# ---------------------------------------------------------------------------
+# Fitting is a transaction, not a race
+# ---------------------------------------------------------------------------
+
+
+def test_a_mid_resize_readback_is_not_a_capture_mismatch() -> None:
+    """The race that made Fit look like it did nothing.
+
+    ``check()`` is an honest reporter: it sees a window that is not the size we
+    adopted and says so. During a resize that is exactly what was asked for, so
+    classifying it as CAPTURE_MISMATCH restarted capture, churned the source
+    epoch and blanked the preview - for a change that was going to succeed.
+    """
+    port = _port()
+    guard = _guard(port)
+    guard.connect()
+    before = guard.revision
+
+    with guard.transaction("fit"):
+        port.set_geometry(make_geometry(size=(1024.0, 768.0)))
+        for _ in range(5):
+            geometry = guard.check()
+            assert geometry.state is not ViewportState.CAPTURE_MISMATCH
+        assert guard.revision == before, "an expected intermediate must not churn the basis"
+
+
+def test_a_frame_delivered_against_the_old_geometry_is_not_a_mismatch_either() -> None:
+    port = _port()
+    guard = _guard(port)
+    guard.connect()
+
+    with guard.transaction("fit"):
+        result = guard.confirm_capture((640, 360))
+        assert result.state is not ViewportState.CAPTURE_MISMATCH
+
+    # Outside the transaction the same delivery is reported honestly.
+    assert guard.confirm_capture((640, 360)).state is ViewportState.CAPTURE_MISMATCH
+
+
+def test_the_fence_is_bounded_so_a_dead_transaction_cannot_blind_the_guard() -> None:
+    port = _port()
+    guard = _guard(port, fit_transaction_deadline_s=0.0)
+    guard.connect()
+
+    with guard.transaction("fit"):
+        port.set_geometry(make_geometry(size=(1024.0, 768.0)))
+        assert not guard.fenced, "an expired fence must stop suppressing"
+        assert guard.check().state is ViewportState.CAPTURE_MISMATCH
+
+
+def test_the_fence_is_reentrant_and_unwinds_completely() -> None:
+    guard = _guard(_port())
+    with guard.transaction("outer"):
+        with guard.transaction("inner"):
+            assert guard.fenced
+        assert guard.fenced, "the outer transaction is still open"
+    assert not guard.fenced
+    assert guard.fence_reason == ""
+
+
+def test_the_fence_unwinds_even_when_the_transaction_raises() -> None:
+    guard = _guard(_port())
+    with pytest.raises(RuntimeError), guard.transaction("boom"):
+        raise RuntimeError("scripted")
+    assert not guard.fenced
+
+
+def test_a_fit_runs_inside_its_own_transaction() -> None:
+    """The window passes through sizes nobody should react to."""
+    port = _port()
+    port.settle_reads = 2
+    guard = _guard(port)
+    guard.connect()
+    seen: list[bool] = []
+
+    real_geometry = port.window_geometry
+
+    def observing_geometry() -> object:
+        seen.append(guard.fenced)
+        return real_geometry()
+
+    port.window_geometry = observing_geometry  # type: ignore[method-assign]
+    guard.fit_and_lock(sleep=_instant)
+
+    assert seen and all(seen), "every read-back during a fit is inside the fence"
+    assert not guard.fenced, "and the fence is gone afterwards"
+
+
+def test_repeated_fits_while_geometry_is_read_stay_stable() -> None:
+    """Twenty fits with a concurrent reader: no mismatch, no revision churn."""
+    import threading
+
+    port = _port()
+    port.settle_reads = 1
+    guard = _guard(port)
+    guard.connect()
+    stop = threading.Event()
+    mismatches: list[str] = []
+
+    def poll() -> None:
+        while not stop.is_set():
+            state = guard.check().state
+            if state is ViewportState.CAPTURE_MISMATCH:
+                mismatches.append(state.value)
+
+    reader = threading.Thread(target=poll, daemon=True)
+    reader.start()
+    try:
+        for _ in range(20):
+            fit = guard.fit_and_lock(sleep=_instant)
+            assert fit.ok
+    finally:
+        stop.set()
+        reader.join(2.0)
+
+    assert mismatches == [], f"{len(mismatches)} false mismatches during fitting"
+    assert guard.geometry.state is ViewportState.CANONICAL_VERIFIED
+
+
+def test_a_second_fit_while_one_is_running_is_refused_not_queued() -> None:
+    import threading
+
+    port = _port()
+    port.settle_reads = 3
+    guard = _guard(port, fit_readback_interval_s=0.02)
+    guard.connect()
+    results: list[object] = []
+
+    def run() -> None:
+        results.append(guard.fit_and_lock())
+
+    first = threading.Thread(target=run, daemon=True)
+    first.start()
+    try:
+        # The concurrent call returns the in-flight fit rather than starting a
+        # second resize; the port's pin counter is what proves it.
+        guard.fit_and_lock()
+    finally:
+        first.join(5.0)
+
+    assert port.pin_calls <= 2, f"{port.pin_calls} resize requests for one fit"
+
+
+def test_a_retina_fit_reports_points_and_backing_pixels_separately() -> None:
+    """A 1280x720 point client is 2560x1440 device pixels; both are recorded."""
+    port = _port(geometry=make_geometry(backing_scale=2.0, canonical_px=(2560, 1440)))
+    guard = _guard(port)
+
+    fit = guard.fit_and_lock(sleep=_instant)
+
+    assert fit.achieved_client_logical == (1280.0, 720.0)
+    assert fit.achieved_client_backing_px == (2560, 1440)
+    assert "px" in fit.describe() and "pt" in fit.describe()

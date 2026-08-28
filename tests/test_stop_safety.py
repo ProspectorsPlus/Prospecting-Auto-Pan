@@ -275,3 +275,129 @@ def test_the_recovery_handshake_emits_only_up_edges(rig: Any) -> None:
     rig.authority.recover_release()
 
     assert _edges_after_close(rig.port, marker) == []
+
+
+# ---------------------------------------------------------------------------
+# The turn keys are part of the release floor, not a special case
+# ---------------------------------------------------------------------------
+
+
+def _held_keys(rig: Any) -> set[str]:
+    return set(rig.authority.held_targets())
+
+
+def test_a_turn_key_is_released_by_every_watchdog_condition(rig: Any) -> None:
+    from prospector_engine.geometry import ViewportGeometry
+    from tests.fakes import make_geometry
+
+    for condition, apply in (
+        ("focus-lost", lambda: rig.port.set_focus(False)),
+        ("viewport-invalid", lambda: rig.port.set_geometry(ViewportGeometry.invalid("gone"))),
+        ("capture-stale", lambda: rig.set_capture_age(5.0)),
+    ):
+        rig.port.set_focus(True)
+        rig.set_capture_age(0.005)
+        rig.port.set_geometry(make_geometry())
+        rig.authority.invalidate("reset")
+        rig.activate(generation=1)
+        assert rig.authority.acquire_key(1, InputKey.RIGHT, 500) is not None
+        assert "right" in _held_keys(rig)
+
+        apply()
+        fault = rig.authority.poll_safety()
+
+        assert fault is not None, condition
+        assert rig.authority.ledger_empty(), f"{condition} left a turn key held"
+
+
+@pytest.mark.parametrize("key", [InputKey.LEFT, InputKey.RIGHT])
+def test_release_all_attempts_every_turn_key_even_when_one_fails(
+    rig: Any, key: InputKey
+) -> None:
+    """A failing edge must not stop the others: the floor is unconditional."""
+    rig.activate(generation=1)
+    rig.authority.acquire_key(1, key, 500)
+    rig.port.fail("key_up")
+
+    report = rig.authority.release_all("stop")
+
+    assert "left" in report.attempted_edges and "right" in report.attempted_edges
+    assert "w" in report.attempted_edges
+    assert report.uncertain, "a failed edge must latch rather than report success"
+
+
+def test_the_two_turn_keys_can_never_be_held_at_once(rig: Any) -> None:
+    """The opposite key is released before this one presses, by ordering."""
+    from prospector_engine.contracts import CommandKind, NavigationCommand, monotonic_s
+
+    rig.activate(generation=1, mode=RunMode.LIVE)
+    registry = _registry(rig)
+    for turn in (1, -1, 1, -1):
+        envelope = registry.envelope_for(_fresh_frame(rig, turn))
+        command = NavigationCommand(
+            generation=1,
+            source_frame_sequence=envelope.frame.sequence,
+            source_captured_at_s=envelope.frame.captured_at_s,
+            forward_axis=0,
+            lateral_axis=0,
+            jump=False,
+            yaw_delta_px=0,
+            turn_axis=turn,  # type: ignore[arg-type]
+            issued_at_s=monotonic_s(),
+            valid_until_s=monotonic_s() + 0.05,
+            reason="turn",
+            kind=CommandKind.ALIGN,
+        )
+        outcome = rig.authority.apply_navigation_command(1, command, envelope.evidence_token)
+        assert outcome.applied, outcome.detail
+        held = _held_keys(rig)
+        assert held <= {"left", "right"}
+        assert not {"left", "right"} <= held, f"both turn keys held: {held}"
+
+
+def test_a_turn_command_never_acquires_a_forward_lease(rig: Any) -> None:
+    from prospector_engine.contracts import CommandKind, NavigationCommand, monotonic_s
+
+    rig.activate(generation=1, mode=RunMode.LIVE)
+    registry = _registry(rig)
+    envelope = registry.envelope_for(_fresh_frame(rig, 1))
+    command = NavigationCommand(
+        generation=1,
+        source_frame_sequence=envelope.frame.sequence,
+        source_captured_at_s=envelope.frame.captured_at_s,
+        forward_axis=0,
+        lateral_axis=0,
+        jump=False,
+        yaw_delta_px=0,
+        turn_axis=1,  # type: ignore[arg-type]
+        issued_at_s=monotonic_s(),
+        valid_until_s=monotonic_s() + 0.05,
+        reason="turn",
+        kind=CommandKind.ALIGN,
+    )
+    outcome = rig.authority.apply_navigation_command(1, command, envelope.evidence_token)
+
+    assert outcome.applied
+    assert outcome.leases_held == ("right",)
+    assert "w" not in outcome.leases_held
+
+
+def _registry(rig: Any) -> Any:
+    from prospector_engine.capture import EvidenceRegistry
+
+    registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
+    registry.set_generation(1)
+    return registry
+
+
+_SEQUENCE = [100]
+
+
+def _fresh_frame(rig: Any, _turn: int) -> Any:
+    from prospector_engine.contracts import monotonic_s
+    from tests.fakes import make_frame
+
+    _SEQUENCE[0] += 1
+    return make_frame(
+        _SEQUENCE[0], captured_at_s=monotonic_s(), geometry=rig.port.window_geometry()
+    )

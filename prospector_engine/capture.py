@@ -1077,7 +1077,7 @@ class ViewportGuard:
         window that is not the size we adopted and say so. During a resize that
         is exactly what we asked for, so classifying it as CAPTURE_MISMATCH
         restarts capture, churns the source epoch and blanks the preview for a
-        change that was going to succeed (D-032). Inside this block they leave
+        change that was going to succeed (D-035). Inside this block they leave
         the adopted geometry alone; the transaction adopts the settled result
         itself.
 
@@ -1704,6 +1704,21 @@ class CaptureService:
     def running(self) -> bool:
         with self._lock:
             return self._source is not None
+
+    def health(self) -> str | None:
+        """The current capture problem, or ``None`` when there is none.
+
+        A description rather than a boolean because "why is there no frame" is
+        the question a stalled setup has to answer, and "no" is not an answer.
+        """
+        with self._lock:
+            error = self._last_error
+            running = self._source is not None
+        if error is not None:
+            return error
+        if not running:
+            return "capture is not running"
+        return None
 
     @property
     def source_epoch(self) -> int:

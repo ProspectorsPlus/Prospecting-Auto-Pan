@@ -378,7 +378,7 @@ def shift_lock_probe(
 
     When the pointer cannot be read at all the honest answer is "cannot
     confirm", and setup stops with a sentence telling the user to switch Shift
-    Lock on. It never presses Shift to find out (D-035).
+    Lock on. It never presses Shift to find out (D-037).
     """
     del pipeline
 
@@ -876,7 +876,7 @@ class Dashboard:
         """Three controls, and nothing else that a normal run needs."""
         row = ttk.Frame(self.root, style="T.TFrame", padding=(14, 2))
         row.grid(row=1, column=0, sticky="ew")
-        row.columnconfigure(2, weight=1)
+        row.columnconfigure(3, weight=1)
 
         self.start_button = ttk.Button(
             row, text="Start Navigator", style="Primary.TButton", command=self._start
@@ -896,8 +896,21 @@ class Dashboard:
             "Runs detection and navigation decisions and shows what it would do, "
             "without ever sending input to the game.",
         )
-        self.guide = MessageBox(row, self.fonts, height_px=40, width_px=520)
-        self.guide.frame.grid(row=0, column=2, sticky="e", padx=(14, 0))
+        # The one physical arming gesture. It is deliberately a separate,
+        # deliberate click rather than something Start Navigator does for you:
+        # automatic setup may reach READY on its own, and it may never arm.
+        self.arm_button = ttk.Button(
+            row, text="Arm Live", style="T.TButton", command=self._arm, state="disabled"
+        )
+        self.arm_button.grid(row=0, column=2, sticky="w", padx=(10, 0))
+        Tooltip(
+            self.arm_button,
+            "Authorizes keyboard and camera output for thirty seconds. It does not "
+            "begin movement: after arming, focus Roblox and press F1. Stop & Release "
+            "cancels it at any time.",
+        )
+        self.guide = MessageBox(row, self.fonts, height_px=40, width_px=440)
+        self.guide.frame.grid(row=0, column=3, sticky="e", padx=(14, 0))
         self.guide.set("Open Roblox windowed with a map equipped, then press Start Navigator.")
 
     # -- setup ------------------------------------------------------------
@@ -1185,7 +1198,16 @@ class Dashboard:
         self._submit(IntentType.RECOVER_RELEASE)
 
     def _arm(self) -> None:
-        """The one physical arming gesture. Never simulated, never persisted."""
+        """The one physical arming gesture. Never simulated, never persisted.
+
+        Refused, with the reason, while anything is still blocking - arming
+        into a blocked runtime would spend the token on a readiness check that
+        was always going to fail, and the user would have to arm twice.
+        """
+        blocking = [b for b in self.app.coordinator.blockers() if b.status != "expected"]
+        if blocking:
+            self.message.set(f"{blocking[0].summary}. {blocking[0].remedy}", WARN)
+            return
         self._submit(IntentType.ARM_LIVE_FROM_UI)
 
     def _on_cadence_selected(self, _event: Any = None) -> None:
@@ -1332,6 +1354,8 @@ class Dashboard:
             text="Setting up..." if running else "Start Navigator",
         )
         self.retry_button.configure(state="disabled" if running else "normal")
+        blocking = [b for b in self.app.coordinator.blockers() if b.status != "expected"]
+        self.arm_button.configure(state="disabled" if blocking else "normal")
 
     def _render_status(self) -> None:
         snapshot = self.app.coordinator.snapshot()

@@ -187,7 +187,7 @@ class InputKey(Enum):
     #: Camera yaw. These are a *turn* actuator, not a lateral one: they rotate
     #: the camera, where A/D strafe the character. Keeping them as separate
     #: vocabulary entries is what lets the release floor lift a turn key even
-    #: when the strafe axis is idle (D-030).
+    #: when the strafe axis is idle (D-038).
     LEFT = "left"
     RIGHT = "right"
 

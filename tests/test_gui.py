@@ -823,3 +823,40 @@ def test_a_corrupt_window_file_falls_back_to_the_default(tmp_path: Path) -> None
     path.write_text("not json at all", encoding="utf-8")
 
     assert WindowLayout.load(path) == WindowLayout()
+
+
+# ---------------------------------------------------------------------------
+# Arming is still a physical, deliberate, separate gesture
+# ---------------------------------------------------------------------------
+
+
+def test_arming_is_its_own_button_and_says_what_it_authorizes(dashboard: Any) -> None:
+    assert "Arm Live" in set(_button_texts(dashboard.root))
+    assert dashboard.arm_button.winfo_manager() == "grid"
+
+
+def test_start_navigator_never_arms(dashboard: Any) -> None:
+    """Automatic setup may reach READY on its own. It may never arm."""
+    import inspect
+
+    source = inspect.getsource(type(dashboard)._start)
+    assert "ARM_LIVE" not in source
+    from prospector_engine.autosetup import AutomaticSetup
+
+    assert "ARM" not in inspect.getsource(AutomaticSetup)
+
+
+def test_arming_while_blocked_is_refused_with_the_reason(dashboard: Any) -> None:
+    # Nothing has been set up, so the SETUP blocker is standing.
+    dashboard._arm()
+
+    assert dashboard.message.text
+    assert "Start Navigator" in dashboard.message.text
+    assert dashboard.app.coordinator.arm_token() is None
+
+
+def test_the_arm_button_is_disabled_until_nothing_is_blocking(dashboard: Any) -> None:
+    from prospector_engine.contracts import SetupProgress
+
+    dashboard._render_guidance(SetupProgress.idle())
+    assert str(dashboard.arm_button.cget("state")) == "disabled"

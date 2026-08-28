@@ -4,14 +4,30 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28 (third pass). Development machine: macOS 25.4, arm64,
-CPython 3.13.15, Tk 9.0. **No Roblox session was operated and Live was never
-armed during implementation; no input was sent.** The only thing this pass did
-to the game window was one Fit & Verify resize (read back, then restored to
-its previous size) and read-only capture for the benches and eight corpus
-frames.
+Last updated: 2026-08-28 (fourth pass). Development machine: macOS 25.4, arm64,
+CPython 3.13.15, Tk 9.0. **No Roblox session was operated and navigation was
+never armed during implementation; no input was sent.** This pass touched the
+game window not at all: Roblox was in native fullscreen on another Space
+throughout, which is exactly the condition the new setup machine is built to
+diagnose, and it did (see below).
 
 ---
+
+## What changed on 2026-08-28 (fourth pass) — production navigation
+
+The third pass measured the detector and fixed it. This one audited why
+nothing downstream of the detector could ever run, and rebuilt that half.
+
+| Confirmed root cause | Evidence it was real | Now |
+|---|---|---|
+| **The commissioning system could not complete.** `NavigationGates` was constructed once with every `E-*` field `PENDING` and frozen; no production code validated or persisted a gate; `CommissioningWindow` was a periodically rewritten read-only `Text` widget that performed no procedure and no state transition. "Collect Calibration Evidence", "Calibrate Live Control" and "Enable Live Control" all converged on it, and `_arm()` redirected there whenever blockers existed. | `commissioning_steps()` only rendered gate statuses; no call site anywhere set one. `_collect_evidence()` opened the window and started a recording. | Deleted. `prospector_engine/autosetup.py` runs nine typed bounded stages to READY; capability is `NavigationCapabilities`, derived from what this run observed (D-036) |
+| **Live was unreachable twice over.** `make_live_worker` refused while the static gates were pending; even with them fabricated, `Navigator` built a default `ShiftLockController` whose empty `YawCalibration` also refused. Green tests hid both by injecting `ALL_PASSED` and a fabricated calibration. | `tests/test_navigation.py` `_calibrated_navigator` constructed exactly that. | `tests/test_setup_flow.py` builds the real application through `build_application` and drives it to READY with nothing injected |
+| **Fit was not a transaction.** Capture, telemetry and guard polling continued during a resize, so an intermediate size was classified `CAPTURE_MISMATCH`, restarting capture and churning the epoch. The macOS AX lookup fell back to the largest, then the first, window. | `ViewportGuard.check()` compared against the adopted identity with no fence; `_ax_window_for` ended in `largest window` / `first window`. | `ViewportGuard.transaction()` fences mismatch classification, bounded by its own deadline (D-035); AX ambiguity is refused with a remedy (D-034) |
+| **The GUI had no geometry contract.** Unconstrained status and blocker labels, `grid_remove` on conditional controls, and `CommissioningWindow.refresh()` scheduling its own `after` at the end of the render — so opening it repeatedly multiplied the refresh loop. | Four clicks produced four loops; a long Accessibility message widened the toplevel. | Fixed-width leaves, fixed-height wrapped message boxes, state-not-grid for conditional controls, one `Ticker` per loop, one expanding row — each asserted in `tests/test_gui.py` (D-041) |
+| **Navigation was scaffolding.** Left/Right were not in the vocabulary; the player reference was a hardcoded anchor; the pipeline supplied `motion=None`; applied `W` never reached the progress ledger; recovery changed labels and emitted nothing; two steering controllers coexisted. | `PerceptionPipeline.analyze` set `motion=None`; `RecoveryLadder.escalate()` returned a level nobody executed; `SteeringController` was constructed and only ever asked for its config. | Turn keys in the vocabulary and the release floor (D-038); a measured `TurnResponse` per run (D-037); `estimate_lk_affine` wired; `NavigationApplyResult.leases_held` feeds the ledger; a recovery ladder that emits real bounded maneuvers with a sticky side; one `ArrowFollowerController` |
+
+**Detector: deliberately unchanged.** The real-frame corpus report is
+byte-identical before and after this pass, per sequence and in total.
 
 ## What changed on 2026-08-28 (third pass) — regression recovery
 
@@ -45,10 +61,10 @@ measurements said.
 | 0C Input authority and deadman | **done** — unchanged this pass | **pending** | **pending** |
 | 0D Coordinator migration | **done** — plus fit completions as typed queue items | n/a | n/a |
 | 0E Bounded legacy services | **done** | **pending** | **pending** |
-| 1 Shadow foundation and GUI | **done** — bounded per-frame trace, honest governor, guided commissioning, renamed controls | **partial** — native headless Shadow measured at 57 of 57 unique fps (see below); an owner-observed session with a map equipped is **pending** | **pending** |
+| 1 Observation foundation and GUI | **done** — automatic setup, stable-geometry dashboard, one timer per loop, bounded per-frame trace, honest governor | **partial** — native headless observation measured at 57 of 57 unique fps (third pass); an owner-observed session with a map equipped is **pending** | **pending** |
 | 2 Offline perception | **partial** — detector v2 measured on the real corpus (below); no separately held-out session exists | **blocked** on a second recording | **blocked** |
-| 3 Shadow navigation and controller | **partial** — unchanged this pass; gated off | **pending** | **pending** |
-| 4 One-map Live lifecycle | **not started, on purpose** | **pending** | **pending** |
+| 3 Navigation and controller | **done locally** — one follower, measured turn actuator, wired motion, bounded recovery; 94 simulated routes at 30/60/90/120 fps | **pending** — needs a windowed Roblox session; every native check below is blocked on that | **pending** |
+| 4 One-map live lifecycle | **partial** — the armed prologue (control mode, turn characterization) and the follow/recover loop exist and are tested against fakes and a simulated world | **pending** | **pending** |
 | 5 Multi-map lifecycle | **blocked** | **pending** | **pending** |
 | 6 Packaging and release | **partial** | **pending** | **pending** |
 
@@ -62,18 +78,18 @@ not validated".
 | Gate | Status | What changed / what it still needs |
 |---|---|---|
 | E-VIEW | **partial** | Fit & Verify ran against the live client: `canonical_verified` in 0.35 s, 1280×720 pt / 2560×1440 px, 3/3 stable read-backs, origin preserved, window restored afterwards. One display, one DPI. Needs the DPI/display matrix and Windows. |
-| E-ANCHOR | pending | Reviewer-labelled avatar control pivot across sessions. |
+| E-ANCHOR | pending | Reviewer-labelled avatar control pivot across sessions. The runtime *reference check* (heading stability with the screen anchor, measured jitter recorded) is a different and weaker claim and never presented as this gate. |
 | E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded labelling. |
 | E-DIR-IDEAL | pending | Manual masks plus aligned-zero outcome trials. |
 | E-PROF | **pending, with regression evidence** | A real corpus exists and the eval split is a regression gate (`tests/test_corpus.py`). It is one session, one map, one machine, with the previous overlay drawn on most arrows. Needs a second, separately held-out recording of a live session with Shadow running (Start Diagnostic Recording). |
 | E-DIR-E2E | **pending, with regression evidence** | Same corpus; headings are reviewer-read to about ±12°, which cannot certify a 10° p95. |
-| E-ARRIVE | pending | Approach/fade sequences and long negatives. |
-| E-MOTION | pending | Labelled clips and an armed locomotion baseline. |
-| E-SHIFTLOCK | pending | Armed stationary micro-yaw with Shift Lock on and off. |
-| E-YAW | pending | **Physically armed** yaw pulses confirmed by perception. |
+| E-ARRIVE | pending | Approach/fade sequences and long negatives. Arrival now *stops* the route after three consecutive candidates rather than being ignored; stopping needs no gate, digging on arrival would. |
+| E-MOTION | pending | Labelled clips and an armed locomotion baseline. A **session-scoped** baseline is now sampled at runtime from frames where forward was genuinely applied (D-040); it is prefixed `runtime:` and its provenance says in words that it is not this gate. |
+| E-SHIFTLOCK | pending | Armed stationary micro-yaw with Shift Lock on and off. The runtime check observes the centred pointer cue and never toggles Shift (D-037); the armed micro-yaw method is defined and unrun. |
+| E-YAW | pending | **Physically armed** yaw pulses confirmed by perception. Superseded in the production path by the per-run `TurnCharacterizer`, which measures sign, gain, minimum pulse, latency and reliability from bounded stationary probes each session; that has been exercised against a simulated camera only and is **pending** a native run. |
 | E-STEER-CAL | pending | Armed manual-target trials. |
 | E-STEER-E2E | pending | Guarded routes. |
-| E-RECOVERY | pending | Not in the control path. |
+| E-RECOVERY | pending | Now **in** the control path and bounded: release, reacquire, sticky-side strafe, forward probe, jump, opposite side once, abandon. Judged on a simulated world only; needs a native obstacle test after open-ground following is safe. |
 | E-DIG / E-LIFECYCLE | pending | Labelled dig episodes. |
 | E-NEXT_MAP / E-SKIP_MAP | pending | Off. |
 | E-PERF | **pending, with native measurements** | Headless Shadow on the live client measured below. Stop latency in wall-clock ms and the dashboard-with-Live path are not measured. |
@@ -200,6 +216,58 @@ soak in the lifecycle tests passes.
 
 ---
 
+### Fourth pass, native — what was and was not measurable
+
+Roblox was in **native fullscreen on another Space** for the whole of this
+pass. That blocks capture and window sizing outright, so every native check
+below is *pending on the owner leaving fullscreen* — not deferred by choice.
+
+What that did give is a real native result for the diagnosis itself. The real
+`build_application`, the real coordinator and the real setup machine, run
+against this machine:
+
+```
+stage:   failed
+kind:    fullscreen
+summary: Roblox is in fullscreen, where its window cannot be sized or captured
+remedy:  Leave fullscreen so Roblox is an ordinary window, then press
+         Start Navigator again.
+detail:  Roblox is running but not on this Space - exit native fullscreen
+input edges held: ()
+```
+
+`--capture-probe` and `--shadow-bench` report the same condition and exit
+cleanly without touching the window.
+
+### Dashboard cost — measured, this pass
+
+Real Tk, real dashboard, 200 samples per loop, no capture and no worker:
+
+| Loop | Cadence | mean | p50 | p95 |
+|---|---|---|---|---|
+| status | 150 ms | 0.135 ms | 0.129 | 0.160 |
+| setup panel | 120 ms | 0.012 ms | 0.011 | 0.014 |
+| metrics + summaries | 500 ms | 0.022 ms | 0.021 | 0.025 |
+| preview (idle) | 33 ms | 0.001 ms | 0.001 | 0.001 |
+| diagnostics drawer, open, data changed | 700 ms | 0.147 ms | 0.143 | 0.166 |
+| diagnostics drawer, open, nothing changed | 700 ms | suppressed - 50 of 50 renders skipped |
+| diagnostics drawer, folded away | 700 ms | 0.0001 ms |
+
+**Idle GUI duty cycle: 0.11 % of one core.** The drawer was previously the
+most expensive thing the window did and ran unconditionally; it now renders
+only when it is visible *and* something changed.
+
+### Synthetic soak — 90 s, this pass
+
+```
+.venv/bin/python treasure.py --soak 1.5
+```
+
+51 unique fps and 51 processed fps sustained; RSS 122-168 MB against a 249 MB
+peak; 4 607 frames; one thread before and after; clean capture shutdown;
+0 of 8 pool buffers live; RSS slope -28 MB/min. **PASS** as a local soak; this
+is not E-PERF.
+
 ## Native checks the owner must run
 
 Everything below takes a few minutes and needs Roblox open, windowed, with a
@@ -207,35 +275,46 @@ map equipped so an arrow is on screen. Nothing before step 7 sends input.
 
 ### Morning, in order (about five minutes)
 
-1. `.venv/bin/python treasure.py`. Press **Connect Roblox** — the ROBLOX card
-   reads `Connected`.
-2. Press **Fit & Verify Viewport**. Watch the ROBLOX card: `Requesting size…`
-   → `Reading back…` → `Canonical 1280x720` or `Resized but OS-clamped to …`.
-   Both are valid; note which.
-3. Select the profile for the map you are on (`Yellow treasure map arrow
-   (real-corpus fit)` for the yellow-arrow maps; green for the green map). The
-   pink-arrow map has no profile yet — see risks.
-4. Press **Start Shadow Analysis**, then **Start Diagnostic Recording**, and
-   walk a normal route for two or three minutes, including turning, passing
-   grass, water, sand, and standing under the arrow. Watch that the jade
-   outline sits on the arrow and the gold arm points where it points; note
-   any moment it locks onto something else. This recording is the held-out
-   session E-PROF needs.
-5. Press **Stop & Release All Input**. A trace file is written beside the
-   logs (`trace-…jsonl`); the recording is under recordings/.
-6. Open **Calibrate Live Control** once and read the eleven steps; nothing
-   there runs anything.
-7. Only then, and only with a hand on F2: the armed procedures for
-   E-SHIFTLOCK and E-YAW in the previous section of this file, unchanged.
+**Before anything: leave native fullscreen.** Roblox must be an ordinary
+window on the current Space, with a treasure map equipped so an arrow is on
+screen. Nothing before step 4 sends input.
 
-Send back: the trace file, the recording directory, and one line about the
-Fit & Verify result.
+1. `.venv/bin/python treasure.py`. Press **Start Navigator** — nothing else.
+   Watch the stage strip: Find Roblox → Size window → Rebind capture → Check
+   frames → Identify map → Check direction → Qualify. Note where it stops if
+   it stops, and copy the sentence it prints.
+2. If it reaches READY: check the LIVE READOUT. *Viewport* should read
+   `1280x720 canonical` (or an honest clamped size), *Map profile* should be
+   the map you actually have equipped, and *Alignment error* should be a
+   number that changes as you turn. Press **Retry Automatic Setup** under
+   Advanced twice more and confirm the window is sized the same way each time
+   and the preview never blanks.
+3. Under Advanced press **Record Diagnostics** and walk a normal route for two
+   or three minutes — turning, grass, water, sand, standing under the arrow.
+   This is the held-out session E-PROF needs. Press **Stop & Release All
+   Input**; a trace lands beside the logs and the recording under recordings/.
+4. **Only with a hand on F2**, and only in a private server on open ground:
+   press **Arm Live**, focus Roblox, press **F1**. The first seconds are
+   stationary while it confirms the camera mode and measures the turn
+   actuator; the LIVE READOUT's *Turning by* row should change from
+   `not measured` to `arrow keys` or `mouse yaw`. Then let it align and walk
+   for no more than thirty seconds and press **F2**.
+
+Send back: the trace file, the recording directory, one line about the size
+the window ended up, the *Turning by* value, and anything the character did
+that you did not expect.
+
+**If step 4 goes wrong in any way, F2 is always live** and releases every key,
+both turn keys, and the mouse buttons, without consulting focus.
 
 ### Windows — everything, from scratch
 
-Unchanged from the previous pass; no line of `platform_win.py` has executed.
-`tests/test_commissioning.py` adds the 100/125/150/200 % backing-scale
-contract at the geometry level only.
+Unchanged from the previous pass: **no line of `platform_win.py` has ever
+executed.** What this pass added to it - the Left/Right scancodes and the
+`KEYEVENTF_EXTENDEDKEY` flag they require - is contract-tested from macOS
+(`tests/test_platform_contract.py`) and is otherwise entirely unverified. The
+extended-key flag in particular is the kind of thing that is either right or
+sends numpad 4/6, and only a Windows machine can tell which.
 
 ---
 

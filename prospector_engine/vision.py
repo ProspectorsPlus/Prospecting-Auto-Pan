@@ -120,7 +120,7 @@ class ArrowProfile:
         plus a clear score margin over consecutive frames - and that evidence
         is available whether or not a held-out E-PROF corpus exists for the
         profile. ``status`` still records the offline evidence honestly and is
-        what the dashboard labels the lock with (D-033).
+        what the dashboard labels the lock with (D-036).
 
         A profile opts out by declaring ``runtime_selectable: false`` in the
         bundled JSON - for a profile kept only as a comparison baseline.

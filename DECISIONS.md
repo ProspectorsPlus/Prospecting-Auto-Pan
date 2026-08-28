@@ -889,3 +889,223 @@ rendered from live state and gate statuses; none passes from a fake. Controls
 are named for what they do.
 
 **Deviation:** none.
+
+---
+
+## D-034 — 2026-08-28 — Ambiguity is refused, not resolved by picking the biggest
+
+**Plan text:** §4.1; mission section B.
+
+**Decision:** `_ax_window_for` accepts an Accessibility window only when it
+*identifies* one — its frame matches the CG window being captured, its title
+uniquely matches, or the process has exactly one window with a readable frame.
+Two windows sharing a frame, two sharing a title, or several with neither is
+`(None, "ambiguous: …")`, and `pin_client_rect` turns that into a sentence
+naming the remedy: close the extra Roblox window.
+
+**Why:** D-032 correlated by frame, then title, then *largest*, then *first*.
+The last two are guesses, and the failure they produce is silent and confusing:
+a login prompt or a crash-report window is resized to 1280x720 while the game
+stays as it was, and the fit reports success. A process with several windows is
+a situation with a specific fix, not a size comparison.
+
+**Deviation:** none.
+
+---
+
+## D-035 — 2026-08-28 — Fitting is a transaction; mismatch classification is fenced
+
+**Plan text:** §4.1; mission section B.
+
+**Decision:** `ViewportGuard.transaction(reason)` suspends `check()` and
+`confirm_capture()` for the duration of a deliberate geometry change.
+`fit_and_lock` runs inside one; the automatic-setup fit stage releases input
+first, fits, restarts capture once, and waits for a fresh frame that matches
+the adopted geometry before anything resumes. The fence is re-entrant, unwinds
+on an exception, and is bounded by `fit_transaction_deadline_s` so a
+transaction that dies cannot leave the guard permanently blind.
+
+**Why:** `check()` and `confirm_capture()` are honest reporters — they see a
+window that is not the size we adopted and say so. During a resize that is
+exactly what was asked for, so classifying it as `CAPTURE_MISMATCH` restarted
+capture, churned the source epoch, and blanked the preview for a change that
+was going to succeed. Fitting looked like it did nothing; what it did was fight
+the guard.
+
+**Measured:** `tests/test_viewport_fit.py` runs twenty fits with a concurrent
+`check()` reader and requires zero false mismatches, and asserts every
+read-back inside a fit is fenced.
+
+**Deviation:** none.
+
+---
+
+## D-036 — 2026-08-28 — Automatic setup replaces commissioning; three kinds of evidence
+
+**Plan text:** §15 gates; mission section A.
+
+**Decision:** `NavigationGates`, `COMMISSIONING_STEPS`, `commissioning_steps`,
+`commissioning_blockers` and `CommissioningWindow` are deleted.
+`prospector_engine/autosetup.py` runs nine typed, bounded stages from IDLE to
+READY, and capability is `NavigationCapabilities`, derived from what this run
+observed. Three kinds of evidence are kept apart:
+
+* **offline build evidence** — the detector corpus, per-profile E-PROF — is a
+  claim about the software, lives in `--detector-report` and STATUS.md, and
+  gates nothing at runtime;
+* **runtime checks** — this window, this geometry, these frames, this arrow,
+  this actuator — are measured every run and are what READY means;
+* **live safety** is unchanged: a physical click to arm and a physical hotkey
+  press with Roblox focused.
+
+**Why:** the gate structure could not complete. `NavigationGates` was
+constructed once with every `E-*` field `PENDING` and frozen; no production
+code validated or persisted a gate; `CommissioningWindow` was a periodically
+rewritten read-only `Text` widget that ran no procedure. Three buttons
+converged on it and `_arm()` redirected there whenever blockers existed, so
+Live was unreachable twice over — the worker refused on pending gates, and the
+default `ShiftLockController` refused on an empty `YawCalibration`. The unit
+tests were green because they injected `ALL_PASSED` gates and a fabricated
+calibration, which is exactly the shape of test that cannot see this.
+
+`tests/test_setup_flow.py` builds the application through the real
+`build_application` and drives it to READY with nothing injected.
+
+**Deviation:** plan §15's gate table is retained for *offline* evidence and is
+no longer the runtime authority. Recorded here as a deliberate departure.
+
+---
+
+## D-037 — 2026-08-28 — The control mode is observed, never toggled
+
+**Plan text:** §9.1 E-SHIFTLOCK; mission section C.
+
+**Decision:** the `VERIFY_CONTROL_MODE` stage looks at where the system pointer
+is. In the locked camera mode Roblox pins the pointer to the centre of the
+client; in the free mode it does not. A pointer held within 6 % of centre is
+the cue; anything else — including a pointer that cannot be read — is "cannot
+confirm", and setup stops with a sentence telling the user to switch Shift Lock
+on.
+
+**Why:** pressing Shift to find out would turn Shift Lock *off* for a player
+who already had it on, which is both a worse outcome than stopping and an
+input emitted before the actuator has been characterized. There is deliberately
+no `ControlModeMethod.ASSERTED`.
+
+**Limitation, stated:** this is a cue, not a proof that the camera is locked.
+The independent check is the characterizer's left/right consistency
+requirement: a free camera that the pointer happens to sit in the middle of
+does not produce consistent signed rotation from bounded stationary probes. The
+armed micro-yaw method (`ControlModeMethod.MICRO_YAW`) is defined and is
+**pending** a native run.
+
+**Deviation:** none.
+
+---
+
+## D-038 — 2026-08-28 — Turning is its own actuator; Left and Right join the vocabulary
+
+**Plan text:** §4.4 release floor; mission section C.
+
+**Decision:** `InputKey.LEFT` and `InputKey.RIGHT` are vocabulary members, so
+the release floor, `release_all`, the deadman's target list and every safety
+test cover them without a new code path. `NavigationCommand.turn_axis` is a
+separate field from `lateral_axis` (strafe) and `yaw_delta_px` (relative
+mouse); a command carrying both a turn key and a mouse delta raises, because
+two actuators asking for the same rotation would double it and the response
+model is fitted per backend. The opposite key is released before this one is
+pressed because `_translate_navigation` releases everything not commanded this
+tick *before* it acquires. On Windows both scancodes carry
+`KEYEVENTF_EXTENDEDKEY`; without it the bare scancode delivers numpad 4/6.
+
+**Deviation:** none.
+
+---
+
+## D-039 — 2026-08-28 — Profile identity is decided by margin, not by confidence
+
+**Plan text:** §7.4 E-PROF; mission section G.
+
+**Decision:** the runtime profile classifier scores each candidate as
+`confidence x (0.2 + 0.8 x selection_margin)` and requires both a mean-score
+margin over the runner-up and temporal agreement across consecutive frames.
+`selectable_automatically` is a *runtime* property (`runtime_selectable` in the
+bundled JSON), not the offline E-PROF gate; `generic_saturated_v0` and
+`yellow_map_v0` opt out, the first because it is deliberately broad and would
+win by matching anything, the second because it is superseded and would split
+the margin with `yellow_map_v1`.
+
+**Measured, on the real-frame corpus:** on sand frames the green-grass profile
+reaches almost the same confidence as the correct yellow one (0.60 vs 0.66)
+and won half the frames under a confidence-only score. Its *selection margin*
+is a third of it (0.20 vs 0.56). With the margin weighting, `yellow_map_v1`
+wins by 0.22 over 75 % of sixteen frames. Confidence says "something
+arrow-shaped is here"; margin says "and nothing else looks like it", which is
+the question profile identity actually asks.
+
+**Deviation:** the plan gated automatic classification on E-PROF. That gate is
+about whether a profile's *detector* is validated on held-out data; which map
+is on screen right now is a runtime question with runtime evidence. Recorded
+as a deliberate departure.
+
+---
+
+## D-040 — 2026-08-28 — The locomotion baseline is sampled from this run
+
+**Plan text:** §7.4 E-MOTION; mission section E.
+
+**Decision:** `LocomotionBaseline.measured_in_run` mints a baseline from this
+session's own unobstructed walking — frames where forward was *applied* (the
+authority's answer, never the request), motion confidence and coverage are
+high, and yaw contamination is negligible. Twelve samples minimum; the stall
+threshold is 35 % of the observed median, because the question downstream is
+"has the character stopped", not "is it at full speed", and a slope or deep
+water legitimately halves the speed. `condition_id` is prefixed `runtime:` and
+the provenance note says, in words, that this is **not** the offline E-MOTION
+gate.
+
+**Why:** with `UNCALIBRATED_BASELINE` the progress guard abstained on every
+frame, so contact could never be detected and recovery could never run — the
+`motion=None` in the pipeline was only half the reason the whole path was dead.
+E-MOTION is independently labelled open-ground trials that would let a *frozen*
+threshold ship with the software; that is still PENDING and this does not
+substitute for it. What this is: a measurement taken here, on this machine,
+under the physical arm, and discarded when the session ends.
+
+**Deviation:** CLAUDE.md rule 7 forbids populating a calibration that was not
+measured. This one is measured, on real hardware, under the same physical
+arming E-YAW requires. The distinction it must never blur is recorded in the
+provenance note and asserted in `tests/test_navigation.py`.
+
+---
+
+## D-041 — 2026-08-28 — The window does not resize itself
+
+**Plan text:** §11.2; mission section F.
+
+**Decision:** four structural rules, each asserted in `tests/test_gui.py`
+rather than left to review:
+
+1. every dynamic string lives in a widget whose *requested* size is fixed — a
+   width in characters (`fixed_label`) or a fixed-height box that wraps and
+   clips (`MessageBox`);
+2. conditional controls keep their grid cell and change `state`; nothing is
+   `grid_remove`d, because a layout that changes when a fault appears jumps at
+   the worst possible moment;
+3. each polling loop owns exactly one cancellable `after` handle
+   (`treasure_panels.Ticker`), with `start()` idempotent and `render_once()`
+   never scheduling;
+4. exactly one grid row expands.
+
+**Why:** a ttk.Label sizes itself to its content, a grid to its children, and a
+toplevel to its grid — so a status string growing from "Ready" to a sentence
+about Accessibility permissions pushed the window wider, every time it changed.
+And `CommissioningWindow.refresh()` scheduled its next tick at the *end* of the
+render, so calling it directly to refresh on demand started a second loop that
+ran forever: four clicks, four loops, four times the CPU.
+
+The diagnostics drawer renders only when it is visible *and* something changed,
+compared through a cheap key (observation identity, two rates, the packet
+count, the geometry revision, the event-log sequence).
+
+**Deviation:** none.

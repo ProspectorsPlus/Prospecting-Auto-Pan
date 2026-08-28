@@ -300,7 +300,7 @@ class LocomotionBaseline:
         measurement taken here, on this machine, under the physical arm, from
         frames where forward was genuinely applied, motion confidence was high
         and yaw contamination was low - and it is discarded when the session
-        ends (D-034).
+        ends (D-040).
 
         The threshold is a fraction of the observed median rather than the
         median itself, because the question downstream is "has the character

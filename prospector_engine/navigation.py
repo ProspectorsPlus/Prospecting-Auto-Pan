@@ -1019,7 +1019,7 @@ class PerceptionPipeline:
     #: (0.60 vs 0.66) and would win half the frames, but its selection margin
     #: is a third of it (0.20 vs 0.56). Confidence says "something arrow-shaped
     #: is here"; margin says "and nothing else looks like it", which is the
-    #: question profile identity actually asks (D-036).
+    #: question profile identity actually asks (D-039).
     MARGIN_WEIGHT = 0.8
 
     def score_profiles(

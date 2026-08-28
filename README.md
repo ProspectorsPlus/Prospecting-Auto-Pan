@@ -14,47 +14,71 @@ repository state and is not architecture truth.
 
 ---
 
+## The normal flow
+
+1. Open Roblox in **windowed** mode with a treasure map equipped.
+2. Press **Start Navigator**.
+3. The application finds Roblox, sizes its client to 1280x720 and reads back
+   what it actually got, rebinds capture, identifies which map you have
+   equipped from consecutive frames, checks that the direction to the arrow
+   holds still, qualifies the whole read-only pipeline, and starts observing.
+4. To let it move your character: press **Arm Live** (enabled once setup is
+   READY and nothing is blocking), focus Roblox, and press **F1**.
+   The first two seconds under the arm are stationary - it confirms the camera
+   control mode and measures how far your camera turns per unit of input - and
+   then it aligns, holds `W`, and follows the arrow.
+5. **Stop & Release All Input** (or **F2**) is available at every moment.
+
+There is no pixel clicking, no numeric yaw entry, no sensitivity setting, no
+corpus to record, no deadband trial and no anchor to label. The only thing that
+can interrupt the flow is an OS permission dialog, and when one does the
+navigator stops with the exact sentence that says what to enable.
+
 ## What actually works today
 
 | Capability | Status |
 |---|---|
 | Explicit coordinate spaces (logical / backing / canonical) | implemented and tested |
-| Window-specific capture at 57–110 unique fps | implemented; **ScreenCaptureKit** on macOS |
-| Connect to the Roblox client without resizing it | implemented and tested |
-| Optional bounded *Fit & Verify Viewport* state machine | implemented; one measured `canonical_verified` on this Mac (2x, one display); **E-VIEW matrix pending** |
+| Window-specific capture at 57-110 unique fps | implemented; **ScreenCaptureKit** on macOS |
+| **Automatic setup**: find Roblox, size the window, rebind capture, identify the map, check the reference, qualify | implemented and tested; nine typed stages, each with an attempt cap and a deadline |
+| Transactional viewport fit (mismatch classification fenced for the duration) | implemented and tested |
+| Ambiguous Roblox windows refused rather than guessed at | implemented and tested (macOS) |
 | One coherent stamped frame per decision, keyed by run/generation/revision | implemented |
 | Per-frame diagnostic packet, Minimal and Full Diagnostics overlays | implemented |
 | Single input authority, leases, watchdog, out-of-process deadman | implemented; 10 000 stop races clean |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
 | Standalone dig loop (**F6**) | implemented; **pixels pending reverification** |
-| Shadow observation, telemetry, evidence recorder, dashboard | implemented |
+| Observation mode, telemetry, evidence recorder, dashboard | implemented |
 | Arrow detection by shape and local contrast, one temporal transaction per frame | implemented; **measured on a real-frame corpus** (eval: recall 80 %, 0 false locks, 0 identity switches); **E-PROF pending** |
 | Signed direction from barb asymmetry, notch line, tip and axis, with reversal hysteresis | implemented; eval sign accuracy 91 %, median 10 deg; **E-DIR-E2E pending** |
+| **Automatic map-profile selection** from consecutive frames | implemented; chosen on temporal agreement plus a score margin, verified on the real-frame corpus |
+| **Automatic turn characterization** (arrow keys or relative mouse yaw) | implemented and tested against a simulated camera; **native measurement pending** |
+| **Closed-loop align-then-follow**, one correction pulse in flight | implemented; simulated routes at 30/60/90/120 fps; **native route pending** |
+| **Bounded reactive recovery** (release, reacquire, sticky-side strafe, probe, jump, opposite side once, abandon) | implemented and tested; **native obstacle test pending** |
+| Runtime locomotion baseline sampled from this session's own walking | implemented; session-scoped, never presented as the offline E-MOTION gate |
 | Real-frame corpus, split by contiguous sequence, with a bbox-aware evaluator and a regression gate | implemented (`tests/corpus/real`, `prospector_engine/corpus.py`) |
 | Bounded per-frame trace (capture, scheduling, ROI/full detector, direction, preview, governor) | implemented; exported as JSONL on Stop and by `--shadow-bench` |
 | Offline stratified evaluator with per-stratum confidence bounds | implemented (rendered stress only) |
-| Cadence governor (WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED), judged on a recent window, recovering from DEGRADED | implemented and tested; native: 57 of 57 unique fps with perception at Balanced 60 |
-| Guided commissioning window with keyed, scoped blockers | implemented; every evidence step stays PENDING until its physical procedure |
-| Shift-Lock steering controller and yaw calibration contract | implemented; **refuses to steer**, no calibration exists |
-| Conservative progress guard (may say "stop", never "go around") | implemented; **E-MOTION pending** |
-| Live navigation (steering) | **refuses to run** — it names the pending experiments instead |
-| Obstacle recovery / 2.5D terrain grid | **not built** — only the input contract for it exists |
-| Automatic arrival | **disabled** — needs E-ARRIVE |
-| Automatic profile classification | **disabled** — selection is explicit |
-| Automatic next map | **disabled** — needs E-NEXT_MAP |
+| Cadence governor (WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED), judged on a recent window | implemented and tested; native: 57 of 57 unique fps with perception at Balanced 60 |
+| 2.5D terrain grid / detour planner | **not built** - reactive recovery is what exists |
+| Automatic next map | **disabled** - needs E-NEXT_MAP |
 
-That table is the point of the project, not an apology for it. Each feature is
-enabled only for the exact OS, arrow profile, and condition whose evidence gate
-passed, and no gate has been run yet. See `STATUS.md`.
+Two kinds of status appear in that table and they are not the same thing.
+*Offline evidence* (E-PROF, E-DIR-E2E, E-MOTION) is a claim about the software,
+measured on held-out data, and it is still pending. *Runtime checks* are claims
+about this session, measured every run, and they are what decides whether the
+navigator will drive. Neither one grants input: that is still a physical click
+and a physical hotkey press. See `STATUS.md`.
 
-## What Shadow shows you
+## What the preview shows you
 
-Start Shadow and the SHADOW VIEW draws, over the live frame it actually
-decided from:
+The preview draws, over the live frame the navigator actually decided from:
 
-* the **assumed player-forward arm** — dashed and labelled, because E-ANCHOR
-  and E-FORWARD have not been run and this is a hypothesis you are being shown,
-  not a measurement;
+* the **player-forward arm** — dashed, because the screen anchor is a
+  hypothesis about the locked camera rather than a labelling of the avatar's
+  pivot. Automatic setup checks that the heading to the arrow *holds still*
+  with this anchor and records the measured jitter; E-ANCHOR and E-FORWARD, the
+  offline labelling exercises, remain PENDING;
 * the **desired map-arrow arm** and the **signed turn** between them, with the
   angle in degrees;
 * a thin arm per **direction cue**, so when the fused cue abstains because its
@@ -164,14 +188,21 @@ and navigator. There is no input authority and no platform port anywhere in
 that path, so it cannot emit anything; it uses recorded timestamps, so a slow
 replay does not make every frame look stale.
 
-### Live mode requires a physical human action
+### Moving your character requires a physical human action
 
-There is no way to start Live from software. The sequence is:
+There is no way to start navigation from software. Automatic setup can reach
+READY on its own; it can never arm. The sequence is:
 
-1. Physically click **Arm Live…** in the dashboard. This creates a one-use,
-   30-second, process-run-bound token that is never persisted.
+1. Physically click **Arm Live** in the dashboard. This creates a one-use,
+   30-second, process-run-bound token that is never persisted. Automatic setup
+   cannot press it, and there is no code path that arms without it.
 2. Physically focus Roblox.
 3. Press **F1**.
+
+The first thing the armed worker does is stand still: it confirms the camera
+control mode and measures the turn actuator with bounded probes, releasing
+after every one. If neither the arrow keys nor relative mouse yaw can be shown
+to rotate the camera, it stops and says so rather than steering blind.
 
 Clicking Tk removes focus from Roblox, so there is no actionable *Start Live*,
 *Reset*, or *Pan Test* button — those are guidance labels, and the hotkeys
@@ -187,6 +218,32 @@ while both terrain check points match, pan-swap when the capacity bar reads
 full, stop on anything else — now with an attempt cap, a deadline, and instant
 cancellation. Re-derive the pixels with `--calibrate` first, or it will
 correctly report `CUE_LOST` and do nothing.
+
+## How the automatic setup is bounded
+
+Nine stages, each with an attempt cap **and** a monotonic deadline, each with a
+typed failure kind and one sentence naming the next action:
+
+| Stage | What it establishes | What its failure says |
+|---|---|---|
+| `FIND_ROBLOX` | one identifiable Roblox client | open it windowed / close the extra window / grant permission / leave fullscreen |
+| `FIT_VIEWPORT` | the client at 1280x720, or the truth about what it clamped to | make it an ordinary window / grant Accessibility |
+| `RESTART_CAPTURE` | capture rebound to the fitted client, exactly once | — |
+| `STABILIZE_CAPTURE` | consecutive fresh frames matching the adopted geometry | check Screen Recording |
+| `SELECT_PROFILE` | which map is equipped, by temporal agreement and margin | equip a map, or override under Advanced |
+| `ESTABLISH_REFERENCE` | the heading to the arrow holds still while you do | stand still with the arrow visible |
+| `SHADOW_QUALIFY` | the arrow is visible often enough, at a usable cadence | keep the arrow on screen / lower graphics settings |
+| `VERIFY_CONTROL_MODE` | the locked-camera control mode, observed not assumed | turn Shift Lock on |
+| `CHARACTERIZE_TURN` | sign, gain, minimum pulse, latency and reliability of the turn actuator | focus Roblox and try again |
+
+The last two emit input and therefore run inside the armed live worker, with
+the character stationary and every probe released. The first seven emit nothing
+at all.
+
+Input is released *before* the window is resized, and mismatch classification
+is fenced for the duration of the fit — a resize passes through sizes that
+would otherwise read as "somebody moved the window", restart capture and blank
+the preview for a change that was going to succeed.
 
 ## Development
 

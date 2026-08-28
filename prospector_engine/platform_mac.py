@@ -862,7 +862,7 @@ class MacPlatformPort:
 
         Anything else is **ambiguous and refused**. Resizing the wrong window
         of a multi-window process is a visible, confusing failure that the old
-        "fall back to the largest" rule made silent (D-031).
+        "fall back to the largest" rule made silent (D-034).
         """
         windows = self._ax_windows(identity.process_id)
         if not windows:
