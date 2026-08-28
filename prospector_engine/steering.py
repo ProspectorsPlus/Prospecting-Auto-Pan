@@ -195,15 +195,17 @@ class YawCalibration:
     def blocking_reasons(self) -> tuple[str, ...]:
         if self.usable:
             return ()
+        # Rendered straight into the Live blockers panel, so each one is a
+        # sentence a person can act on rather than a field name.
         reasons: list[str] = []
         if self.status is not EvidenceStatus.VALIDATED:
-            reasons.append(f"E-YAW calibration is {self.status.value}")
+            reasons.append(f"E-YAW: the yaw calibration is {self.status.value}")
         if self.degrees_per_unit is None:
-            reasons.append("degrees per mouse unit has not been measured")
+            reasons.append("E-YAW: degrees per mouse unit has not been measured")
         if self.positive_is_right is None:
-            reasons.append("the sign of a positive yaw delta has not been measured")
+            reasons.append("E-YAW: the sign of a positive yaw delta has not been measured")
         if self.min_effective_units is None:
-            reasons.append("the smallest effective mouse movement has not been measured")
+            reasons.append("E-YAW: the smallest effective mouse movement is unknown")
         return tuple(reasons)
 
 

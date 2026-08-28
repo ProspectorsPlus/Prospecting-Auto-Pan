@@ -20,17 +20,22 @@ repository state and is not architecture truth.
 |---|---|
 | Explicit coordinate spaces (logical / backing / canonical) | implemented and tested |
 | Window-specific capture at 57–110 unique fps | implemented; **ScreenCaptureKit** on macOS |
-| Canonical client-area pin and read-back | implemented; **E-VIEW pin half pending** on both OSes |
-| One coherent stamped frame per decision | implemented |
-| Per-frame diagnostic observation and Shadow overlay | implemented |
-| Single input authority, leases, watchdog, out-of-process deadman | implemented and tested |
+| Connect to the Roblox client without resizing it | implemented and tested |
+| Optional bounded *Fit & Lock Viewport* state machine | implemented; **E-VIEW fit half pending** on both OSes |
+| One coherent stamped frame per decision, keyed by run/generation/revision | implemented |
+| Per-frame diagnostic packet, Minimal and Full Diagnostics overlays | implemented |
+| Single input authority, leases, watchdog, out-of-process deadman | implemented; 10 000 stop races clean |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
 | Standalone dig loop (**F6**) | implemented; **pixels pending reverification** |
 | Shadow observation, telemetry, evidence recorder, dashboard | implemented |
-| Arrow detection, direction cues, motion estimators | implemented as **candidates**; no gate has been run |
-| Cadence governor (30/60/90/120 with hysteresis) | implemented and tested |
+| Arrow detection by shape and local contrast, with a scored breakdown | implemented; measured on rendered stress frames; **E-PROF pending** |
+| Signed direction from arrowhead topology (no PCA coin-flips) | implemented; **E-DIR-E2E pending** |
+| Offline stratified evaluator with per-stratum confidence bounds | implemented |
+| Cadence governor (WARMUP/STABLE/PROBE/COOLDOWN/DEGRADED) | implemented and tested |
+| Shift-Lock steering controller and yaw calibration contract | implemented; **refuses to steer**, no calibration exists |
+| Conservative progress guard (may say "stop", never "go around") | implemented; **E-MOTION pending** |
 | Live navigation (steering) | **refuses to run** — it names the pending experiments instead |
-| Obstacle recovery | **disabled** — needs E-MOTION *and* E-RECOVERY |
+| Obstacle recovery / 2.5D terrain grid | **not built** — only the input contract for it exists |
 | Automatic arrival | **disabled** — needs E-ARRIVE |
 | Automatic profile classification | **disabled** — selection is explicit |
 | Automatic next map | **disabled** — needs E-NEXT_MAP |
@@ -59,6 +64,23 @@ decided from:
 Everything in that picture comes from one `DiagnosticObservation`, which holds
 the frame itself — so the overlay can never be drawn from one frame over the
 image of another.
+
+## Why the arrow is found by shape rather than colour
+
+On the green map the arrow's green chromaticity is **0.518** and the grass
+behind it is **0.520**. No colour rule can separate them, and the previous
+detector — which ranked candidates by area and scored confidence by how close
+that area was to the middle of an allowed range — promoted the grass.
+
+Colour now only *proposes*. What decides is a weighted set of independent
+terms, of which the arrowhead's two-notch topology is necessary rather than
+merely heavy: in every measured view of the real arrow the contour has exactly
+two deep convexity defects of comparable depth with a large gap to the third,
+and terrain does not produce that. Direction comes from the same topology — the
+midpoint of the notches to the tip — which is signed by construction, unlike
+the PCA axis it replaces. See `DECISIONS.md` D-024.
+
+Run `treasure.py --detector-report` to reproduce the per-stratum numbers.
 
 ## Coordinate spaces
 
