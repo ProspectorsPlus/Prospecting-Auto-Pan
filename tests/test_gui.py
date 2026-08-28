@@ -947,3 +947,286 @@ def test_the_viewport_row_says_canonical_when_it_is(dashboard: Any) -> None:
     text = dashboard._viewport_text(make_geometry(), None)
 
     assert "1280x720" in text and "canonical" in text
+
+
+# ---------------------------------------------------------------------------
+# The action layer: purple, readable, and truthful
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def root() -> Any:
+    widget = _tk_root()
+    yield widget
+    widget.destroy()
+
+
+def _key_for(frame: Any) -> Any:
+    from prospector_engine.contracts import RuntimeKey
+
+    return RuntimeKey("test", 1, 1, 1, 1, 1, frame.sequence, frame.content_id)
+
+
+def _command(**overrides: Any) -> Any:
+    from prospector_engine.contracts import NavigationCommand
+
+    defaults: dict[str, Any] = {
+        "generation": 1,
+        "source_frame_sequence": 7,
+        "source_captured_at_s": 0.0,
+        "forward_axis": 1,
+        "lateral_axis": 0,
+        "jump": False,
+        "yaw_delta_px": 0,
+        "issued_at_s": 0.0,
+        "valid_until_s": 9_999.0,
+        "reason": "follow",
+        "turn_axis": 0,
+    }
+    defaults.update(overrides)
+    return NavigationCommand(**defaults)
+
+
+def _canvas(root: Any, mode: Any = None) -> Any:
+    import tkinter as tk
+
+    from treasure_overlay import DiagnosticCanvas, OverlayMode
+
+    widget = tk.Canvas(root, width=640, height=360)
+    widget.pack()
+    root.update_idletasks()
+    return DiagnosticCanvas(widget, mode or OverlayMode.MINIMAL)
+
+
+def _visible_texts(canvas: Any) -> list[str]:
+    """Every text string the canvas is actually showing."""
+    shown = []
+    for item in canvas.canvas.find_all():
+        if canvas.canvas.type(item) != "text":
+            continue
+        if canvas.canvas.itemcget(item, "state") == "hidden":
+            continue
+        shown.append(str(canvas.canvas.itemcget(item, "text")))
+    return shown
+
+
+def _item_visible(canvas: Any, name: str) -> bool:
+    item = canvas._items.get(name)
+    if item is None:
+        return False
+    return canvas.canvas.itemcget(item, "state") != "hidden"
+
+
+def test_shadow_draws_a_dashed_would_command_and_emits_nothing(root: Any) -> None:
+    from prospector_engine.contracts import CommandVisualization
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_shadow(_command(turn_axis=1))
+    canvas.render(_observation(command_view=view))
+    root.update_idletasks()
+
+    assert "WOULD" in _visible_texts(canvas)
+    assert "ACTIVE" not in _visible_texts(canvas)
+    # W and the right turn, both drawn, from the proposal.
+    assert _item_visible(canvas, "action_stroke_W")
+    assert _item_visible(canvas, "action_stroke_RT")
+    # Dashed, because nothing was pressed.
+    assert canvas.canvas.itemcget(canvas._items["action_stroke_W"], "dash")
+
+
+def test_live_draws_active_only_from_the_leases_the_authority_reports(root: Any) -> None:
+    from prospector_engine.contracts import (
+        CommandVisualization,
+        NavigationApplyResult,
+        NavigationApplyStatus,
+    )
+
+    canvas = _canvas(root)
+    # The command asked for forward *and* a right turn; the authority reports
+    # holding only "w". The overlay must draw what is held, not what was asked.
+    view = CommandVisualization.for_live(
+        _command(turn_axis=1),
+        NavigationApplyResult(NavigationApplyStatus.APPLIED, "ok", leases_held=("w",)),
+    )
+    canvas.render(_observation(command_view=view))
+    root.update_idletasks()
+
+    assert "ACTIVE" in _visible_texts(canvas)
+    assert _item_visible(canvas, "action_stroke_W")
+    assert not _item_visible(canvas, "action_stroke_RT"), "drew a turn nobody was holding"
+
+
+def test_a_rejected_command_never_appears_active(root: Any) -> None:
+    from prospector_engine.contracts import (
+        CommandVisualization,
+        NavigationApplyResult,
+        NavigationApplyStatus,
+    )
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_live(
+        _command(forward_axis=1),
+        NavigationApplyResult(NavigationApplyStatus.REJECTED_FOCUS, "Roblox lost focus"),
+    )
+    canvas.render(_observation(command_view=view))
+    root.update_idletasks()
+
+    assert "ACTIVE" not in _visible_texts(canvas)
+    assert not _item_visible(canvas, "action_stroke_W")
+
+
+def test_simultaneous_forward_and_turn_both_render(root: Any) -> None:
+    from prospector_engine.contracts import (
+        CommandVisualization,
+        NavigationApplyResult,
+        NavigationApplyStatus,
+    )
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_live(
+        _command(turn_axis=-1),
+        NavigationApplyResult(NavigationApplyStatus.APPLIED, "ok", leases_held=("left", "w")),
+    )
+    canvas.render(_observation(command_view=view))
+    root.update_idletasks()
+
+    assert _item_visible(canvas, "action_stroke_W")
+    assert _item_visible(canvas, "action_stroke_LT")
+    assert {"W", "<"}.issubset(set(_visible_texts(canvas)))
+
+
+def test_minimal_contains_no_cue_arms_labels_or_candidate_geometry(root: Any) -> None:
+    """The screenshot failure: blue cue rays and outlier text over a route."""
+    canvas = _canvas(root)
+    canvas.render(_observation())
+    root.update_idletasks()
+
+    for index in range(3):
+        assert not _item_visible(canvas, f"cue_{index}")
+        assert not _item_visible(canvas, f"cue_{index}_label")
+    for name in ("bbox", "centroid", "shaft", "tip", "tip2", "contour", "notch_0"):
+        assert not _item_visible(canvas, name), f"Minimal drew {name}"
+    assert not any("outlier" in text for text in _visible_texts(canvas))
+    # ...while still answering the question Minimal exists for.
+    assert _item_visible(canvas, "forward_arm")
+    assert _item_visible(canvas, "desired_arm")
+
+
+def test_full_diagnostics_still_draws_the_internals(root: Any) -> None:
+    from treasure_overlay import OverlayMode
+
+    canvas = _canvas(root, OverlayMode.FULL)
+    canvas.render(_observation())
+    root.update_idletasks()
+
+    assert _item_visible(canvas, "cue_0")
+    assert _item_visible(canvas, "bbox")
+
+
+def test_switching_full_to_minimal_hides_items_already_drawn(root: Any) -> None:
+    from treasure_overlay import OverlayMode
+
+    canvas = _canvas(root, OverlayMode.FULL)
+    canvas.render(_observation())
+    root.update_idletasks()
+    assert _item_visible(canvas, "bbox") and _item_visible(canvas, "cue_0")
+
+    # No new packet arrives - which is the case that matters, because a stopped
+    # run has no next frame to redraw on.
+    canvas.set_mode(OverlayMode.MINIMAL)
+    root.update_idletasks()
+    for name in ("bbox", "centroid", "shaft", "tip", "cue_0", "cue_0_label"):
+        assert not _item_visible(canvas, name), f"{name} survived the switch to Minimal"
+
+
+def test_a_stopped_packet_clears_every_active_vector(root: Any) -> None:
+    """The acceptance failure: 'Stopped' beside a live-looking vector field."""
+    from dataclasses import replace
+
+    from prospector_engine.contracts import (
+        CommandVisualization,
+        NavigationApplyResult,
+        NavigationApplyStatus,
+        PacketKind,
+    )
+    from treasure_overlay import OverlayMode
+
+    canvas = _canvas(root, OverlayMode.FULL)
+    live = CommandVisualization.for_live(
+        _command(),
+        NavigationApplyResult(NavigationApplyStatus.APPLIED, "ok", leases_held=("w",)),
+    )
+    running = _observation(command_view=live)
+    canvas.render(running)
+    root.update_idletasks()
+    assert _item_visible(canvas, "action_stroke_W")
+
+    stopped = replace(
+        running,
+        key=replace(running.key, mode_session_id=running.key.mode_session_id + 1),
+        packet_kind=PacketKind.TERMINAL,
+        command=None,
+        command_view=live.freeze(),
+        plain_summary="Stopped - no command is in effect",
+    )
+    canvas.render(stopped)
+    root.update_idletasks()
+
+    assert not _item_visible(canvas, "action_stroke_W")
+    assert "ACTIVE" not in _visible_texts(canvas)
+    # ...and the detector's internals go with it, so nothing looks live.
+    for name in ("bbox", "cue_0", "cue_0_label", "contour", "shaft"):
+        assert not _item_visible(canvas, name), f"a stopped packet still drew {name}"
+
+
+def test_the_action_layer_item_count_is_bounded(root: Any) -> None:
+    """Repeated renders reuse items; a canvas that grows would eventually die."""
+    from prospector_engine.contracts import (
+        CommandVisualization,
+        NavigationApplyResult,
+        NavigationApplyStatus,
+    )
+
+    canvas = _canvas(root)
+    for index in range(40):
+        held = ("w", "left") if index % 2 else ("w", "right", "space")
+        view = CommandVisualization.for_live(
+            _command(turn_axis=1, jump=bool(index % 2)),
+            NavigationApplyResult(NavigationApplyStatus.APPLIED, "ok", leases_held=held),
+        )
+        from tests.fakes import make_frame
+
+        frame = make_frame(100 + index, captured_at_s=0.0)
+        canvas.render(
+            _observation(
+                frame=frame,
+                key=_key_for(frame),
+                command_view=view,
+            )
+        )
+    root.update_idletasks()
+    assert len(canvas.canvas.find_all()) < 80, "the action layer leaked canvas items"
+
+
+def test_the_action_layer_is_raised_above_the_caption_and_diagnostics(root: Any) -> None:
+    from prospector_engine.contracts import (
+        CommandVisualization,
+        NavigationApplyResult,
+        NavigationApplyStatus,
+    )
+    from treasure_overlay import OverlayMode
+
+    canvas = _canvas(root, OverlayMode.FULL)
+    view = CommandVisualization.for_live(
+        _command(),
+        NavigationApplyResult(NavigationApplyStatus.APPLIED, "ok", leases_held=("w",)),
+    )
+    canvas.render(_observation(command_view=view))
+    root.update_idletasks()
+
+    order = canvas.canvas.find_all()
+    action = order.index(canvas._items["action_stroke_W"])
+    for name in ("caption", "caption_bg", "cue_0", "bbox", "desired_arm"):
+        item = canvas._items.get(name)
+        if item is not None:
+            assert action > order.index(item), f"{name} covers the action layer"

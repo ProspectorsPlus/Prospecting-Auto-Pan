@@ -43,6 +43,8 @@ from prospector_engine.contracts import (
     ArrowObservation,
     CapturedFrame,
     CommandKind,
+    CommandOutcome,
+    CommandVisualization,
     ControlState,
     CueReading,
     DiagnosticObservation,
@@ -1299,6 +1301,7 @@ class PerceptionPipeline:
         key: RuntimeKey | None = None,
         control_state: ControlState | None = None,
         blockers: tuple[str, ...] = (),
+        command_view: CommandVisualization | None = None,
     ) -> DiagnosticObservation:
         """Bind the frame, the geometry, and the decision into one value."""
         inputs = result.inputs
@@ -1338,6 +1341,7 @@ class PerceptionPipeline:
                 or inputs.direction.abstain_reason
                 or (decision.reason if decision.release else None)
             ),
+            command_view=command_view or CommandVisualization.none(),
             capture_ms=frame.duration_ms,
             perception_ms=result.perception_ms,
             decision_ms=decision_ms,
@@ -1361,7 +1365,7 @@ def _run_observer_loop(
     map_id: str,
     approach_valid: bool,
     max_ticks: int | None,
-    apply: Callable[[NavigationDecision, Any, PerceptionResult], bool] | None,
+    apply: Callable[[NavigationDecision, Any, PerceptionResult], CommandVisualization] | None,
 ) -> tuple[int, int, ModeResultKind, str]:
     """The shared perception loop for Shadow and Live.
 
@@ -1414,17 +1418,32 @@ def _run_observer_loop(
         capture.note_decision_ms(decision_ms)
         capture.note_end_to_end_ms(frame.age_s(monotonic_s()) * 1000.0)
 
+        # The key is stamped from the coordinator's current world, not from
+        # anything this worker knows, so a cancelled worker's late frame cannot
+        # outrank the session that replaced it.
+        key = context.key_for(frame, pipeline.profile_revision)
+
+        # ACT, THEN PUBLISH. The observation is built after the command has
+        # been proposed or applied, so it can carry what *happened* rather than
+        # what was asked for. Publishing first is what made WOULD_APPLY and
+        # APPLIED indistinguishable in the UI: the packet was already gone by
+        # the time the authority answered, so the overlay drew every request as
+        # though the character were moving.
+        command_view = CommandVisualization.none(live=apply is not None)
+        if apply is not None:
+            command_view = apply(decision, envelope, result)
+            if command_view.outcome is CommandOutcome.APPLIED:
+                applied += 1
+
         observation = pipeline.diagnostic(
             frame,
             result,
             decision,
             decision_ms=decision_ms,
-            # The key is stamped from the coordinator's current world, not from
-            # anything this worker knows, so a cancelled worker's late frame
-            # cannot outrank the session that replaced it.
-            key=context.key_for(frame, pipeline.profile_revision),
+            key=key,
             control_state=navigator.control_state,
             blockers=context.blockers,
+            command_view=replace(command_view, key=key),
         )
         context.on_observation(observation)
         context.on_phase(decision.phase)
@@ -1449,8 +1468,6 @@ def _run_observer_loop(
                 )
             )
 
-        if apply is not None and apply(decision, envelope, result):
-            applied += 1
         if decision.phase is NavigationPhase.ARRIVED:
             terminal = (ModeResultKind.ARRIVED, "arrival confirmed")
             break
@@ -1488,14 +1505,16 @@ def make_shadow_worker(
 
         def record(
             decision: NavigationDecision, envelope: Any, result: PerceptionResult
-        ) -> bool:
+        ) -> CommandVisualization:
             del envelope, result
             if decision.command is None or observer is None:
                 context.on_status(f"{decision.phase.name}: {decision.reason}")
-                return False
+                return CommandVisualization.none(detail=decision.reason)
             observer.propose(decision.command)
             context.on_status(f"WOULD_APPLY {decision.command.reason}")
-            return True
+            # A proposal, and physically incapable of being anything else: the
+            # observer holds a NoInputSession with no route to a platform port.
+            return CommandVisualization.for_shadow(decision.command)
 
         processed, proposed, kind, detail = _run_observer_loop(
             context,
@@ -1572,19 +1591,22 @@ def make_live_worker(
 
         def apply(
             decision: NavigationDecision, envelope: Any, result: PerceptionResult
-        ) -> bool:
+        ) -> CommandVisualization:
             now = monotonic_s()
             if decision.release or decision.command is None:
                 session.release_navigation(decision.reason)
                 navigator.note_released(now_s=now)
-                return False
+                return CommandVisualization.released(detail=decision.reason, live=True)
             outcome = session.apply_navigation_command(
                 decision.command, envelope.evidence_token
             )
             navigator.note_applied(outcome, now_s=now)
+            # Built from the authority's own answer - its status and the leases
+            # it reports holding - never from the command that was requested.
+            view = CommandVisualization.for_live(decision.command, outcome)
             if not outcome.applied:
                 session.release_navigation(f"apply-rejected:{outcome.detail}")
-                return False
+                return view
             # The baseline is learned from frames where forward was genuinely
             # applied - the authority's answer, never the request.
             observed = baseline.observe(
@@ -1601,7 +1623,7 @@ def make_live_worker(
                     f"walking speed measured over {baseline.samples} frames; "
                     "obstacle detection is now active"
                 )
-            return True
+            return view
 
         try:
             processed, applied, kind, detail = _run_observer_loop(

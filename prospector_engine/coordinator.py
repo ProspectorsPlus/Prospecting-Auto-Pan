@@ -425,6 +425,10 @@ class RuntimeCoordinator:
             key=replace(previous.key, mode_session_id=self._mode_session),
             packet_kind=kind,
             command=None,
+            # Frozen, so the action layer is cleared rather than left showing
+            # the last thing that was held. A stopped navigator that still
+            # draws an ACTIVE key is indistinguishable from a running one.
+            command_view=previous.command_view.freeze(),
             phase=None,
             control_state=None,
             plain_summary=reason,

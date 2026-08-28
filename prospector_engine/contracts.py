@@ -19,7 +19,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, auto
 from typing import Literal, Protocol, runtime_checkable
 
@@ -776,6 +776,197 @@ class NavigationApplyResult:
     @property
     def applied(self) -> bool:
         return self.status is NavigationApplyStatus.APPLIED
+
+
+class CommandOutcome(Enum):
+    """What actually happened to a movement command, for the action overlay.
+
+    The distinction this enum exists to enforce is between *asking* and
+    *acting*. A requested command and an applied one look identical at the
+    point they are decided and are completely different facts, and an overlay
+    that blurs them tells a person the character is walking when it is not.
+    """
+
+    #: No command this frame - abstaining, acquiring, or between routes.
+    NONE = "none"
+    #: Shadow. The policy proposed this and nothing could have emitted it: the
+    #: session is a NoInputSession and holds no authority to press anything.
+    WOULD = "would"
+    #: Live, and the input authority confirmed every edge landed. The glyphs
+    #: are read from the leases it reports holding, never from the request.
+    APPLIED = "applied"
+    #: Live, and the authority refused - generation, evidence, focus, viewport,
+    #: cancellation or health. Nothing is being held.
+    REJECTED = "rejected"
+    #: Deliberately released: a policy release, Stop, a fault, or worker exit.
+    RELEASED = "released"
+
+    @property
+    def holds_input(self) -> bool:
+        """Whether this outcome means keys are physically down right now."""
+        return self is CommandOutcome.APPLIED
+
+
+#: Lease target -> the glyph the overlay draws for it. Turning is deliberately
+#: distinct from strafing: they are different actuators and a person watching a
+#: route needs to see which one is running.
+LEASE_GLYPHS: dict[str, str] = {
+    "w": "W",
+    "s": "S",
+    "a": "A",
+    "d": "D",
+    "left": "<",
+    "right": ">",
+    "space": "JUMP",
+}
+
+
+@dataclass(frozen=True)
+class CommandVisualization:
+    """What the action overlay draws, and where every part of it came from.
+
+    Constructed *after* the command has been proposed (Shadow) or applied
+    (Live), never before - which is the whole point. Built by
+    ``for_shadow`` / ``for_live`` / ``none`` rather than by hand, so a caller
+    cannot accidentally build an APPLIED packet out of a request.
+    """
+
+    outcome: CommandOutcome
+    #: The atomic identity of the frame and world this belongs to. A consumer
+    #: compares it exactly as it compares an observation's key.
+    key: RuntimeKey | None = None
+    #: What the policy asked for. Present for WOULD and REJECTED too, because
+    #: "it wanted to turn right and was refused" is the useful diagnostic.
+    requested: NavigationCommand | None = None
+    #: The authority's verdict. ``None`` in Shadow, which never asks.
+    status: NavigationApplyStatus | None = None
+    #: The authority's own answer about what is held. Empty unless APPLIED.
+    leases_held: tuple[str, ...] = ()
+    detail: str = ""
+    #: True only for a real live session; Shadow provenance is never live.
+    live: bool = False
+    #: Set when the packet is terminal, frozen or stopped. The overlay clears
+    #: the action layer outright rather than drawing a stale command.
+    frozen: bool = False
+
+    @classmethod
+    def none(cls, *, detail: str = "", live: bool = False) -> CommandVisualization:
+        return cls(CommandOutcome.NONE, detail=detail, live=live)
+
+    @classmethod
+    def released(cls, *, detail: str, live: bool = False) -> CommandVisualization:
+        return cls(CommandOutcome.RELEASED, detail=detail, live=live)
+
+    @classmethod
+    def for_shadow(
+        cls, command: NavigationCommand, *, key: RuntimeKey | None = None
+    ) -> CommandVisualization:
+        """A proposal. Shadow holds a NoInputSession and cannot emit an edge."""
+        return cls(
+            CommandOutcome.WOULD,
+            key=key,
+            requested=command,
+            detail=command.reason,
+            live=False,
+        )
+
+    @classmethod
+    def for_live(
+        cls,
+        command: NavigationCommand,
+        result: NavigationApplyResult,
+        *,
+        key: RuntimeKey | None = None,
+    ) -> CommandVisualization:
+        """An applied - or refused - command, described by the authority.
+
+        On anything but APPLIED the leases are dropped on the floor: a refusal
+        released whatever had landed, so there is nothing to draw.
+        """
+        applied = result.status is NavigationApplyStatus.APPLIED
+        return cls(
+            CommandOutcome.APPLIED if applied else CommandOutcome.REJECTED,
+            key=key,
+            requested=command,
+            status=result.status,
+            leases_held=result.leases_held if applied else (),
+            detail=result.detail,
+            live=True,
+        )
+
+    def freeze(self) -> CommandVisualization:
+        """The terminal form: nothing is held, and it says so."""
+        return replace(
+            self,
+            outcome=CommandOutcome.RELEASED
+            if self.outcome is CommandOutcome.APPLIED
+            else self.outcome,
+            leases_held=(),
+            frozen=True,
+        )
+
+    @property
+    def glyphs(self) -> tuple[str, ...]:
+        """The keys to draw, in a stable order.
+
+        For APPLIED these come from ``leases_held`` - the authority's answer -
+        and for WOULD from the request, because in Shadow there is no authority
+        to ask and no input to misrepresent. Every other outcome draws nothing.
+        """
+        if self.frozen:
+            return ()
+        if self.outcome is CommandOutcome.APPLIED:
+            targets = set(self.leases_held)
+        elif self.outcome is CommandOutcome.WOULD and self.requested is not None:
+            command = self.requested
+            targets = set()
+            if command.forward_axis == 1:
+                targets.add("w")
+            elif command.forward_axis == -1:
+                targets.add("s")
+            if command.lateral_axis == -1:
+                targets.add("a")
+            elif command.lateral_axis == 1:
+                targets.add("d")
+            if command.turn_axis == -1:
+                targets.add("left")
+            elif command.turn_axis == 1:
+                targets.add("right")
+            if command.jump:
+                targets.add("space")
+        else:
+            return ()
+        order = list(LEASE_GLYPHS)
+        return tuple(LEASE_GLYPHS[t] for t in order if t in targets)
+
+    @property
+    def yaw_px(self) -> int:
+        """Relative mouse yaw, drawn only when it actually went out.
+
+        A refused yaw edge fails the whole apply, so a non-zero value here on
+        an APPLIED packet means the edge landed.
+        """
+        if self.frozen or self.requested is None:
+            return 0
+        if self.outcome not in (CommandOutcome.APPLIED, CommandOutcome.WOULD):
+            return 0
+        return self.requested.yaw_delta_px
+
+    @property
+    def label(self) -> str:
+        """The word drawn beside the glyphs."""
+        return {
+            CommandOutcome.NONE: "",
+            CommandOutcome.WOULD: "WOULD",
+            CommandOutcome.APPLIED: "ACTIVE",
+            CommandOutcome.REJECTED: "REJECTED",
+            CommandOutcome.RELEASED: "RELEASED",
+        }[self.outcome]
+
+    @property
+    def active(self) -> bool:
+        """Whether there is anything at all for the action layer to draw."""
+        return bool(self.glyphs) or self.yaw_px != 0
 
 
 # ---------------------------------------------------------------------------
@@ -1540,6 +1731,10 @@ class DiagnosticObservation:
     phase: NavigationPhase | None
     command: NavigationCommand | None
     abstain_reason: str | None
+    #: What actually happened to ``command`` - proposed, applied, refused or
+    #: released - filled in *after* the worker has acted on it. The overlay
+    #: draws this and never ``command``, which is only ever a request.
+    command_view: CommandVisualization = field(default_factory=CommandVisualization.none)
 
     capture_ms: float = 0.0
     normalize_ms: float = 0.0

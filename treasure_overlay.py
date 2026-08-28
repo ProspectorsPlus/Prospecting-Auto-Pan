@@ -29,11 +29,16 @@ import sys
 import time
 import tkinter as tk
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 
-from prospector_engine.contracts import DiagnosticObservation, PacketKind, RunMode
+from prospector_engine.contracts import (
+    CommandOutcome,
+    DiagnosticObservation,
+    PacketKind,
+    RunMode,
+)
 from prospector_engine.geometry import Affine2D
 
 
@@ -51,6 +56,18 @@ class OverlayMode(Enum):
 
     @property
     def draws_candidates(self) -> bool:
+        return self is OverlayMode.FULL
+
+    @property
+    def draws_diagnostics(self) -> bool:
+        """Whether detector internals belong on screen at all.
+
+        Minimal answers "where am I going and what is being pressed"; Full
+        answers "why did the detector say that". Cue arms, cue labels, outlier
+        text, the arrow's own axis, its tip and notches and every candidate box
+        belong only to the second question, and drawing them over a route is
+        what made Minimal unreadable.
+        """
         return self is OverlayMode.FULL
 
 
@@ -114,6 +131,35 @@ class DiagnosticCanvas:
     ARROW_COLOUR = JADE
     REJECT_COLOUR = "#8a4b4b"
     ARC_COLOUR = "#d0743c"
+    #: Everything a frozen packet is drawn in: one flat, obviously dead grey.
+    FROZEN_COLOUR = "#5d646d"
+
+    #: The action layer. Purple because nothing else on the overlay is - the
+    #: reference arms are bone, the desired direction gold, detections jade -
+    #: so "what is being pressed" can never be confused with "what was seen".
+    #: The underlay is a near-black casing drawn under every purple stroke:
+    #: vivid purple over bright sand or open water is otherwise unreadable, and
+    #: this panel exists to be read at a glance while a character is moving.
+    ACTION_COLOUR = "#c65cff"
+    ACTION_UNDERLAY = "#0a0410"
+    ACTION_UNDERLAY_WIDTH = 11
+    ACTION_STROKE_WIDTH = 7
+    #: Fixed in *view* pixels, not canonical ones, so the glyphs stay the same
+    #: readable size whatever the preview is scaled to.
+    ACTION_RAY_PX = 84.0
+    ACTION_LABEL_FONT = ("Helvetica", 13, "bold")
+
+    #: Glyph -> screen bearing in degrees (0 up, positive clockwise). Turning
+    #: sits diagonally above the walk axes because it is steering *while*
+    #: moving, and putting it on the strafe axes would read as A/D.
+    ACTION_BEARINGS: ClassVar[dict[str, float]] = {
+        "W": 0.0,
+        "D": 90.0,
+        "S": 180.0,
+        "A": 270.0,
+        "<": 315.0,
+        ">": 45.0,
+    }
 
     ARM_LENGTH_PX = 190.0
 
@@ -141,11 +187,43 @@ class DiagnosticCanvas:
         self.last_overlay_ms = 0.0
         self.last_overlay_skipped = False
 
+    #: Everything Full Diagnostics can draw that Minimal must not. Named
+    #: explicitly rather than derived, because "hide what the other mode owns"
+    #: has to keep working when someone adds an item and forgets the else-branch.
+    DIAGNOSTIC_ITEM_NAMES: ClassVar[tuple[str, ...]] = (
+        "contour",
+        "bbox",
+        "centroid",
+        "shaft",
+        "tip",
+        "tip2",
+        "notch_0",
+        "notch_1",
+    )
+
     def set_mode(self, mode: OverlayMode) -> None:
-        """Switch modes and force a redraw, so the change is visible at once."""
+        """Switch modes and force a redraw, so the change is visible at once.
+
+        Diagnostic items are hidden *here* rather than on the next packet.
+        Waiting for a redraw leaves the candidate boxes and cue arms on screen
+        for as long as no new frame arrives - which is exactly the case that
+        matters, because a stopped run has no next frame.
+        """
         self.mode = mode
         self._last_sequence = -1
         self._last_key = None
+        if not mode.draws_diagnostics:
+            self.hide_diagnostic_items()
+
+    def hide_diagnostic_items(self) -> None:
+        """Hide every detector-internal item, whatever drew it."""
+        for name in self.DIAGNOSTIC_ITEM_NAMES:
+            self._hide(name)
+        for name in list(self._items):
+            if name.startswith("cue_"):
+                self._hide(name)
+        for item in self._reject_items:
+            self.canvas.itemconfigure(item, state="hidden")
 
     # -- item helpers -----------------------------------------------------
     def _line(self, name: str, **options: Any) -> int:
@@ -199,8 +277,14 @@ class DiagnosticCanvas:
         pasted = time.perf_counter()
         self.last_paste_ms = (pasted - started) * 1000.0
         now = time.monotonic()
+        # A frozen packet is never throttled. Full Diagnostics caps its overlay
+        # redraws, and a Stop that lands inside that window would otherwise
+        # leave the action layer on screen until the next frame - and a stopped
+        # run has no next frame, so "until the next frame" means "forever".
+        frozen = observation.packet_kind is not PacketKind.FRAME
         if (
             self.mode is OverlayMode.FULL
+            and not frozen
             and now - self._last_overlay_at_s < self.FULL_OVERLAY_INTERVAL_S
         ):
             # Latest-only at a capped cadence: the picture is current and the
@@ -302,6 +386,15 @@ class DiagnosticCanvas:
     def _draw_overlay(self, observation: DiagnosticObservation, transform: Affine2D) -> None:
         anchor = observation.anchor_px
         stale = observation.age_s > 0.25
+        # A TRANSITION or TERMINAL packet is the last frame held up after the
+        # run ended. It keeps its picture - going blank on Stop hides what was
+        # on screen when it happened - but every vector is drawn in the frozen
+        # grey, and the detector's internals and the action layer are gone
+        # entirely. A stopped navigator must not be able to look like a running
+        # one (mission section 6).
+        frozen = observation.packet_kind is not PacketKind.FRAME
+        forward_colour = self.FROZEN_COLOUR if frozen else self.FORWARD_COLOUR
+        desired_colour = self.FROZEN_COLOUR if frozen else self.DESIRED_COLOUR
 
         # -- direction arms -----------------------------------------------
         if anchor is None:
@@ -333,10 +426,12 @@ class DiagnosticCanvas:
             forward_item = self._line(
                 "forward_arm", fill=self.FORWARD_COLOUR, width=4, arrow="last", dash=(7, 5)
             )
+            self.canvas.itemconfigure(forward_item, fill=forward_colour)
             self._set_arm(forward_item, anchor, observation.forward_deg, transform)
             forward_label = self._text(
                 "forward_label", fill=self.FORWARD_COLOUR, font=("Helvetica", 10, "bold")
             )
+            self.canvas.itemconfigure(forward_label, fill=forward_colour)
             label_point = (anchor[0], anchor[1] - self.ARM_LENGTH_PX - 16)
             label_view = transform.apply_point(label_point)
             self.canvas.coords(forward_label, label_view[0], label_view[1])
@@ -345,6 +440,7 @@ class DiagnosticCanvas:
             )
 
             self._draw_cue_arms(observation, anchor, transform)
+
             if observation.desired_deg is None:
                 self._hide("desired_arm")
                 self._hide("arc")
@@ -364,12 +460,14 @@ class DiagnosticCanvas:
                 desired_item = self._line(
                     "desired_arm", fill=self.DESIRED_COLOUR, width=4, arrow="last"
                 )
+                self.canvas.itemconfigure(desired_item, fill=desired_colour)
                 self._set_arm(desired_item, anchor, observation.desired_deg, transform)
                 self._show("desired_arm")
                 self._draw_arc(observation, anchor, transform)
 
         # -- notches, the geometry the signed direction came from -----------
-        notches = observation.arrow.notch_px if self.mode.draws_candidates else None
+        draws_internals = self.mode.draws_diagnostics and not frozen
+        notches = observation.arrow.notch_px if draws_internals else None
         for index in (0, 1):
             key = f"notch_{index}"
             if notches is None or index >= len(notches):
@@ -382,7 +480,7 @@ class DiagnosticCanvas:
 
         # -- arrow geometry ------------------------------------------------
         arrow = observation.arrow
-        if arrow.valid and observation.contour_px and self.mode.draws_candidates:
+        if arrow.valid and observation.contour_px and draws_internals:
             points: list[float] = []
             for x, y in observation.contour_px:
                 view_x, view_y = transform.apply(float(x), float(y))
@@ -396,7 +494,7 @@ class DiagnosticCanvas:
         else:
             self._hide("contour")
 
-        if arrow.valid and arrow.bbox_px is not None:
+        if arrow.valid and arrow.bbox_px is not None and draws_internals:
             x, y, w, h = arrow.bbox_px
             top_left = transform.apply(float(x), float(y))
             bottom_right = transform.apply(float(x + w), float(y + h))
@@ -418,7 +516,7 @@ class DiagnosticCanvas:
         else:
             self._hide("bbox")
 
-        if arrow.valid and arrow.centroid_px is not None:
+        if arrow.valid and arrow.centroid_px is not None and draws_internals:
             cx, cy = transform.apply_point(arrow.centroid_px)
             centroid = self._oval("centroid", outline=self.ARROW_COLOUR, fill=self.ARROW_COLOUR)
             self.canvas.coords(centroid, cx - 3, cy - 3, cx + 3, cy + 3)
@@ -426,7 +524,12 @@ class DiagnosticCanvas:
         else:
             self._hide("centroid")
 
-        if arrow.valid and arrow.tip_px is not None and arrow.tail_px is not None:
+        if (
+            arrow.valid
+            and arrow.tip_px is not None
+            and arrow.tail_px is not None
+            and draws_internals
+        ):
             tail_view = transform.apply_point(arrow.tail_px)
             tip_view = transform.apply_point(arrow.tip_px)
             shaft = self._line("shaft", fill=GOLD, width=2, arrow="last")
@@ -435,7 +538,7 @@ class DiagnosticCanvas:
         else:
             self._hide("shaft")
 
-        if arrow.valid and arrow.tip_px is not None:
+        if arrow.valid and arrow.tip_px is not None and draws_internals:
             tx, ty = transform.apply_point(arrow.tip_px)
             tip = self._line("tip", fill=GOLD, width=2)
             self.canvas.coords(tip, tx - 7, ty, tx + 7, ty)
@@ -451,9 +554,7 @@ class DiagnosticCanvas:
         # Minimal mode draws none of these on purpose: someone watching a route
         # wants the turn, not the eight blobs the detector considered.
         rejected = (
-            [c for c in observation.candidates if not c.accepted]
-            if self.mode.draws_candidates
-            else []
+            [c for c in observation.candidates if not c.accepted] if draws_internals else []
         )
         while len(self._reject_items) < len(rejected):
             self._reject_items.append(
@@ -499,6 +600,194 @@ class DiagnosticCanvas:
         self.canvas.tag_raise(backdrop)
         self.canvas.tag_raise(caption)
 
+        # Last, so it is above the caption backdrop and every diagnostic item.
+        self._draw_action_layer(observation, transform)
+
+    # -- the action layer -------------------------------------------------
+    #: Every canvas item the action layer can own, so it can be cleared
+    #: wholesale without knowing what the last frame happened to draw. Bounded
+    #: by construction: six bearings plus a yaw bar, a jump pill and a badge.
+    ACTION_ITEM_NAMES: ClassVar[tuple[str, ...]] = (
+        *(
+            f"action_{part}_{glyph}"
+            for glyph in ("W", "A", "S", "D", "LT", "RT")
+            for part in ("under", "stroke", "box", "text")
+        ),
+        "action_badge",
+        "action_badge_bg",
+        "action_yaw_under",
+        "action_yaw_stroke",
+        "action_yaw_box",
+        "action_yaw_text",
+        "action_jump_box",
+        "action_jump_text",
+    )
+
+    #: Glyph -> the suffix used in item names. "<" and ">" cannot appear in a
+    #: name that is also read back in tests, so they get words.
+    ACTION_KEYS: ClassVar[dict[str, str]] = {
+        "W": "W",
+        "A": "A",
+        "S": "S",
+        "D": "D",
+        "<": "LT",
+        ">": "RT",
+    }
+
+    def _clear_action_layer(self) -> None:
+        """Hide every action item. The only thing a stopped packet needs."""
+        for name in self.ACTION_ITEM_NAMES:
+            self._hide(name)
+
+    def _draw_action_layer(
+        self, observation: DiagnosticObservation, transform: Affine2D
+    ) -> None:
+        """Draw what is actually being pressed, above everything else.
+
+        Reads ``observation.command_view`` and nothing else. That value is
+        constructed *after* the command was proposed or applied, so a request
+        the authority refused can never reach this method as though it had
+        landed, and a frozen packet arrives with its glyphs already emptied.
+        """
+        view = observation.command_view
+        anchor = observation.anchor_px
+        frozen = observation.packet_kind is not PacketKind.FRAME
+        if anchor is None or frozen or not view.active:
+            self._clear_action_layer()
+            return
+
+        origin = transform.apply_point(anchor)
+        # Dashed for a proposal, solid for a command that is really held. The
+        # colour is identical on purpose: the same action, two provenances.
+        dash = (10, 6) if view.outcome is CommandOutcome.WOULD else ()
+        drawn: list[int] = []
+
+        for glyph in view.glyphs:
+            if glyph == "JUMP":
+                continue
+            bearing = self.ACTION_BEARINGS.get(glyph)
+            suffix = self.ACTION_KEYS.get(glyph)
+            if bearing is None or suffix is None:
+                continue
+            radians = math.radians(bearing)
+            end = (
+                origin[0] + math.sin(radians) * self.ACTION_RAY_PX,
+                origin[1] - math.cos(radians) * self.ACTION_RAY_PX,
+            )
+            under = self._line(
+                f"action_under_{suffix}",
+                fill=self.ACTION_UNDERLAY,
+                width=self.ACTION_UNDERLAY_WIDTH,
+                capstyle="round",
+            )
+            self.canvas.coords(under, origin[0], origin[1], end[0], end[1])
+            self._show(f"action_under_{suffix}")
+            stroke = self._line(
+                f"action_stroke_{suffix}",
+                fill=self.ACTION_COLOUR,
+                width=self.ACTION_STROKE_WIDTH,
+                capstyle="round",
+                arrow="last",
+            )
+            self.canvas.itemconfigure(stroke, dash=dash)
+            self.canvas.coords(stroke, origin[0], origin[1], end[0], end[1])
+            self._show(f"action_stroke_{suffix}")
+            drawn.extend((under, stroke))
+            drawn.extend(
+                self._action_label(f"action_box_{suffix}", f"action_text_{suffix}", glyph, end)
+            )
+
+        if "JUMP" in view.glyphs:
+            above = (origin[0], origin[1] - self.ACTION_RAY_PX - 34)
+            drawn.extend(
+                self._action_label("action_jump_box", "action_jump_text", "JUMP", above)
+            )
+        else:
+            self._hide("action_jump_box")
+            self._hide("action_jump_text")
+
+        if view.yaw_px:
+            # Relative mouse yaw has no key, so it gets a bar whose direction
+            # is its sign and whose label carries the magnitude.
+            reach = self.ACTION_RAY_PX * 0.8
+            end_x = origin[0] + (reach if view.yaw_px > 0 else -reach)
+            end_y = origin[1] - self.ACTION_RAY_PX * 0.42
+            under = self._line(
+                "action_yaw_under",
+                fill=self.ACTION_UNDERLAY,
+                width=self.ACTION_UNDERLAY_WIDTH,
+                capstyle="round",
+            )
+            self.canvas.coords(under, origin[0], end_y, end_x, end_y)
+            self._show("action_yaw_under")
+            stroke = self._line(
+                "action_yaw_stroke",
+                fill=self.ACTION_COLOUR,
+                width=self.ACTION_STROKE_WIDTH,
+                capstyle="round",
+                arrow="last",
+            )
+            self.canvas.itemconfigure(stroke, dash=dash)
+            self.canvas.coords(stroke, origin[0], end_y, end_x, end_y)
+            self._show("action_yaw_stroke")
+            drawn.extend((under, stroke))
+            drawn.extend(
+                self._action_label(
+                    "action_yaw_box",
+                    "action_yaw_text",
+                    f"MOUSE {view.yaw_px:+d}",
+                    (end_x, end_y),
+                )
+            )
+        else:
+            for name in (
+                "action_yaw_under",
+                "action_yaw_stroke",
+                "action_yaw_box",
+                "action_yaw_text",
+            ):
+                self._hide(name)
+
+        drawn.extend(
+            self._action_label(
+                "action_badge_bg",
+                "action_badge",
+                view.label,
+                (origin[0], origin[1] + self.ACTION_RAY_PX + 30),
+            )
+        )
+        # Raised last, and after the caption, so nothing the detector drew and
+        # nothing the caption backdrop covers can sit on top of it.
+        for item in drawn:
+            self.canvas.tag_raise(item)
+
+    def _action_label(
+        self, box_name: str, text_name: str, text: str, centre: tuple[float, float]
+    ) -> list[int]:
+        """A boxed key label: dark plate, purple border, bold glyph."""
+        label = self._text(
+            text_name,
+            fill="#ffffff",
+            font=self.ACTION_LABEL_FONT,
+            anchor="center",
+            justify="center",
+        )
+        self.canvas.coords(label, centre[0], centre[1])
+        self.canvas.itemconfigure(label, text=text, state="normal")
+        bounds = self.canvas.bbox(label)
+        box = self._items.get(box_name)
+        if box is None:
+            box = self.canvas.create_rectangle(
+                0, 0, 0, 0, fill=self.ACTION_UNDERLAY, outline=self.ACTION_COLOUR, width=2
+            )
+            self._items[box_name] = box
+        if bounds is not None:
+            self.canvas.coords(box, bounds[0] - 7, bounds[1] - 5, bounds[2] + 7, bounds[3] + 5)
+        self.canvas.itemconfigure(box, state="normal")
+        self.canvas.tag_raise(box)
+        self.canvas.tag_raise(label)
+        return [box, label]
+
     def _set_arm(
         self,
         item: int,
@@ -530,12 +819,20 @@ class DiagnosticCanvas:
         anchor: tuple[float, float],
         transform: Affine2D,
     ) -> None:
-        """One thin arm per candidate cue.
+        """One thin arm per candidate cue. Full Diagnostics only.
 
         When the fusion cue abstains because its components disagree, this is
         what shows *how* they disagree - which is the difference between a
-        useful diagnostic and a blank screen.
+        useful diagnostic and a blank screen. It is also a dozen blue rays and
+        labels radiating from the character, which is why Minimal draws none of
+        it: this used to run unconditionally and was the crowding it caused
+        that made a stopped navigator look busy.
         """
+        if not self.mode.draws_diagnostics or observation.packet_kind is not PacketKind.FRAME:
+            for index in range(len(observation.cues)):
+                self._hide(f"cue_{index}")
+                self._hide(f"cue_{index}_label")
+            return
         for index, cue in enumerate(observation.cues):
             key = f"cue_{index}"
             if cue.heading_deg is None:
