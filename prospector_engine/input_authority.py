@@ -945,6 +945,11 @@ class InputAuthority:
             self._release_uncertain = True
             self._release_uncertain_reason = reason
 
+    def latch_release_uncertain(self, reason: str) -> None:
+        """Adopt an unsafe-release latch from outside - e.g. a record left by a
+        previous run that ended without a confirmed release (plan 4.4)."""
+        self._latch_uncertain(reason)
+
     def recover_release(self) -> ReleaseReport:
         """Release-only recovery handshake that can clear the uncertain latch.
 

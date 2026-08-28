@@ -43,7 +43,14 @@ from prospector_engine.input_authority import (
     NoInputSession,
     ServiceInputSession,
 )
-from prospector_engine.telemetry import EventLog, TelemetryHub
+from prospector_engine.telemetry import (
+    AppPaths,
+    EventLog,
+    TelemetryHub,
+    clear_recovery_record,
+    read_recovery_record,
+    write_recovery_record,
+)
 
 __all__ = [
     "CoordinatorConfig",
@@ -193,6 +200,7 @@ class RuntimeCoordinator:
         config: CoordinatorConfig | None = None,
         hub: TelemetryHub | None = None,
         events: EventLog | None = None,
+        paths: AppPaths | None = None,
     ) -> None:
         self._authority = authority
         self._guard = guard
@@ -202,6 +210,7 @@ class RuntimeCoordinator:
         self._config = config or CoordinatorConfig()
         self._hub = hub or TelemetryHub()
         self._events = events or EventLog()
+        self._paths = paths
 
         self._queue: list[_QueueItem] = []
         self._queue_lock = threading.Condition()
@@ -312,12 +321,56 @@ class RuntimeCoordinator:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._adopt_previous_recovery_record()
         self._running.set()
         self._authority.start_watchdog()
         self._thread = threading.Thread(
             target=self._loop, name="treasure-coordinator", daemon=True
         )
         self._thread.start()
+
+    def _adopt_previous_recovery_record(self) -> None:
+        """A previous run that could not confirm its release still blocks Live.
+
+        The record outlives the process that wrote it, so a crash mid-hold does
+        not silently become a clean start (plan 4.4).
+        """
+        if self._paths is None:
+            return
+        record = read_recovery_record(self._paths)
+        if record is None:
+            return
+        reason = str(record.get("reason", "unknown"))
+        self._authority.latch_release_uncertain(f"previous run: {reason}")
+        self._events.add("release.recovery-record", reason)
+
+    def _persist_recovery_record(self, reason: str, report: Any) -> None:
+        if self._paths is None:
+            return
+        with contextlib.suppress(Exception):
+            write_recovery_record(
+                self._paths,
+                reason,
+                {
+                    "failures": list(getattr(report, "failures", ())),
+                    "deadman_acknowledged": bool(
+                        getattr(report, "deadman_acknowledged", False)
+                    ),
+                    "ledger_empty": bool(getattr(report, "ledger_empty", False)),
+                    "attempted_edges": len(getattr(report, "attempted_edges", ())),
+                },
+            )
+
+    def _on_recover_release(self, intent: RuntimeIntent) -> None:
+        """The explicit release-only handshake. It emits up-edges and nothing else."""
+        report = self._authority.recover_release()
+        if report.release_known_safe:
+            if self._paths is not None:
+                clear_recovery_record(self._paths)
+            self._events.add("release.recovered", report.reason)
+        else:
+            self._persist_recovery_record("recovery handshake failed", report)
+            self._events.add("release.recovery-failed", ",".join(report.failures) or "unknown")
 
     def shutdown(self, timeout_s: float | None = None) -> dict[str, str]:
         """Ordered, bounded shutdown (plan 3.5). Records any survivor."""
@@ -329,6 +382,8 @@ class RuntimeCoordinator:
         self._authority.invalidate("shutdown")
         release = self._authority.release_all("shutdown")
         report["release"] = "known-safe" if release.release_known_safe else "uncertain"
+        if not release.release_known_safe:
+            self._persist_recovery_record("shutdown released with uncertainty", release)
 
         report["worker"] = "joined" if self._join_worker(deadline) else "survivor"
         report["capture"] = "stopped" if self._capture.stop(deadline) else "survivor"
@@ -393,6 +448,7 @@ class RuntimeCoordinator:
             IntentType.RESET_CHARACTER: self._on_service,
             IntentType.PAN_SWAP_TEST: self._on_service,
             IntentType.PIXEL_INFO: self._on_service,
+            IntentType.RECOVER_RELEASE: self._on_recover_release,
         }.get(intent.intent_type)
         if handler is None:
             return
@@ -637,6 +693,8 @@ class RuntimeCoordinator:
         if self._worker_cancel is not None:
             self._worker_cancel.cancel()
         report = self._authority.release_all(reason)
+        if not report.release_known_safe:
+            self._persist_recovery_record(reason, report)
         joined = self._join_worker(self._config.worker_join_deadline_s)
         self._set_phase(None)
         if not joined:

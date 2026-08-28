@@ -57,7 +57,12 @@ from prospector_engine.navigation import (
     make_shadow_worker,
 )
 from prospector_engine.ports import PlatformPort, create_platform_port, current_platform_name
-from prospector_engine.telemetry import EvidenceRecorder, LatestSlot, resolve_app_paths
+from prospector_engine.telemetry import (
+    AppPaths,
+    EvidenceRecorder,
+    LatestSlot,
+    resolve_app_paths,
+)
 from prospector_engine.vision import ArrowSegmenter, load_profiles
 
 # --- Palette ---------------------------------------------------------------
@@ -185,6 +190,7 @@ class Application:
     gates: NavigationGates
     preview: LatestSlot[Any]
     reports: queue.Queue[str]
+    paths: AppPaths
 
     def shutdown(self) -> dict[str, str]:
         report = self.coordinator.shutdown()
@@ -193,6 +199,7 @@ class Application:
 
 
 def build_application(profile_id: str = "yellow_map_v0") -> Application:
+    paths = resolve_app_paths().ensure()
     port = create_platform_port()
     guard = ViewportGuard(port)
     deadman = DeadmanClient(config=AuthorityConfig())
@@ -244,6 +251,7 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
         registry=registry,
         workers=workers,
         config=CoordinatorConfig(),
+        paths=paths,
     )
     return Application(
         port=port,
@@ -256,6 +264,7 @@ def build_application(profile_id: str = "yellow_map_v0") -> Application:
         gates=gates,
         preview=preview,
         reports=reports,
+        paths=paths,
     )
 
 
@@ -400,6 +409,13 @@ class Dashboard:
         )
         self.record_button.grid(row=0, column=3, sticky="ew", padx=3)
 
+        # Only shown while an unsafe-release latch is set. It emits up-edges
+        # only; it is the explicit handshake plan 4.4 requires before Live can
+        # be offered again.
+        self.recover_button = ttk.Button(
+            row, text="Recover release", style="T.TButton", command=self._recover
+        )
+
         # Guidance, not buttons: clicking Tk would steal focus from Roblox.
         self.live_guide = tk.Label(
             row,
@@ -533,14 +549,16 @@ class Dashboard:
         """The one physical arming gesture. Never simulated, never persisted."""
         self._submit(IntentType.ARM_LIVE_FROM_UI)
 
+    def _recover(self) -> None:
+        self._submit(IntentType.RECOVER_RELEASE)
+
     def _toggle_record(self) -> None:
         if self.recorder is not None:
             self.recorder.stop()
             self.recorder = None
             self.record_button.configure(text="Record: off")
             return
-        paths = resolve_app_paths().ensure()
-        session_dir = paths.recordings / f"session-{int(monotonic_s())}"
+        session_dir = self.app.paths.recordings / f"session-{int(monotonic_s())}"
         self.recorder = EvidenceRecorder(session_dir)
         self.recorder.start()
         self.record_button.configure(text="Record: ON")
@@ -568,6 +586,13 @@ class Dashboard:
         for key, label in self.readiness_labels.items():
             value = snapshot.readiness.get(key, "-")
             label.configure(text=value, foreground=STATUS_COLOURS.get(value, BONE))
+
+        if self.app.authority.release_uncertain:
+            self.recover_button.grid(
+                row=1, column=0, columnspan=6, sticky="ew", padx=3, pady=(4, 0)
+            )
+        else:
+            self.recover_button.grid_remove()
 
         token = self.app.coordinator.arm_token()
         if token is None:

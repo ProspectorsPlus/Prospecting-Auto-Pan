@@ -43,8 +43,11 @@ __all__ = [
     "TelemetryHub",
     "atomic_write_bytes",
     "atomic_write_text",
+    "clear_recovery_record",
+    "read_recovery_record",
     "read_session",
     "resolve_app_paths",
+    "write_recovery_record",
 ]
 
 
@@ -358,6 +361,7 @@ class EvidenceRecorder:
         if self._thread is not None:
             return
         (self._dir / "chunks").mkdir(parents=True, exist_ok=True)
+        self._quarantine_orphans()
         self._manifest = {
             "schema": 1,
             "started_at_unix_s": time.time(),
@@ -428,6 +432,28 @@ class EvidenceRecorder:
         self._flush_chunk(final=True)
         self._write_manifest()
         return True
+
+    def _quarantine_orphans(self) -> None:
+        """Move chunks the manifest never recorded into ``quarantine/``.
+
+        A run that ended without a bounded flush can leave a chunk on disk that
+        no manifest entry describes. It is evidence of *something*, so it is
+        set aside rather than deleted or silently replayed (plan 11.1).
+        """
+        manifest_path = self._dir / "manifest.json"
+        known: set[str] = set()
+        if manifest_path.exists():
+            with contextlib.suppress(OSError, json.JSONDecodeError):
+                previous = json.loads(manifest_path.read_text(encoding="utf-8"))
+                known = {str(entry["name"]) for entry in previous.get("chunks", [])}
+        orphans = [p for p in (self._dir / "chunks").glob("*.npz") if p.name not in known]
+        if not orphans:
+            return
+        destination = self._dir / "quarantine"
+        destination.mkdir(parents=True, exist_ok=True)
+        for path in orphans:
+            with contextlib.suppress(OSError):
+                os.replace(path, destination / path.name)
 
     # -- writer -----------------------------------------------------------
     def _writer_loop(self) -> None:
@@ -584,3 +610,52 @@ def read_session(
                     )
         except (OSError, ValueError, KeyError):
             continue
+
+
+# ---------------------------------------------------------------------------
+# Unsafe-release recovery record
+# ---------------------------------------------------------------------------
+
+RECOVERY_RECORD_NAME = "unsafe_release.json"
+
+
+def write_recovery_record(paths: AppPaths, reason: str, evidence: Mapping[str, Any]) -> Path:
+    """Persist that a release could not be confirmed safe.
+
+    Plan 4.4: a missing release ACK or a failed local edge must leave a
+    prominent record for the *next* launch, not just a log line in a process
+    that is about to exit.
+    """
+    paths.recovery.mkdir(parents=True, exist_ok=True)
+    path = paths.recovery / RECOVERY_RECORD_NAME
+    payload = {
+        "schema": 1,
+        "written_at_unix_s": time.time(),
+        "reason": reason,
+        "evidence": dict(evidence),
+        "consequence": (
+            "Live and every bounded SERVICE mode are refused until an explicit "
+            "release-only recovery handshake succeeds."
+        ),
+    }
+    atomic_write_text(path, json.dumps(payload, indent=2) + "\n")
+    return path
+
+
+def read_recovery_record(paths: AppPaths) -> dict[str, Any] | None:
+    path = paths.recovery / RECOVERY_RECORD_NAME
+    if not path.exists():
+        return None
+    try:
+        loaded: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        # An unreadable record is still a record: fail closed.
+        return {"schema": 0, "reason": "unreadable recovery record", "evidence": {}}
+    return loaded
+
+
+def clear_recovery_record(paths: AppPaths) -> None:
+    """Remove the record. Only a *successful* recovery handshake may call this."""
+    path = paths.recovery / RECOVERY_RECORD_NAME
+    with contextlib.suppress(OSError):
+        path.unlink()

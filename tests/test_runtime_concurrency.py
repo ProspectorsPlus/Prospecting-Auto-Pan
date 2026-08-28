@@ -478,3 +478,94 @@ def test_cancellation_is_cooperative_and_immediate() -> None:
     started = time.monotonic()
     assert cancellation.wait(5.0) is True
     assert time.monotonic() - started < 0.5
+
+
+# ---------------------------------------------------------------------------
+# Unsafe-release recovery across launches
+# ---------------------------------------------------------------------------
+
+
+def test_a_recovery_record_from_a_previous_run_blocks_live_at_startup(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Plan 4.4: a run that could not confirm its release still blocks the next one."""
+    from prospector_engine.telemetry import (
+        read_recovery_record,
+        resolve_app_paths,
+        write_recovery_record,
+    )
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    paths = resolve_app_paths().ensure()
+    write_recovery_record(paths, "previous run left a key held", {"failures": ["w"]})
+
+    rig = Harness()
+    rig.coordinator._paths = paths
+    rig.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    rig.start()
+    try:
+        assert rig.authority.release_uncertain
+
+        rig.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
+        assert rig.wait_for(lambda: rig.coordinator.arm_token() is not None)
+        rig.submit(IntentType.START_LIVE, source="hotkey")
+        time.sleep(0.15)
+        assert rig.started == []
+
+        rig.submit(IntentType.RECOVER_RELEASE, source="gui")
+        assert rig.wait_for(lambda: not rig.authority.release_uncertain, timeout_s=2.0)
+        assert read_recovery_record(paths) is None
+    finally:
+        rig.close()
+
+
+def test_a_failed_recovery_handshake_rewrites_the_record(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    from prospector_engine.telemetry import read_recovery_record, resolve_app_paths
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    paths = resolve_app_paths().ensure()
+
+    rig = Harness()
+    rig.coordinator._paths = paths
+    rig.start()
+    try:
+        rig.port.fail("key_up")
+        rig.authority.release_all("injected")
+        assert rig.authority.release_uncertain
+
+        rig.submit(IntentType.RECOVER_RELEASE, source="gui")
+        assert rig.wait_for(lambda: read_recovery_record(paths) is not None, timeout_s=2.0)
+
+        record = read_recovery_record(paths)
+        assert record is not None
+        assert "recovery handshake failed" in record["reason"]
+        assert rig.authority.release_uncertain
+    finally:
+        rig.port.fail_ops.clear()
+        rig.close()
+
+
+def test_a_stop_that_cannot_confirm_release_writes_a_record(
+    tmp_path: Any, monkeypatch: Any
+) -> None:
+    from prospector_engine.telemetry import read_recovery_record, resolve_app_paths
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    paths = resolve_app_paths().ensure()
+
+    rig = Harness()
+    rig.coordinator._paths = paths
+    rig.register(IntentType.START_SHADOW, "shadow", _cancellable_worker())
+    rig.start()
+    try:
+        rig.submit(IntentType.START_SHADOW)
+        assert rig.wait_for(lambda: rig.coordinator.mode is RunMode.SHADOW)
+        rig.port.fail("key_up")
+
+        rig.submit(IntentType.STOP)
+        assert rig.wait_for(lambda: read_recovery_record(paths) is not None, timeout_s=2.0)
+    finally:
+        rig.port.fail_ops.clear()
+        rig.close()

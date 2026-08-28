@@ -529,6 +529,10 @@ class IntentType(Enum):
     RESET_CHARACTER = auto()
     PAN_SWAP_TEST = auto()
     SHUTDOWN = auto()
+    #: Deviation from plan 3.2, recorded in DECISIONS.md (D-013). The explicit
+    #: release-only recovery handshake plan 4.4 requires before an unsafe-release
+    #: latch can be cleared. It emits only up-edges.
+    RECOVER_RELEASE = auto()
     #: Deviation from plan 3.2, recorded in DECISIONS.md (D-002). The legacy F3
     #: calibration read-out is preserved as a first-class intent so it flows
     #: through the coordinator like everything else. It samples pixels and shows

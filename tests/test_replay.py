@@ -410,3 +410,88 @@ def test_replay_is_repeatable_over_a_real_recording(tmp_path: Path) -> None:
     first = [record.bgr.tobytes() for record in read_session(recorder.session_dir)]
     second = [record.bgr.tobytes() for record in read_session(recorder.session_dir)]
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Unsafe-release recovery record and orphan quarantine
+# ---------------------------------------------------------------------------
+
+
+def test_an_unconfirmed_release_leaves_a_record_for_the_next_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prospector_engine.telemetry import (
+        read_recovery_record,
+        resolve_app_paths,
+        write_recovery_record,
+    )
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    paths = resolve_app_paths().ensure()
+
+    written = write_recovery_record(
+        paths, "stop released with uncertainty", {"failures": ["w"]}
+    )
+
+    assert written.exists()
+    record = read_recovery_record(paths)
+    assert record is not None
+    assert record["reason"] == "stop released with uncertainty"
+    assert "Live" in record["consequence"]
+
+
+def test_an_unreadable_recovery_record_still_counts_as_a_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: a corrupt record must not read as 'nothing happened'."""
+    from prospector_engine.telemetry import (
+        RECOVERY_RECORD_NAME,
+        read_recovery_record,
+        resolve_app_paths,
+    )
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    paths = resolve_app_paths().ensure()
+    (paths.recovery / RECOVERY_RECORD_NAME).write_text("{ not json")
+
+    record = read_recovery_record(paths)
+
+    assert record is not None
+    assert "unreadable" in record["reason"]
+
+
+def test_only_a_successful_handshake_clears_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from prospector_engine.telemetry import (
+        clear_recovery_record,
+        read_recovery_record,
+        resolve_app_paths,
+        write_recovery_record,
+    )
+
+    monkeypatch.setenv("TREASURE_DATA_DIR", str(tmp_path / "data"))
+    paths = resolve_app_paths().ensure()
+    write_recovery_record(paths, "test", {})
+    assert read_recovery_record(paths) is not None
+
+    clear_recovery_record(paths)
+
+    assert read_recovery_record(paths) is None
+    clear_recovery_record(paths)  # idempotent
+
+
+def test_chunks_no_manifest_describes_are_quarantined_not_deleted(tmp_path: Path) -> None:
+    session = tmp_path / "session"
+    (session / "chunks").mkdir(parents=True)
+    orphan = session / "chunks" / "000009.npz"
+    orphan.write_bytes(b"leftover from a run that never flushed")
+
+    recorder = EvidenceRecorder(session)
+    recorder.start()
+    recorder.stop()
+
+    assert not orphan.exists()
+    quarantined = session / "quarantine" / "000009.npz"
+    assert quarantined.exists()
+    assert quarantined.read_bytes() == b"leftover from a run that never flushed"
