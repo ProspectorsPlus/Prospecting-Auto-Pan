@@ -317,3 +317,57 @@ def test_the_mac_port_computes_scale_from_the_display_mode() -> None:
 
     scale = MacPlatformPort._scale_for_display(0)
     assert scale >= 1.0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="this is the from-macOS direction")
+def test_the_windows_turn_keys_carry_the_extended_flag() -> None:
+    """The one Windows detail that is either right or sends numpad 4/6.
+
+    Left and Right share their scancodes with the numeric keypad; only the E0
+    prefix - `KEYEVENTF_EXTENDEDKEY` - distinguishes them. This checks the
+    structure from macOS. It cannot check what Roblox receives; only a Windows
+    machine can, and that check is listed as pending in STATUS.md.
+    """
+    environment = dict(os.environ)
+    environment["TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from prospector_engine.platform_win import ("
+            "  KEYEVENTF_EXTENDEDKEY, _WIN_EXTENDED, _WIN_SCANCODES, _key_input)\n"
+            "from prospector_engine.contracts import InputKey\n"
+            "assert KEYEVENTF_EXTENDEDKEY == 0x0001\n"
+            "turns = {_WIN_SCANCODES[InputKey.LEFT], _WIN_SCANCODES[InputKey.RIGHT]}\n"
+            "assert turns == _WIN_EXTENDED, (turns, _WIN_EXTENDED)\n"
+            "assert _WIN_SCANCODES[InputKey.LEFT] == 0x4B\n"
+            "assert _WIN_SCANCODES[InputKey.RIGHT] == 0x4D\n"
+            "for key in InputKey:\n"
+            "    code = _WIN_SCANCODES[key]\n"
+            "    for up in (False, True):\n"
+            "        flags = _key_input(code, up).u.ki.dwFlags\n"
+            "        extended = bool(flags & KEYEVENTF_EXTENDEDKEY)\n"
+            "        assert extended == (code in _WIN_EXTENDED), (key, up, flags)\n"
+            "print('ok')\n",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        env=environment,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_the_turn_keys_are_in_the_release_floor_on_every_platform() -> None:
+    """Adding a key that can be pressed must add a key that is released."""
+    from prospector_engine.contracts import InputKey, InputVocabulary
+
+    vocabulary = InputVocabulary()
+    assert InputKey.LEFT in vocabulary.keys
+    assert InputKey.RIGHT in vocabulary.keys
+    assert InputKey.LEFT.is_turn and InputKey.RIGHT.is_turn
+    assert not InputKey.A.is_turn, "strafing is not turning"
+    assert not InputKey.W.is_turn

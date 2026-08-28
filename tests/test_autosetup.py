@@ -516,3 +516,20 @@ def test_the_control_phase_does_not_reuse_a_stale_fingerprint() -> None:
     assert response is not None
     assert response.fingerprint.backend == response.backend.value
     assert response.fingerprint.matches_except_backend(replace(FINGERPRINT, backend="x"))
+
+
+def test_a_stage_loop_terminates_even_if_the_clock_never_advances() -> None:
+    """The deadline is the real bound; the attempt cap catches a frozen clock."""
+    port = FakePort(delivered_px=(1024, 768))
+    machine = AutomaticSetup(
+        port,
+        config=replace(FAST, poll_interval_s=0.0),
+        now=lambda: 0.0,  # a clock that never moves
+        sleep=lambda _s: None,
+        candidates=("green_arrow_v1", "yellow_map_v1"),
+    )
+
+    progress = machine.run_observation()
+
+    assert progress.stage is SetupStage.FAILED
+    assert progress.failure is not None

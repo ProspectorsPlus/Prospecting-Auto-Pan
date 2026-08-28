@@ -691,9 +691,3 @@ class ArrowFollowerController:
             observe_until_s=now + hold_s + response.latency_s,
         )
         return plan
-
-
-#: The pre-consolidation name. One controller, one config: the module that used
-#: to carry a second PD loop under this name now re-exports the real one so an
-#: old import cannot resurrect a diverged copy.
-ShiftLockController = ArrowFollowerController

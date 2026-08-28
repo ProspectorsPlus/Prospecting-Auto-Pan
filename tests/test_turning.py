@@ -364,3 +364,83 @@ def test_a_corrupt_cache_file_is_ignored(tmp_path: Path) -> None:
     path = tmp_path / "turn.json"
     path.write_text("{not json", encoding="utf-8")
     assert TurnResponseCache(path).load(FINGERPRINT) is None
+
+
+# ---------------------------------------------------------------------------
+# What may and may not be persisted
+# ---------------------------------------------------------------------------
+
+
+def test_nothing_about_arming_is_ever_written_to_the_cache(tmp_path: Path) -> None:
+    """A cache that could remember "armed" would be a persisted authorization."""
+    path = tmp_path / "turn.json"
+    cache = TurnResponseCache(path)
+    cache.save(_measured())
+
+    raw = path.read_text(encoding="utf-8").lower()
+    for forbidden in ("arm", "token", "run_id", "generation", "session"):
+        assert forbidden not in raw, f"the cache persisted {forbidden!r}"
+
+
+def test_the_cache_stores_only_the_measured_numbers(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "turn.json"
+    TurnResponseCache(path).save(_measured())
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    (payload,) = entries.values()
+
+    assert set(payload) == {
+        "backend",
+        "degrees_per_unit",
+        "positive_is_right",
+        "min_effective_units",
+        "max_units",
+        "latency_s",
+        "reliability",
+        "samples",
+    }
+
+
+def test_the_cache_is_versioned_and_a_stale_version_is_ignored(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "turn.json"
+    TurnResponseCache(path).save(_measured())
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["version"] = TurnResponseCache.VERSION + 1
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    assert TurnResponseCache(path).load(replace(FINGERPRINT, backend="mouse_yaw")) is None
+
+
+def test_the_cache_is_bounded(tmp_path: Path) -> None:
+    import json
+
+    path = tmp_path / "turn.json"
+    cache = TurnResponseCache(path)
+    for index in range(TurnResponseCache.MAX_ENTRIES * 2):
+        cache.save(
+            _measured(fingerprint=replace(FINGERPRINT, client_fingerprint=f"client-{index}"))
+        )
+
+    entries = json.loads(path.read_text(encoding="utf-8"))["entries"]
+    assert len(entries) <= TurnResponseCache.MAX_ENTRIES
+
+
+def test_an_unusable_response_is_not_cached(tmp_path: Path) -> None:
+    path = tmp_path / "turn.json"
+    TurnResponseCache(path).save(_measured(status=EvidenceStatus.PENDING))
+
+    assert not path.exists()
+
+
+def test_a_cache_that_cannot_be_written_is_not_a_failure(tmp_path: Path) -> None:
+    """A missing cache costs a second of probing next run. Nothing more."""
+    directory = tmp_path / "readonly"
+    directory.mkdir()
+    directory.chmod(0o500)
+    try:
+        TurnResponseCache(directory / "turn.json").save(_measured())
+    finally:
+        directory.chmod(0o700)

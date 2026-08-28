@@ -848,16 +848,24 @@ class AutomaticSetup:
         )
 
     # -- plumbing ---------------------------------------------------------
+    #: Safety factor over the attempts a deadline can hold at the poll
+    #: interval. The deadline is the real bound; the attempt cap exists so a
+    #: clock that does not advance - a virtual one in a test, a suspended
+    #: laptop - still terminates the loop.
+    POLL_ATTEMPT_SLACK = 4
+
     def _poll(self, deadline_s: float) -> Iterator[tuple[int, float]]:
         """Yield ``(attempt, elapsed)`` until the deadline, honouring cancel.
 
         Every stage loop goes through here, which is how "every retry loop has
-        both an attempt cap and a monotonic deadline" is enforced structurally
-        rather than remembered.
+        both an attempt cap and a monotonic deadline" (CLAUDE.md section 6) is
+        enforced structurally rather than remembered.
         """
         started = self._now()
+        interval = max(self._config.poll_interval_s, 1e-4)
+        max_attempts = int(deadline_s / interval) * self.POLL_ATTEMPT_SLACK + 16
         attempt = 0
-        while True:
+        while attempt < max_attempts:
             self._check_cancelled()
             elapsed = self._now() - started
             if elapsed > deadline_s:

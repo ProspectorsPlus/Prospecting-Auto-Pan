@@ -145,10 +145,6 @@ class ControlFingerprint:
         return "|".join(parts)
 
 
-#: Backwards-compatible name for the steering module's original spelling.
-CalibrationFingerprint = ControlFingerprint
-
-
 # ---------------------------------------------------------------------------
 # Limits
 # ---------------------------------------------------------------------------
