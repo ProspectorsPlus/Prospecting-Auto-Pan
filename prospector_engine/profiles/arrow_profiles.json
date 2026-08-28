@@ -81,8 +81,22 @@
       "provenance": {
         "status": "pending",
         "source": "tests/corpus/real, TUNE split only (pink-a, purple-a, desert-a, sand-a, sand-near-a), measured 2026-08-28",
-        "note": "Colour bounds chosen where arrow-pixel coverage was 92-98% per tune stratum with surround leakage at or below 4%: |R-G| <= 40 (v0: 28) admits the arrow's shaded side; blue gap 65 keeps pale sand (min(R,G)-B about 52) outside. The area floor is half the smallest labelled tune arrow (1140 px box) because the occluded arrow beside the player fell under v0's 900 px floor; the ceiling admits the arrow filling the view. Evaluated on the EVAL split by treasure.py --detector-report --corpus. Not validated: one session, one map, one machine (E-PROF PENDING)."
-      }
+        "note": "Colour bounds chosen where arrow-pixel coverage was 92-98% per tune stratum with surround leakage at or below 4%: |R-G| <= 40 (v0: 28) admits the arrow's shaded side; blue gap 65 keeps pale sand (min(R,G)-B about 52) outside. The area floor is half the smallest labelled tune arrow (1140 px box) because the occluded arrow beside the player fell under v0's 900 px floor; the ceiling admits the arrow filling the view. Evaluated on the EVAL split by treasure.py --detector-report --corpus. Not validated: one session, one map, one machine (E-PROF PENDING). Exclusions: the top menu band (0-40 px) and the hotbar band (672-720 px) of the canonical raster, where yellow progress bars and hotbar icons were measured to acquire as arrows on a live capture (tests/corpus/real live-sluice); no labelled arrow in the corpus overlaps either band (lowest label top 124 px, lowest label bottom 509 px)."
+      },
+      "exclusion_regions_px": [
+        [
+          0,
+          0,
+          1280,
+          40
+        ],
+        [
+          0,
+          672,
+          1280,
+          48
+        ]
+      ]
     },
     {
       "profile_id": "generic_saturated_v0",

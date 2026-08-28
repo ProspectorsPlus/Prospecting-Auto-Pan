@@ -84,6 +84,7 @@ from prospector_engine.telemetry import (
     LatestSlot,
     resolve_app_paths,
 )
+from prospector_engine.trace import PreviewTrace
 from prospector_engine.vision import ArrowSegmenter, ProfileAuthority, load_profiles
 from treasure_overlay import (
     BAD,
@@ -846,6 +847,16 @@ class Dashboard:
             if self._diagnostics.render(observation):
                 self._last_observation = observation
                 self.app.capture.note_preview_ms((monotonic_s() - started) * 1000.0)
+                self.app.capture.trace.record_preview(
+                    PreviewTrace(
+                        frame_sequence=observation.frame_sequence,
+                        at_s=started,
+                        paste_ms=self._diagnostics.last_paste_ms,
+                        overlay_ms=self._diagnostics.last_overlay_ms,
+                        overlay_mode=self._overlay_mode.value,
+                        skipped=self._diagnostics.last_overlay_skipped,
+                    )
+                )
                 if self.recorder is not None:
                     self.recorder.offer(
                         observation.frame, {"sequence": observation.frame_sequence}

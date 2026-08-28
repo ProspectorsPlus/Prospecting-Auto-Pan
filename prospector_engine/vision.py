@@ -104,6 +104,10 @@ class ArrowProfile:
     provenance: Provenance
     supported_client_size_px: tuple[int, int] = (1280, 720)
     evaluation_spec_id: str | None = None
+    #: Canonical-pixel rectangles the arrow is never looked for: fixed HUD
+    #: bands whose yellow bars and banners were measured to acquire as
+    #: arrows on a live scene. A profile that lists none searches everywhere.
+    exclusion_regions_px: tuple[tuple[int, int, int, int], ...] = ()
 
     @property
     def selectable_automatically(self) -> bool:
@@ -274,6 +278,10 @@ def load_profiles(raw: str | None = None) -> ProfileLibrary:
                 int(entry["supported_client_size_px"][1]),
             ),
             evaluation_spec_id=entry.get("evaluation_spec_id"),
+            exclusion_regions_px=tuple(
+                (int(r[0]), int(r[1]), int(r[2]), int(r[3]))
+                for r in entry.get("exclusion_regions_px", ())
+            ),
         )
     return ProfileLibrary(profiles)
 

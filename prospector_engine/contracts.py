@@ -610,6 +610,17 @@ class CaptureMetrics:
     governor: CadenceReport
     epoch: int = 0
     degraded_reason: str | None = None
+    #: Capture-to-observation latency over the **recent** window the governor
+    #: and Live eligibility judge on; ``end_to_end`` keeps the longer history
+    #: for diagnostics so one old outlier can neither hide nor block.
+    end_to_end_recent: LatencySummary | None = None
+    #: The pipeline is inside a settling period after a cadence, source,
+    #: geometry or profile change, or waiting for the backend to acknowledge
+    #: a reconfiguration; samples taken now are tagged, not judged.
+    settling: bool = False
+    #: Whether a perception consumer is attached. Without one, processed
+    #: throughput is genuinely zero and is reported as such.
+    consumer_attached: bool = False
 
     @property
     def healthy(self) -> bool:

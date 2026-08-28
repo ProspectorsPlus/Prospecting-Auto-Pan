@@ -600,6 +600,15 @@ class RuntimeCoordinator:
     def _on_stop(self, intent: RuntimeIntent) -> None:
         self._events.add("intent.stop", intent.source)
         self._safe_stop(f"stop:{intent.source}")
+        self._export_trace("stop")
+
+    def _export_trace(self, label: str) -> None:
+        """Write the bounded frame trace beside the logs. Best effort."""
+        if self._paths is None:
+            return
+        written = self._capture.export_trace(self._paths.logs, label=label)
+        if written is not None:
+            self._events.add("trace.exported", str(written))
 
     def _on_shutdown(self, intent: RuntimeIntent) -> None:
         self._events.add("intent.shutdown", intent.source)

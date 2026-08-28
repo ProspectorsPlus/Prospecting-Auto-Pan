@@ -180,7 +180,7 @@ class DetectorConfig:
     #: Components measured per pass, after the profile's area/aspect filter
     #: and ordered by area. Bounding *before* any mask is allocated is what
     #: keeps a frame full of same-coloured speckle from costing 50 ms.
-    max_candidates: int = 10
+    max_candidates: int = 8
     #: Splits attempted per pass, at most.
     max_splits: int = 2
 
@@ -194,6 +194,11 @@ class DetectorConfig:
     max_split_area_fraction: float = 0.25
     duplicate_iou: float = 0.6
     max_ring_radius_px: int = 41
+    #: A measurement window larger than this is downscaled to fit before the
+    #: ring, erosion and Sobel run over it. Contrast and edge ratios are
+    #: scale-tolerant; a 900 000-pixel window dilated with a 41-pixel element
+    #: was the tail of the full-frame pass on a view full of yellow.
+    max_window_px: int = 120_000
 
     # -- shape ------------------------------------------------------------
     #: Measured 0.851-0.961 on clean masks; a disc sits at 0.99 and is
@@ -277,6 +282,10 @@ class DetectorConfig:
     lost_after_s: float = 3.0
     #: Force a global search this often while tracking.
     reacquire_every_s: float = 0.75
+    #: While **no** identity is held and the last search found nothing, full
+    #: searches run at most this often. Acquisition costs at most one extra
+    #: frame; a view with nothing to find stops costing a full pass per frame.
+    idle_search_interval_s: float = 0.03
     #: Appearance gate: the contrast ratio may drift this much from the
     #: track's slowly adapted signature.
     appearance_gate: float = 0.45
@@ -781,7 +790,10 @@ class ArrowDetector:
         self._profile = profile
         self._config = config or DetectorConfig()
         self._scorer = _Scorer(self._config, profile)
-        self._exclusions = exclusion_regions_px
+        # The profile's safe exclusions plus any the caller adds.
+        self._exclusions = tuple(getattr(profile, "exclusion_regions_px", ()) or ()) + tuple(
+            exclusion_regions_px
+        )
         self._next_track_id = 0
         self.reset()
 
@@ -795,8 +807,12 @@ class ArrowDetector:
         self._last_global_s: float | None = None
         self._global_due = True
         self._last_sequence: int | None = None
+        self._last_outcome: DetectionOutcome | None = None
         self._now_s = 0.0
         self._diagonal = 1468.6
+        self.duplicate_commits = 0
+        self._last_search_s: float | None = None
+        self._last_viable = False
         self._last_decision = "none"
         self.switches = 0
         self.reacquisitions = 0
@@ -843,6 +859,33 @@ class ArrowDetector:
         if self._global_due or self._last_global_s is None:
             return True
         return self._now_s - self._last_global_s >= self._config.reacquire_every_s
+
+    def search_due(self, now_s: float) -> bool:
+        """Whether a full search should run at all on a frame at ``now_s``.
+
+        Always while an identity is held or being reacquired. While nothing
+        is held and the previous search found nothing viable, searches are
+        spaced by ``idle_search_interval_s`` so an empty view does not cost a
+        full pass on every frame.
+        """
+        if self._last_search_s is None:
+            return True
+        spaced = now_s - self._last_search_s >= self._config.idle_search_interval_s
+        if self._state is TrackState.TRACK and self._track is not None:
+            # A held identity with no candidate in its gate: the global
+            # challenge runs at the idle spacing, not on every frame.
+            return not self._global_due or spaced
+        if self._state not in (TrackState.ACQUIRE, TrackState.LOST):
+            return True
+        if self._acquire is not None or self._last_viable:
+            return True
+        return spaced
+
+    def note_skipped(self, frame: CapturedFrame) -> DetectionOutcome:
+        """Record a frame that was observed without a search. No state moves."""
+        self._last_sequence = frame.sequence
+        self._now_s = frame.captured_at_s
+        return self._outcome(_abstain(self._profile, "search-skipped"), None, (), "skipped")
 
     def predicted_centroid(self) -> tuple[float, float] | None:
         """Constant-velocity prediction, used only to *prioritize* a search."""
@@ -1000,6 +1043,18 @@ class ArrowDetector:
         light = luminance[top:bottom, left:right]
         if window.size == 0:
             return (0.0, 0.0)
+        shrink = 1
+        while window.size / (shrink * shrink) > config.max_window_px:
+            shrink *= 2
+        if shrink > 1:
+            size = (max(8, window.shape[1] // shrink), max(8, window.shape[0] // shrink))
+            window = np.asarray(
+                cv2.resize(window, size, interpolation=cv2.INTER_NEAREST), dtype=np.uint8
+            )
+            light = cv2.resize(light, size, interpolation=cv2.INTER_AREA)
+            radius = max(3, (radius // shrink) | 1)
+            contour_local = contour_local // shrink
+            left, top = left // shrink, top // shrink
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (radius, radius))
         near = cv2.dilate(window, np.ones((5, 5), np.uint8))
         ring_mask = cv2.subtract(cv2.dilate(window, kernel), near)
@@ -1359,13 +1414,19 @@ class ArrowDetector:
     ) -> DetectionOutcome:
         """Advance temporal state exactly once for this frame.
 
-        Calling it twice for the same ``frame.sequence`` raises: the second
-        call would age the track for a screenshot it has already seen.
+        A second call for the same ``frame.sequence`` - a replayed recording
+        with a repeated frame, a caller that ran two passes - advances nothing:
+        the previous outcome is returned marked ``duplicate`` and counted.
+        Aging the track for a screenshot it has already seen was the defect
+        this boundary exists to prevent.
         """
         if self._last_sequence is not None and frame.sequence == self._last_sequence:
-            raise ValueError(
-                f"commit called twice for frame {frame.sequence}; temporal state "
-                "advances once per unique frame"
+            self.duplicate_commits += 1
+            previous = self._last_outcome
+            if previous is not None:
+                return replace(previous, decision="duplicate")
+            return self._outcome(
+                _abstain(self._profile, "duplicate-frame"), None, (), "duplicate"
             )
         self._last_sequence = frame.sequence
         self._now_s = frame.captured_at_s
@@ -1380,6 +1441,8 @@ class ArrowDetector:
             return self._outcome(_abstain(self._profile, reasons[0]), None, (), "none")
 
         viable = [h for h in fused if h.accepted]
+        self._last_search_s = self._now_s
+        self._last_viable = bool(viable)
         width, height = frame.canonical_size_px
         self._diagonal = math.hypot(width, height)
 
@@ -1828,7 +1891,9 @@ class ArrowDetector:
         self._last_decision = decision
         if selected is not None and not any(h.state == "selected" for h in hypotheses):
             hypotheses = self._label(hypotheses, selected, None)
-        return DetectionOutcome(observation, selected, hypotheses, decision, self._state)
+        outcome = DetectionOutcome(observation, selected, hypotheses, decision, self._state)
+        self._last_outcome = outcome
+        return outcome
 
     # -- compatibility ----------------------------------------------------
     def analyze(

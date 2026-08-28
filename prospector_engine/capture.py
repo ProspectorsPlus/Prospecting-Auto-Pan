@@ -27,6 +27,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -58,6 +59,7 @@ from prospector_engine.geometry import (
     ViewportState,
 )
 from prospector_engine.ports import CaptureSource, PlatformPort
+from prospector_engine.trace import GovernorTransition, TraceRing
 
 __all__ = [
     "CadenceGovernor",
@@ -112,8 +114,10 @@ class CaptureConfig:
     #: than the downshift ratio on purpose: comfortably inside a tier is not
     #: the same as running out of room in it.
     upshift_saturation: float = 0.95
-    #: Consecutive bad polls before a downshift. Two, so one transient is free.
-    downshift_polls: int = 2
+    #: Consecutive bad polls before a downshift. Four polls at the supervisor
+    #: interval is a full second of evidence: a resize, a collection pause or
+    #: the first cold frames after start are free, a sustained shortfall is not.
+    downshift_polls: int = 4
     #: Polls a probe must stay good before it is believed.
     probe_confirm_polls: int = 2
     #: How long a failed probe suppresses the next one. Long enough that a
@@ -139,6 +143,13 @@ class CaptureConfig:
     max_stale_per_window: int = 0
     #: Absolute p95 frame-age ceiling for Live, whatever the tier interval says.
     live_max_age_ms: int = 75
+    #: How far back the governor and Live eligibility look at latency. Short
+    #: on purpose: readiness is a statement about now.
+    recent_window_s: float = 2.0
+    #: How long after a cadence, source, geometry or profile change samples
+    #: are tagged as settling rather than judged. Long enough for OpenCV's
+    #: first passes and a ScreenCaptureKit reconfiguration to land.
+    settle_s: float = 1.5
     #: Reacquisition backoff. Bounded and capped so a window that is gone for
     #: good costs a retry every few seconds, not a busy loop.
     reacquire_initial_delay_s: float = 0.25
@@ -285,6 +296,12 @@ class LatestFrameSlot:
             return self._value
 
     @property
+    def has_consumer(self) -> bool:
+        """Whether anyone has ever waited on this slot this session."""
+        with self._lock:
+            return self._has_consumer
+
+    @property
     def sequence(self) -> int:
         with self._lock:
             return self._sequence
@@ -318,20 +335,34 @@ class LatestFrameSlot:
 
 
 class LatencyTracker:
-    """A bounded ring of durations with percentiles. No unbounded history."""
+    """A bounded ring of timestamped durations with two views.
+
+    ``summary()`` is the history: the whole ring, for diagnostics.
+    ``recent(window_s)`` is what the governor and Live eligibility judge on:
+    only samples from the last few seconds *and* from the current epoch. A
+    single 274 ms sample from a resize twenty seconds ago stays visible in the
+    history and stops counting against the pipeline - the previous design let
+    one such sample block Live for as long as the ring took to roll over.
+    """
 
     def __init__(self, label: str, window: int = 240) -> None:
         self._label = label
-        self._samples: deque[float] = deque(maxlen=window)
+        self._samples: deque[tuple[float, float]] = deque(maxlen=window)
         self._lock = threading.Lock()
+        self._epoch_started_s = 0.0
 
-    def record_ms(self, milliseconds: float) -> None:
+    def record_ms(self, milliseconds: float, now_s: float | None = None) -> None:
+        stamp = monotonic_s() if now_s is None else now_s
         with self._lock:
-            self._samples.append(milliseconds)
+            self._samples.append((stamp, milliseconds))
 
-    def summary(self) -> LatencySummary:
+    def start_epoch(self, now_s: float | None = None) -> None:
+        """Samples before this instant no longer count as recent."""
         with self._lock:
-            values = sorted(self._samples)
+            self._epoch_started_s = monotonic_s() if now_s is None else now_s
+
+    def _summarise(self, values: list[float]) -> LatencySummary:
+        values.sort()
         if not values:
             return LatencySummary(self._label, 0, 0.0, 0.0, 0.0, 0.0)
 
@@ -340,6 +371,18 @@ class LatencyTracker:
             return values[index]
 
         return LatencySummary(self._label, len(values), at(0.5), at(0.95), at(0.99), values[-1])
+
+    def summary(self) -> LatencySummary:
+        with self._lock:
+            values = [value for _stamp, value in self._samples]
+        return self._summarise(values)
+
+    def recent(self, window_s: float, now_s: float | None = None) -> LatencySummary:
+        now = monotonic_s() if now_s is None else now_s
+        with self._lock:
+            floor = max(self._epoch_started_s, now - window_s)
+            values = [value for stamp, value in self._samples if stamp >= floor]
+        return self._summarise(values)
 
 
 class _RateCounter:
@@ -575,6 +618,29 @@ class CadenceGovernor:
         self._last_loss = 0.0
         self._last_p95_age_ms: float | None = None
         self._stable_since_s: float | None = None
+        self._on_transition: Callable[[GovernorTransition], None] | None = None
+        self._settling_polls = 0
+
+    def set_transition_hook(self, hook: Callable[[GovernorTransition], None] | None) -> None:
+        """Receive every tier or state change with the governor's reason."""
+        self._on_transition = hook
+
+    @property
+    def settling_polls(self) -> int:
+        """Polls skipped because the pipeline was settling."""
+        return self._settling_polls
+
+    def _announce(
+        self, from_tier: PerformanceTier, to_tier: PerformanceTier, reason: str, now_s: float
+    ) -> None:
+        hook = self._on_transition
+        if hook is not None:
+            with contextlib.suppress(Exception):
+                hook(
+                    GovernorTransition(
+                        now_s, from_tier.fps, to_tier.fps, self._state.value, reason
+                    )
+                )
 
     # -- introspection ----------------------------------------------------
     @property
@@ -619,7 +685,16 @@ class CadenceGovernor:
         self._consecutive_good = 0
         self._healthy_since_s = None
         self._stable_since_s = None
+        self._last_processed_ratio = 0.0
+        self._last_loss = 0.0
+        self._last_p95_age_ms = None
         self._reason = reason or None
+        self._announce(
+            self._tier,
+            self._tier,
+            f"epoch reset: {reason}" if reason else "epoch reset",
+            monotonic_s(),
+        )
 
     def report(self) -> CadenceReport:
         return CadenceReport(
@@ -664,9 +739,10 @@ class CadenceGovernor:
     def _index(self) -> int:
         return self.LADDER.index(self._tier)
 
-    def _set_tier(self, tier: PerformanceTier, reason: str) -> None:
+    def _set_tier(self, tier: PerformanceTier, reason: str, now_s: float | None = None) -> None:
         if tier is self._tier:
             return
+        previous = self._tier
         self._tier = tier
         self._changes += 1
         self._reason = reason
@@ -677,6 +753,7 @@ class CadenceGovernor:
         self._consecutive_good = 0
         self._healthy_since_s = None
         self._stable_since_s = None
+        self._announce(previous, tier, reason, monotonic_s() if now_s is None else now_s)
 
     # -- the update -------------------------------------------------------
     def update(
@@ -690,11 +767,26 @@ class CadenceGovernor:
         observation_loss: float = 0.0,
         stale_recent: int = 0,
         pool_exhausted_recent: int = 0,
+        settling: bool = False,
     ) -> PerformanceTier:
-        """One poll. ``processed_fps`` defaults to ``unique_fps`` when the
-        caller has no separate perception measurement (a capture-only probe)."""
+        """One poll.
+
+        ``processed_fps`` is ``None`` only when there is **no consumer** - a
+        capture-only probe, or Shadow not started - and then capture stands
+        in for it. With a consumer attached a processed rate of zero is a real
+        zero and is judged as one; the previous code let it fall back to the
+        capture rate, which is how a stalled worker read as healthy.
+
+        ``settling`` polls are recorded and skipped: the pipeline is inside a
+        cadence, source, geometry or profile change, or the backend has not
+        acknowledged a reconfiguration yet, and the new tier is not judged on
+        frames the old one produced.
+        """
         config = self._config
         target = float(self._tier.fps)
+        if settling:
+            self._settling_polls += 1
+            return self._tier
         if unique_fps <= 0.0:
             # No measurement yet - starting up, or between sessions. Judging a
             # tier on an empty window would downshift a healthy pipeline before
@@ -749,7 +841,7 @@ class CadenceGovernor:
             self._ceiling_hint = fallback
             self._ceiling_until_s = now_s + self._config.ceiling_retry_after_s
             self._failed_probes += 1
-            self._set_tier(fallback, f"probe to a higher tier failed: {detail}")
+            self._set_tier(fallback, f"probe to a higher tier failed: {detail}", now_s)
             self._state = GovernorState.COOLDOWN
             self._cooldown_until_s = now_s + self._config.probe_cooldown_s
             self._probe_from = None
@@ -761,7 +853,7 @@ class CadenceGovernor:
             self._consecutive_bad = 0
             index = self._index()
             if index > 0:
-                self._set_tier(self.LADDER[index - 1], f"downshift: {detail}")
+                self._set_tier(self.LADDER[index - 1], f"downshift: {detail}", now_s)
                 self._state = GovernorState.COOLDOWN
                 self._cooldown_until_s = now_s + self._config.probe_cooldown_s
                 self._reason = None if self._tier.acceptable else detail
@@ -790,8 +882,14 @@ class CadenceGovernor:
             return self._tier
 
         if not self._tier.acceptable:
+            # Below the Live floor and healthy at it. DEGRADED is a verdict
+            # about the tier, not a trap: with the polls good for long enough
+            # the governor probes upward exactly as STABLE would, which is how
+            # Auto recovers once the load that pushed it down has cleared.
             self._state = GovernorState.DEGRADED
-        elif self._consecutive_good >= self._config.min_stable_polls:
+            self._reason = f"below the {PerformanceTier.MINIMUM.fps} Hz Live floor"
+            return self._maybe_probe(useful_fps, target, now_s)
+        if self._consecutive_good >= self._config.min_stable_polls:
             cooldown_expired = (
                 self._state is GovernorState.COOLDOWN and now_s >= self._cooldown_until_s
             )
@@ -829,7 +927,7 @@ class CadenceGovernor:
             return self._tier
         self._probe_from = self._tier
         self._probes += 1
-        self._set_tier(self.LADDER[index + 1], "probing the next tier up")
+        self._set_tier(self.LADDER[index + 1], "probing the next tier up", now_s)
         self._state = GovernorState.PROBE
         self._probe_started_s = now_s
         return self._tier
@@ -1441,6 +1539,11 @@ class CaptureService:
         self._pool = FrameBufferPool(self._config.pool_capacity)
         self._governor = CadenceGovernor(self._config)
         self._usage = _ProcessUsage()
+        #: Bounded per-frame tracing. Owned here because this is where every
+        #: other measurement already lands.
+        self.trace = TraceRing()
+        self._governor.set_transition_hook(self.trace.record_transition)
+        self._settling_until_s = 0.0
 
         self._capture_latency = LatencyTracker("capture", self._config.latency_window)
         self._normalize_latency = LatencyTracker("normalize", self._config.latency_window)
@@ -1537,13 +1640,37 @@ class CaptureService:
             with contextlib.suppress(Exception):
                 source.set_target_fps(self._governor.tier.fps)
 
-    def reset_epoch(self, reason: str) -> None:
-        """Start a new measurement epoch across every rate and the governor.
+    @property
+    def settling(self) -> bool:
+        """Inside a settling period, or waiting for the backend to acknowledge
+        a reconfiguration. Frames observed now are tagged, not judged."""
+        if monotonic_s() < self._settling_until_s:
+            return True
+        source = self._source
+        return bool(getattr(source, "reconfiguring", False)) if source is not None else False
 
-        Called on start, source replacement, reacquisition, and tier change: a
-        rate averaged across a discontinuity describes neither side of it, and
-        a cumulative counter that survives one is unreadable.
+    def reset_epoch(self, reason: str) -> None:
+        """Start a new measurement epoch across every rate, every latency
+        window and the governor, atomically enough that no consumer can read
+        a rate from one epoch beside a latency from another.
+
+        Called on start, source replacement, reacquisition, cadence, geometry
+        and profile changes: a rate averaged across a discontinuity describes
+        neither side of it, and a cumulative counter that survives one is
+        unreadable. The latency *history* is kept for diagnostics; only the
+        recent window the governor judges on restarts.
         """
+        now = monotonic_s()
+        for tracker in (
+            self._capture_latency,
+            self._normalize_latency,
+            self._perception_latency,
+            self._decision_latency,
+            self._preview_latency,
+            self._end_to_end,
+        ):
+            tracker.start_epoch(now)
+        self._settling_until_s = now + self._config.settle_s
         for counter in (
             self._source_rate,
             self._unique_rate,
@@ -1849,21 +1976,29 @@ class CaptureService:
                 self._exhausted_rate.tick(now, count=exhausted_now)
 
             before = self._governor.tier
+            consumer = self._slot.has_consumer
+            recent = self._end_to_end.recent(self._config.recent_window_s, now)
             after = self._governor.update(
                 unique_fps=self._unique_rate.rate(),
                 frame_age_ms=age_ms,
                 now_s=now,
-                processed_fps=self._processed_rate.rate() or None,
-                p95_age_ms=self._end_to_end.summary().p95_ms or None,
+                # A real zero when a consumer exists; capture stands in only
+                # when nobody is consuming at all.
+                processed_fps=self._processed_rate.rate() if consumer else None,
+                p95_age_ms=recent.p95_ms if recent.samples else None,
                 observation_loss=self._observation_loss(),
                 stale_recent=stale_now,
                 pool_exhausted_recent=exhausted_now,
+                settling=self.settling,
             )
             if after is not before:
                 source = self._source
                 if source is not None:
                     with contextlib.suppress(Exception):
                         source.set_target_fps(after.fps)
+                # The new tier is judged only after the change has settled
+                # and the backend has acknowledged it.
+                self._settling_until_s = now + self._config.settle_s
 
             self._maybe_reacquire(now)
 
@@ -1966,7 +2101,19 @@ class CaptureService:
             governor=report,
             epoch=epoch,
             degraded_reason=reason,
+            end_to_end_recent=self._end_to_end.recent(self._config.recent_window_s),
+            settling=self.settling,
+            consumer_attached=self._slot.has_consumer,
         )
+
+    def export_trace(self, directory: Path | str, *, label: str = "trace") -> Path | None:
+        """Write the bounded trace rings as JSONL. Best effort, never raises."""
+        try:
+            stamp = int(monotonic_s() * 1000.0)
+            target = Path(directory) / f"{label}-epoch{self._source_epoch}-{stamp}.jsonl"
+            return self.trace.export_jsonl(target)
+        except Exception:
+            return None
 
 
 def canonical_size() -> tuple[int, int]:

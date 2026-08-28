@@ -129,6 +129,9 @@ class CorpusSequence:
     lighting: str
     notes: str
     frames: tuple[CorpusFrame, ...]
+    #: Which timeline ``source_time_s`` belongs to. Sequences from different
+    #: sources never overlap in time however their clocks read.
+    source: str = "recording"
 
 
 @dataclass(frozen=True)
@@ -278,6 +281,7 @@ def load_corpus(root: Path | str) -> Corpus:
                 lighting=entry.get("lighting", ""),
                 notes=entry.get("notes", ""),
                 frames=frames,
+                source=str(entry.get("source", "recording")),
             )
         )
     return Corpus(

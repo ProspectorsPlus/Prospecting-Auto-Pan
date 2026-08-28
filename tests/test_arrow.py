@@ -446,8 +446,14 @@ def test_temporal_state_advances_once_per_unique_frame() -> None:
     outcome = detector.commit(frame, [region, whole])
 
     assert outcome.decision == "acquiring"
-    with pytest.raises(ValueError, match="twice"):
-        detector.commit(frame, [whole])
+    again = detector.commit(frame, [whole])
+    assert again.decision == "duplicate", "a repeated frame advances nothing"
+    assert detector.duplicate_commits == 1
+    assert detector.state is TrackState.ACQUIRE
+    # The next unique frame is the second consistent one, exactly as if the
+    # duplicate had never been offered.
+    following, _hypotheses = detector.analyze(_frame(scene, 2))
+    assert following.valid
 
 
 def test_a_region_pass_reports_full_frame_coordinates_and_no_false_clipping() -> None:

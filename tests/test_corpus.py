@@ -85,14 +85,19 @@ def test_the_corpus_is_split_by_contiguous_sequence(corpus: object) -> None:
         times = [frame.source_time_s for frame in sequence.frames]
         assert times == sorted(times), f"{sequence.sequence_id} is not in time order"
     tune_ranges = [
-        (min(f.source_time_s for f in s.frames), max(f.source_time_s for f in s.frames))
+        (
+            s.source,
+            min(f.source_time_s for f in s.frames),
+            max(f.source_time_s for f in s.frames),
+        )
         for s in corpus.split("tune")  # type: ignore[attr-defined]
     ]
     for sequence in corpus.split("eval"):  # type: ignore[attr-defined]
         for frame in sequence.frames:
-            assert not any(low <= frame.source_time_s <= high for low, high in tune_ranges), (
-                "an eval frame lies inside a tune sequence"
-            )
+            assert not any(
+                source == sequence.source and low <= frame.source_time_s <= high
+                for source, low, high in tune_ranges
+            ), "an eval frame lies inside a tune sequence of the same source"
 
 
 def test_every_frame_carries_a_positive_label_or_says_it_is_unknown(corpus: object) -> None:
@@ -134,6 +139,24 @@ def test_no_arrow_strata_produce_no_acquisitions(
     for name in ("no-arrow-ui", "no-arrow-sand"):
         assert strata[name].absent > 0
         assert strata[name].false_acquisitions == 0, f"{name}: locked onto something"
+
+
+def test_live_event_scene_false_acquisitions_stay_at_or_below_the_measured_count(
+    eval_results: dict[str, SequenceMetrics],
+) -> None:
+    """A known weakness, held where it was measured rather than hidden.
+
+    The live sluice/event scene (rainbow lighting, yellow banners and bars)
+    still acquires event banners and particles that sit outside any fixed
+    HUD band: three of eight frames when measured. The fixed bands are
+    excluded by the profile; the rest is held here at the measured count so
+    it can only get better without anyone noticing.
+    """
+    stratum = by_stratum(eval_results)["no-arrow-live-ui"]
+    assert stratum.absent >= 8
+    assert stratum.false_acquisitions <= 3, (
+        f"live scene false acquisitions rose to {stratum.false_acquisitions}"
+    )
 
 
 def test_no_false_lock_and_no_identity_switch_on_eval(

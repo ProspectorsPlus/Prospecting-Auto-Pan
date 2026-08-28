@@ -23,6 +23,8 @@ from prospector_engine.arrow import (
     ArrowDetector,
     DetectorConfig,
     DirectionEstimator,
+    ProposalSet,
+    ProposalStats,
     TrackState,
     present,
 )
@@ -49,7 +51,7 @@ from prospector_engine.contracts import (
 from prospector_engine.coordinator import WorkerContext
 from prospector_engine.motion import ContactMonitor
 from prospector_engine.steering import ShiftLockController, SteeringInputs
-from prospector_engine.trace import PerceptionTiming
+from prospector_engine.trace import FrameTrace, PerceptionTiming
 from prospector_engine.vision import (
     ArrivalDetector,
     ArrowProfile,
@@ -819,6 +821,7 @@ class PerceptionPipeline:
     _roi_hits: int = 0
     _full_passes: int = 0
     _fallbacks: int = 0
+    _skipped: int = 0
     _profile_revision: int = 1
     _geometry_identity: tuple[object, ...] | None = None
     _last_heading_deg: float | None = None
@@ -892,6 +895,11 @@ class PerceptionPipeline:
     def reversals_refused(self) -> int:
         return self._reversals_refused
 
+    @property
+    def skipped_searches(self) -> int:
+        """Frames observed without a search while nothing was held."""
+        return self._skipped
+
     def _roi_for(self, frame: CapturedFrame) -> tuple[int, int, int, int] | None:
         """A search region around the predicted track, or ``None`` for full frame.
 
@@ -948,16 +956,24 @@ class PerceptionPipeline:
             and detector.wants_global_search()
             and detector.state in (TrackState.TRACK, TrackState.AMBIGUOUS, TrackState.REACQUIRE)
         )
-        proposals = detector.propose(frame, roi_px=roi)
-        outcome = detector.commit(frame, [proposals])
-        if roi is None:
-            self._frames_since_full = 0
-            self._full_passes += 1
-            if fallback:
-                self._fallbacks += 1
+        if roi is None and not detector.search_due(frame.captured_at_s):
+            # Nothing is held and the last full search found nothing: this
+            # frame is observed, not searched. Latest-only, one frame of
+            # acquisition latency at most, and no full pass for an empty view.
+            proposals = ProposalSet((), ProposalStats("skipped", None, 0.0, 0, 0, 0, 0), None)
+            outcome = detector.note_skipped(frame)
+            self._skipped += 1
         else:
-            self._frames_since_full += 1
-            self._roi_hits += 1
+            proposals = detector.propose(frame, roi_px=roi)
+            outcome = detector.commit(frame, [proposals])
+            if roi is None:
+                self._frames_since_full = 0
+                self._full_passes += 1
+                if fallback:
+                    self._fallbacks += 1
+            else:
+                self._frames_since_full += 1
+                self._roi_hits += 1
 
         arrow = outcome.observation
         selected = outcome.selected
@@ -1130,6 +1146,7 @@ def _run_observer_loop(
         envelope = capture.wait_for_new(last_sequence, 0.25)
         if envelope is None:
             continue
+        picked_at_s = monotonic_s()
         frame = envelope.frame
         if last_sequence and frame.sequence > last_sequence + 1:
             # Frames existed that we never observed: the slot replaced them
@@ -1164,6 +1181,26 @@ def _run_observer_loop(
         )
         context.on_observation(observation)
         context.on_phase(decision.phase)
+        # The trace ring lives on the capture service; narrower stand-ins used
+        # by replay tests do not carry one, and the loop must not care.
+        trace = getattr(capture, "trace", None)
+        if result.timing is not None and trace is not None:
+            tier = getattr(capture, "tier", None)
+            trace.record(
+                FrameTrace(
+                    frame_sequence=frame.sequence,
+                    captured_at_s=frame.captured_at_s,
+                    completed_at_s=frame.completed_at_s,
+                    source_epoch=int(getattr(capture, "source_epoch", 0)),
+                    cadence_hz=int(tier.fps) if tier is not None else 0,
+                    capture_ms=frame.duration_ms,
+                    scheduling_delay_ms=max(0.0, (picked_at_s - frame.completed_at_s) * 1000.0),
+                    perception=result.timing,
+                    decision_ms=decision_ms,
+                    capture_to_observation_ms=(monotonic_s() - frame.captured_at_s) * 1000.0,
+                    settling=bool(getattr(capture, "settling", False)),
+                )
+            )
 
         if apply is not None and apply(decision, envelope):
             applied += 1

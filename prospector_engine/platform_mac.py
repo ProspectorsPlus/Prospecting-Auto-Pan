@@ -328,6 +328,7 @@ class MacScreenCaptureKitSource:
         self._idle_frames = 0
         self._content_counter = 0
         self._lock = threading.Lock()
+        self._reconfiguring = False
 
     @property
     def name(self) -> str:
@@ -350,6 +351,17 @@ class MacScreenCaptureKitSource:
         with self._lock:
             return self._error
 
+    @property
+    def reconfiguring(self) -> bool:
+        """A frame-interval change has been requested and not yet acknowledged.
+
+        The governor waits for this to clear before judging the new tier:
+        ScreenCaptureKit applies a configuration asynchronously, and frames
+        delivered in between still belong to the old interval.
+        """
+        with self._lock:
+            return self._reconfiguring
+
     def set_target_fps(self, fps: int) -> None:
         self._target_fps = max(1, fps)
         stream = self._stream
@@ -363,12 +375,19 @@ class MacScreenCaptureKitSource:
         configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, self._target_fps))
 
         def _updated(error: Any) -> None:
-            if error is not None:
-                with self._lock:
+            with self._lock:
+                self._reconfiguring = False
+                if error is not None:
                     self._error = f"reconfigure failed: {error}"
 
-        with contextlib.suppress(Exception):
+        with self._lock:
+            self._reconfiguring = True
+        try:
             stream.updateConfiguration_completionHandler_(configuration, _updated)
+        except Exception as exc:
+            with self._lock:
+                self._reconfiguring = False
+                self._error = f"reconfigure failed: {exc!r}"
 
     # -- construction -----------------------------------------------------
     def _find_window(self, window_id: int) -> Any:

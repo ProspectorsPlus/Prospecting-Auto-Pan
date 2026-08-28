@@ -270,7 +270,8 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "pink-b",
@@ -681,7 +682,8 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "purple-a",
@@ -797,7 +799,8 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "purple-b",
@@ -913,7 +916,8 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "purple-pale",
@@ -1132,7 +1136,8 @@
      },
      "note": "position labelled; heading unreadable"
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "menu",
@@ -1188,7 +1193,8 @@
      "source_frame": 1944,
      "arrow": null
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "desert-a",
@@ -1226,7 +1232,8 @@
      "source_frame": 2028,
      "arrow": null
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "desert-b",
@@ -1330,7 +1337,8 @@
      "source_frame": 2220,
      "arrow": null
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "sand-a",
@@ -1624,7 +1632,8 @@
      "unknown": true,
      "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "sand-b",
@@ -2001,7 +2010,8 @@
      "unknown": true,
      "note": "reviewer could not label (wrong reference object or arrow under the HUD box)"
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "water",
@@ -2224,7 +2234,8 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "sand-near-a",
@@ -2512,7 +2523,8 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
   },
   {
    "id": "sand-near-b",
@@ -2832,7 +2844,83 @@
       "overlay_contact": true
      }
     }
-   ]
+   ],
+   "source": "recording-2026-08-27"
+  },
+  {
+   "id": "live-sluice",
+   "split": "eval",
+   "stratum": "no-arrow-live-ui",
+   "lighting": "day",
+   "source_time_range_s": [
+    0,
+    7
+   ],
+   "sample_period_s": 1.0,
+   "notes": "captured read-only from the live client on 2026-08-28 at a sluice/deposit area during a luck-totem event: rainbow event lighting, yellow-pink terrain, the pan-fill HUD, chat and hotbar; no map arrow. Stored at canonical 1280x720 already (letterboxed by the capture service); chat, hotbar and currency pixelated",
+   "frames": [
+    {
+     "file": "live-sluice/live00.webp",
+     "source_time_s": 0.0,
+     "source_frame": 0,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live01.webp",
+     "source_time_s": 1.0,
+     "source_frame": 1,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live02.webp",
+     "source_time_s": 2.0,
+     "source_frame": 2,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live03.webp",
+     "source_time_s": 3.0,
+     "source_frame": 3,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live04.webp",
+     "source_time_s": 4.0,
+     "source_frame": 4,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live05.webp",
+     "source_time_s": 5.0,
+     "source_frame": 5,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live06.webp",
+     "source_time_s": 6.0,
+     "source_frame": 6,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    },
+    {
+     "file": "live-sluice/live07.webp",
+     "source_time_s": 7.0,
+     "source_frame": 7,
+     "arrow": null,
+     "note": "live capture; no map arrow on screen"
+    }
+   ],
+   "stored_size_px": [
+    1280,
+    720
+   ],
+   "source": "live-capture-2026-08-28"
   }
  ]
 }

@@ -38,9 +38,10 @@ def test_a_sustained_shortfall_downshifts_one_tier() -> None:
 
     governor.update(unique_fps=40.0, frame_age_ms=5.0, now_s=1.0)
     assert governor.tier is PerformanceTier.MAXIMUM, "one bad poll must not downshift"
-    governor.update(unique_fps=40.0, frame_age_ms=5.0, now_s=1.5)
+    for step in range(1, 4):
+        governor.update(unique_fps=40.0, frame_age_ms=5.0, now_s=1.0 + step * 0.25)
 
-    assert governor.tier is PerformanceTier.HIGH
+    assert governor.tier is PerformanceTier.HIGH, "a full second of shortfall does"
 
 
 def test_a_single_transient_does_not_knock_a_healthy_pipeline_down() -> None:
@@ -64,8 +65,8 @@ def test_an_empty_measurement_window_is_not_a_verdict() -> None:
 def test_stale_frames_downshift_even_when_throughput_looks_fine() -> None:
     """A high rate of old frames is worse than a lower rate of fresh ones."""
     governor = _governor(start_tier=PerformanceTier.MAXIMUM, max_frame_age_ms=100)
-    governor.update(unique_fps=120.0, frame_age_ms=500.0, now_s=1.0)
-    governor.update(unique_fps=120.0, frame_age_ms=500.0, now_s=1.5)
+    for step in range(4):
+        governor.update(unique_fps=120.0, frame_age_ms=500.0, now_s=1.0 + step * 0.25)
 
     assert governor.tier is PerformanceTier.HIGH
 
@@ -100,8 +101,8 @@ def test_the_governor_respects_its_ceiling() -> None:
 def test_falling_below_the_minimum_is_reported_as_degraded() -> None:
     """Below 30 unique fps the application says so instead of looking healthy."""
     governor = _governor(start_tier=PerformanceTier.MINIMUM)
-    governor.update(unique_fps=5.0, frame_age_ms=5.0, now_s=1.0)
-    governor.update(unique_fps=5.0, frame_age_ms=5.0, now_s=1.5)
+    for step in range(4):
+        governor.update(unique_fps=5.0, frame_age_ms=5.0, now_s=1.0 + step * 0.25)
 
     assert governor.tier is PerformanceTier.DEGRADED
     assert not governor.tier.acceptable

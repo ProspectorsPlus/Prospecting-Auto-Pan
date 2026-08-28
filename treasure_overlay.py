@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import sys
+import time
 import tkinter as tk
 from enum import Enum
 from typing import Any
@@ -114,6 +115,12 @@ class DiagnosticCanvas:
 
     ARM_LENGTH_PX = 190.0
 
+    #: Full Diagnostics redraws its overlay at most this often. The image
+    #: still pastes at the preview cadence; the candidate polygons, cue arms
+    #: and captions - the expensive part - run at a separately capped rate so
+    #: they can never slow the frame.
+    FULL_OVERLAY_INTERVAL_S = 0.05
+
     def __init__(self, canvas: tk.Canvas, mode: OverlayMode = OverlayMode.MINIMAL) -> None:
         self.canvas = canvas
         self.mode = mode
@@ -126,6 +133,11 @@ class DiagnosticCanvas:
         self._reject_items: list[int] = []
         self._last_sequence = -1
         self._last_key: Any = None
+        self._last_overlay_at_s = 0.0
+        #: Timings of the most recent render, for the preview trace.
+        self.last_paste_ms = 0.0
+        self.last_overlay_ms = 0.0
+        self.last_overlay_skipped = False
 
     def set_mode(self, mode: OverlayMode) -> None:
         """Switch modes and force a redraw, so the change is visible at once."""
@@ -180,8 +192,24 @@ class DiagnosticCanvas:
         width = max(64, self.canvas.winfo_width())
         height = max(64, self.canvas.winfo_height())
         transform = observation.geometry.preview_from_canonical((width, height))
+        started = time.perf_counter()
         self._draw_image(observation, (width, height), transform)
+        pasted = time.perf_counter()
+        self.last_paste_ms = (pasted - started) * 1000.0
+        now = time.monotonic()
+        if (
+            self.mode is OverlayMode.FULL
+            and now - self._last_overlay_at_s < self.FULL_OVERLAY_INTERVAL_S
+        ):
+            # Latest-only at a capped cadence: the picture is current and the
+            # diagnostics catch up on the next tick; nothing queues.
+            self.last_overlay_skipped = True
+            self.last_overlay_ms = 0.0
+            return True
+        self.last_overlay_skipped = False
         self._draw_overlay(observation, transform)
+        self._last_overlay_at_s = now
+        self.last_overlay_ms = (time.perf_counter() - pasted) * 1000.0
         return True
 
     def render_frame_only(self, frame: Any) -> bool:
