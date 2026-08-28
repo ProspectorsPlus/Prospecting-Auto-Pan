@@ -1358,6 +1358,21 @@ class PerceptionPipeline:
 # ---------------------------------------------------------------------------
 
 
+def _motion_confirmed(motion: MotionObservation | None) -> bool | None:
+    """Did the world actually move? ``None`` when the estimator abstained.
+
+    Only meaningful next to an applied forward command: this says whether
+    perception corroborated it, which is the difference between "the keys are
+    down" and "the character is walking".
+    """
+    if motion is None or not motion.valid:
+        return None
+    speed = motion.forward_speed_norm
+    if speed is None:
+        return None
+    return abs(speed) > 0.0
+
+
 def _run_observer_loop(
     context: WorkerContext,
     pipeline: PerceptionPipeline,
@@ -1615,7 +1630,17 @@ def make_live_worker(
             navigator.note_applied(outcome, now_s=now)
             # Built from the authority's own answer - its status and the leases
             # it reports holding - never from the command that was requested.
-            view = CommandVisualization.for_live(decision.command, outcome)
+            #
+            # motion_confirmed answers a different question from "did the
+            # authority apply it", and the two are only the same when nothing
+            # is wrong. An estimator that abstains reports None, which is not
+            # the same claim as "nothing moved": holding W against a wall and
+            # having no motion estimate are different facts.
+            view = CommandVisualization.for_live(
+                decision.command,
+                outcome,
+                motion_confirmed=_motion_confirmed(result.inputs.motion),
+            )
             if not outcome.applied:
                 session.release_navigation(f"apply-rejected:{outcome.detail}")
                 return view

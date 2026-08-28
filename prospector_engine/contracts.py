@@ -778,6 +778,29 @@ class NavigationApplyResult:
         return self.status is NavigationApplyStatus.APPLIED
 
 
+class CommandStage(Enum):
+    """How far a movement command actually got. Ordered, and not merged.
+
+    The distinction this exists to enforce: ``CGEventPost`` returning without
+    raising is **not** evidence that anything moved. It is evidence that the
+    call returned. Several very different faults produce the sentence "it says
+    APPLIED and the character does not move", and until the stages were named
+    separately the only available diagnosis was a guess.
+    """
+
+    REQUESTED = "requested"
+    OS_EDGE_POSTED = "os_edge_posted"
+    AUTHORITY_APPLIED = "authority_applied"
+    GAME_MOTION_CONFIRMED = "game_motion_confirmed"
+    REJECTED = "rejected"
+    RELEASED = "released"
+
+    @property
+    def is_success(self) -> bool:
+        """Only observed motion counts. Applied-without-movement is a failure."""
+        return self is CommandStage.GAME_MOTION_CONFIRMED
+
+
 class CommandOutcome(Enum):
     """What actually happened to a movement command, for the action overlay.
 
@@ -848,6 +871,11 @@ class CommandVisualization:
     #: Set when the packet is terminal, frozen or stopped. The overlay clears
     #: the action layer outright rather than drawing a stale command.
     frozen: bool = False
+    #: Whether perception saw the world move while this was held. ``None``
+    #: means the estimator abstained - not that nothing moved. Applied without
+    #: motion is the exact failure "it says APPLIED and nothing happens"
+    #: describes, so it is recorded rather than assumed away.
+    motion_confirmed: bool | None = None
 
     @classmethod
     def none(cls, *, detail: str = "", live: bool = False) -> CommandVisualization:
@@ -877,6 +905,7 @@ class CommandVisualization:
         result: NavigationApplyResult,
         *,
         key: RuntimeKey | None = None,
+        motion_confirmed: bool | None = None,
     ) -> CommandVisualization:
         """An applied - or refused - command, described by the authority.
 
@@ -892,6 +921,7 @@ class CommandVisualization:
             leases_held=result.leases_held if applied else (),
             detail=result.detail,
             live=True,
+            motion_confirmed=motion_confirmed,
         )
 
     def freeze(self) -> CommandVisualization:
@@ -953,8 +983,32 @@ class CommandVisualization:
         return self.requested.yaw_delta_px
 
     @property
+    def stage(self) -> CommandStage:
+        """How far this command actually got, in the honest vocabulary.
+
+        ``APPLIED`` means the authority holds the leases. It does **not** mean
+        the character moved: that is a separate observation, and conflating the
+        two is what makes "it says APPLIED and nothing happens" unanswerable.
+        """
+        if self.outcome is CommandOutcome.REJECTED:
+            return CommandStage.REJECTED
+        if self.outcome is CommandOutcome.RELEASED:
+            return CommandStage.RELEASED
+        if self.outcome is CommandOutcome.WOULD:
+            return CommandStage.REQUESTED
+        if self.outcome is CommandOutcome.APPLIED:
+            if self.motion_confirmed:
+                return CommandStage.GAME_MOTION_CONFIRMED
+            return CommandStage.AUTHORITY_APPLIED
+        return CommandStage.REQUESTED
+
+    @property
     def label(self) -> str:
         """The word drawn beside the glyphs."""
+        if self.outcome is CommandOutcome.APPLIED and self.motion_confirmed is False:
+            # Held, and the world is not moving. Saying ACTIVE here would be
+            # the single most misleading thing the overlay could do.
+            return "NO MOTION"
         return {
             CommandOutcome.NONE: "",
             CommandOutcome.WOULD: "WOULD",

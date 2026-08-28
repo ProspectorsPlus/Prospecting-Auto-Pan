@@ -27,6 +27,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
+from prospector_engine.contracts import CommandStage
+
 __all__ = [
     "Capability",
     "CapabilityId",
@@ -37,22 +39,6 @@ __all__ = [
     "PreflightInputs",
     "run_preflight",
 ]
-
-
-class CommandStage(Enum):
-    """How far a movement command actually got. Ordered, and not merged."""
-
-    REQUESTED = "requested"
-    OS_EDGE_POSTED = "os_edge_posted"
-    AUTHORITY_APPLIED = "authority_applied"
-    GAME_MOTION_CONFIRMED = "game_motion_confirmed"
-    REJECTED = "rejected"
-    RELEASED = "released"
-
-    @property
-    def is_success(self) -> bool:
-        """Only observed motion counts. Applied-without-movement is a failure."""
-        return self is CommandStage.GAME_MOTION_CONFIRMED
 
 
 class CapabilityKind(Enum):
