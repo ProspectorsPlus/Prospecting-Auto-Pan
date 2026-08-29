@@ -1035,3 +1035,30 @@ def test_a_yaw_contaminated_sample_is_refused() -> None:
 
 def test_math_import_is_used_by_the_fusion_geometry() -> None:
     assert math.isclose(wrap_deg(360.0), 0.0, abs_tol=1e-9)
+
+
+def test_losing_focus_ends_a_recovery_episode_rather_than_pausing_it() -> None:
+    """Safety preempts a maneuver, and a maneuver is the one state that would
+    otherwise miss it: the follower's safety checks live in the steering path,
+    which recovery does not go through. The actuator and the coordinator both
+    release on their own, so this is not the only guard - but the episode has
+    to be *ended*, not left armed to resume the moment focus comes back.
+    """
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+    decisions = _stalled_route(navigator, ticks=40)
+    assert any(d.phase is NavigationPhase.RECOVERY for d in decisions)
+    assert navigator.recovery.active
+
+    navigator.note_health(focus_ok=False, processed_fps=60.0)
+    lost = navigator.decide(
+        _inputs(error_deg=0.5, motion=_motion(0.0), sequence=999, captured_at_s=2.0),
+        generation=1,
+        now_s=2.0,
+    )
+
+    assert lost.release and lost.movement.idle
+    assert lost.phase is NavigationPhase.FAILED
+    assert not navigator.recovery.active, "the episode was left armed to resume"

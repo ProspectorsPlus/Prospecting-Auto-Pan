@@ -1008,6 +1008,16 @@ class Navigator:
             commanded_heading_deg=heading,
         )
         self._learn_terrain(inputs, verdict, now_s, heading)
+        if self._recovery.active and not self._focus_ok:
+            # Safety preempts a maneuver, and a maneuver is the one state that
+            # would otherwise miss it: the follower's safety checks live in
+            # ``_steer``, which recovery does not go through. The actuator and
+            # the coordinator both release on their own, so this is not the only
+            # guard - but the episode has to be *ended* rather than left armed
+            # to resume the moment focus comes back.
+            self._recovery.resolve("focus left Roblox")
+            self._escalation = "focus left Roblox; recovery abandoned"
+            return self._release(NavigationPhase.FAILED, "Roblox is not focused", now_s=now_s)
         if self._recovery.active:
             return self._continue_recovery(inputs, verdict, generation, now_s, delta_s)
         if verdict.recover:
