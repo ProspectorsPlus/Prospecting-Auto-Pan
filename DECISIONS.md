@@ -1329,3 +1329,93 @@ acknowledged release, which is the Recover Release handshake. It named the one
 control guaranteed to leave the user where they started.
 
 **Deviation:** none.
+
+---
+
+## D-050 — 2026-08-28 — The macOS hotkey listener died on the first keypress
+
+**Plan text:** §3.1, §11.2.
+
+**Decision:** `MacHotkeySource` is a direct Quartz event tap. `pynput` moves
+from a runtime dependency to a dev one, kept only so the regression test that
+records this can run.
+
+**Why:** measured here, not inferred. In `pynput` 1.8.2 the callback's return
+value is control flow — `AbstractListener.__init__` wraps every callback so a
+`False` return raises `StopException` and stops the listener permanently:
+
+```
+$ .venv/bin/python -c "..."   # tests/test_bindings.py holds the executable form
+plain 'a': LISTENER STOPPED -> StopException
+ctrl_l:    LISTENER STOPPED -> StopException
+```
+
+The old adapter returned `False` for every key it did not recognize — which is
+every ordinary key, *and Ctrl on its own*. So the listener died on the first
+keypress of the session and no chord after it was ever heard. That is the whole
+of "Ctrl+N does nothing". Every existing test called `on_press` directly and
+discarded the return value, so the one contract that mattered was the one
+nothing checked.
+
+The reported cause was a callback-arity `TypeError` — the Darwin backend calls
+`on_press(key, injected)` while the adapter took only `key`. **That half is not
+true of 1.8.2**: `Listener._wrap(f, 2)` inspects the signature and adapts a
+one-argument callback. Verified by calling `listener.on_press(key, False)`
+against a one-argument bound method; it returns normally. The arity is a real
+hazard in principle and a non-cause here, and the fix is the same either way.
+
+Two things a direct tap gives that pynput 1.8.2 cannot:
+
+* **Recovery.** macOS disables a slow tap and posts
+  `kCGEventTapDisabledByTimeout`. pynput's run loop never handles it, so the
+  tap stays dead while its thread stays alive and `running` stays true. Here it
+  is re-enabled, counted, and turned into a hard failure if it will not stay up.
+* **A readiness answer that means something.** `_create_event_tap` returning
+  `None` — Input Monitoring not granted — makes pynput call `_mark_ready()` and
+  return, so `wait()` succeeds and `is_alive()` is briefly true for a listener
+  that will never hear anything. READY here requires the tap to exist,
+  `CGEventTapIsEnabled` to be true, and the run loop that delivers key events
+  to have completed an iteration.
+
+The tap is `kCGEventTapOptionListenOnly`: it cannot swallow, alter or inject a
+keystroke. Injected events are dropped by process id, so our own synthetic
+`D` cannot return as `Ctrl+D`.
+
+**Deviation:** the plan's dependency table lists `pynput` for macOS hotkeys.
+Superseded here; the table is not rewritten (CLAUDE.md §8).
+
+---
+
+## D-051 — 2026-08-28 — Ctrl-only chords, and the F-keys are gone
+
+**Plan text:** §11.2, and the D-046 chords this replaces.
+
+**Decision:** the bindings are `Ctrl+N/O/X/R/P/D/I`, identical on macOS and
+Windows. No Option, Alt, Shift, Fn or function key appears in any chord, alias,
+label, tooltip, README line or test.
+
+**Why:** `Ctrl+Option` is three keys on a laptop and collides with macOS
+text-navigation chords; the two platforms spelling the same chord differently
+made every label conditional for no benefit. The F-key aliases were removed
+rather than hidden — an alias that still fires has not been removed, and a
+single unmodified keypress that starts a character walking is one slip away.
+
+Three consequences that are the actual work:
+
+* **Exactness.** `Ctrl+Option+N` must not match `Ctrl+N`, so the recognizer
+  tracks Alt, Shift and Meta precisely in order to *disqualify* a chord. The
+  table is keyed by the whole modifier set, never by subset.
+* **The modifier set is a level reading, not an accumulation.** Every key event
+  carries what the OS says is physically down — `CGEventGetFlags` on macOS,
+  `GetAsyncKeyState` on Windows. The old recognizer accumulated key-down and
+  key-up edges, so the first key-up delivered to another application left it
+  believing Ctrl was held forever. A level cannot be stranded.
+* **Quarantine, which a level reading alone does not give.** A Ctrl the user is
+  holding in another application is genuinely down, so a level reading would
+  happily complete a chord the user never pressed here. On a focus transition
+  every held key is quarantined and counts again only after the OS reports it
+  released. On Windows this also meant *not* zeroing the poller's own level
+  cache, which used to manufacture a rising edge on the very next poll.
+
+**Deviation:** the plan's §11.2 hotkey table lists F1–F5. Superseded twice now
+(D-046, then here); the plan is not rewritten.

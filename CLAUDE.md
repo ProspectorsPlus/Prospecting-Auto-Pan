@@ -97,10 +97,10 @@ no input, but they do need Screen Recording permission.
    hotkey press while Roblox is focused. An agent may not simulate, bypass,
    pre-authorize, or persist that arming, and may not add a code path that
    would let it.
-2. **Never press a game hotkey to test it.** The Ctrl+Option chords (and
-   their legacy F1–F6 aliases) drive real input into
-   Roblox. Their handlers are covered by tests that use fakes; an agent must
-   never fire them on the real machine.
+2. **Never press a game hotkey to test it.** The Ctrl chords (Ctrl+N, O, X,
+   R, P, D, I — identical on both platforms, no F-key aliases) drive real
+   input into Roblox. Their handlers are covered by tests that use fakes and
+   synthetic CGEvents; an agent must never fire them on the real machine.
 3. **Never fabricate native evidence.** macOS and Windows gates are tracked
    separately. If hardware, a real Roblox session, or owner observation was
    not available, the gate status is `pending` with the exact steps needed.

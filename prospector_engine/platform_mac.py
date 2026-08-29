@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import Any
 
 import numpy as np
 
@@ -43,7 +43,16 @@ except ImportError as exc:  # pragma: no cover - install-time failure
         f"({exc}). Install with: pip install -e '.[dev]'"
     ) from exc
 
-from prospector_engine.bindings import BINDINGS, ChordRecognizer, legacy_bindings
+from prospector_engine.bindings import (
+    BINDINGS,
+    Binding,
+    ChordEvent,
+    ChordRecognizer,
+    HotkeyHealth,
+    HotkeyJournal,
+    HotkeyState,
+    Modifier,
+)
 from prospector_engine.capture import normalize_into_canonical
 from prospector_engine.contracts import (
     FocusState,
@@ -67,7 +76,6 @@ from prospector_engine.geometry import (
 )
 
 __all__ = [
-    "MAC_HOTKEY_BINDINGS",
     "TITLE_BAR_FALLBACK_PT",
     "MacHotkeySource",
     "MacPlatformPort",
@@ -136,25 +144,11 @@ TITLE_BAR_PROVENANCE = Provenance(
     note="measured 28.0 pt on the dev Mac; E-VIEW on macOS is PENDING",
 )
 
-MAC_HOTKEY_BINDINGS: dict[str, IntentType] = legacy_bindings()
-"""The legacy F-key aliases, kept working and no longer advertised.
-
-The primary bindings are the Ctrl+Option chords in
-``prospector_engine.bindings``; this table is derived from the same registry
-(``legacy_bindings()``) so the two can never drift, and exists only so an
-existing muscle-memory workflow survives the change.
-"""
-
-#: Apple virtual key codes. Letters are here because with Ctrl+Option held,
-#: macOS reports a control character - or nothing at all - for ``char``, so the
-#: keycode is the only reliable identity for the second half of a chord.
+#: Apple virtual key codes for the ordinary half of every chord. Keycodes
+#: rather than characters because with Ctrl held macOS reports a control
+#: character - or nothing at all - so the keycode is the only reliable
+#: identity. There are no function keys here: the F-row aliases are gone.
 _MAC_HOTKEY_VK: dict[str, int] = {
-    "f1": 122,
-    "f2": 120,
-    "f3": 99,
-    "f4": 118,
-    "f5": 96,
-    "f6": 97,
     "n": 45,
     "o": 31,
     "x": 7,
@@ -163,6 +157,20 @@ _MAC_HOTKEY_VK: dict[str, int] = {
     "d": 2,
     "i": 34,
 }
+
+#: CGEvent flag masks -> the modifier they mean. Read straight off each event,
+#: so the recognizer is told what is *physically* down rather than what a
+#: sequence of key-up events led us to believe.
+_MAC_FLAG_MODIFIERS: tuple[tuple[int, Modifier], ...] = (
+    (Quartz.kCGEventFlagMaskControl, Modifier.CTRL),
+    (Quartz.kCGEventFlagMaskAlternate, Modifier.ALT),
+    (Quartz.kCGEventFlagMaskShift, Modifier.SHIFT),
+    (Quartz.kCGEventFlagMaskCommand, Modifier.META),
+)
+
+
+def _modifiers_from_flags(flags: int) -> frozenset[Modifier]:
+    return frozenset(mod for mask, mod in _MAC_FLAG_MODIFIERS if flags & mask)
 
 
 def _post(event: Any) -> None:
@@ -1296,15 +1304,31 @@ class MacPlatformPort:
 
 
 class MacHotkeySource:
-    """Global Ctrl+Option chord listener that submits intents and nothing else.
+    """Global Ctrl chord listener built on a Quartz event tap.
 
-    Input-emitting intents are submitted only while Roblox is positively
-    focused (plan 11.2). ``STOP`` is always accepted - a stop that needed
-    focus would be useless exactly when it matters.
+    It replaced a ``pynput`` adapter, and the reason is not preference. In
+    pynput 1.8.2 the callback's return value is control flow: ``_wrap`` raises
+    ``StopException`` the moment a callback returns ``False``, which stops the
+    listener permanently. The old adapter returned ``False`` for every key it
+    did not recognize - which is every ordinary key, and Ctrl on its own - so
+    **the listener died on the first keypress of the session** and every chord
+    after that vanished with no symptom anywhere. That was the whole of "Ctrl+N
+    does nothing". Reproduced in ``tests/test_bindings.py``.
 
-    The chord state machine lives in ``prospector_engine.bindings`` and is
-    shared with Windows; this class is only the pynput adapter that turns
-    macOS key events into normalized names.
+    Two more things a direct tap gives that pynput 1.8.2 cannot:
+
+    * **Recovery.** macOS disables a slow tap and posts
+      ``kCGEventTapDisabledByTimeout``. pynput's run loop ignores that event,
+      so the tap stays dead while its thread stays alive and its ``running``
+      flag stays true. Here it is re-enabled, and the re-enable is counted.
+    * **A readiness answer that means something.** ``READY`` requires the tap
+      to exist, ``CGEventTapIsEnabled`` to be true, and the run loop that
+      delivers key events to have completed an iteration. A live thread object
+      proves none of those - pynput returns from ``wait()`` even when the tap
+      could not be created at all.
+
+    The tap is ``kCGEventTapOptionListenOnly``: it cannot swallow, alter or
+    inject a keystroke. It submits intents and does nothing else.
     """
 
     #: Intents that never require focus. Derived from the registry so a new
@@ -1313,17 +1337,15 @@ class MacHotkeySource:
         {IntentType.SHUTDOWN, *(b.intent for b in BINDINGS if not b.requires_focus)}
     )
 
-    #: pynput key -> normalized modifier name. Both sides, because both are
-    #: real keys and a chord held with the right-hand Option must work.
-    _MODIFIER_NAMES: ClassVar[dict[str, str]] = {
-        "ctrl_l": "ctrl_l",
-        "ctrl_r": "ctrl_r",
-        "ctrl": "ctrl_l",
-        "alt_l": "alt_l",
-        "alt_r": "alt_r",
-        "alt": "alt_l",
-        "alt_gr": "alt_r",
-    }
+    #: One run-loop slice. Every return from ``CFRunLoopRunInMode`` is proof
+    #: the loop that delivers key events is still turning, which is what makes
+    #: READY a measurement rather than an assumption.
+    LOOP_SLICE_S = 0.25
+    #: A tap found disabled is re-enabled this many times before the source
+    #: gives up and reports a hard failure rather than pretending to work.
+    MAX_REENABLES = 32
+    #: How long ``start()`` waits for the loop's first tick before failing.
+    READY_DEADLINE_S = 2.0
 
     def __init__(
         self,
@@ -1333,59 +1355,224 @@ class MacHotkeySource:
     ) -> None:
         self._submit = submit
         self._focus_probe = focus_probe
-        self._listener: Any | None = None
         self._sequence = 0
         self._lock = threading.Lock()
         self._recognizer = ChordRecognizer()
+        self._journal = HotkeyJournal("quartz-tap")
         self._vk_names = {vk: name for name, vk in _MAC_HOTKEY_VK.items()}
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._ticked = threading.Event()
+        self._tap: Any = None
+        self._loop_ref: Any = None
+        self._reenables = 0
+        self._last_focus: FocusState | None = None
+        #: Held so the callback is not garbage collected while macOS holds a
+        #: pointer to it. Losing it crashes the process, not the listener.
+        self._callback: Any = None
 
-    def _name_for(self, key: Any) -> str | None:
-        """Normalize a pynput key to a recognizer name, or ``None``."""
-        pynput_name = getattr(key, "name", None)
-        if isinstance(pynput_name, str) and pynput_name in self._MODIFIER_NAMES:
-            return self._MODIFIER_NAMES[pynput_name]
-        vk = getattr(key, "vk", None)
-        if vk is None:
-            vk = getattr(getattr(key, "value", None), "vk", None)
-        if isinstance(vk, int) and vk in self._vk_names:
-            return self._vk_names[vk]
-        return None
+    # -- normalization (pure, and the part tests drive) -------------------
+    def _name_for_keycode(self, keycode: int) -> str | None:
+        """Normalize an Apple virtual keycode, or ``None`` for a key we ignore."""
+        return self._vk_names.get(int(keycode))
 
-    def on_press(self, key: Any) -> bool:
-        """Feed one key-down. Public so tests can drive real key sequences."""
-        name = self._name_for(key)
-        if name is None:
+    def handle_key_down(self, keycode: int, flags: int) -> ChordEvent:
+        """Feed one hardware key-down. Never raises, never returns a verdict.
+
+        Public because this is the half worth testing: it turns a keycode plus
+        a flag mask into a disposition, and the tap callback around it does
+        nothing but call this and swallow.
+        """
+        event = self._recognizer.key_down(
+            self._name_for_keycode(keycode), _modifiers_from_flags(flags)
+        )
+        self._journal.edge(event)
+        if event.binding is not None:
+            self.dispatch(event.binding)
+        return event
+
+    def handle_key_up(self, keycode: int, flags: int) -> ChordEvent:
+        event = self._recognizer.key_up(
+            self._name_for_keycode(keycode), _modifiers_from_flags(flags)
+        )
+        self._journal.edge(event)
+        return event
+
+    def handle_flags_changed(self, flags: int) -> ChordEvent:
+        event = self._recognizer.modifiers_changed(_modifiers_from_flags(flags))
+        self._journal.edge(event)
+        return event
+
+    def dispatch(self, binding: Binding) -> bool:
+        """Record the chord, then apply policy. In that order, always.
+
+        A chord refused for focus used to be dropped inside the listener, so
+        the one question a stuck user has - "did it even hear me?" - had no
+        answer anywhere. The recognition is journalled first and unconditionally;
+        the refusal is a separate, named fact recorded beside it.
+        """
+        label = binding.chord.label("darwin")
+        if binding.intent not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
+            self._journal.chord(label, "refused: Roblox is not focused")
             return False
-        binding = self._recognizer.key_down(name)
-        if binding is None:
-            return False
+        self._journal.chord(label, "submitted")
         return self.fire(binding.intent)
 
-    def on_release(self, key: Any) -> None:
-        name = self._name_for(key)
-        if name is not None:
-            self._recognizer.key_up(name)
-
+    # -- lifecycle --------------------------------------------------------
     def clear_held_keys(self, reason: str = "focus-change") -> None:
-        """Forget held modifiers. A key-up lost to another app is not a hold."""
-        self._recognizer.clear(reason)
+        """Quarantine what is held, so a carried-over Ctrl cannot complete a chord."""
+        flags = 0
+        with contextlib.suppress(Exception):
+            flags = int(
+                Quartz.CGEventSourceFlagsState(Quartz.kCGEventSourceStateHIDSystemState)
+            )
+        self._recognizer.quarantine(_modifiers_from_flags(flags), reason)
+
+    def note_focus(self, focus: FocusState) -> None:
+        """Quarantine held keys when the frontmost application changes.
+
+        Polled on the run loop rather than probed per keystroke: asking macOS
+        which application is frontmost on every key edge would cost more than
+        the tap it is protecting.
+        """
+        if self._last_focus is None:
+            self._last_focus = focus
+            return
+        if focus != self._last_focus:
+            self._last_focus = focus
+            self.clear_held_keys(f"focus-change:{focus}")
+
+    def health(self) -> HotkeyHealth:
+        return self._journal.health
 
     def start(self) -> None:
-        try:
-            from pynput import keyboard
-        except ImportError as exc:  # pragma: no cover - install-time failure
-            raise ImportError(f"Global hotkeys need pynput ({exc}).") from exc
+        if self._thread is not None:
+            return
+        self._journal.starting("creating the event tap")
+        self._stop.clear()
+        self._ticked.clear()
+        thread = threading.Thread(target=self._run, name="treasure-hotkeys", daemon=True)
+        self._thread = thread
+        thread.start()
+        if not self._ticked.wait(self.READY_DEADLINE_S):
+            # Never a silent degrade: either the tap is turning or it is not.
+            if self._journal.health.state is not HotkeyState.FAILED:
+                self._journal.failed(
+                    "the event tap did not start within "
+                    f"{self.READY_DEADLINE_S:g}s; grant Input Monitoring to this "
+                    "application and restart it"
+                )
+            return
+        self._journal.ready("tap enabled and the run loop is turning")
 
-        listener = keyboard.Listener(on_press=self.on_press, on_release=self.on_release)
-        listener.daemon = True
-        listener.name = "treasure-hotkeys"
-        listener.start()
-        self._listener = listener
+    def _create_tap(self) -> Any:
+        mask = (
+            (1 << Quartz.kCGEventKeyDown)
+            | (1 << Quartz.kCGEventKeyUp)
+            | (1 << Quartz.kCGEventFlagsChanged)
+        )
+        return Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            mask,
+            self._callback,
+            None,
+        )
+
+    def _on_event(self, _proxy: Any, event_type: int, event: Any, _refcon: Any) -> Any:
+        """The tap callback. Returns the event untouched, whatever happens.
+
+        Every exception is caught and journalled. An exception escaping here
+        would take down the run loop and put us back where pynput was.
+        """
+        try:
+            if event_type in (
+                Quartz.kCGEventTapDisabledByTimeout,
+                Quartz.kCGEventTapDisabledByUserInput,
+            ):
+                self._reenable("macOS disabled the tap")
+                return event
+            # Hardware events carry process id 0. Anything else was injected -
+            # by us, or by another automation - and must never fire a chord.
+            injected = (
+                Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUnixProcessID)
+                != 0
+            )
+            if injected:
+                return event
+            flags = int(Quartz.CGEventGetFlags(event))
+            if event_type == Quartz.kCGEventFlagsChanged:
+                self.handle_flags_changed(flags)
+                return event
+            keycode = int(
+                Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+            )
+            if event_type == Quartz.kCGEventKeyDown:
+                self.handle_key_down(keycode, flags)
+            else:
+                self.handle_key_up(keycode, flags)
+        except Exception as exc:  # never let the run loop die
+            self._journal.error(repr(exc))
+        return event
+
+    def _reenable(self, why: str) -> None:
+        tap = self._tap
+        if tap is None:
+            return
+        if self._reenables >= self.MAX_REENABLES:
+            self._journal.failed(f"{why}, and it has been re-enabled {self._reenables} times")
+            self._stop.set()
+            return
+        self._reenables += 1
+        with contextlib.suppress(Exception):
+            Quartz.CGEventTapEnable(tap, True)
+        self._journal.restarted(f"{why}; re-enabled ({self._reenables})")
+
+    def _run(self) -> None:
+        self._callback = self._on_event
+        try:
+            tap = self._create_tap()
+        except Exception as exc:
+            self._journal.failed(f"the event tap could not be created: {exc!r}")
+            self._ticked.set()
+            return
+        if tap is None:
+            self._journal.failed(
+                "macOS refused an event tap. Grant Input Monitoring to whichever "
+                "application launched this process, then restart it."
+            )
+            self._ticked.set()
+            return
+        self._tap = tap
+        source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+        loop = Quartz.CFRunLoopGetCurrent()
+        self._loop_ref = loop
+        Quartz.CFRunLoopAddSource(loop, source, Quartz.kCFRunLoopDefaultMode)
+        Quartz.CGEventTapEnable(tap, True)
+        try:
+            while not self._stop.is_set():
+                Quartz.CFRunLoopRunInMode(
+                    Quartz.kCFRunLoopDefaultMode, self.LOOP_SLICE_S, False
+                )
+                self._journal.heartbeat()
+                self._ticked.set()
+                # A tap can be disabled without the disable event ever being
+                # delivered - the run loop it would arrive on is the one that
+                # stalled. Checking the state each slice catches that case.
+                if not Quartz.CGEventTapIsEnabled(tap):
+                    self._reenable("the tap was found disabled")
+        except Exception as exc:  # pragma: no cover - run-loop failure
+            self._journal.failed(f"the hotkey run loop stopped: {exc!r}")
+        finally:
+            with contextlib.suppress(Exception):
+                Quartz.CGEventTapEnable(tap, False)
+            self._loop_ref = None
+            self._tap = None
+            self._ticked.set()
 
     def fire(self, intent_type: IntentType) -> bool:
-        """Submit one hotkey intent if policy allows. Exposed for tests."""
-        if intent_type not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
-            return False
+        """Submit one hotkey intent. Policy has already been applied."""
         with self._lock:
             self._sequence += 1
             sequence = self._sequence
@@ -1400,13 +1587,27 @@ class MacHotkeySource:
         return True
 
     def stop(self) -> None:
-        self._recognizer.clear("listener-stopped")
-        listener = self._listener
-        self._listener = None
-        if listener is not None:
+        self._stop.set()
+        loop = self._loop_ref
+        if loop is not None:
             with contextlib.suppress(Exception):
-                listener.stop()
+                Quartz.CFRunLoopStop(loop)
+        thread = self._thread
+        self._thread = None
+        if thread is not None:
+            thread.join(timeout=1.0)
+        self._recognizer.clear("listener-stopped")
+        self._journal.stopped("listener stopped")
 
     def is_running(self) -> bool:
-        listener = self._listener
-        return bool(listener is not None and listener.is_alive())
+        """Whether a chord pressed right now would be heard.
+
+        Deliberately not ``thread.is_alive()``. A thread whose tap macOS has
+        disabled is perfectly alive and hears nothing, and reporting that as
+        running is what let the dashboard say hotkeys were ready while every
+        chord disappeared.
+        """
+        thread = self._thread
+        return bool(
+            thread is not None and thread.is_alive() and self._journal.health.state.hears_keys
+        )

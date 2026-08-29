@@ -95,10 +95,11 @@ def test_the_windows_port_can_be_imported_and_inspected_from_macos() -> None:
             sys.executable,
             "-c",
             "from prospector_engine.platform_win import ("
-            "  WIN_HOTKEY_BINDINGS, WindowsPlatformPort, WindowsReleaseOnlyPort, _WIN_SCANCODES)\n"
+            "  WindowsPlatformPort, WindowsReleaseOnlyPort, _WIN_SCANCODES, _WIN_HOTKEY_VK)\n"
             "from prospector_engine.contracts import InputKey\n"
+            "from prospector_engine.bindings import ORDINARY_KEYS\n"
             "assert set(_WIN_SCANCODES) == set(InputKey)\n"
-            "assert sorted(WIN_HOTKEY_BINDINGS) == ['f1','f2','f3','f4','f5','f6']\n"
+            "assert set(_WIN_HOTKEY_VK) == ORDINARY_KEYS\n"
             "port = WindowsPlatformPort()\n"
             "assert port.name == 'windows'\n"
             "assert not hasattr(WindowsReleaseOnlyPort, 'raw_key_down')\n"
@@ -189,16 +190,24 @@ def test_every_vocabulary_key_has_a_native_code_on_this_platform() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_all_five_hotkeys_are_bound_on_this_platform() -> None:
-    """B4: F5 was advertised in the docs but bound in neither listener."""
-    if current_platform_name() == "macos":
-        from prospector_engine.platform_mac import MAC_HOTKEY_BINDINGS as bindings
-    else:  # pragma: no cover - exercised on Windows
-        from prospector_engine.platform_win import WIN_HOTKEY_BINDINGS as bindings
+def test_every_advertised_chord_is_bound_on_this_platform() -> None:
+    """B4: F5 was advertised in the docs but bound in neither listener.
 
-    assert sorted(bindings) == ["f1", "f2", "f3", "f4", "f5", "f6"]
-    assert set(bindings.values()) == {
+    There is now one registry, so the failure mode is structurally gone: this
+    checks that the platform's keycode table covers exactly what the registry
+    names, in both directions.
+    """
+    from prospector_engine.bindings import BINDINGS, ORDINARY_KEYS
+
+    if current_platform_name() == "macos":
+        from prospector_engine.platform_mac import _MAC_HOTKEY_VK as table
+    else:  # pragma: no cover - exercised on Windows
+        from prospector_engine.platform_win import _WIN_HOTKEY_VK as table
+
+    assert set(table) == ORDINARY_KEYS
+    assert {b.intent for b in BINDINGS} == {
         IntentType.START_LIVE,
+        IntentType.START_SHADOW,
         IntentType.STOP,
         IntentType.PIXEL_INFO,
         IntentType.RESET_CHARACTER,
@@ -215,18 +224,33 @@ def test_input_emitting_hotkeys_require_positive_focus() -> None:
     else:  # pragma: no cover - exercised on Windows
         from prospector_engine.platform_win import WindowsHotkeySource as Source
 
+    from prospector_engine.bindings import binding_for_intent
+
     submitted: list[RuntimeIntent] = []
     focus: list[bool | None] = [False]
     source = Source(submitted.append, focus_probe=lambda: focus[0])
 
-    assert source.fire(IntentType.START_LIVE) is False
-    assert source.fire(IntentType.RESET_CHARACTER) is False
-    assert source.fire(IntentType.PAN_SWAP_TEST) is False
-    assert source.fire(IntentType.DIG_LOOP) is False
+    def chord(intent: IntentType) -> bool:
+        binding = binding_for_intent(intent)
+        assert binding is not None
+        return source.dispatch(binding)
+
+    for intent in (
+        IntentType.START_LIVE,
+        IntentType.RESET_CHARACTER,
+        IntentType.PAN_SWAP_TEST,
+        IntentType.DIG_LOOP,
+    ):
+        assert chord(intent) is False
+        # Refused, but *heard*: the chord is journalled before policy runs, so
+        # "did it even see me press it" always has an answer.
+        assert source.health().last_chord == binding_for_intent(intent).label(  # type: ignore[union-attr]
+            "darwin" if current_platform_name() == "macos" else "win32"
+        )
     assert submitted == []
 
     focus[0] = True
-    assert source.fire(IntentType.RESET_CHARACTER) is True
+    assert chord(IntentType.RESET_CHARACTER) is True
     assert submitted[-1].source == "hotkey"
 
 

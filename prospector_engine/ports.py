@@ -16,6 +16,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
+from prospector_engine.bindings import HotkeyHealth
 from prospector_engine.contracts import (
     FocusState,
     InputKey,
@@ -56,7 +57,26 @@ class HotkeySource(Protocol):
 
     def stop(self) -> None: ...
 
-    def is_running(self) -> bool: ...
+    def is_running(self) -> bool:
+        """Whether a chord pressed *now* would be heard.
+
+        Not "a thread object exists". A listener whose event source the OS has
+        disabled is alive and deaf, and reporting that as running is what let
+        the dashboard claim hotkeys were ready while every chord vanished.
+        """
+        ...
+
+    def health(self) -> HotkeyHealth:
+        """The full reading: state, backend, counts, last edge, last error."""
+        ...
+
+    def clear_held_keys(self, reason: str = "focus-change") -> None:
+        """Quarantine everything held, on a focus transition.
+
+        A modifier the user is holding in another application must be released
+        and pressed again before it can complete a chord here.
+        """
+        ...
 
 
 @runtime_checkable

@@ -132,17 +132,18 @@ def test_there_is_no_second_window_for_setup(dashboard: Any) -> None:
 def test_the_chords_are_shown_as_guidance(dashboard: Any) -> None:
     labels = [str(label.cget("text")) for label in _widgets(dashboard.root, ("Label",))]
     joined = " ".join(labels)
-    assert "Ctrl+Option+" in joined or "Ctrl+Alt+" in joined
+    assert "Ctrl+" in joined
     for key in ("N navigate", "X stop", "R reset", "P pan", "D dig"):
         assert key in joined, f"the legend does not mention {key}"
 
 
-def test_no_primary_instruction_mentions_a_function_key(dashboard: Any) -> None:
-    """F1-F6 still work; they are aliases, and nothing tells a user to use one.
+def test_no_instruction_mentions_a_function_key(dashboard: Any) -> None:
+    """There are no F-key bindings left, so nothing may name one.
 
-    Function keys were the wrong primary binding: F1 is Help almost
-    everywhere, the row is brightness and volume by default on a Mac, and one
-    unmodified keypress starting a character walking is a slip away.
+    Function keys were the wrong binding: F1 is Help almost everywhere, the row
+    is brightness and volume by default on a Mac, and one unmodified keypress
+    starting a character walking is a slip away. They were removed rather than
+    hidden - an alias that still fires is not removed.
     """
     import re
 

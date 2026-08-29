@@ -41,7 +41,15 @@ if sys.platform != "win32" and not os.environ.get("TREASURE_ALLOW_CROSS_PLATFORM
 
 import numpy as np
 
-from prospector_engine.bindings import BINDINGS, ChordRecognizer, legacy_bindings
+from prospector_engine.bindings import (
+    BINDINGS,
+    Binding,
+    ChordEvent,
+    ChordRecognizer,
+    HotkeyHealth,
+    HotkeyJournal,
+    Modifier,
+)
 from prospector_engine.capture import normalize_into_canonical
 from prospector_engine.contracts import (
     FocusState,
@@ -64,7 +72,6 @@ from prospector_engine.geometry import (
 )
 
 __all__ = [
-    "WIN_HOTKEY_BINDINGS",
     "WindowsHotkeySource",
     "WindowsPlatformPort",
     "WindowsPrintWindowSource",
@@ -116,20 +123,9 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 
-#: The legacy F-key aliases, derived from the one registry so macOS and
-#: Windows cannot drift apart. The primary bindings are Ctrl+Alt chords.
-WIN_HOTKEY_BINDINGS: dict[str, IntentType] = legacy_bindings()
-
-#: Windows virtual key codes for everything the recognizer names. The modifier
-#: entries are the *side-specific* ones: VK_CONTROL and VK_MENU are the merged
-#: codes and cannot tell left from right, which the recognizer wants to know.
+#: Windows virtual key codes for the ordinary half of every chord. No function
+#: keys: the F-row aliases are gone on both platforms.
 _WIN_HOTKEY_VK: dict[str, int] = {
-    "f1": 0x70,
-    "f2": 0x71,
-    "f3": 0x72,
-    "f4": 0x73,
-    "f5": 0x74,
-    "f6": 0x75,
     "n": 0x4E,
     "o": 0x4F,
     "x": 0x58,
@@ -138,11 +134,20 @@ _WIN_HOTKEY_VK: dict[str, int] = {
     "d": 0x44,
     "i": 0x49,
 }
-_WIN_MODIFIER_VK: dict[str, int] = {
-    "ctrl_l": 0xA2,
-    "ctrl_r": 0xA3,
-    "alt_l": 0xA4,
-    "alt_r": 0xA5,
+
+#: Side-specific modifier virtual keys, both sides of every modifier, mapped to
+#: the modifier they mean. VK_CONTROL and VK_MENU are the merged codes and
+#: cannot tell left from right; a chord must work from either hand, and a right
+#: Alt that is really AltGr must still disqualify a Ctrl-only chord.
+_WIN_MODIFIER_VK: dict[int, Modifier] = {
+    0xA2: Modifier.CTRL,  # VK_LCONTROL
+    0xA3: Modifier.CTRL,  # VK_RCONTROL
+    0xA4: Modifier.ALT,  # VK_LMENU
+    0xA5: Modifier.ALT,  # VK_RMENU
+    0xA0: Modifier.SHIFT,  # VK_LSHIFT
+    0xA1: Modifier.SHIFT,  # VK_RSHIFT
+    0x5B: Modifier.META,  # VK_LWIN
+    0x5C: Modifier.META,  # VK_RWIN
 }
 
 ULONG_PTR = wintypes.WPARAM
@@ -605,17 +610,25 @@ class WindowsHotkeySource:
     Polling avoids conflicting with our own synthetic input and needs no third
     party library. It submits intents only; it never touches engine state.
 
-    The poll turns level into edges: a key newly down is a key-down event, a
-    key newly up is a key-up. That is exactly the vocabulary
-    ``ChordRecognizer`` wants, so the rising-edge, autorepeat and
-    both-modifier-sides rules are the same code macOS runs rather than a second
-    implementation that has to agree with it.
+    The poll turns level into edges for the *ordinary* keys, and reads the
+    modifiers as a level every time - which is exactly what the macOS tap hands
+    the recognizer from ``CGEventGetFlags``. So the rising-edge, autorepeat,
+    exact-match and quarantine rules are the same code on both platforms rather
+    than a second implementation that has to agree with the first.
+
+    **Keys held across a focus transition are quarantined.** A poller has this
+    problem in a form a tap does not: ``GetAsyncKeyState`` keeps reporting the
+    Ctrl the user is holding in another application, so switching into Roblox
+    with Ctrl down would let a later ``N`` complete a chord the user never
+    pressed here. ``clear_held_keys`` quarantines whatever is physically down;
+    it counts again only after the poll has seen it go up.
     """
 
     ALWAYS_ALLOWED = frozenset(
         {IntentType.SHUTDOWN, *(b.intent for b in BINDINGS if not b.requires_focus)}
     )
     POLL_INTERVAL_S = 0.03
+    FOCUS_INTERVAL_S = 0.25
 
     def __init__(
         self,
@@ -630,35 +643,73 @@ class WindowsHotkeySource:
         self._sequence = 0
         self._lock = threading.Lock()
         self._recognizer = ChordRecognizer()
-        self._down: dict[str, bool] = dict.fromkeys((*_WIN_HOTKEY_VK, *_WIN_MODIFIER_VK), False)
+        self._journal = HotkeyJournal("win-getasynckeystate")
+        self._down: dict[str, bool] = dict.fromkeys(_WIN_HOTKEY_VK, False)
+        self._is_down: Callable[[int], bool] | None = None
+        self._last_focus: FocusState | None = None
 
-    def poll_once(self, is_down: Callable[[int], bool]) -> list[IntentType]:
-        """One poll pass. ``is_down`` is injected so tests can drive it."""
-        fired: list[IntentType] = []
-        # Modifiers first, so a chord pressed within a single poll interval
-        # sees its modifiers already held rather than arriving a tick late.
-        for name in (*_WIN_MODIFIER_VK, *_WIN_HOTKEY_VK):
-            code = _WIN_MODIFIER_VK.get(name, _WIN_HOTKEY_VK.get(name, 0))
+    def _modifiers(self, is_down: Callable[[int], bool]) -> frozenset[Modifier]:
+        """The modifier level, read fresh. Never accumulated from edges."""
+        return frozenset(mod for code, mod in _WIN_MODIFIER_VK.items() if is_down(code))
+
+    def poll_once(self, is_down: Callable[[int], bool]) -> list[ChordEvent]:
+        """One poll pass. ``is_down`` is injected so tests can drive it.
+
+        Returns every edge it saw, recognized or not, so the self-test can show
+        the sequence rather than only its conclusion.
+        """
+        self._is_down = is_down
+        modifiers = self._modifiers(is_down)
+        edges: list[ChordEvent] = []
+        for name, code in _WIN_HOTKEY_VK.items():
             pressed = is_down(code)
             if pressed == self._down[name]:
                 continue
             self._down[name] = pressed
-            if not pressed:
-                self._recognizer.key_up(name)
-                continue
-            binding = self._recognizer.key_down(name)
-            if binding is not None and self.fire(binding.intent):
-                fired.append(binding.intent)
-        return fired
+            event = (
+                self._recognizer.key_down(name, modifiers)
+                if pressed
+                else self._recognizer.key_up(name, modifiers)
+            )
+            self._journal.edge(event)
+            edges.append(event)
+            if event.binding is not None:
+                self.dispatch(event.binding)
+        return edges
+
+    def dispatch(self, binding: Binding) -> bool:
+        """Record the chord, then apply policy. In that order, always."""
+        label = binding.chord.label("win32")
+        if binding.intent not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
+            self._journal.chord(label, "refused: Roblox is not focused")
+            return False
+        self._journal.chord(label, "submitted")
+        return self.fire(binding.intent)
 
     def clear_held_keys(self, reason: str = "focus-change") -> None:
-        self._recognizer.clear(reason)
-        for name in self._down:
-            self._down[name] = False
+        probe = self._is_down
+        modifiers = self._modifiers(probe) if probe is not None else frozenset()
+        # The physical level is deliberately *not* reset: zeroing it would
+        # manufacture a rising edge on the very next poll, which is the bug
+        # this method exists to prevent.
+        self._recognizer.quarantine(modifiers, reason)
+
+    def note_focus(self, focus: FocusState) -> None:
+        """Quarantine held keys when the foreground window changes."""
+        if self._last_focus is None:
+            self._last_focus = focus
+            return
+        if focus != self._last_focus:
+            self._last_focus = focus
+            self.clear_held_keys(f"focus-change:{focus}")
+
+    def health(self) -> HotkeyHealth:
+        return self._journal.health
 
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._journal.starting("starting the key poller")
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="treasure-hotkeys", daemon=True)
         self._thread.start()
@@ -669,12 +720,32 @@ class WindowsHotkeySource:
         def is_down(code: int) -> bool:
             return bool(user32.GetAsyncKeyState(code) & 0x8000)
 
-        while not self._stop.wait(self.POLL_INTERVAL_S):
+        # One pass before READY: a poller that cannot read the keyboard fails
+        # here rather than looking healthy forever.
+        try:
             self.poll_once(is_down)
+        except Exception as exc:
+            self._journal.failed(f"the key poller could not read the keyboard: {exc!r}")
+            return
+        self._journal.ready("polling the keyboard")
+        # Focus is polled far more slowly than keys: asking Windows for the
+        # foreground window thirty times a second would cost more than the
+        # poller it protects.
+        focus_every = max(1, int(self.FOCUS_INTERVAL_S / self.POLL_INTERVAL_S))
+        tick = 0
+        while not self._stop.wait(self.POLL_INTERVAL_S):
+            try:
+                self.poll_once(is_down)
+            except Exception as exc:  # never let the poll thread die
+                self._journal.error(repr(exc))
+            tick += 1
+            if tick % focus_every == 0:
+                with contextlib.suppress(Exception):
+                    self.note_focus(self._focus_probe())
+            self._journal.heartbeat()
 
     def fire(self, intent_type: IntentType) -> bool:
-        if intent_type not in self.ALWAYS_ALLOWED and self._focus_probe() is not True:
-            return False
+        """Submit one hotkey intent. Policy has already been applied."""
         with self._lock:
             self._sequence += 1
             sequence = self._sequence
@@ -694,10 +765,15 @@ class WindowsHotkeySource:
         self._thread = None
         if thread is not None:
             thread.join(timeout=1.0)
+        self._recognizer.clear("listener-stopped")
+        self._journal.stopped("listener stopped")
 
     def is_running(self) -> bool:
+        """Whether a chord pressed right now would be heard - not merely alive."""
         thread = self._thread
-        return bool(thread is not None and thread.is_alive())
+        return bool(
+            thread is not None and thread.is_alive() and self._journal.health.state.hears_keys
+        )
 
 
 # ===========================================================================

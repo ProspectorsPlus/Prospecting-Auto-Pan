@@ -28,11 +28,15 @@ dependencies = [
     # (DECISIONS.md D-018); CoreMedia comes with it for CMSampleBuffer access.
     "pyobjc-framework-ScreenCaptureKit>=10.0; sys_platform == 'darwin'",
     "pyobjc-framework-CoreMedia>=10.0; sys_platform == 'darwin'",
-    "pynput>=1.7; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
 dev = [
+    # Not a runtime dependency any more: the macOS hotkey listener is a direct
+    # Quartz event tap (DECISIONS.md D-047). It is kept here so the regression
+    # test that records *why* - a callback returning False stops a pynput
+    # listener permanently - can still run.
+    "pynput>=1.7; sys_platform == 'darwin'",
     "pytest>=8.0",
     "pytest-timeout>=2.2",
     "hypothesis>=6.90",

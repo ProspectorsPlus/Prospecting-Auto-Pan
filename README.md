@@ -23,12 +23,12 @@ repository state and is not architecture truth.
    equipped from consecutive frames, checks that the direction to the arrow
    holds still, qualifies the whole read-only pipeline, and starts observing.
 4. To let it move your character: press **Arm Live** (enabled once setup is
-   READY and nothing is blocking), focus Roblox, and press **Ctrl+Option+N**
-   (**Ctrl+Alt+N** on Windows).
+   READY and nothing is blocking), focus Roblox, and press **Ctrl+N**
+   (**Ctrl+N** on Windows).
    The first two seconds under the arm are stationary - it confirms the camera
    control mode and measures how far your camera turns per unit of input - and
    then it aligns, holds `W`, and follows the arrow.
-5. **Stop & Release All Input** (or **Ctrl+Option+X** / **Ctrl+Alt+X**) is
+5. **Stop & Release All Input** (or **Ctrl+X** / **Ctrl+X**) is
    available at every moment, focused or not.
 
 There is no pixel clicking, no numeric yaw entry, no sensitivity setting, no
@@ -49,7 +49,7 @@ navigator stops with the exact sentence that says what to enable.
 | Per-frame diagnostic packet, Minimal and Full Diagnostics overlays | implemented |
 | Single input authority, leases, watchdog, out-of-process deadman | implemented; 10 000 stop races clean |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
-| Standalone dig loop (**Ctrl+Option+D**) | implemented; **pixels pending reverification** |
+| Standalone dig loop (**Ctrl+D**) | implemented; **pixels pending reverification** |
 | Observation mode, telemetry, evidence recorder, dashboard | implemented |
 | Arrow detection by shape and local contrast, one temporal transaction per frame | implemented; **measured on a real-frame corpus** (eval: recall 80 %, 0 false locks, 0 identity switches); **E-PROF pending** |
 | Signed direction from barb asymmetry, notch line, tip and axis, with reversal hysteresis | implemented; eval sign accuracy 91 %, median 10 deg; **E-DIR-E2E pending** |
@@ -209,7 +209,7 @@ READY on its own; it can never arm. The sequence is:
    30-second, process-run-bound token that is never persisted. Automatic setup
    cannot press it, and there is no code path that arms without it.
 2. Physically focus Roblox.
-3. Press **Ctrl+Option+N** (**Ctrl+Alt+N** on Windows).
+3. Press **Ctrl+N** (**Ctrl+N** on Windows).
 
 The first thing the armed worker does is stand still: it confirms the camera
 control mode and measures the turn actuator with bounded probes, releasing
@@ -221,28 +221,31 @@ Clicking Tk removes focus from Roblox, so there is no actionable *Start Live*,
 carry the intent while Roblox is positively focused. A failed readiness check
 spends the token: you re-arm.
 
-Hotkeys are **Ctrl+Option** chords on macOS and **Ctrl+Alt** on Windows:
+Hotkeys are **Ctrl** chords, identical on macOS and Windows:
 
 | Chord | Action | Needs Roblox focused |
 |---|---|---|
-| **Ctrl+Option+N** | Start armed navigation | yes |
-| **Ctrl+Option+O** | Start observing - no input is sent | no |
-| **Ctrl+Option+X** | Stop and release all input | **no** |
-| **Ctrl+Option+R** | Reset the character | yes |
-| **Ctrl+Option+P** | Pan swap service | yes |
-| **Ctrl+Option+D** | Dig service | yes |
-| **Ctrl+Option+I** | Read the pixel under the cursor | no |
+| **Ctrl+N** | Start armed navigation | yes |
+| **Ctrl+O** | Start observing - no input is sent | no |
+| **Ctrl+X** | Stop and release all input | **no** |
+| **Ctrl+R** | Reset the character | yes |
+| **Ctrl+P** | Pan swap service | yes |
+| **Ctrl+D** | Dig service | yes |
+| **Ctrl+I** | Read the pixel under the cursor | no |
 
-Shift is deliberately not in any chord: Roblox binds Shift Lock to it, and a
-start chord that also toggled the camera mode the navigator depends on would
-be fighting itself. Stop never requires focus - a stop that did would be
-useless exactly when it is needed.
+Ctrl alone, and exactly Ctrl: `Ctrl+Option+N` does not match `Ctrl+N`. Shift
+is deliberately not in any chord, because Roblox binds Shift Lock to it and a
+start chord that also toggled the camera mode the navigator depends on would be
+fighting itself. Stop never requires focus - a stop that did would be useless
+exactly when it is needed. Either Ctrl key works, and a Ctrl carried in from
+another application is quarantined until you release and press it again.
 
-**F1-F6 still work** as they always did (F1 navigate, F2 stop, F3 pixel, F4
-reset, F5 pan, F6 dig). They are legacy aliases kept so an existing workflow
-is not broken by the upgrade; they are not the documented way in.
+**There are no function-key bindings.** F1-F6 were removed, not hidden: an
+alias that still fires has not been removed. F1 is Help in most applications,
+the row is brightness and volume by default on a Mac, and a single unmodified
+keypress is one slip away from starting a character moving.
 
-**Ctrl+Option+D** is the pre-navigator dig loop, rebuilt on the bounded services: tap
+**Ctrl+D** is the pre-navigator dig loop, rebuilt on the bounded services: tap
 while both terrain check points match, pan-swap when the capacity bar reads
 full, stop on anything else — now with an attempt cap, a deadline, and instant
 cancellation. Re-derive the pixels with `--calibrate` first, or it will

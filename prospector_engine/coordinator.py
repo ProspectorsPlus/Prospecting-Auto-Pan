@@ -15,11 +15,13 @@ import contextlib
 import heapq
 import itertools
 import os
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from prospector_engine.bindings import chord_label
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
     BlockerScope,
@@ -94,6 +96,11 @@ class CoordinatorConfig:
 #: taught users to ignore red, which is the opposite of what a fault colour is
 #: for: red is reserved for a fault happening *now* (mission section 10).
 _NEUTRAL_STOPS = ("stop:", "shutdown", "worker-complete", "transition:", "return-to-shadow")
+
+
+#: The start chord, spelled for this OS. Read from the one registry so a
+#: rebinding cannot leave a stale key name in a blocker message.
+_START_CHORD = chord_label(IntentType.START_LIVE, sys.platform)
 
 
 def _describe_stop(reason: str) -> str:
@@ -1250,8 +1257,9 @@ class RuntimeCoordinator:
                     "expected",
                     "Roblox is not the frontmost window",
                     "Expected while you look at this dashboard. Shadow keeps running; "
-                    "Live only starts when Roblox has focus at the moment F1 is pressed.",
-                    "Focus Roblox before pressing F1.",
+                    f"Live only starts when Roblox has focus at the moment {_START_CHORD} "
+                    "is pressed.",
+                    f"Focus Roblox before pressing {_START_CHORD}.",
                 )
             )
         if not readiness.capture_fresh:

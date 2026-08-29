@@ -17,9 +17,8 @@ they are gone.
 
 **Clicking Tk removes focus from Roblox.** So there is no actionable Start
 Live, Reset, or Pan Test button. Those are guidance ("focus Roblox, then press
-Ctrl+Option+N"), and the real hotkeys submit their intents only while Roblox is
-positively
-focused (plan 11.2).
+Ctrl+N"), and the real hotkeys submit their intents only while Roblox is
+positively focused (plan 11.2).
 
 **Stop is always reachable.** *Stop & Release* is pinned in the header at
 a fixed size, outside every resizable region, so no window size, UI scale or
