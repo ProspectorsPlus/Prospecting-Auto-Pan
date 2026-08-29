@@ -193,6 +193,15 @@ class TurnLimits:
     max_duration_s: float = 25.0
     #: Fraction of probes that must produce the expected sign to be usable.
     min_reliability: float = 0.75
+    #: Ceiling on one correction *while stationary and confirmed severely
+    #: misaligned* - a pivot. Turning a hundred and eighty degrees thirty at a
+    #: time costs six corrections, and each one waits out the actuator's whole
+    #: measured latency before the next: about four seconds to turn round, most
+    #: of it spent waiting. Standing still with a measured gain, the honest
+    #: thing is to hold the key for the rotation actually wanted, exactly as a
+    #: person would, and cut it short when the error closes - which the
+    #: controller already does on every new frame.
+    max_pivot_correction_deg: float = 170.0
     #: Ceiling on one correction, so a bad estimate cannot spin the camera.
     #:
     #: Raised from 14 when the follower learned to correct *while walking*. The

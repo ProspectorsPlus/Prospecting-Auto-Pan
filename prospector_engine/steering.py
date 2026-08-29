@@ -197,8 +197,9 @@ class SteeringLimits:
     gentle_correction_deg: float = 12.0
     #: Ceiling on one correction inside ``strong_band_deg``.
     strong_correction_deg: float = 25.0
-    #: Ceiling on one correction during a stationary pivot.
-    pivot_correction_deg: float = 30.0
+    #: Ceiling on one correction during a stationary pivot. Large on
+    #: purpose: see ``TurnLimits.max_pivot_correction_deg``.
+    pivot_correction_deg: float = 170.0
     #: How long the error must stay beyond ``strong_band_deg`` before the
     #: character stops walking.
     #:
@@ -208,6 +209,14 @@ class SteeringLimits:
     #: cover a sustained-but-wrong estimate - and every frame it covers is a
     #: frame spent walking away from the target.
     pivot_confirm_s: float = 0.18
+    #: Error beyond which the pivot needs no confirmation at all.
+    #:
+    #: Past this the target is flatly behind us and there is no reading of the
+    #: frame in which walking forward is the right thing to do. The heading
+    #: filter's outlier gate has already refused it for two frames if it was a
+    #: flyer, so waiting out ``pivot_confirm_s`` on top of that is a fifth of a
+    #: second spent walking further from the treasure.
+    pivot_immediate_deg: float = 150.0
     #: Error inside which a pivot ends and pursuit resumes. Well below
     #: ``strong_band_deg`` so the two cannot chatter.
     pivot_release_deg: float = 45.0
@@ -947,6 +956,10 @@ class ArrowFollowerController:
         if severity <= limits.strong_band_deg:
             self._severe_since_s = None
             return False
+        if severity >= limits.pivot_immediate_deg:
+            # Flatly behind us. Nothing is gained by walking another step first.
+            self._severe_since_s = self._severe_since_s or now_s
+            return True
         if self._severe_since_s is None:
             self._severe_since_s = now_s
             return False
@@ -1028,6 +1041,15 @@ class ArrowFollowerController:
             return TurnPlan.none(backend, requested_deg=error)
 
         ceiling = self._correction_ceiling(magnitude, pivoting=pivoting)
+        turn_limits = self._turn_limits
+        if pivoting:
+            # Standing still, and the misalignment has already been confirmed
+            # over ``pivot_confirm_s``. The global ceiling exists to stop a bad
+            # estimate spinning the camera mid-route; it is not the right bound
+            # for a deliberate turn on the spot.
+            turn_limits = replace(
+                turn_limits, max_correction_deg=turn_limits.max_pivot_correction_deg
+            )
         command = limits.kp * abs(error) * max(0.0, min(1.0, estimate.confidence))
         # Never ask for more rotation than remains, and never more than the
         # band allows: a correction bigger than the error is an overshoot by
@@ -1035,7 +1057,7 @@ class ArrowFollowerController:
         # gentle band. The sign comes from the error and from nothing else, so
         # no gain, however it is tuned, can point the camera the wrong way.
         command = math.copysign(min(command, magnitude, ceiling), error)
-        plan = response.plan_for(command, self._turn_limits)
+        plan = response.plan_for(command, turn_limits)
         if not plan.moves:
             return plan
 

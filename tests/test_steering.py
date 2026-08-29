@@ -405,24 +405,39 @@ def test_a_strong_error_corrects_harder_and_still_walks(error: float) -> None:
     assert all(d.forward == 1 for d in _drive(_controller(), error, 6))
 
 
-def test_only_a_sustained_severe_error_stops_the_character() -> None:
+def test_a_target_flatly_behind_pivots_without_waiting() -> None:
+    """Past ``pivot_immediate_deg`` there is no reading of the frame in which
+    walking on is right, and the confirmation is a fifth of a second spent
+    walking further from the target."""
     controller = _controller()
     decisions = _drive(controller, 170.0, 40)
 
-    assert decisions[0].forward == 1, "one frame of a severe error stopped it dead"
-    assert any(d.state is ControlState.ALIGN for d in decisions), "it never pivoted"
+    assert decisions[0].state is ControlState.ALIGN
     pivots = [d for d in decisions if d.state is ControlState.ALIGN]
     assert all(p.forward == 0 for p in pivots)
     assert all(p.kind is CommandKind.ALIGN for p in pivots)
+
+
+def test_a_merely_severe_error_is_confirmed_before_it_stops_the_character() -> None:
+    """One bad frame must never cost a stop. Between ``strong_band_deg`` and
+    ``pivot_immediate_deg`` the confirmation still runs."""
+    limits = SteeringLimits()
+    error = (limits.strong_band_deg + limits.pivot_immediate_deg) / 2.0
+    controller = _controller()
+    decisions = _drive(controller, error, 40)
+
+    assert decisions[0].forward == 1, "one frame of a severe error stopped it dead"
+    assert any(d.state is ControlState.ALIGN for d in decisions), "it never pivoted"
 
 
 def test_a_pivot_ends_well_inside_the_band_that_started_it() -> None:
     """Hysteresis, so a heading hovering on the boundary cannot alternate."""
     limits = SteeringLimits()
     controller = _controller()
-    # Long enough to confirm the pivot, short enough that the runaway-episode
-    # guard - which this constant error would eventually trip - has not fired.
-    _drive(controller, 170.0, 16)
+    # A few frames, so the pivot is entered; short enough that the
+    # runaway-episode guard - which this constant error would eventually trip -
+    # has not fired.
+    _drive(controller, 170.0, 6)
     assert controller.state is ControlState.ALIGN
 
     # A few frames, not one: a 130-degree jump in a single frame is exactly
@@ -524,9 +539,20 @@ def test_a_correction_never_exceeds_the_error_that_remains() -> None:
 
 
 def test_the_correction_is_always_bounded() -> None:
+    """Two ceilings, because a pivot and a correction-while-walking are
+    different things: a controller walking through its own correction must not
+    out-turn the route, and one standing still deliberately turning round must
+    not be limited to thirty degrees a go."""
+    limits = TurnLimits()
     for error in (-179.0, -90.0, 15.0, 120.0, 179.0):
         decision = _controller().update(_inputs(error))
-        assert abs(decision.plan.expected_deg) <= TurnLimits().max_correction_deg + 1e-6
+        ceiling = (
+            limits.max_pivot_correction_deg
+            if decision.state is ControlState.ALIGN
+            else limits.max_correction_deg
+        )
+        assert abs(decision.plan.expected_deg) <= ceiling + 1e-6
+        assert abs(decision.plan.expected_deg) <= limits.max_pivot_correction_deg + 1e-6
 
 
 def test_the_deadband_never_goes_below_the_measured_actuator_resolution() -> None:

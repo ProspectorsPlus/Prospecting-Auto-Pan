@@ -49,9 +49,18 @@ class FakePort:
         loopback: bool | None = True,
         posts: bool = True,
         journal: LifecycleJournal | None = None,
+        camera_speeds: list[float] | None = None,
+        camera_posts: bool = True,
     ) -> None:
         self.idle = deque(idle_speeds)
         self.moving = deque(moving_speeds)
+        #: What the picture does when the camera is nudged. ``None`` means this
+        #: game has no camera to nudge, which is the state every port was in
+        #: before the fallback existed.
+        self.camera = deque(camera_speeds or [])
+        self.camera_posts = camera_posts
+        self.nudged = 0
+        self.camera_released: list[str] = []
         self.applied = applied
         self.leases = leases
         self.loopback = loopback
@@ -65,7 +74,10 @@ class FakePort:
     def next_motion(self, timeout_s: float) -> MotionSample | None:
         del timeout_s
         self._sequence += 1
-        pool = self.moving if self.holding else self.idle
+        if self.nudged and self.camera:
+            pool: deque[float] = self.camera
+        else:
+            pool = self.moving if self.holding else self.idle
         if not pool:
             return None
         speed = pool.popleft()
@@ -96,6 +108,15 @@ class FakePort:
     def release_forward(self, reason: str) -> None:
         self.holding = False
         self.released.append(reason)
+
+    def nudge_camera(self) -> bool:
+        if not self.camera_posts:
+            return False
+        self.nudged += 1
+        return True
+
+    def release_camera(self) -> None:
+        self.camera_released.append("nudge-complete")
 
 
 def _probe(
@@ -143,7 +164,7 @@ def test_flow_noise_is_not_movement() -> None:
     result = _probe(port, journal).run()
     assert result.outcome is AcceptanceOutcome.NO_MOTION
     assert journal.reached(LifecycleStage.GAME_MOTION_NOT_CONFIRMED)
-    assert "not acting on the key" in result.outcome.remedy
+    assert "Nothing on screen moved" in result.outcome.remedy
 
 
 def test_a_noisy_idle_raises_the_bar_rather_than_being_ignored() -> None:
@@ -196,7 +217,7 @@ def test_a_false_loopback_with_no_motion_is_reported_as_no_motion() -> None:
 
     assert result.outcome is AcceptanceOutcome.NO_MOTION
     assert "did not report the key as down" in result.detail
-    assert "Roblox is not acting on the key" in result.outcome.remedy
+    assert "Nothing on screen moved" in result.outcome.remedy
 
 
 def test_an_unknown_loopback_does_not_fail_the_probe() -> None:
@@ -319,3 +340,137 @@ def test_the_key_is_held_for_the_whole_pulse_not_until_the_frames_arrive() -> No
     # ...and it did not simply run to the deadline either.
     assert elapsed_s < 3.0
     assert port.released, "forward was still held"
+
+
+# ---------------------------------------------------------------------------
+# A character that cannot walk is not a broken input path
+# ---------------------------------------------------------------------------
+
+#: What the owner's machine actually measured while the character was wedged
+#: against foliage: a nudge of a few pixels per hold, straddling the threshold.
+#: Recorded from `safe-stop-epoch*.jsonl`, 2026-08-29.
+WEDGED = [0.014, 0.002, 0.019, -0.001, 0.016]
+#: And what a camera flick does in the same situation - unmissable, because a
+#: camera answers whether or not the character can move.
+CAMERA_TURNS = [0.31, 0.28, 0.33]
+
+
+def test_a_wedged_character_with_a_working_camera_is_a_pass() -> None:
+    """The defect this whole branch exists to end.
+
+    Measuring forward motion alone cannot tell "Roblox is ignoring us" from
+    "we are against a tree", and for every run the owner ever made it reported
+    the second as the first: 24 of 33 attempts failed with the character
+    nudging a few pixels against foliage, under a banner saying Roblox was not
+    acting on the key. Roblox was acting on the key perfectly.
+    """
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=STILL, moving_speeds=WEDGED, camera_speeds=CAMERA_TURNS)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.ACCEPTED_BLOCKED
+    assert result.ok, "setup refused to continue because the character was stuck"
+    assert port.nudged == 1, "the camera was never asked"
+    assert "against something" in result.describe()
+    assert result.camera_speed_norm > result.threshold_norm
+
+
+def test_nothing_moving_at_all_is_still_a_failure() -> None:
+    """The camera fallback must not turn a genuinely dead input path into a pass."""
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=STILL, moving_speeds=STILL, camera_speeds=STILL)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.NO_MOTION
+    assert not result.ok
+    assert port.nudged == 1
+
+
+def test_a_walking_character_never_reaches_the_camera_fallback() -> None:
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=STILL, moving_speeds=WALKING, camera_speeds=CAMERA_TURNS)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.MOVED
+    assert port.nudged == 0, "it nudged the camera despite the character walking"
+
+
+def test_a_port_with_no_camera_still_reports_no_motion() -> None:
+    """The state every port was in before the fallback existed."""
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=STILL, moving_speeds=STILL, camera_posts=False)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.NO_MOTION
+    assert result.camera_speed_norm == 0.0
+
+
+def test_the_camera_is_released_even_when_the_fallback_answers() -> None:
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=STILL, moving_speeds=WEDGED, camera_speeds=CAMERA_TURNS)
+
+    _probe(port, journal).run()
+
+    assert port.camera_released, "the camera nudge was never released"
+
+
+# ---------------------------------------------------------------------------
+# Only readings with a magnitude get a vote on the direction
+# ---------------------------------------------------------------------------
+
+
+def test_frames_from_before_the_character_accelerated_do_not_vote() -> None:
+    """Measured on the owner's machine: a median of -0.955 - enormous,
+    unmistakable movement - was rejected at "50% agreement" because two
+    near-zero frames captured before the character had accelerated voted the
+    other way. Abstention is not a direction.
+    """
+    journal = LifecycleJournal()
+    ramp = [0.0001, -0.0002, -0.51, -0.62, -0.58]
+    port = FakePort(idle_speeds=STILL, moving_speeds=ramp, camera_speeds=CAMERA_TURNS)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.MOVED, result.detail
+    assert result.sign_agreement == 1.0, "the near-zero frames were still voting"
+
+
+def test_the_magnitude_is_taken_over_the_frames_that_moved() -> None:
+    """Averaging in the pre-acceleration frames drags an honest walk under the
+    threshold; the reported strength must describe the movement itself."""
+    journal = LifecycleJournal()
+    ramp = [0.000, 0.000, 0.40, 0.44, 0.42]
+    port = FakePort(idle_speeds=STILL, moving_speeds=ramp, camera_speeds=CAMERA_TURNS)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.MOVED
+    assert result.moved_speed_norm is not None
+    assert result.moved_speed_norm > 0.35, (
+        f"reported {result.moved_speed_norm}, dragged down by the ramp"
+    )
+
+
+def test_one_frame_above_the_threshold_is_a_flicker_not_a_walk() -> None:
+    journal = LifecycleJournal()
+    flicker = [0.001, 0.002, 0.45, -0.001, 0.000]
+    port = FakePort(idle_speeds=STILL, moving_speeds=flicker, camera_speeds=STILL)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.NO_MOTION
+
+
+def test_two_frames_that_disagree_are_not_a_direction() -> None:
+    journal = LifecycleJournal()
+    disagreeing = [0.45, -0.44, 0.001, 0.002, 0.000]
+    port = FakePort(idle_speeds=STILL, moving_speeds=disagreeing, camera_speeds=STILL)
+
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.NO_MOTION
+    assert result.sign_agreement == 0.5

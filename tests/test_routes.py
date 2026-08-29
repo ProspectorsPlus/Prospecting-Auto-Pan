@@ -481,10 +481,17 @@ def test_a_moderate_turn_never_lets_go_of_the_forward_hold(fps: float) -> None:
 def test_only_a_target_behind_the_character_earns_a_stationary_pivot(
     fps: float,
 ) -> None:
-    world = World(error_deg=175.0, fps=fps)
+    # 175 degrees is flatly behind: it pivots at once, deliberately - see
+    # ``pivot_immediate_deg``. A *moderate* severe error still has to be
+    # confirmed, and that is what the second half of this checks.
+    behind = drive(World(error_deg=175.0, fps=fps), ticks=int(fps * 10))
+    assert NavigationPhase.ALIGN in behind.phases, "a target behind us never pivoted"
+    assert behind.phases[0] is NavigationPhase.ALIGN, "it walked on past a target behind it"
+    assert abs(behind.error_deg if hasattr(behind, "error_deg") else 0.0) <= 180.0
+
+    world = World(error_deg=100.0, fps=fps)
     result = drive(world, ticks=int(fps * 10))
 
-    assert NavigationPhase.ALIGN in result.phases, "a target behind us never pivoted"
     assert result.phases[0] is not NavigationPhase.ALIGN, "one frame stopped it dead"
     assert abs(world.error_deg) <= 15.0
 

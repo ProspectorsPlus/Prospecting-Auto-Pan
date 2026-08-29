@@ -633,35 +633,33 @@ def test_a_command_lease_never_outlives_its_evidence() -> None:
     assert decision.command.valid_until_s <= decision.command.source_captured_at_s + 0.100001
 
 
-def test_arrival_releases_movement_and_terminates_after_repeated_evidence() -> None:
+def test_a_confirmed_arrival_stops_the_route_at_once() -> None:
+    """The banner is the game telling us we are standing on the spot, and
+    ``ArrivalDetector`` has already applied its own N-of-M before it ever
+    reports ``valid``. Counting it three more times here was the same evidence
+    divided by three, and every frame of it was spent walking off the spot.
+    """
     from prospector_engine.contracts import ArrivalObservation
 
     navigator = _navigator()
     arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
-    phases = []
-    for index in range(Navigator.ARRIVAL_LATCHES):
-        decision = navigator.decide(
-            _inputs(arrival=arrival, sequence=index + 1, captured_at_s=index * 0.02),
-            generation=1,
-            now_s=index * 0.02,
-        )
-        phases.append(decision.phase)
-        assert decision.release and decision.command is None
 
-    assert phases[0] is NavigationPhase.ARRIVAL_CONFIRM
-    assert phases[-1] is NavigationPhase.ARRIVED
+    decision = navigator.decide(_inputs(arrival=arrival), generation=1, now_s=0.0)
+
+    assert decision.phase is NavigationPhase.ARRIVED
+    assert decision.release and decision.command is None
+    assert decision.movement.idle
 
 
-def test_one_arrival_candidate_does_not_end_the_route() -> None:
+def test_an_arrival_that_is_not_valid_does_not_end_the_route() -> None:
     from prospector_engine.contracts import ArrivalObservation
 
     navigator = _navigator()
-    arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
-    first = navigator.decide(_inputs(arrival=arrival), generation=1, now_s=0.0)
-    # A frame without arrival evidence clears the latch rather than banking it.
-    navigator.decide(_inputs(sequence=2, captured_at_s=0.02), generation=1, now_s=0.02)
+    candidate = ArrivalObservation(0.4, 1, 6, None, False, ("hits=1/6",))
 
-    assert first.phase is NavigationPhase.ARRIVAL_CONFIRM
+    decision = navigator.decide(_inputs(arrival=candidate), generation=1, now_s=0.0)
+
+    assert decision.phase is not NavigationPhase.ARRIVED
     assert navigator.arrival_latches == 0
 
 
@@ -692,7 +690,10 @@ def test_a_moderate_error_is_corrected_while_still_walking() -> None:
     assert decision.phase is NavigationPhase.CORRECT
 
 
-def test_only_a_sustained_severe_error_stops_the_character() -> None:
+def test_a_target_flatly_behind_pivots_at_once() -> None:
+    """Past ``pivot_immediate_deg`` there is no reading of the frame in which
+    walking forward is right, and the fifth of a second the confirmation costs
+    is a fifth of a second spent walking further away."""
     navigator = _navigator()
 
     phases = []
@@ -707,8 +708,21 @@ def test_only_a_sustained_severe_error_stops_the_character() -> None:
         if decision.command is not None and decision.command.forward_axis == 0:
             assert decision.command.kind is CommandKind.ALIGN
 
-    assert phases[0] is not NavigationPhase.ALIGN, "one frame stopped it dead"
     assert NavigationPhase.ALIGN in phases, "a target behind us never earned a pivot"
+    assert phases[0] is NavigationPhase.ALIGN, (
+        "165 degrees is flatly behind; it should not walk another step first"
+    )
+
+
+def test_a_merely_severe_error_is_still_confirmed_before_stopping() -> None:
+    """One bad frame must never cost a stop. Between ``strong_band_deg`` and
+    ``pivot_immediate_deg`` the confirmation still runs."""
+    navigator = _navigator()
+
+    first = navigator.decide(_inputs(error_deg=100.0), generation=1, now_s=0.0)
+
+    assert first.phase is not NavigationPhase.ALIGN
+    assert first.command is not None and first.command.forward_axis == 1
 
 
 def test_an_alignment_command_can_never_ask_for_forward_motion() -> None:
@@ -1062,3 +1076,178 @@ def test_losing_focus_ends_a_recovery_episode_rather_than_pausing_it() -> None:
     assert lost.release and lost.movement.idle
     assert lost.phase is NavigationPhase.FAILED
     assert not navigator.recovery.active, "the episode was left armed to resume"
+
+
+# ---------------------------------------------------------------------------
+# Arrival by geometry: walking over the target
+# ---------------------------------------------------------------------------
+
+
+def _pass_watcher(**overrides: Any) -> Any:
+    from prospector_engine.navigation import WaypointPass, WaypointPassConfig
+
+    return WaypointPass(WaypointPassConfig(**overrides))
+
+
+def _approach(watcher: Any, frames: int = 12, error: float = 5.0) -> None:
+    for _ in range(frames):
+        assert not watcher.observe(error_deg=error, walking=True)
+
+
+def test_walking_over_the_target_is_an_arrival() -> None:
+    """The signal the banner cannot give, because by the time the route has
+    overshot the banner has already been and gone."""
+    watcher = _pass_watcher(approach_frames=8, passed_frames=4)
+    _approach(watcher)
+
+    results = [watcher.observe(error_deg=178.0, walking=True) for _ in range(4)]
+
+    assert results[:3] == [False, False, False]
+    assert results[3], "walking over the target was never recognised"
+    assert "walked over it" in watcher.detail
+
+
+def test_a_swing_without_an_approach_is_not_an_arrival() -> None:
+    """A route that merely passes near something must not latch on it."""
+    watcher = _pass_watcher(approach_frames=8, passed_frames=4)
+
+    results = [watcher.observe(error_deg=178.0, walking=True) for _ in range(20)]
+
+    assert not any(results)
+
+
+def test_our_own_pivot_is_not_an_arrival() -> None:
+    """A hard turn swings the bearing too, and that is us turning."""
+    watcher = _pass_watcher(approach_frames=8, passed_frames=4, min_unexplained_swing_deg=90.0)
+    _approach(watcher)
+    watcher.note_commanded_yaw(120.0)
+
+    results = [watcher.observe(error_deg=178.0, walking=True) for _ in range(10)]
+
+    assert not any(results)
+    assert "ourselves" in watcher.detail
+
+
+def test_a_course_correction_that_comes_back_is_not_an_arrival() -> None:
+    """The bearing has to stay behind. Swinging out and back is steering."""
+    watcher = _pass_watcher(approach_frames=8, passed_frames=4)
+    _approach(watcher)
+
+    assert not watcher.observe(error_deg=150.0, walking=True)
+    assert not watcher.observe(error_deg=150.0, walking=True)
+    assert not watcher.observe(error_deg=10.0, walking=True)
+    results = [watcher.observe(error_deg=150.0, walking=True) for _ in range(3)]
+
+    assert not any(results), "a swing that came back still latched"
+
+
+def test_an_unreadable_bearing_holds_the_count_rather_than_dropping_it() -> None:
+    """The arrow is commonly unreadable for a moment as it passes closest, and
+    losing the approach to that would make the signal useless exactly when it
+    is needed."""
+    watcher = _pass_watcher(approach_frames=8, passed_frames=4)
+    _approach(watcher)
+
+    for _ in range(5):
+        assert not watcher.observe(error_deg=None, walking=True)
+    results = [watcher.observe(error_deg=178.0, walking=True) for _ in range(4)]
+
+    assert results[3]
+
+
+def test_standing_still_does_not_count_as_approaching() -> None:
+    watcher = _pass_watcher(approach_frames=8, passed_frames=4)
+    for _ in range(20):
+        watcher.observe(error_deg=5.0, walking=False)
+
+    results = [watcher.observe(error_deg=178.0, walking=True) for _ in range(6)]
+
+    assert not any(results)
+
+
+def test_the_navigator_ends_the_route_when_it_walks_over_the_target() -> None:
+    """End to end through the real Navigator, with no banner at all."""
+    navigator = _navigator()
+    navigator.note_health(focus_ok=True, processed_fps=60.0)
+
+    final = None
+    for index in range(1, 60):
+        now = index * 0.02
+        # Approaching for the first 30 frames, then the target is behind us.
+        error = 3.0 if index <= 30 else 176.0
+        decision = navigator.decide(
+            _inputs(error_deg=error, sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        navigator.note_held(sorted(key.value for key in decision.movement.keys), now_s=now)
+        if decision.phase is NavigationPhase.ARRIVED:
+            final = decision
+            break
+
+    assert final is not None, "the route never noticed it had walked over the spot"
+    assert final.release and final.movement.idle
+    assert "walked over it" in final.reason
+
+
+def test_arriving_in_water_keeps_walking_instead_of_stopping() -> None:
+    """The Rotwood Swamp has alligators in the water; a second or two standing
+    in it is fatal, so arrival cannot mean "stop here" unconditionally."""
+    from prospector_engine.contracts import ArrivalObservation
+    from prospector_engine.vision import WaterReading
+
+    navigator = _navigator()
+    arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
+    wet = WaterReading(fraction=0.8, driest_deg=90.0)
+
+    decision = navigator.decide(
+        replace(_inputs(arrival=arrival), water=wet), generation=1, now_s=0.0
+    )
+
+    assert decision.phase is not NavigationPhase.ARRIVED
+    assert decision.movement.forward == 1, "it stopped in the water"
+    assert decision.movement.turn == 1, "it did not steer toward dry ground"
+
+
+def test_arriving_on_dry_ground_stops_at_once() -> None:
+    from prospector_engine.contracts import ArrivalObservation
+    from prospector_engine.vision import WaterReading
+
+    navigator = _navigator()
+    arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
+    dry = WaterReading(fraction=0.0, driest_deg=0.0)
+
+    decision = navigator.decide(
+        replace(_inputs(arrival=arrival), water=dry), generation=1, now_s=0.0
+    )
+
+    assert decision.phase is NavigationPhase.ARRIVED
+    assert decision.movement.idle
+
+
+def test_the_walk_out_of_water_is_bounded_and_then_stops_anyway() -> None:
+    """Wandering is worse than standing: past the budget it stops regardless,
+    because standing somewhere is a state a person can see and fix."""
+    from prospector_engine.contracts import ArrivalObservation
+    from prospector_engine.vision import WaterReading
+
+    navigator = _navigator()
+    arrival = ArrivalObservation(1.0, 4, 6, "m1", True, ("latched",))
+    wet = WaterReading(fraction=0.9, driest_deg=45.0)
+
+    final = None
+    for index in range(1, 400):
+        now = index * 0.05
+        decision = navigator.decide(
+            replace(_inputs(arrival=arrival, sequence=index, captured_at_s=now), water=wet),
+            generation=1,
+            now_s=now,
+        )
+        if decision.phase is NavigationPhase.ARRIVED:
+            final = (index, now, decision)
+            break
+
+    assert final is not None, "it walked forever looking for dry land"
+    _index, now, decision = final
+    assert now <= 6.0, f"it kept walking for {now:.0f} s"
+    assert decision.movement.idle

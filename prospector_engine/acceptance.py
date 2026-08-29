@@ -54,6 +54,7 @@ Nothing here decides to navigate. It reports, and the caller stops.
 
 from __future__ import annotations
 
+import contextlib
 import statistics
 from collections import deque
 from collections.abc import Callable, Sequence
@@ -95,10 +96,18 @@ class AcceptanceOutcome(Enum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     NO_MOTION = "no_motion"
     MOVED = "moved"
+    ACCEPTED_BLOCKED = "accepted_blocked"
+    """The game acted on our input - the camera moved - and the character did
+    not walk. That is an obstructed character, not a broken input path, and the
+    two had been reported as the same thing.
+
+    It is a **pass**. Live starts, and the obstacle recovery that already
+    exists deals with being against something; refusing to start is the one
+    response that guarantees it can never be dealt with."""
 
     @property
     def ok(self) -> bool:
-        return self is AcceptanceOutcome.MOVED
+        return self in (AcceptanceOutcome.MOVED, AcceptanceOutcome.ACCEPTED_BLOCKED)
 
     @property
     def remedy(self) -> str:
@@ -120,9 +129,13 @@ class AcceptanceOutcome(Enum):
                 "texture and try again."
             ),
             AcceptanceOutcome.NO_MOTION: (
-                "Roblox is not acting on the key. Click into the game window once so "
-                "the character has keyboard focus, make sure you are not in a menu or "
-                "against a wall, then try again."
+                "Nothing on screen moved - not the character, and not the camera. "
+                "Click into the game window once so it has keyboard focus, leave any "
+                "menu, and try again."
+            ),
+            AcceptanceOutcome.ACCEPTED_BLOCKED: (
+                "Walk somewhere more open if the run does not get going; the "
+                "navigator will try to get round it on its own."
             ),
             AcceptanceOutcome.MOVED: "",
         }[self]
@@ -154,6 +167,21 @@ class MotionSample:
         if motion is None or motion.forward_speed_norm is None:
             return 0.0
         return float(motion.forward_speed_norm)
+
+    @property
+    def scene_change_norm(self) -> float:
+        """Any movement of the picture at all, forward or sideways.
+
+        A camera turn barely changes ``speed_norm`` and moves the scene
+        sideways by a lot, so "did the game react to us" and "did the character
+        walk" need different questions asked of the same reading.
+        """
+        motion = self.motion
+        if motion is None or not motion.valid:
+            return 0.0
+        forward = abs(float(motion.forward_speed_norm or 0.0))
+        lateral = abs(float(motion.lateral_speed_norm or 0.0))
+        return max(forward, lateral)
 
 
 @dataclass(frozen=True)
@@ -196,6 +224,26 @@ class AcceptancePort(Protocol):
         """Unconditional. Called on every path, including the failures."""
         ...
 
+    def nudge_camera(self) -> bool:
+        """Emit one bounded camera movement. ``True`` if an edge went out.
+
+        The discriminating question. A character wedged against a tree cannot
+        walk however well the input path works, so measuring forward motion
+        alone cannot tell "Roblox is ignoring us" from "we are against
+        something" - and the probe reported the second as the first for every
+        run the owner ever made. The camera answers in **any** state, which is
+        exactly the property the standalone native probe uses its scroll trial
+        for (D-074).
+
+        A port with no camera returns ``False`` and the probe simply cannot
+        make the distinction, which is the state it was always in before.
+        """
+        ...
+
+    def release_camera(self) -> None:
+        """Unconditional, like :meth:`release_forward`."""
+        ...
+
 
 @dataclass(frozen=True)
 class AcceptanceConfig:
@@ -225,8 +273,12 @@ class AcceptanceConfig:
     #: ...and this absolute floor, so a perfectly still idle window cannot make
     #: any flicker count as walking.
     min_speed_norm: float = 0.02
-    #: ...and this fraction of the post-edge readings must agree on the sign,
-    #: so one frame of noise is not a direction.
+    #: ...over at least this many readings that actually cleared it. One frame
+    #: above a threshold is a flicker; two that agree is a direction.
+    min_moving_samples: int = 2
+    #: ...and this fraction of *those* readings must agree on the sign. Only
+    #: readings that cleared the threshold vote: a reading of +0.00003 has no
+    #: sign, and letting it cast one is what rejected a measured -0.955.
     min_sign_agreement: float = 0.66
     #: ...at this mean estimator confidence or better.
     min_confidence: float = 0.15
@@ -236,6 +288,9 @@ class AcceptanceConfig:
     #: that was held for 322 ms; a bounded delay makes the reading worth
     #: printing. It is still never a verdict.
     loopback_delay_ms: int = 80
+    #: The camera fallback: how many readings, and how long to wait for them.
+    min_camera_samples: int = 2
+    camera_deadline_s: float = 1.5
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
@@ -267,12 +322,20 @@ class AcceptanceResult:
     mean_confidence: float = 0.0
     loopback: bool | None = None
     leases_held: tuple[str, ...] = ()
+    #: How much the picture moved when the camera was nudged, when the
+    #: character would not walk. ``0.0`` when the fallback never ran.
+    camera_speed_norm: float = 0.0
 
     @property
     def ok(self) -> bool:
         return self.outcome.ok
 
     def describe(self) -> str:
+        if self.outcome is AcceptanceOutcome.ACCEPTED_BLOCKED:
+            return (
+                "Roblox is taking our input - the camera moved - but the character "
+                "did not walk. It is against something"
+            )
         if self.outcome is AcceptanceOutcome.MOVED:
             return (
                 f"W accepted; movement observed ({self.moved_speed_norm:.3f} vs "
@@ -524,13 +587,32 @@ class InputAcceptanceProbe:
 
         speeds = [sample.speed_norm for sample in post]
         median = statistics.median(speeds)
-        forward = sum(1 for speed in speeds if speed > 0.0)
-        agreement = max(forward, len(speeds) - forward) / len(speeds)
         confidence = statistics.fmean(
             sample.motion.confidence for sample in post if sample.motion is not None
         )
+
+        # Only readings that actually cleared the threshold get a vote on the
+        # direction. A reading of +0.00003 has no sign, and counting it as one
+        # is how a probe rejects real motion: measured on the owner's machine,
+        # a median of -0.955 - enormous, unmistakable movement - was thrown out
+        # at "50% agreement" because two near-zero frames from before the
+        # character had accelerated voted the other way. The same run rejected
+        # +0.067 and +0.027 the same way. Abstention is not a direction, which
+        # is the rule the rest of this codebase already runs on.
+        significant = [speed for speed in speeds if abs(speed) > threshold]
+        forward = sum(1 for speed in significant if speed > 0.0)
+        agreement = (
+            max(forward, len(significant) - forward) / len(significant) if significant else 0.0
+        )
+        # ...and the magnitude is judged over those same readings. A character
+        # accelerates: the first frames after the edge are captured before it
+        # has moved, and averaging them in drags an honest walk under the
+        # threshold.
+        strength = (
+            statistics.median([abs(speed) for speed in significant]) if significant else 0.0
+        )
         moved = (
-            abs(median) > threshold
+            len(significant) >= self._config.min_moving_samples
             and agreement >= self._config.min_sign_agreement
             and confidence >= self._config.min_confidence
         )
@@ -543,6 +625,8 @@ class InputAcceptanceProbe:
             stage,
             f"median {median:+.3f} vs threshold {threshold:.3f}",
             median_speed_norm=round(median, 5),
+            moving_speed_norm=round(strength, 5),
+            moving_samples=len(significant),
             threshold_norm=round(threshold, 5),
             idle_noise_norm=round(noise, 5),
             sign_agreement=round(agreement, 3),
@@ -550,21 +634,79 @@ class InputAcceptanceProbe:
             frames=len(post),
         )
         detail = (
-            f"median {median:+.3f}, threshold {threshold:.3f}, "
-            f"agreement {agreement:.0%}, confidence {confidence:.2f}, "
-            f"{len(post)} post-edge frames"
+            f"{len(significant)} of {len(post)} frames moved "
+            f"(median {strength:.3f} vs threshold {threshold:.3f}), "
+            f"agreement {agreement:.0%}, confidence {confidence:.2f}"
         )
-        if not moved and loopback is False:
+        if moved:
+            return result(
+                AcceptanceOutcome.MOVED,
+                detail,
+                moved_speed_norm=round(strength, 5),
+                sign_agreement=round(agreement, 3),
+                mean_confidence=round(confidence, 3),
+            )
+
+        # The character did not walk. That is *not* yet a statement about the
+        # input path, and reporting it as one is the defect this branch exists
+        # to end. Ask the question a wedged character can still answer.
+        camera = self._camera_answers(threshold)
+        if camera is not None:
+            return result(
+                AcceptanceOutcome.ACCEPTED_BLOCKED,
+                f"the camera moved ({camera:.3f}) but the character did not walk "
+                f"({detail}); it is against something",
+                moved_speed_norm=round(strength, 5),
+                sign_agreement=round(agreement, 3),
+                mean_confidence=round(confidence, 3),
+                camera_speed_norm=round(camera, 5),
+            )
+        if loopback is False:
             # Reported, not acted on: two independent things both looking wrong
             # is worth telling a person, and is still not a different verdict.
             detail = f"{detail}; the OS also did not report the key as down"
         return result(
-            AcceptanceOutcome.MOVED if moved else AcceptanceOutcome.NO_MOTION,
+            AcceptanceOutcome.NO_MOTION,
             detail,
-            moved_speed_norm=round(median, 5),
+            moved_speed_norm=round(strength, 5),
             sign_agreement=round(agreement, 3),
             mean_confidence=round(confidence, 3),
         )
+
+    def _camera_answers(self, threshold: float) -> float | None:
+        """Nudge the camera and report how much the picture moved, or ``None``.
+
+        The one question a character wedged against a tree can still answer.
+        Bounded like everything else here, and released in a ``finally`` on
+        every path including the failures.
+        """
+        try:
+            if not self._port.nudge_camera():
+                return None
+            samples = self._collect(
+                self._config.min_camera_samples,
+                self._config.camera_deadline_s,
+                after_s=monotonic_s(),
+            )
+        except Exception:
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                self._port.release_camera()
+        if len(samples) < self._config.min_camera_samples:
+            return None
+        changes = sorted(sample.scene_change_norm for sample in samples)
+        peak = changes[-1]
+        self._journal.note(
+            LifecycleStage.GAME_MOTION_CONFIRMED
+            if peak > threshold
+            else LifecycleStage.GAME_MOTION_NOT_CONFIRMED,
+            f"camera nudge moved the picture by {peak:.3f} vs threshold {threshold:.3f}",
+            camera_speed_norm=round(peak, 5),
+            threshold_norm=round(threshold, 5),
+            frames=len(samples),
+        )
+        return peak if peak > threshold else None
 
 
 class ForwardMotionWitness:

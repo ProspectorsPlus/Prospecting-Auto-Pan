@@ -22,6 +22,8 @@ from prospector_engine.vision import (
     ArrowSegmenter,
     ArrowTracker,
     SegmenterConfig,
+    WaterConfig,
+    WaterGuard,
     angle_between_deg,
     heading_deg,
     load_profiles,
@@ -335,29 +337,128 @@ def test_the_fusion_cue_combines_agreeing_components() -> None:
 # ---------------------------------------------------------------------------
 # Arrival
 # ---------------------------------------------------------------------------
+#
+# The signal is the game's own "X Marks the spot! Dig down!" banner, and the
+# frames below reproduce the signature that was *measured* off the owner's real
+# client on 2026-08-29: one line of bright glyphs with a dark outline, 205 px
+# wide and 15 px tall in canonical pixels, horizontally centred to within a
+# pixel, 314 glyph pixels. Seventeen real negative frames - five taken at the
+# destination with the banner not showing, twelve captured live while
+# navigating - scored exactly zero glyph pixels.
+#
+# The real frames are not committed: they are screenshots of the owner's own
+# session and carry their username, level and balance. What is committed is the
+# signature they produced.
+
+
+def _banner_frame(
+    *,
+    width: int = 205,
+    height: int = 15,
+    centre_x: int = 640,
+    top: int = 557,
+    outlined: bool = True,
+) -> CapturedFrame:
+    """A canonical frame with a line of outlined text where the banner sits."""
+    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+    bgr[:, :] = (60, 120, 60)  # grass, so the band is not trivially empty
+    left = centre_x - width // 2
+    if outlined:
+        bgr[top - 3 : top + height + 3, left - 3 : left + width + 3] = (10, 10, 10)
+    # Sparse strokes rather than a solid bar: the real text fills about a tenth
+    # of its own bounding box.
+    for column in range(left, left + width, 6):
+        bgr[top : top + height, column : column + 2] = (250, 250, 250)
+    return CapturedFrame(
+        sequence=1,
+        captured_at_s=0.0,
+        completed_at_s=0.005,
+        duration_ms=5.0,
+        geometry=make_geometry(),
+        bgr=freeze_array(bgr),
+    )
 
 
 def test_the_arrival_detector_is_not_enabled_for_production() -> None:
+    """E-ARRIVE has not been run, and one positive frame cannot set a gate."""
     detector = ArrivalDetector()
     assert detector.status is EvidenceStatus.PENDING
     assert not detector.enabled_for_production()
 
 
-def test_arrival_needs_a_valid_approach_context() -> None:
-    detector = ArrivalDetector(ArrivalConfig(required_hits=1, min_response=0.0))
-    frame = _frame_with_shapes([(400, 100, 500, 80, (255, 255, 255))])
+def test_the_measured_banner_is_recognised() -> None:
+    detector = ArrivalDetector()
 
-    observation = detector.observe(frame, map_id="m1", approach_valid=False)
+    reading = detector.reading(_banner_frame())
+    found, why = detector.matches(reading)
+
+    assert found, why
+    assert reading.width_px == pytest.approx(205, abs=8)
+    assert reading.height_px == pytest.approx(15, abs=4)
+    assert abs(reading.centre_offset_px) < 5
+
+
+def test_open_terrain_is_not_a_banner() -> None:
+    """Twelve live navigating frames scored zero glyph pixels; so does this."""
+    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+    bgr[:, :] = (60, 120, 60)
+    frame = CapturedFrame(
+        sequence=1,
+        captured_at_s=0.0,
+        completed_at_s=0.005,
+        duration_ms=5.0,
+        geometry=make_geometry(),
+        bgr=freeze_array(bgr),
+    )
+    detector = ArrivalDetector()
+
+    reading = detector.reading(frame)
+
+    assert not reading.found
+    assert not detector.matches(reading)[0]
+
+
+def test_bright_text_with_no_dark_outline_is_not_the_banner() -> None:
+    """A glyph body alone is a bright patch. The outline is what makes it text."""
+    detector = ArrivalDetector()
+
+    reading = detector.reading(_banner_frame(outlined=False))
+
+    assert not detector.matches(reading)[0]
+
+
+def test_a_player_nametag_is_not_the_banner() -> None:
+    """Nametags are also bright outlined text, and are narrow and off-centre -
+    which is exactly why width and centring are checked and brightness is not."""
+    detector = ArrivalDetector()
+
+    narrow = detector.matches(detector.reading(_banner_frame(width=60)))
+    offset = detector.matches(detector.reading(_banner_frame(centre_x=420)))
+
+    assert not narrow[0] and "wide" in narrow[1]
+    assert not offset[0] and "centre" in offset[1]
+
+
+def test_a_tall_block_of_text_is_not_the_banner() -> None:
+    """The chat log is many lines; the banner is one."""
+    detector = ArrivalDetector()
+
+    assert not detector.matches(detector.reading(_banner_frame(height=60)))[0]
+
+
+def test_arrival_needs_a_valid_approach_context() -> None:
+    detector = ArrivalDetector(ArrivalConfig(required_hits=1))
+
+    observation = detector.observe(_banner_frame(), map_id="m1", approach_valid=False)
 
     assert not observation.valid
     assert "no-valid-approach" in observation.evidence
 
 
 def test_arrival_requires_n_of_m_support() -> None:
-    detector = ArrivalDetector(
-        ArrivalConfig(support_window=4, required_hits=3, min_response=0.0)
-    )
-    frame = _frame_with_shapes([(400, 100, 500, 80, (255, 255, 255))])
+    """One frame of a banner-shaped thing is not an arrival."""
+    detector = ArrivalDetector(ArrivalConfig(support_window=4, required_hits=3))
+    frame = _banner_frame()
 
     first = detector.observe(frame, map_id="m1", approach_valid=True)
     second = detector.observe(frame, map_id="m1", approach_valid=True)
@@ -369,10 +470,8 @@ def test_arrival_requires_n_of_m_support() -> None:
 
 
 def test_one_map_can_latch_arrival_only_once() -> None:
-    detector = ArrivalDetector(
-        ArrivalConfig(support_window=2, required_hits=1, min_response=0.0)
-    )
-    frame = _frame_with_shapes([(400, 100, 500, 80, (255, 255, 255))])
+    detector = ArrivalDetector(ArrivalConfig(support_window=2, required_hits=1))
+    frame = _banner_frame()
 
     latched = detector.observe(frame, map_id="m1", approach_valid=True)
     again = detector.observe(frame, map_id="m1", approach_valid=True)
@@ -383,11 +482,92 @@ def test_one_map_can_latch_arrival_only_once() -> None:
 
 
 def test_a_new_map_can_latch_after_a_reset() -> None:
-    detector = ArrivalDetector(
-        ArrivalConfig(support_window=2, required_hits=1, min_response=0.0)
-    )
-    frame = _frame_with_shapes([(400, 100, 500, 80, (255, 255, 255))])
+    detector = ArrivalDetector(ArrivalConfig(support_window=2, required_hits=1))
+    frame = _banner_frame()
     assert detector.observe(frame, map_id="m1", approach_valid=True).valid
 
     detector.reset_for_map("m2")
     assert detector.observe(frame, map_id="m2", approach_valid=True).valid
+
+
+def test_the_band_is_where_the_game_actually_draws_the_banner() -> None:
+    """It was the top centre - a patch of sky - and the measured text is at
+    y 557..572. A detector looking in the wrong place can never fire."""
+    x, y, width, height = ArrivalConfig().prompt_region_px
+
+    assert y <= 557 and y + height >= 572, "the measured text is outside the band"
+    assert x <= 537 and x + width >= 742
+
+
+# ---------------------------------------------------------------------------
+# Water
+# ---------------------------------------------------------------------------
+#
+# In the Rotwood Swamp the water has alligators in it and standing in it for a
+# second or two is fatal, so "we have arrived, stop here" has to be able to say
+# *not here*. Water separates from terrain by hue: measured over ten real
+# canonical frames on 2026-08-29, water reads hue 84-99 and grass and dirt read
+# hue 15-44, with the configured band comfortably between them.
+
+
+def _painted(*, water_box: tuple[int, int, int, int] | None = None) -> CapturedFrame:
+    """Grass, optionally with a rectangle of swamp water painted into it."""
+    bgr = np.zeros((720, 1280, 3), dtype=np.uint8)
+    bgr[:, :] = (60, 150, 90)  # BGR grass: hue about 40
+    if water_box is not None:
+        x, y, width, height = water_box
+        bgr[y : y + height, x : x + width] = (150, 120, 60)  # BGR water: hue about 100
+    return CapturedFrame(
+        sequence=1,
+        captured_at_s=0.0,
+        completed_at_s=0.005,
+        duration_ms=5.0,
+        geometry=make_geometry(),
+        bgr=freeze_array(bgr),
+    )
+
+
+def test_grass_is_not_water() -> None:
+    guard = WaterGuard()
+
+    reading = guard.read(_painted(), anchor_px=(640.0, 430.0))
+
+    assert reading is not None
+    assert reading.fraction == 0.0
+    assert not reading.unsafe(guard.config)
+
+
+def test_standing_in_water_is_recognised() -> None:
+    guard = WaterGuard()
+
+    reading = guard.read(_painted(water_box=(500, 300, 300, 260)), anchor_px=(640.0, 430.0))
+
+    assert reading is not None
+    assert reading.fraction > 0.9
+    assert reading.unsafe(guard.config)
+
+
+def test_the_driest_way_out_points_away_from_the_water() -> None:
+    """The whole left of the frame is water; the way out is to the right."""
+    guard = WaterGuard()
+
+    reading = guard.read(_painted(water_box=(0, 0, 640, 720)), anchor_px=(640.0, 430.0))
+
+    assert reading is not None
+    assert reading.driest_deg is not None
+    assert reading.driest_deg > 0.0, f"it pointed into the water ({reading.driest_deg:+.0f})"
+
+
+def test_a_reading_needs_an_anchor() -> None:
+    """Every measurement here is relative to where the character is."""
+    assert WaterGuard().read(_painted(), anchor_px=None) is None
+
+
+def test_the_water_band_does_not_touch_the_measured_terrain() -> None:
+    """Grass and dirt measured at hue 15-44; water at 84-99. A band that
+    overlapped the terrain would make every route think it was drowning."""
+    config = WaterConfig()
+
+    assert config.hue_low > 44, "the band reaches down into terrain hue"
+    assert config.hue_low <= 84 <= config.hue_high
+    assert config.hue_low <= 99 <= config.hue_high

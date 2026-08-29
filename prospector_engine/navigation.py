@@ -96,6 +96,9 @@ from prospector_engine.vision import (
     ArrowSegmenter,
     ArrowTracker,
     ProfileAuthority,
+    WaterConfig,
+    WaterGuard,
+    WaterReading,
     wrap_deg,
 )
 
@@ -300,6 +303,136 @@ class MotionConfig:
         right = int(width * self.right_fraction)
         bottom = int(height * self.bottom_fraction)
         return (x, y, max(16, right - x), max(16, bottom - y))
+
+
+# ---------------------------------------------------------------------------
+# Arrival by geometry
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WaypointPassConfig:
+    """When a swing in the bearing means we walked over the target.
+
+    The banner is the better signal and it is the primary one; this exists
+    because the banner is *transient* - it showed in one of six frames taken at
+    a destination - and because the case that actually goes wrong is exactly
+    the case the banner has already been missed in: the route walks past the
+    spot, the arrow swings round behind, and nothing ever says "you are here".
+
+    The geometry is unambiguous. Walking over a fixed point is the one thing
+    that swings its bearing through a half turn, and after the reversal latch
+    (D-086) the rear half of the compass is readable, so the swing can be seen
+    all the way round instead of being clipped at ninety degrees.
+    """
+
+    #: Heading error, while walking, that counts as approaching the target.
+    approach_within_deg: float = 55.0
+    #: Consecutive approaching frames before a swing means anything. Without
+    #: this, a route that merely passes near something reads as an arrival.
+    approach_frames: int = 8
+    #: Heading error that counts as the target being behind us.
+    passed_beyond_deg: float = 130.0
+    #: Consecutive frames beyond it. A reversal takes a few frames to latch in
+    #: the direction estimator, so this is counted after that has settled.
+    passed_frames: int = 4
+    #: How much of the swing has to be unexplained by our own steering.
+    #:
+    #: A pivot swings the bearing too, so the two have to be told apart - but
+    #: not by a flat ceiling on commanded rotation. The controller reacts to
+    #: the swing *on the tick it sees it*, and the heading filter runs one tick
+    #: behind the arrival check, so a flat ceiling charged the pass with the
+    #: pivot it had itself caused and could never fire. Subtracting instead of
+    #: refusing keeps the property that matters: a bearing that moved much
+    #: further than we turned was the world going past us.
+    min_unexplained_swing_deg: float = 90.0
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="prospector_engine/navigation.py; owner report 2026-08-29",
+            note=(
+                "geometry, not a measurement: no route corpus has been used to fit "
+                "these. E-ARRIVE is still owed and this does not stand in for it."
+            ),
+        )
+    )
+
+
+class WaypointPass:
+    """Watches the bearing for the signature of walking over the target."""
+
+    def __init__(self, config: WaypointPassConfig | None = None) -> None:
+        self._config = config or WaypointPassConfig()
+        self.reset()
+
+    def reset(self) -> None:
+        self._approaching = 0
+        self._passed = 0
+        self._yaw_deg = 0.0
+        self._detail = ""
+
+    @property
+    def detail(self) -> str:
+        return self._detail
+
+    @property
+    def approaching(self) -> bool:
+        return self._approaching >= self._config.approach_frames
+
+    def note_commanded_yaw(self, degrees: float) -> None:
+        """Rotation the controller asked for, so our own turn is not an arrival.
+
+        Counted only while still approaching. Once the bearing has started to
+        swing, the controller *responds* to it by pivoting - that rotation is
+        an effect of the pass, not a cause of it, and charging it against the
+        evidence made walking over the target impossible to detect.
+        """
+        if self._passed == 0:
+            self._yaw_deg += abs(degrees)
+
+    def observe(self, *, error_deg: float | None, walking: bool) -> bool:
+        """One frame. ``True`` exactly once, on the frame the pass is confirmed."""
+        config = self._config
+        if error_deg is None:
+            # No bearing: the swing cannot be measured and time alone proves
+            # nothing. Hold what has been counted rather than discarding it -
+            # the arrow is commonly unreadable for a moment as it passes close.
+            return False
+        magnitude = abs(wrap_deg(error_deg))
+        if magnitude <= config.approach_within_deg and walking:
+            if self._passed == 0:
+                self._approaching += 1
+                self._yaw_deg = 0.0
+            else:
+                # It came back to the front without ever being confirmed behind.
+                # That is a course correction, not an arrival.
+                self._passed = 0
+            return False
+        if not self.approaching:
+            self._approaching = 0
+            return False
+        if magnitude < config.passed_beyond_deg:
+            return False
+        unexplained = magnitude - self._yaw_deg
+        if unexplained < config.min_unexplained_swing_deg:
+            self._detail = (
+                f"the bearing swung to {magnitude:.0f} degrees, but we turned "
+                f"{self._yaw_deg:.0f} of that ourselves"
+            )
+            self._approaching = 0
+            self._passed = 0
+            return False
+        self._passed += 1
+        if self._passed < config.passed_frames:
+            return False
+        detail = (
+            f"walked over it: the bearing swung from inside "
+            f"{config.approach_within_deg:.0f} degrees to {magnitude:.0f} behind, "
+            f"and only {self._yaw_deg:.0f} degrees of that was our own turn"
+        )
+        self.reset()
+        self._detail = detail
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -706,6 +839,8 @@ class NavigationInputs:
     motion: MotionObservation | None
     arrival: ArrivalObservation | None
     forward_commanded: bool
+    #: How much water is under the character, when a reference anchor exists.
+    water: WaterReading | None = None
 
 
 @dataclass(frozen=True)
@@ -810,9 +945,15 @@ class Navigator:
     fault, a terminal state or a changed world resets anything.
     """
 
-    #: Consecutive arrival candidates before the run terminates. One frame of
-    #: arrival evidence releases movement; three end the route.
-    ARRIVAL_LATCHES = 3
+    #: Arrival observations before the run terminates.
+    #:
+    #: One, because the confirmation already happened. ``ArrivalDetector``
+    #: applies its own N-of-M over the banner before it ever reports ``valid``,
+    #: and ``WaypointPass`` counts its own frames too - so a second count here
+    #: was not extra safety, it was the same evidence divided by three. The
+    #: banner is the game telling us we are standing on the spot, and every
+    #: frame spent re-confirming it is a frame spent walking away from it.
+    ARRIVAL_LATCHES = 1
 
     def __init__(
         self,
@@ -822,6 +963,7 @@ class Navigator:
         recovery: RecoveryLadder | None = None,
         progress: ProgressGuard | None = None,
         terrain: TraversabilityMemory | None = None,
+        waypoint: WaypointPass | None = None,
         max_evidence_age_ms: int = 100,
     ) -> None:
         self._capabilities = capabilities
@@ -831,6 +973,12 @@ class Navigator:
         self._recovery = recovery or RecoveryLadder()
         self._progress = progress or ProgressGuard(capabilities.motion_baseline)
         self._terrain = terrain or TraversabilityMemory()
+        self._waypoint = waypoint or WaypointPass()
+        self._water_config = WaterConfig()
+        #: How long the navigator may keep walking to get out of water before
+        #: it stops anyway. Bounded: wandering is worse than standing still.
+        self._water_escape_s = 4.0
+        self._leaving_water_since_s: float | None = None
         self._max_evidence_age_ms = max_evidence_age_ms
         self._phase = NavigationPhase.ACQUIRE
         self._arrival_latches = 0
@@ -939,6 +1087,10 @@ class Navigator:
         return self._terrain
 
     @property
+    def waypoint(self) -> WaypointPass:
+        return self._waypoint
+
+    @property
     def phase(self) -> NavigationPhase:
         return self._phase
 
@@ -988,20 +1140,34 @@ class Navigator:
                 NavigationPhase.REACQUIRE, f"stale-frame:{age_ms:.0f}ms", now_s=now_s
             )
 
-        # 2. Arrival preempts recovery and steering.
+        # 2. Arrival preempts recovery and steering. Two independent signals:
+        #    the game's own banner, and the geometry of having walked over the
+        #    target. The banner is the better one and it is transient, and the
+        #    case that goes wrong is exactly the one where it has been missed.
+        heading = self._heading_deg(inputs, now_s)
+        arrived_by = ""
+        if self._waypoint.observe(error_deg=heading, walking=self._last_movement.forward > 0):
+            arrived_by = self._waypoint.detail
         arrival = inputs.arrival
-        if arrival is not None and arrival.valid:
+        if not arrived_by and arrival is not None and arrival.valid:
             self._arrival_latches += 1
             if self._arrival_latches >= self.ARRIVAL_LATCHES:
-                return self._release(NavigationPhase.ARRIVED, "arrival confirmed", now_s=now_s)
-            return self._release(
-                NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate", now_s=now_s
-            )
-        self._arrival_latches = 0
+                arrived_by = "the game says this is the spot"
+            else:
+                return self._release(
+                    NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate", now_s=now_s
+                )
+        elif not arrived_by:
+            self._arrival_latches = 0
+        if arrived_by:
+            step = self._step_out_of_water(inputs, generation, now_s, arrived_by)
+            if step is not None:
+                return step
+            self._escalation = arrived_by
+            return self._release(NavigationPhase.ARRIVED, arrived_by, now_s=now_s)
 
         # 3. Progress and contact. The guard abstains until it has a reference,
         #    and abstention is never a reason to do anything.
-        heading = self._heading_deg(inputs, now_s)
         verdict = self._progress.update(
             inputs.motion,
             now_s=now_s,
@@ -1032,6 +1198,62 @@ class Navigator:
         return self._steer(inputs, generation=generation, now_s=now_s)
 
     # -- helpers -----------------------------------------------------------
+    def _step_out_of_water(
+        self,
+        inputs: NavigationInputs,
+        generation: int,
+        now_s: float,
+        reason: str,
+    ) -> NavigationDecision | None:
+        """Keep walking to dry land before stopping. ``None`` when it is safe.
+
+        The Rotwood Swamp has alligators in the water, and a second or two
+        standing in it is fatal - so "we have arrived" cannot mean "stop here"
+        unconditionally. This walks toward the driest direction it can see,
+        bounded hard in time: past the budget it stops anyway, because standing
+        somewhere is a state a person can see and fix, and wandering is not.
+        """
+        water = inputs.water
+        if water is None or not water.unsafe(self._water_config):
+            self._leaving_water_since_s = None
+            return None
+        if self._leaving_water_since_s is None:
+            self._leaving_water_since_s = now_s
+            self._escalation = f"arrived, but {water.describe()}; stepping out first"
+        elapsed = now_s - self._leaving_water_since_s
+        if elapsed > self._water_escape_s:
+            self._leaving_water_since_s = None
+            self._escalation = (
+                f"{reason}; still in water after {elapsed:.0f} s, stopping anyway"
+            )
+            return None
+        turn = 0
+        if water.driest_deg is not None and abs(wrap_deg(water.driest_deg)) > 25.0:
+            turn = 1 if wrap_deg(water.driest_deg) > 0 else -1
+        movement = DesiredMovement(
+            forward=1,
+            turn=turn,
+            reason=f"arrived in water; walking to dry ground ({water.describe()})",
+        )
+        self._phase = NavigationPhase.FOLLOW
+        command = self._command(
+            generation,
+            inputs.frame,
+            now_s,
+            movement=movement,
+            reason=movement.reason,
+            kind=CommandKind.FOLLOW,
+        )
+        return self._decision(
+            NavigationPhase.FOLLOW,
+            command,
+            movement.reason,
+            movement=movement,
+            now_s=now_s,
+            heading=None,
+            verdict=None,
+        )
+
     def _heading_deg(self, inputs: NavigationInputs, now_s: float) -> float | None:
         """The best heading available, filtered first and raw as a fallback.
 
@@ -1218,6 +1440,7 @@ class Navigator:
             )
 
         movement = _movement_from(decision)
+        self._waypoint.note_commanded_yaw(decision.plan.expected_deg)
         phase = _CONTROL_TO_PHASE[decision.state]
         self._phase = phase
         # A hold restates a level; it never mints a command. The frame that
@@ -1484,6 +1707,7 @@ class PerceptionPipeline:
     estimator: DirectionEstimator | None = None
     tracker: ArrowTracker = field(default_factory=ArrowTracker)
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
+    water: WaterGuard = field(default_factory=WaterGuard)
     strategy: str = "topology_consensus"
     reference: ReferenceFrame = field(default_factory=ReferenceFrame)
     profiles: ProfileAuthority | None = None
@@ -1751,6 +1975,9 @@ class PerceptionPipeline:
         # to agree with the last one.
         if arrow.track_id != self._last_track_id:
             self._last_heading_deg = None
+            # A different arrow has no remembered polarity to reverse against,
+            # so the latch counting reversals against the old one must go too.
+            self.estimator.reset()
         direction_started = monotonic_s()
         result = self.estimator.estimate(
             selected.features if selected is not None else None,
@@ -1785,6 +2012,7 @@ class PerceptionPipeline:
             motion=motion,
             arrival=arrival,
             forward_commanded=False,
+            water=self.water.read(frame, self.reference.anchor_canonical_px),
         )
         stats = proposals.stats
         shown = present(outcome, detector.config.top_k)
@@ -2407,6 +2635,8 @@ class _LiveControlPort:
         self._hold_until_s = 0.0
         self._forward_held = False
         self._forward_until_s = 0.0
+        #: Camera rotation this port owes the player back, in mouse-yaw px.
+        self._nudged_px = 0
 
     # -- shared frame plumbing -------------------------------------------
     def _refresh(self) -> PerceptionResult | None:
@@ -2530,6 +2760,57 @@ class _LiveControlPort:
             session.stop_moving(reason)
         self._forward_held = False
         self._forward_until_s = 0.0
+
+    #: The camera nudge the acceptance fallback uses. Large enough that the
+    #: picture moves unmistakably on any sensitivity, small enough to be a
+    #: flick rather than a spin.
+    ACCEPTANCE_NUDGE_PX = 120
+
+    def nudge_camera(self) -> bool:
+        """Move the camera once, so a wedged character can still answer.
+
+        Mouse yaw, because it is the one actuator that needs no characterization
+        to produce a visible result: a relative delta moves the picture whatever
+        the sensitivity turns out to be, and this runs *before* the turn
+        actuator has been measured.
+        """
+        outcome = self._issue(
+            forward_axis=0,
+            turn_axis=0,
+            yaw_delta_px=self.ACCEPTANCE_NUDGE_PX,
+            reason="input acceptance: can the camera move if the character cannot",
+        )
+        if outcome is None or outcome.block.blocking:
+            return False
+        posted = int(getattr(outcome, "yaw_posted_px", 0)) != 0
+        if posted:
+            self._nudged_px += self.ACCEPTANCE_NUDGE_PX
+            self._context.lifecycle.note(
+                LifecycleStage.TURN_POSTED,
+                f"acceptance camera nudge {self.ACCEPTANCE_NUDGE_PX:+d} px",
+                backend=TurnBackend.MOUSE_YAW.value,
+                delta_px=self.ACCEPTANCE_NUDGE_PX,
+            )
+        return posted
+
+    def release_camera(self) -> None:
+        """Put the camera back where it was, then release.
+
+        The nudge is a diagnostic, not a decision: it exists to find out whether
+        the game reacts to us, and leaving the player's view rotated by it would
+        be an edit to their session made for our benefit. Unconditional, like
+        every other release here, and it never raises.
+        """
+        owed, self._nudged_px = self._nudged_px, 0
+        if owed:
+            with contextlib.suppress(Exception):
+                self._issue(
+                    forward_axis=0,
+                    turn_axis=0,
+                    yaw_delta_px=-owed,
+                    reason="input acceptance: undoing the camera nudge",
+                )
+        self.release_turn()
 
     def input_acceptance(self) -> AcceptanceResult:
         """Run the bounded pulse. Released before this returns, on every path."""

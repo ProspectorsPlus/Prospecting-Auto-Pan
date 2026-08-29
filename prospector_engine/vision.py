@@ -40,12 +40,17 @@ from prospector_engine.contracts import (
 
 __all__ = [
     "DIRECTION_STRATEGIES",
+    "ArrivalConfig",
     "ArrivalDetector",
     "ArrowProfile",
     "ArrowSegmenter",
     "ArrowTracker",
     "ProfileAuthority",
     "ProfileLibrary",
+    "PromptReading",
+    "WaterConfig",
+    "WaterGuard",
+    "WaterReading",
     "angle_between_deg",
     "heading_deg",
     "load_profiles",
@@ -883,18 +888,218 @@ DIRECTION_STRATEGIES = {
 
 
 @dataclass(frozen=True)
-class ArrivalConfig:
-    """N-of-M temporal rule plus lifecycle context. All values provisional."""
+class WaterConfig:
+    """Where water is, in colour, and how much of it makes standing still unsafe.
 
-    support_window: int = 6
-    required_hits: int = 4
-    min_response: float = 0.55
-    banner_region_px: tuple[int, int, int, int] = (340, 90, 600, 120)
+    In the Rotwood Swamp the water has alligators in it: standing in or beside
+    it for a second or two is fatal, so "we have arrived, stop here" is the one
+    place the navigator must be able to say *not here*.
+
+    Water separates from terrain cleanly by hue. Measured over ten real
+    canonical frames on 2026-08-29: the water reads hue 84-99 with saturation
+    around 100-120, and grass and dirt read hue 15-44. The band below is wider
+    than both measurements and still does not touch the terrain.
+
+    **What has not been measured**: how much water around the character means
+    the character is *in* it. None of the ten frames has the character on or
+    near water - every one reads 0% around the player - so ``max_fraction`` is
+    a chosen bound, not a fitted one, and it is deliberately generous. Erring
+    towards "keep moving" is free; erring the other way is a death.
+    """
+
+    #: OpenCV hue is 0..179. Water sits near cyan, terrain well below it.
+    hue_low: int = 75
+    hue_high: int = 112
+    min_saturation: int = 45
+    min_value: int = 55
+    #: The box around the player anchor that counts as "where we are standing".
+    radius_px: int = 70
+    #: Fraction of it that has to be water before standing still is unsafe.
+    max_fraction: float = 0.20
+    #: Directions probed when choosing which way is driest.
+    sectors: int = 8
+    #: How far out from the anchor each sector looks.
+    look_px: int = 170
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="ten real canonical frames, 2026-08-29; owner report of alligators",
+            note=(
+                "the hue band is measured and the terrain is well clear of it. "
+                "max_fraction is chosen: no frame yet shows the character in water."
+            ),
+        )
+    )
+
+
+@dataclass(frozen=True)
+class WaterReading:
+    """How much water is under the character, and which way is driest."""
+
+    fraction: float
+    #: Bearing of the driest sector, in the same screen convention as headings.
+    driest_deg: float | None
+    #: Water fraction per sector, clockwise from straight up.
+    sectors: tuple[tuple[float, float], ...] = ()
+
+    def unsafe(self, config: WaterConfig) -> bool:
+        return self.fraction > config.max_fraction
+
+    def describe(self) -> str:
+        way = "nowhere drier" if self.driest_deg is None else f"driest {self.driest_deg:+.0f}"
+        return f"water {self.fraction:.0%} under the character, {way}"
+
+
+class WaterGuard:
+    """Reads how much water is around the player anchor. Decides nothing."""
+
+    def __init__(self, config: WaterConfig | None = None) -> None:
+        self._config = config or WaterConfig()
+
+    @property
+    def config(self) -> WaterConfig:
+        return self._config
+
+    def mask(self, bgr: NDArray[np.uint8]) -> NDArray[np.bool_]:
+        import cv2
+
+        config = self._config
+        hsv = cv2.cvtColor(np.asarray(bgr), cv2.COLOR_BGR2HSV)
+        hue, saturation, value = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        return (
+            (hue >= config.hue_low)
+            & (hue <= config.hue_high)
+            & (saturation >= config.min_saturation)
+            & (value >= config.min_value)
+        )
+
+    def read(
+        self, frame: CapturedFrame, anchor_px: tuple[float, float] | None
+    ) -> WaterReading | None:
+        """Water under the character, and the driest way out. ``None`` without
+        an anchor, because every measurement here is relative to one."""
+        if anchor_px is None:
+            return None
+        config = self._config
+        water = self.mask(np.asarray(frame.bgr))
+        height, width = water.shape[:2]
+        anchor_x, anchor_y = int(anchor_px[0]), int(anchor_px[1])
+        radius = config.radius_px
+        patch = water[
+            max(0, anchor_y - radius) : min(height, anchor_y + radius),
+            max(0, anchor_x - radius) : min(width, anchor_x + radius),
+        ]
+        if patch.size == 0:
+            return None
+        fraction = float(patch.mean())
+
+        sectors: list[tuple[float, float]] = []
+        for index in range(config.sectors):
+            bearing = -180.0 + index * (360.0 / config.sectors)
+            radians = math.radians(bearing)
+            probe_x = int(anchor_x + math.sin(radians) * config.look_px)
+            probe_y = int(anchor_y - math.cos(radians) * config.look_px)
+            half = max(8, radius // 2)
+            window = water[
+                max(0, probe_y - half) : min(height, probe_y + half),
+                max(0, probe_x - half) : min(width, probe_x + half),
+            ]
+            sectors.append((bearing, float(window.mean()) if window.size else 1.0))
+        driest = min(sectors, key=lambda entry: entry[1]) if sectors else None
+        return WaterReading(
+            fraction=round(fraction, 4),
+            driest_deg=None if driest is None else driest[0],
+            sectors=tuple((b, round(f, 4)) for b, f in sectors),
+        )
+
+
+@dataclass(frozen=True)
+class PromptReading:
+    """What the arrival band contains, measured rather than scored.
+
+    Carried in full - not collapsed to one number - because when a route does
+    not notice it has arrived, "the text was 140 px wide and we want 150" is a
+    thing a person can act on and "response 0.48" is not.
+    """
+
+    found: bool
+    glyph_pixels: int = 0
+    width_px: int = 0
+    height_px: int = 0
+    centre_offset_px: float = 0.0
+    aspect: float = 0.0
+    detail: str = ""
+
+    @classmethod
+    def none(cls, detail: str) -> PromptReading:
+        return cls(found=False, detail=detail)
+
+    def describe(self) -> str:
+        return (
+            f"prompt {self.width_px}x{self.height_px} px, "
+            f"{self.glyph_pixels} glyphs, offset {self.centre_offset_px:+.0f}"
+        )
+
+
+@dataclass(frozen=True)
+class ArrivalConfig:
+    """The game's own "you are here" prompt, and how sure we have to be.
+
+    **Why the prompt and not the arrow.** The obvious signal is the map arrow
+    swinging down to point at the ground, and it cannot be used: measured on
+    six real frames taken at a destination, the detector found no usable arrow
+    on five of them. At the spot the arrow turns transparent, bobs, and is seen
+    down its own axis, so the detector reports ``ambiguous-candidates`` or
+    ``rejected:topology`` - it fails exactly where arrival needs it. The
+    banner, by contrast, is opaque high-contrast text in a fixed place.
+
+    **What was measured** (canonical 1280x720, one positive frame,
+    2026-08-29): the prompt occupies x 537..742, y 557..572 - one line 205 px
+    wide and 15 px tall, horizontally centred to within a pixel, 314 glyph
+    pixels at a fill ratio of 0.095 inside its own box. Seventeen negative
+    frames - five at the destination without the prompt showing, twelve
+    captured live while navigating - scored exactly zero on every statistic
+    here.
+
+    That is **one** positive frame, so every number below is provisional and
+    the region is deliberately far wider than the text. E-ARRIVE has not been
+    run and this does not stand in for it.
+    """
+
+    #: Where the prompt is drawn, in canonical pixels: a band across the lower
+    #: middle of the client, generous around the measured 205x15 text.
+    #:
+    #: The previous value was (340, 90, 600, 120) - the *top* centre - which is
+    #: not where this game draws it, so the detector was reading a patch of sky.
+    prompt_region_px: tuple[int, int, int, int] = (340, 535, 600, 80)
+
+    #: A glyph body is bright; the outline around it is dark. Terrain has
+    #: neither next to the other, which is what makes this specific.
+    min_glyph_value: int = 205
+    max_outline_value: int = 90
+    outline_radius_px: int = 7
+
+    #: The prompt is one wide, centred line. A player nametag is also bright
+    #: text with a dark outline, and is none of those things - it is narrow,
+    #: off-centre and it moves.
+    min_glyph_pixels: int = 90
+    min_glyph_width_px: int = 150
+    max_glyph_height_px: int = 34
+    min_aspect: float = 6.0
+    max_centre_offset_px: int = 90
+
+    #: N of M consecutive observations. Short, because the prompt is transient:
+    #: of six frames taken at a destination it was showing in one.
+    support_window: int = 5
+    required_hits: int = 3
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PENDING,
-            source="one supplied positive screenshot",
-            note="E-ARRIVE has not been run; a single frame cannot set a threshold",
+            source="one positive and seventeen negative canonical frames, 2026-08-29",
+            note=(
+                "E-ARRIVE has not been run. One positive frame cannot set a "
+                "threshold; the geometry here is measured, the margins are chosen."
+            ),
         )
     )
 
@@ -908,8 +1113,12 @@ class ArrivalDetector:
 
     def __init__(self, config: ArrivalConfig | None = None) -> None:
         self._config = config or ArrivalConfig()
-        self._window: deque[float] = deque(maxlen=self._config.support_window)
+        self._window: deque[bool] = deque(maxlen=self._config.support_window)
         self._latched_map_id: str | None = None
+
+    @property
+    def config(self) -> ArrivalConfig:
+        return self._config
 
     @property
     def status(self) -> EvidenceStatus:
@@ -923,17 +1132,65 @@ class ArrivalDetector:
         if self._latched_map_id != map_id:
             self._latched_map_id = None
 
-    def response(self, frame: CapturedFrame) -> float:
-        """Edge/gradient response inside the banner region, normalized 0..1."""
+    def reading(self, frame: CapturedFrame) -> PromptReading:
+        """Look for one wide, centred, outlined line of text in the band.
+
+        Deliberately not an edge-density score. Edge density in a band of
+        terrain is a number that goes up when there is grass in it, and the
+        threshold that separates grass from a banner is exactly the threshold
+        nobody has the data to set. This measures the *shape* of the thing
+        instead - bright glyph bodies with dark outline against them, forming
+        one wide centred line - and every one of those is a property the text
+        has and terrain does not.
+        """
         import cv2
 
-        x, y, width, height = self._config.banner_region_px
+        config = self._config
+        x, y, width, height = config.prompt_region_px
         patch = np.asarray(frame.bgr)[y : y + height, x : x + width]
         if patch.size == 0:
-            return 0.0
-        grey = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(grey, 60, 180)
-        return float(edges.mean() / 255.0) * 4.0
+            return PromptReading.none("region outside the frame")
+
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        value = hsv[:, :, 2].astype(np.int16)
+        bright = value > config.min_glyph_value
+        outline = (value < config.max_outline_value).astype(np.uint8)
+        radius = max(1, config.outline_radius_px)
+        near_outline = cv2.dilate(outline, np.ones((radius, radius), np.uint8)) > 0
+        glyph = bright & near_outline
+
+        pixels = int(glyph.sum())
+        if pixels < config.min_glyph_pixels:
+            return PromptReading.none(f"only {pixels} glyph pixels")
+        rows, columns = np.nonzero(glyph)
+        glyph_width = int(columns.max() - columns.min())
+        glyph_height = int(rows.max() - rows.min())
+        centre_offset = float((columns.min() + columns.max()) / 2.0 - patch.shape[1] / 2.0)
+        aspect = glyph_width / max(1, glyph_height)
+        return PromptReading(
+            found=True,
+            glyph_pixels=pixels,
+            width_px=glyph_width,
+            height_px=glyph_height,
+            centre_offset_px=centre_offset,
+            aspect=aspect,
+            detail="",
+        )
+
+    def matches(self, reading: PromptReading) -> tuple[bool, str]:
+        """Whether a reading has the prompt's shape, and why not when it does not."""
+        config = self._config
+        if not reading.found:
+            return (False, reading.detail)
+        if reading.width_px < config.min_glyph_width_px:
+            return (False, f"only {reading.width_px} px wide")
+        if reading.height_px > config.max_glyph_height_px:
+            return (False, f"{reading.height_px} px tall; not one line")
+        if reading.aspect < config.min_aspect:
+            return (False, f"aspect {reading.aspect:.1f}; not a line of text")
+        if abs(reading.centre_offset_px) > config.max_centre_offset_px:
+            return (False, f"off centre by {reading.centre_offset_px:+.0f} px")
+        return (True, "")
 
     def observe(
         self, frame: CapturedFrame, *, map_id: str, approach_valid: bool
@@ -948,10 +1205,11 @@ class ArrivalDetector:
             return ArrivalObservation(
                 0.0, 0, self._config.support_window, map_id, False, ("already-latched",)
             )
-        response = self.response(frame)
-        self._window.append(response)
-        hits = sum(1 for value in self._window if value >= self._config.min_response)
-        evidence.append(f"response={response:.3f}")
+        reading = self.reading(frame)
+        found, why = self.matches(reading)
+        self._window.append(found)
+        hits = sum(1 for value in self._window if value)
+        evidence.append(reading.describe() if found else f"no prompt: {why}")
         evidence.append(f"hits={hits}/{len(self._window)}")
         if not approach_valid:
             evidence.append("no-valid-approach")
