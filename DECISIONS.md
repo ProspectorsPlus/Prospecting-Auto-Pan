@@ -2103,3 +2103,197 @@ that a line with no action is information rather than red.
 Not cleared on Stop — reading back why the last run ended is most of what it is
 for. Only Start Navigator clears it, and the whole story is exported with the
 stop trace beside the numbers.
+
+---
+
+## D-069 — 2026-08-29 — The prologue stopped disarming the thing it proves works
+
+**Decision:** `_LiveControlPort.release_forward` and `.release_turn` call
+`NavigationInputSession.stop_moving`, never `release_navigation`. The full
+release floor is reserved for explicit Stop, worker terminal exit, a terminal
+safety fault, process shutdown, and an unrecoverable release failure.
+
+**Why:** D-067 removed the twelve-condition admission test and rebuilt movement
+on a level-triggered actuator, and it named this exact class of bug — an
+ordinary success running the terminal release floor — as the thing it was
+fixing. It then left four instances of it in the one code path Live runs first.
+`stop-epoch4-1914449166.jsonl` records all four in eight milliseconds, on the
+success path:
+
+    0.834  ledger_empty     navigation:acceptance-probe-complete
+    0.835  ledger_empty     navigation:acceptance-complete
+    0.835  ledger_empty     navigation:prologue-complete
+    0.836  ledger_empty     worker:...
+
+Each reaches `InputAuthority.release_all`, which sets `_admission_open = False`
+and calls `MovementActuator.disarm`. Admission reopens in exactly one place,
+`activate_generation`, and only on a mode transition. So by the time the
+prologue returned *"the camera turns, go and navigate"*, the actuator that
+would do the navigating had been disarmed by the probe that proved it worked.
+
+**Why the tests did not see it:** `tests/test_live_prologue.py` fakes
+`release_navigation` as "lift the keys" — the actuator's `release_all`, which
+does not clear `_armed`. A fake laxer than the thing it stands in for reports a
+healthy run for a path that has muted the session for good. The regressions in
+`tests/test_navigation_lifecycle.py` use the real `InputAuthority` and the real
+`NavigationInputSession` and assert on a `W` down edge reaching the port.
+
+## D-070 — 2026-08-29 — Cadence is telemetry, not permission
+
+**Decision:** `metrics.live_eligible` is gone from `_on_start_live`. The
+`CADENCE` blocker keeps its row and takes the new `advisory` status, and
+`LiveBlocker.blocking` — not a status string compared in two modules — is what
+callers filter on. `SteeringLimits.min_processed_fps` no longer releases; it
+produces a `ControlDecision.advisories` entry. Live's entry gate is the age of
+the latest frame, which `readiness()` already measured.
+
+**Why:** a governor tier is an adaptive scheduling decision about how hard to
+drive the capture source. It describes the recent past, it is reset by every
+source, geometry and profile change, and it was never a statement about whether
+the picture in front of the operator is usable *now*. Used as an authorization
+it produced, in the owner's traces:
+
+    live_refused  cadence:stable at 60 Hz
+    live_refused  cadence:cooldown at 30 Hz     (x7, frames arriving 24 ms apart)
+    live_refused  cadence:capture started
+
+A status whose own name is "stable" refusing a keypress is not a threshold that
+needs tuning; it is the wrong quantity. A 20 fps pipeline delivering 50 ms-old
+frames is slower than we would like and is not dangerous. A 60 fps pipeline
+whose last frame is 400 ms old is dangerous, and frame age already catches it.
+
+Cadence still adapts and is still shown — as a `WARN` line naming the tier and
+saying it is not blocking.
+
+## D-071 — 2026-08-29 — `CGEventSourceKeyState` is diagnostic, and it was racing
+
+**Decision:** the loopback read never decides an outcome. `NO_LOOPBACK` is
+retired as a verdict (the enum member is kept so an archived report parses) and
+`OS_EDGE_LOOPBACK_OBSERVED` is off `FORWARD_PULSE_PATH`. The read is taken once,
+`AcceptanceConfig.loopback_delay_ms` (80 ms) after the down edge rather than in
+the same breath as the post, and it may narrow the *advice* attached to a
+failure, never the failure.
+
+**Why, measured here:** in `stop-epoch4-1914449166.jsonl` the sequence is
+
+    0.512  os_edge_posted            w   posted=True
+    0.512  os_edge_loopback_missing  loopback=False
+    0.522  post_edge_frame_observed  frame 8979, 4 ms after the edge
+    0.834  w_hold_confirmed          forward was down for 322.7 ms
+
+`W` was demonstrably held for a third of a second and six frames were captured
+after the edge. The run was failed on a read taken microseconds after the post,
+before any of those six frames were examined. Re-measured tonight through
+`--native-control-probe` with an 80 ms delay, on this machine, against the real
+client: `loopback=True` on both event taps, repeatedly. The immediate read was a
+timing artefact, and the verdict it produced was about scheduling rather than
+about Roblox.
+
+`CGEventPostToPid` reports `loopback=False` by construction — it bypasses the
+window server's key state — so retaining the gate would also have disqualified a
+backend before it was measured.
+
+## D-072 — 2026-08-29 — One safety lifecycle; unknown focus is not focus loss
+
+**Decision:** `InputAuthority.poll_safety` no longer raises a releasing fault
+for `focus is None`; it counts the reading (`unknown_focus_polls`). A positive
+`False` still releases immediately and unconditionally. `SafetyFaultKind`
+keeps `FOCUS_UNKNOWN` for anything that positively knows better.
+`build_application` now submits every safety fault to
+`RuntimeCoordinator.submit_fault`.
+
+**Why:** two objects owned the same word and disagreed about it. macOS's
+frontmost probe is a `CGWindowList` scan that answers `None` on any error or
+ambiguity. `MovementActuator._blocking_condition` treats that as "carry on",
+deliberately and with the whole of D-067 behind it. `poll_safety` treated it as
+terminal, ran the full release floor, and disarmed that same actuator. Whichever
+ran first won, which is a race and not a safety property.
+
+The second half is worse. The fault callback only wrote an event-log line, so
+the release happened and the object that owns `RunMode` was never told: the
+header went on saying LIVE over a runtime whose actuator was disarmed and whose
+next command could only answer *"the navigator is stopped"*. A zombie Live is
+worse than a stop, because nothing on screen tells the person to press anything.
+
+## D-073 — 2026-08-29 — A session generation is checked; a frame's evidence is not
+
+**Decision:** `NavigationInputSession.move` and `.stop_moving` refuse when the
+session's generation is not the authority's current one, and
+`InputAuthority.release_navigation` refuses a superseded generation instead of
+`del generation`.
+
+**Why:** the argument was accepted and thrown away, so a straggling worker's
+`finally: release_navigation()` ran the whole release floor against whatever
+mode was running by then — Shadow blocks inside a native screen grab, the
+coordinator cancels it, joins for its bounded deadline, gives up, starts Live;
+the straggler wakes, unwinds, and disarms the Live actuator that was just armed.
+Nothing in the trace said which worker did it, because the call had already
+forgotten which worker it came from.
+
+**Why this is not the machinery D-067 removed.** That validated an evidence
+token by object identity and then ten properties of the *frame* — sequence,
+capture instant, capture duration, two age budgets, viewport identity — per key,
+per tick, and a healthy 55 fps pipeline could not pass it. This is one integer
+comparison about the *session*, and its answer changes only on a mode
+transition. It cannot refuse a press for being late.
+
+## D-074 — 2026-08-29 — A native diagnostic that looks at the game
+
+**Decision:** `prospector_engine/nativeprobe.py` and
+`treasure.py --native-control-probe`. Passing the flag is the authorization. It
+builds no application, no coordinator, no input authority and no deadman, needs
+no profile, no map and no automatic setup, verifies Roblox is the positively
+identified frontmost window, posts one edge per trial, measures the frames, and
+releases in a `finally` inside a whole-vocabulary sweep.
+
+**Why:** every earlier claim rested on evidence that cannot support it.
+`CGEventPost` returning proves the call did not raise. An inert keycode (F13)
+read back through `CGEventSourceKeyState` proves this process can reach
+WindowServer. A unit test with a fake port proves the code is wired the way the
+test wired it. None of the three is a claim about Roblox, and a keyboard trial
+alone cannot separate *"our events never arrive"* from *"the game has nothing to
+move"* — so the probe also carries a scroll trial, which a Roblox window will
+visibly answer in any state.
+
+**Measured on this machine, 2026-08-29, against the real client** (home page,
+no character in a world), `--hold-ms 600`, two trials each, vertical scene
+translation by phase correlation:
+
+| backend                          | scroll response | W loopback at +80 ms |
+|----------------------------------|-----------------|----------------------|
+| `CGEventPost(kCGHIDEventTap)`    | −140.4 px       | `True`               |
+| `CGEventPost(kCGSessionEventTap)`| −172.9 px       | `True`               |
+| `CGEventPostToPid(<roblox pid>)` | −0.6 px         | `False`              |
+
+Alternating hid against pid, four rounds, both directions: hid moved the page in
+7 of 8 trials (the miss was at a scroll limit), pid in 0 of 8, median |dy| 229.6
+against 0.7 px. **`CGEventPostToPid` does not reach Roblox at all**; both event
+taps do. Production keeps `hid`, and the ladder is kept so the choice stays a
+measurement.
+
+**Not proven by this:** that `W` moves a character. There was no character —
+the client sat on its home page all night. Scroll is routed by hit-testing and
+keys by focus, and only a character walking settles the keyboard question.
+
+**Two still windows, not one.** A key trial measures the scene before the edge
+*and again after the key comes up*, and the threshold is a multiple of the
+larger. The first version used only the "before" window and reported a false
+`MOVED` for `W` on the home page — `mad 5.96` against an idle of exactly 0.00,
+which is a row of thumbnails lazily loading part-way through the hold beating
+an absolute floor of 0.45. Whatever is changing on its own is still changing a
+moment later; a character that was walking has stopped. With the control window
+the same trial reports `during 0.00, after 0.00` and no motion, which is the
+truth about a home page.
+
+## D-075 — 2026-08-29 — `cv2.phaseCorrelate` mutates its arguments
+
+**Decision:** `measure_scene` passes copies.
+
+**Why:** OpenCV multiplies both inputs by the Hanning window **in place**. Every
+frame in a run is the `current` of one pair and the `previous` of the next, so
+without copies the second comparison of every pair is a windowed image against a
+raw one. A run of six *byte-identical* frames reported a mean absolute
+difference of 40.9 out of 255. It was caught by a synthetic test asserting that
+a still scene reads as still, and it had already contaminated the first night's
+probe output: the Roblox home page appeared to have an idle noise floor of
+28-37, and measures 0.00 once the copies are in.

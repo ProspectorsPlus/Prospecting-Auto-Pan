@@ -72,11 +72,12 @@ not silently degrade.
 .venv/bin/python treasure.py --tracking-report  # rendered recovery latency, no input
 ```
 
-One mode is deliberately **not** in that list, because it is not safe to run
+Two modes are deliberately **not** in that list, because neither is safe to run
 unattended:
 
 ```sh
-.venv/bin/python treasure.py --forward-probe 600   # PRESSES W AGAINST ROBLOX
+.venv/bin/python treasure.py --forward-probe 600    # PRESSES W AGAINST ROBLOX
+.venv/bin/python treasure.py --native-control-probe  # PRESSES KEYS AT ROBLOX
 ```
 
 `--detector-report` (rendered) and `--soak` use the fixtures in `tests/`, and
@@ -106,10 +107,27 @@ rather than to the coordinator, and it is built without the physical-chord
 capability, so nothing it recognizes can start a mode or reach an input
 session; it needs Input Monitoring.
 
-`--forward-probe` is the **one mode that emits input**. It presses `W` once
-against the real client for a bounded pulse and reports whether the world
-moved. It refuses unless Roblox is frontmost, and an agent must never run it
-(rule 1 below).
+`--forward-probe` and `--native-control-probe` are the **two modes that emit
+input**, and an agent must never run either unless the owner has asked for it
+in the current session (rule 1 below). `--forward-probe` presses `W` once
+through the whole production stack — coordinator, authority, readiness — and
+reports whether the world moved. `--native-control-probe` presses at the client
+directly, with no coordinator, no authority, no profile and no setup, so a
+negative result cannot be explained away by anything upstream:
+
+```sh
+.venv/bin/python treasure.py --native-control-probe \
+    --key w,a,s,d --hold-ms 600 --backend hid,session,pid --trials 2 \
+    [--scroll] [--no-camera] [--json PATH]
+```
+
+Passing the flag is the authorization. It refuses unless Roblox is the
+positively identified frontmost window, posts exactly one edge per trial,
+releases it in a `finally`, and sweeps the whole vocabulary on the way out.
+`--scroll` adds a transport trial that a Roblox window answers in **any** state,
+which is what separates *"our events never arrive"* from *"the game has nothing
+to move"* — a client on its home page gives an honest "no motion" for `W` that
+looks exactly like a broken backend and is not one (D-074).
 
 ## 4. Hard rules for any agent working here
 
@@ -123,7 +141,9 @@ moved. It refuses unless Roblox is frontmost, and an agent must never run it
    An agent may not simulate, bypass, pre-authorize, or persist that press,
    may not hand `ChordAuthority` to anything but the listener, and may not add
    a code path that would let it. An agent must also never run
-   `--forward-probe`, which is the one command that presses a key.
+   `--forward-probe` or `--native-control-probe` — the two commands that press
+   a key — unless the owner has asked for exactly that in the current session,
+   and then only against a client the owner has said is ready.
 2. **Never press a game hotkey to test it.** The Ctrl chords (Ctrl+N, O, X,
    R, P, D, I — identical on both platforms, no F-key aliases) drive real
    input into Roblox. Their handlers are covered by tests that use fakes and
@@ -146,10 +166,18 @@ moved. It refuses unless Roblox is frontmost, and an agent must never run it
    their physically armed procedures on real hardware. Filling them in to make
    a code path reachable converts a safety gate into a comment. Tests may
    construct one; they say so in a docstring and live in `tests/`.
-8. **Rendered frames are training stress, never held-out validation.** Plan
+8. **A default `pytest` run may never emit an OS edge.** `native` tests are
+   excluded by `addopts`, and that is not the whole rule: a test that shells
+   out to an input-emitting CLI mode emits input whenever the machine happens
+   to satisfy that mode's preconditions. One did, briefly, during the tenth
+   pass — it ran `--native-control-probe` in a subprocess and asserted on the
+   refusal, and on a machine with Roblox frontmost it pressed keys and dragged
+   the right mouse button across a live client instead. Assert such a refusal
+   in-process, against a port that says "not frontmost".
+9. **Rendered frames are training stress, never held-out validation.** Plan
    §7.2 is explicit. `tests/arrow_fixtures.py` exists to stress the detector
    deterministically, and no gate may be passed on its output.
-9. **Tune on `tune`, read `eval` once.** In `tests/corpus/real/labels.json`
+10. **Tune on `tune`, read `eval` once.** In `tests/corpus/real/labels.json`
    the sequences marked `tune` are the only ones a detector change may be
    chosen on; `eval` sequences are read to report, never to pick. A new
    real recording extends the corpus as new sequences with provenance; the

@@ -4,20 +4,61 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28 (eighth pass, native control recovery). Development
-machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
-**No Roblox session was operated and Live was never started during
-implementation; no input was sent.** The fifth pass did resize the Roblox
-window, which is the fit stage doing its job, and restored it every time —
-measured below.
+Last updated: 2026-08-29 (tenth pass, movement lifecycle and native probe).
+Development machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
+Live was never started and no Roblox session was operated during
+implementation. The tenth pass **did** send bounded input to the Roblox client
+under `--native-control-probe`, with explicit owner authorization: one key edge
+per trial with a `finally` release, and scroll-wheel events. Nothing was
+clicked, joined, bought or changed; measurements are in D-074.
 
 ---
 
-## MOVEMENT IS STILL BROKEN — read this first (2026-08-29)
+## MOVEMENT: WHAT IS FIXED AND WHAT IS STILL UNPROVEN (2026-08-29, tenth pass)
 
-**The character still does not move.** The owner confirmed this after the ninth
-pass rebuilt the whole movement path. Do not treat anything below as a fix that
-worked; treat it as ground that has been cleared.
+**Still unproven: that `W` moves a character.** It could not be tested tonight.
+The Roblox client was running but sitting on its **home page** with no world
+loaded — the player process had gone to tray at 01:34 and there was no
+character to move for the rest of the session. Every `W` trial therefore
+returned an honest "no motion", which is a true negative about the home page
+and says nothing about the game.
+
+**Proven tonight, natively, against the real client** (see D-074):
+
+* This process's CGEvents **do reach Roblox and Roblox does act on them** —
+  scroll moved the page by 140-173 px through both event taps, repeatedly.
+* `CGEventPostToPid` reaches Roblox **not at all**: 0 of 8 trials, median
+  |dy| 0.7 px against 229.6 px for the HID tap. It is ruled out as a backend.
+* The key-state loopback that failed every run last night reads **`True`** when
+  it is read 80 ms after the edge instead of in the same breath as the post.
+  The gate was measuring scheduling, not receipt.
+
+**Fixed, with regressions, in the lifecycle above the backend** (D-069 to
+D-073): the prologue no longer disarms the actuator on its own success path;
+cadence is no longer an authorization; the loopback no longer preempts the
+motion evidence; an ambiguous focus reading no longer releases; a terminal
+fault now leaves LIVE visibly instead of leaving a zombie; and a superseded
+worker can neither press nor release.
+
+### What the owner has to do for the last link
+
+Leave Roblox **in a world, with a character standing still**, then run:
+
+```sh
+.venv/bin/python treasure.py --native-control-probe --key w,a,s,d --hold-ms 600
+```
+
+It sends bounded input, releases on every path, and needs no map, profile or
+setup. If W moves the character, the backend question is closed and the
+follower can be armed with Ctrl+N. If it does not, the probe's own numbers say
+whether the edge went out, how long it was held, and how much the world moved.
+
+---
+
+## The ninth pass, and what it cleared (2026-08-29)
+
+Treat the section below as ground that was cleared rather than as a fix that
+worked: the character still did not move after it.
 
 ### Ruled out, by measurement, not by argument
 

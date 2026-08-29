@@ -195,7 +195,20 @@ def test_the_status_document_separates_local_macos_and_windows() -> None:
     status = (ROOT / "STATUS.md").read_text()
     assert "macOS commissioning" in status
     assert "Windows commissioning" in status
-    assert "No Roblox session was operated" in status
+    # It must say plainly, at the top, both of the things a reader needs before
+    # trusting any gate below: that Live was not started, and what was or was
+    # not sent to a real client.
+    #
+    # The assertion here used to be the literal sentence "No Roblox session was
+    # operated", and it stopped being true the night the owner authorized a
+    # bounded native probe and it was run. Pinning a claim rather than the
+    # *presence of a claim* leaves exactly two ways out - loosen the test, or
+    # write a sentence that is no longer true - and the second one is how an
+    # evidence document quietly becomes decoration.
+    assert "Live was never started" in status
+    assert "no input was sent" in status or "send bounded input" in status, (
+        "STATUS.md must state what was emitted to a real client, either way"
+    )
 
 
 def test_every_tuned_config_carries_provenance() -> None:
