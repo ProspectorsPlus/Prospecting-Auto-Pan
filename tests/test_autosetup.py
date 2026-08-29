@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from prospector_engine.acceptance import AcceptanceOutcome, AcceptanceResult
 from prospector_engine.autosetup import (
     AutomaticSetup,
     CaptureSample,
@@ -33,6 +34,7 @@ from prospector_engine.contracts import (
     ViewportFit,
 )
 from prospector_engine.geometry import ViewportGeometry
+from prospector_engine.lifecycle import LifecycleStage
 from prospector_engine.turning import ControlFingerprint, TurnBackend, TurnObservation
 from tests.fakes import make_geometry
 
@@ -436,6 +438,33 @@ class FakeControl:
     emitted: list[tuple[str, int]] = field(default_factory=list)
     refuse_emit: bool = False
     _pending: int = 0
+
+    #: What the bounded forward pulse concluded. The default is the happy path,
+    #: so a test about the *camera* does not have to describe the keyboard.
+    accepts_input: bool = True
+
+    def input_acceptance(self) -> AcceptanceResult:
+        if self.accepts_input:
+            return AcceptanceResult(
+                AcceptanceOutcome.MOVED,
+                "walked",
+                idle_noise_norm=0.002,
+                threshold_norm=0.02,
+                moved_speed_norm=0.4,
+                post_edge_samples=4,
+                loopback=True,
+                leases_held=("w",),
+            )
+        return AcceptanceResult(
+            AcceptanceOutcome.NO_MOTION,
+            "held forward and nothing moved",
+            first_missing=LifecycleStage.GAME_MOTION_CONFIRMED,
+            idle_noise_norm=0.002,
+            threshold_norm=0.02,
+            post_edge_samples=4,
+            loopback=True,
+            leases_held=("w",),
+        )
 
     def control_mode_sample(self) -> ControlModeSample:
         return ControlModeSample(

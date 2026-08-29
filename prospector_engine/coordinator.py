@@ -14,14 +14,16 @@ from __future__ import annotations
 import contextlib
 import heapq
 import itertools
+import json
 import os
 import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
-from prospector_engine.bindings import chord_label
+from prospector_engine.bindings import ChordEvent, chord_label
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
     BlockerScope,
@@ -32,6 +34,7 @@ from prospector_engine.contracts import (
     DiagnosticObservation,
     EvidenceStatus,
     FitCompletion,
+    InputKey,
     IntentType,
     LiveBlocker,
     ModeResult,
@@ -56,6 +59,7 @@ from prospector_engine.input_authority import (
     NoInputSession,
     ServiceInputSession,
 )
+from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
 from prospector_engine.telemetry import (
     AppPaths,
     EventLog,
@@ -240,6 +244,13 @@ class WorkerContext:
     on_status: Callable[[str], None] = lambda _message: None
     on_phase: Callable[[NavigationPhase | None], None] = lambda _phase: None
     on_observation: Callable[[DiagnosticObservation], None] = lambda _observation: None
+    #: The named-stage record. Shared with the authority, so what the worker
+    #: asked for and what the authority actually posted land on one timeline.
+    lifecycle: LifecycleJournal = field(default_factory=LifecycleJournal)
+    #: Read-only: whether the OS believes a key is down. Not a port - the
+    #: worker must never hold something that could emit input (plan 4.2). It
+    #: answers the one question a returning post call cannot.
+    key_state: Callable[[InputKey], bool | None] = lambda _key: None
 
 
 #: Runs one automatic-setup pass. Takes a "should I stop" predicate and a
@@ -287,6 +298,7 @@ class RuntimeCoordinator:
         profiles: Any = None,
         setup_runner: SetupRunner | None = None,
         cursor_probe: Callable[[], tuple[int, int] | None] | None = None,
+        key_state_probe: Callable[[InputKey], bool | None] | None = None,
     ) -> None:
         self._authority = authority
         self._guard = guard
@@ -300,9 +312,10 @@ class RuntimeCoordinator:
         self._pipeline_provider = pipeline_provider
         self._profiles = profiles
         self._setup_runner = setup_runner
-        # A read-only pointer probe, not a port: the coordinator must never
-        # hold something that could emit input (plan 4.2).
+        # Read-only probes, not a port: the coordinator must never hold
+        # something that could emit input (plan 4.2).
         self._cursor_probe = cursor_probe
+        self._key_state_probe = key_state_probe or (lambda _key: None)
         self._setup_progress = SetupProgress.idle()
         self._setup_thread: threading.Thread | None = None
         self._setup_cancel = threading.Event()
@@ -449,6 +462,34 @@ class RuntimeCoordinator:
     def events(self) -> EventLog:
         return self._events
 
+    def note_hotkey_edge(self, event: ChordEvent) -> None:
+        """Record one key edge from the listener, before any policy runs.
+
+        Wired to the hotkey source by the application. It is the only way the
+        difference between "the chord never arrived" and "the chord arrived and
+        was refused" reaches the persisted record - and those have completely
+        different remedies.
+        """
+        if event.binding is None:
+            # Only near-misses. Every ordinary keystroke on the machine reaches
+            # this, and recording them would push the events that matter out of
+            # a bounded ring within seconds of somebody typing.
+            if event.name is None:
+                return
+            self._authority.lifecycle.note(
+                LifecycleStage.PHYSICAL_EDGE_RECEIVED,
+                event.describe(),
+                disposition=event.disposition.value,
+                key=event.name,
+            )
+            return
+        self._authority.lifecycle.note(
+            LifecycleStage.CHORD_RECOGNIZED,
+            event.binding.chord.label(sys.platform),
+            intent=event.binding.intent.name,
+            chord=event.binding.chord.label(sys.platform),
+        )
+
     @property
     def last_result(self) -> ModeResult | None:
         return self._last_result
@@ -492,6 +533,13 @@ class RuntimeCoordinator:
                 self._pending_ordinary.add(key)
             heapq.heappush(self._queue, _QueueItem(priority, next(self._order), intent))
             self._queue_lock.notify()
+        self._authority.lifecycle.note(
+            LifecycleStage.INTENT_QUEUED,
+            f"{intent.intent_type.name} from {intent.source}",
+            intent=intent.intent_type.name,
+            source=intent.source,
+            sequence=intent.sequence,
+        )
         return True
 
     def submit_fault(self, fault: SafetyFault) -> None:
@@ -670,12 +718,32 @@ class RuntimeCoordinator:
         self._export_trace("stop")
 
     def _export_trace(self, label: str) -> None:
-        """Write the bounded frame trace beside the logs. Best effort."""
+        """Write the frame trace *and* the lifecycle beside the logs.
+
+        Both into one file, because they are one story. The stop traces this
+        replaces held only ``frame``, ``preview`` and ``governor`` rows: a
+        session that entered Live, failed input acceptance and stopped looked
+        from the file exactly like a session that never armed at all. The
+        lifecycle rows and the raw event stream are what make the difference
+        readable without being present when it happened.
+        """
         if self._paths is None:
             return
         written = self._capture.export_trace(self._paths.logs, label=label)
-        if written is not None:
-            self._events.add("trace.exported", str(written))
+        if written is None:
+            return
+        rows = [{"kind": "lifecycle", **row} for row in self._authority.lifecycle.rows()]
+        rows += [
+            {"kind": "event", "at_s": round(at_s, 6), "name": name, "detail": detail}
+            for at_s, name, detail in self._events.verbatim(limit=2000)
+        ]
+        try:
+            with Path(written).open("a", encoding="utf-8") as handle:
+                for row in rows:
+                    handle.write(json.dumps(row) + "\n")
+        except OSError as exc:  # best effort; a trace is never worth a crash
+            self._events.add("trace.append-failed", repr(exc))
+        self._events.add("trace.exported", str(written))
 
     def _on_shutdown(self, intent: RuntimeIntent) -> None:
         self._events.add("intent.shutdown", intent.source)
@@ -933,6 +1001,11 @@ class RuntimeCoordinator:
         self._arm_token = None
         proof = _ConsumedArmProof(token_id=token.token_id, intent_sequence=intent.sequence)
         self._events.add("live.armed", proof.token_id)
+        self._authority.lifecycle.note(
+            LifecycleStage.ARM_TOKEN_CONSUMED,
+            proof.token_id,
+            intent_sequence=intent.sequence,
+        )
         self._begin_mode(RunMode.LIVE, intent, IntentType.START_LIVE)
 
     def _on_service(self, intent: RuntimeIntent) -> None:
@@ -1023,6 +1096,8 @@ class RuntimeCoordinator:
             on_status=lambda message: self._events.add("worker.status", message),
             on_phase=self._set_phase,
             on_observation=self._publish_observation,
+            lifecycle=self._authority.lifecycle,
+            key_state=self._key_state_probe,
         )
         self._worker_cancel = cancellation
         self._worker_id = worker_id

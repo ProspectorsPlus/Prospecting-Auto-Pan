@@ -20,6 +20,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
+
 from prospector_engine.autosetup import AutomaticSetup, ControlModeSample, SetupConfig
 from prospector_engine.contracts import (
     Cancellation,
@@ -30,9 +32,11 @@ from prospector_engine.contracts import (
     NavigationCommand,
 )
 from prospector_engine.coordinator import WorkerContext
+from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
 from prospector_engine.navigation import (
     NavigationCapabilities,
     PerceptionPipeline,
+    _LiveControlPort,
     make_live_prologue,
     make_live_worker,
 )
@@ -62,29 +66,46 @@ FAST = SetupConfig(
 
 @dataclass
 class Session:
-    """Records what the prologue asked the authority to do."""
+    """Records what the prologue asked the authority to do.
+
+    It notes ``OS_EDGE_POSTED`` and ``LEASE_HELD`` into the journal because the
+    real ``InputAuthority`` does, and the acceptance probe reads the journal to
+    tell "the post never happened" from "the game ignored it".
+    """
 
     commands: list[NavigationCommand] = field(default_factory=list)
     releases: list[str] = field(default_factory=list)
     refuse: bool = False
+    posts: bool = True
+    key_state_down: bool | None = True
     on_applied: Any = None
+    on_released: Any = None
+    lifecycle: LifecycleJournal = field(default_factory=LifecycleJournal)
 
     def apply_navigation_command(self, command: NavigationCommand, evidence: Any) -> Any:
         del evidence
         self.commands.append(command)
         if self.refuse:
             return NavigationApplyResult(NavigationApplyStatus.REJECTED_FOCUS, "not focused")
-        if self.on_applied is not None:
-            self.on_applied(command)
         held = []
         if command.turn_axis == -1:
             held.append("left")
         elif command.turn_axis == 1:
             held.append("right")
+        if command.forward_axis == 1:
+            held.append("w")
+        if self.posts:
+            for target in held:
+                self.lifecycle.note(LifecycleStage.OS_EDGE_POSTED, target, target=target)
+                self.lifecycle.note(LifecycleStage.LEASE_HELD, target, target=target)
+        if self.on_applied is not None:
+            self.on_applied(command)
         return NavigationApplyResult(NavigationApplyStatus.APPLIED, command.reason, tuple(held))
 
     def release_navigation(self, reason: str) -> Any:
         self.releases.append(reason)
+        if self.on_released is not None:
+            self.on_released(reason)
 
 
 @dataclass
@@ -103,6 +124,11 @@ class Capture:
     heading_deg: float = 40.0
     pending: int = 0
     probes_seen: int = 0
+    #: Whether holding forward makes the ground flow. ``False`` is the game
+    #: that takes the key and does nothing with it.
+    walks: bool = True
+    walking: bool = False
+    scroll_px: int = 0
 
     def __post_init__(self) -> None:
         from tests.arrow_fixtures import render_scene
@@ -128,15 +154,25 @@ class Capture:
                 # Turning the camera right reduces the heading to the arrow.
                 self.heading_deg -= self.pending * self.gain_deg_per_unit
             self.pending = 0
+        if self.walking and self.walks:
+            # The whole scene flows past: what walking forward looks like to a
+            # flow estimator. Rendered stress for wiring only (plan 7.2); no
+            # gate is passed on it.
+            self.scroll_px += 9
         step = int(round(self.heading_deg / 5.0) * 5)
         step = max(-180, min(175, step))
+        scene = self._scenes[step]
+        if self.scroll_px:
+            scene = np.roll(scene, self.scroll_px % scene.shape[0], axis=0)
         frame = make_frame(
-            self.sequence, captured_at_s=time.monotonic(), bgr=self._scenes[step]
+            self.sequence, captured_at_s=time.monotonic(), bgr=np.ascontiguousarray(scene)
         )
         return self._registry.envelope_for(frame)
 
     def absorb(self, command: NavigationCommand) -> None:
-        """Turn an accepted command into camera motion on the next frame."""
+        """Turn an accepted command into camera or character motion."""
+        if command.forward_axis == 1:
+            self.walking = True
         if command.yaw_delta_px:
             self.pending += command.yaw_delta_px
         elif command.turn_axis:
@@ -145,6 +181,9 @@ class Capture:
             span_s = command.valid_until_s - command.issued_at_s
             hold_ms = max(1, round(span_s * 1000))
             self.pending += command.turn_axis * hold_ms
+
+    def released(self, _reason: str) -> None:
+        self.walking = False
 
     def note_perception_ms(self, value: float) -> None: ...
 
@@ -155,6 +194,7 @@ class Capture:
 
 def _context(session: Session, capture: Capture) -> WorkerContext:
     session.on_applied = capture.absorb
+    session.on_released = capture.released
     return WorkerContext(
         generation=1,
         mode=None,  # type: ignore[arg-type]
@@ -163,6 +203,10 @@ def _context(session: Session, capture: Capture) -> WorkerContext:
         frames=capture,  # type: ignore[arg-type]
         navigation=session,  # type: ignore[arg-type]
         pipeline=PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lifecycle=session.lifecycle,
+        # The OS agrees the key is down exactly when the fake authority says a
+        # lease is held; ``key_state_down`` scripts the case where it does not.
+        key_state=lambda _key: session.key_state_down,
     )
 
 
@@ -208,7 +252,7 @@ class _NullPort:
 # ---------------------------------------------------------------------------
 
 
-def test_an_unverified_control_mode_stops_before_a_single_probe() -> None:
+def test_an_unverified_control_mode_stops_before_a_single_camera_probe() -> None:
     session, capture = Session(), Capture()
     worker = make_live_worker(
         lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
@@ -220,12 +264,21 @@ def test_an_unverified_control_mode_stops_before_a_single_probe() -> None:
 
     assert result.kind is ModeResultKind.FAILED
     assert "Shift Lock" in result.detail
-    assert session.commands == [], "a probe was issued before the mode was confirmed"
+    # The acceptance pulse ran and passed - that is the stage before this one -
+    # and no *camera* probe was issued after the mode failed to confirm.
+    assert capture.probes_seen == 0, "a camera probe was issued before the mode was confirmed"
+    assert all(command.turn_axis == 0 for command in session.commands)
+    assert all(command.yaw_delta_px == 0 for command in session.commands)
     assert session.releases, "the worker released on the way out"
 
 
-def test_the_prologue_never_presses_forward() -> None:
-    """Every probe is a stationary rotation. `W` belongs to FOLLOW."""
+def test_the_prologue_presses_forward_exactly_once_and_bounded() -> None:
+    """`W` belongs to FOLLOW, and to one bounded acceptance pulse before it.
+
+    The pulse is the only forward edge the prologue may emit. Everything after
+    it is a stationary rotation, and the pulse itself is capped by
+    ``_LiveControlPort.MAX_FORWARD_PULSE_MS`` however long it is asked for.
+    """
     session, capture = Session(), Capture()
     worker = make_live_worker(
         lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
@@ -237,9 +290,53 @@ def test_the_prologue_never_presses_forward() -> None:
 
     assert session.commands, "the prologue never probed at all"
     assert capture.probes_seen > 0, "no probe reached the simulated camera"
-    assert all(command.forward_axis == 0 for command in session.commands)
+    forward = [command for command in session.commands if command.forward_axis == 1]
+    assert len(forward) == 1, f"expected one forward pulse, got {len(forward)}"
+    pulse = forward[0]
+    span_ms = (pulse.valid_until_s - pulse.issued_at_s) * 1000.0
+    assert 0 < span_ms <= _LiveControlPort.MAX_FORWARD_PULSE_MS
+    assert capture.walking is False, "forward was still held when the prologue returned"
     assert all(command.jump is False for command in session.commands)
     assert all(command.lateral_axis == 0 for command in session.commands)
+
+
+def test_a_game_that_takes_the_key_and_does_nothing_stops_before_the_camera() -> None:
+    """The stage that made the thirty-second timeout unnecessary.
+
+    Characterizing a camera turn assumes the game is acting on our input. When
+    it is not, that stage spends its whole deadline proving nothing and reports
+    a timeout - which names the wrong problem. One pulse answers it first.
+    """
+    session, capture = Session(), Capture(walks=False)
+    worker = make_live_worker(
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lambda: NavigationCapabilities.observing(os_name="test", profile_id="green_arrow_v1"),
+        prologue=_prologue(),
+    )
+
+    result = worker(_context(session, capture))
+
+    assert result.kind is ModeResultKind.FAILED
+    assert "not acting on the key" in result.detail
+    assert capture.probes_seen == 0, "the camera was probed anyway"
+    assert session.lifecycle.reached(LifecycleStage.GAME_MOTION_NOT_CONFIRMED)
+    assert capture.walking is False
+
+
+def test_an_edge_the_os_never_registered_is_named_as_such() -> None:
+    session, capture = Session(key_state_down=False), Capture()
+    worker = make_live_worker(
+        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
+        lambda: NavigationCapabilities.observing(os_name="test", profile_id="green_arrow_v1"),
+        prologue=_prologue(),
+    )
+
+    result = worker(_context(session, capture))
+
+    assert result.kind is ModeResultKind.FAILED
+    assert "does not report the key as down" in result.detail
+    assert session.lifecycle.reached(LifecycleStage.OS_EDGE_LOOPBACK_MISSING)
+    assert capture.probes_seen == 0
 
 
 def test_a_probe_that_is_refused_stops_rather_than_pretending_it_landed() -> None:

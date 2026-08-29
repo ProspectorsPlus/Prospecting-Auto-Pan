@@ -588,11 +588,24 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         )
         turn_cache.save(response)
 
+    # Bound late: the coordinator does not exist yet, and the prologue needs
+    # somewhere to publish. One cell rather than a forward reference, so the
+    # wiring stays readable in the order it is built.
+    setup_sink: list[Callable[[SetupProgress], None]] = []
+
+    def coordinator_publish(progress: SetupProgress) -> None:
+        for sink in setup_sink:
+            sink(progress)
+
     prologue = make_live_prologue(
         fingerprint_factory=control_fingerprint,
         control_mode_probe=probe,
         capabilities_factory=capabilities_factory,
-        setup_factory=lambda cancelled: make_setup(cancelled, lambda _p: None),
+        # Published, not discarded. The prologue used to run its stages into a
+        # sink that dropped them, so the thirty seconds Live spent failing to
+        # characterize a turn looked from the dashboard exactly like thirty
+        # seconds of navigating.
+        setup_factory=lambda cancelled: make_setup(cancelled, coordinator_publish),
         prior_factory=turn_cache.load,
         on_measured=remember,
     )
@@ -620,7 +633,10 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         profiles=profiles,
         setup_runner=run_setup,
         cursor_probe=port.cursor_client_px,
+        key_state_probe=port.key_state,
     )
+    setup_sink.append(coordinator._publish_setup)
+
     application = Application(
         port=port,
         guard=guard,

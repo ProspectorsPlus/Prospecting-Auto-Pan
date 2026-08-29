@@ -35,6 +35,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol, runtime_checkable
 
+from prospector_engine.acceptance import AcceptanceResult
 from prospector_engine.contracts import (
     EvidenceStatus,
     Provenance,
@@ -187,6 +188,16 @@ class ControlSetupPort(Protocol):
     Held only by the live worker, which only exists after a physical arm.
     """
 
+    def input_acceptance(self) -> AcceptanceResult:
+        """One bounded forward pulse, and a causal answer about what it did.
+
+        The first thing in the whole system that emits input, and the reason
+        the stages after it are worth running at all: characterizing a camera
+        turn in a game that is not receiving keys spends thirty seconds proving
+        nothing and reports a timeout.
+        """
+        ...
+
     def control_mode_sample(self) -> ControlModeSample: ...
 
     def turn_observation(self) -> TurnObservation | None: ...
@@ -226,6 +237,10 @@ class SetupConfig:
     profile_min_margin: float = 0.12
     #: Fraction of frames the winner must actually lead.
     profile_min_agreement: float = 0.7
+    #: The whole input-acceptance stage: measure idle, pulse, watch, release.
+    #: Short on purpose - if the game is not taking keys, waiting longer is
+    #: not going to change that, and the user is standing there.
+    verify_input_deadline_s: float = 8.0
     reference_deadline_s: float = 8.0
     reference_stable_frames: int = 6
     #: Degrees of frame-to-frame jitter the heading may show and still count as
@@ -427,6 +442,7 @@ class AutomaticSetup:
         self._started_s = 0.0
         self._reference: ReferenceCheck | None = None
         self._profile_decision: ProfileDecision | None = None
+        self._acceptance: AcceptanceResult | None = None
 
     @staticmethod
     def _default_sleep(seconds: float) -> None:
@@ -446,6 +462,11 @@ class AutomaticSetup:
     @property
     def profile_decision(self) -> ProfileDecision | None:
         return self._profile_decision
+
+    @property
+    def acceptance(self) -> AcceptanceResult | None:
+        """What the forward pulse concluded, or ``None`` if it has not run."""
+        return self._acceptance
 
     # -- the run ----------------------------------------------------------
     def run_observation(self) -> SetupProgress:
@@ -488,21 +509,35 @@ class AutomaticSetup:
         """Verify the control mode and measure the turn actuator, under the arm.
 
         Called by the live worker after a physical arm, with the character
-        stationary. Every probe it issues is released by
-        :meth:`ControlSetupPort.release_turn` before the next observation, and
-        the whole thing is bounded by ``characterize_deadline_s``.
+        stationary. Every probe it issues is released before the next
+        observation, and every stage is bounded by its own deadline.
+
+        **Input acceptance comes first, and the order is the point.** Verifying
+        a camera control mode and measuring a turn actuator both assume the
+        game is receiving our input. When it is not - the commonest failure by
+        far - those stages spend their whole deadline proving nothing and then
+        report a timeout, which names the wrong problem. One forward pulse,
+        confirmed against frames captured after its own down edge, answers the
+        question they depend on before either of them runs.
         """
         self._started_s = self._now()
-        self._enter(SetupStage.VERIFY_CONTROL_MODE, "checking the camera control mode")
+        stage = SetupStage.VERIFY_INPUT
+        self._enter(stage, "testing whether Roblox accepts a key")
         try:
+            failure = self._verify_input(control)
+            if failure is not None:
+                return (self._fail(failure), None)
+            stage = SetupStage.VERIFY_CONTROL_MODE
+            self._enter(stage, "checking the camera control mode")
             failure = self._verify_control_mode(control)
             if failure is not None:
                 return (self._fail(failure), None)
-            self._enter(SetupStage.CHARACTERIZE_TURN, "measuring the turn actuator")
+            stage = SetupStage.CHARACTERIZE_TURN
+            self._enter(stage, "measuring the turn actuator")
             response, failure = self._characterize_turn(control, limits=limits, prior=prior)
         except SetupCancelled:
             control.release_turn()
-            return (self._cancel(SetupStage.CHARACTERIZE_TURN), None)
+            return (self._cancel(stage), None)
         finally:
             control.release_turn()
         if failure is not None:
@@ -776,6 +811,30 @@ class AutomaticSetup:
         return None
 
     # -- stage: control mode ----------------------------------------------
+    # -- stage: does the game take our input at all? ----------------------
+    def _verify_input(self, control: ControlSetupPort) -> SetupFailure | None:
+        """One bounded forward pulse. Released before this returns, always."""
+        stage = SetupStage.VERIFY_INPUT
+        try:
+            result = control.input_acceptance()
+        finally:
+            control.release_turn()
+        self._note(stage, 1, result.describe())
+        self._acceptance = result
+        if result.ok:
+            return None
+        return SetupFailure(
+            SetupFailureKind.INPUT_NOT_ACCEPTED,
+            stage,
+            result.describe(),
+            result.outcome.remedy,
+            f"outcome={result.outcome.value} "
+            f"idle_noise={result.idle_noise_norm:.4f} "
+            f"threshold={result.threshold_norm:.4f} "
+            f"post_edge_frames={result.post_edge_samples} "
+            f"loopback={result.loopback} leases={','.join(result.leases_held) or 'none'}",
+        )
+
     def _verify_control_mode(self, control: ControlSetupPort) -> SetupFailure | None:
         """Confirm the locked-camera control mode. Never toggles it.
 

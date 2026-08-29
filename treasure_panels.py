@@ -734,6 +734,7 @@ SETUP_STEPS: tuple[tuple[str, str], ...] = (
     ("select_profile", "Identify map"),
     ("establish_reference", "Check direction"),
     ("shadow_qualify", "Qualify"),
+    ("verify_input", "Test input"),
     ("verify_control_mode", "Camera mode"),
     ("characterize_turn", "Measure turning"),
 )
@@ -742,7 +743,7 @@ SETUP_STEPS: tuple[tuple[str, str], ...] = (
 class SetupPanel:
     """What automatic setup is doing, as a stage strip and one sentence.
 
-    Nine fixed cells, laid out once. A stage changing colour cannot change the
+    Ten fixed cells, laid out once. A stage changing colour cannot change the
     panel's requested size, which is why the strip is boxes rather than a text
     widget that is rewritten - the old commissioning window rewrote a Text on a
     timer and that is what made the layout breathe.

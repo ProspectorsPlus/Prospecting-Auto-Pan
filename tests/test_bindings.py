@@ -69,7 +69,7 @@ def test_no_function_key_is_bound_anywhere() -> None:
     """An alias that still fires is not removed, it is hidden."""
     for binding in BINDINGS:
         assert not binding.chord.key.startswith("f") or binding.chord.key == "f"
-    assert ORDINARY_KEYS == {"n", "o", "x", "r", "p", "d", "i"}
+    assert {"n", "o", "x", "r", "p", "d", "i"} == ORDINARY_KEYS
     assert not any(key.startswith("f") and key[1:].isdigit() for key in ORDINARY_KEYS)
 
 

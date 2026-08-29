@@ -29,6 +29,13 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
+from prospector_engine.acceptance import (
+    AcceptanceResult,
+    ForwardMotionWitness,
+    ForwardRequest,
+    InputAcceptanceProbe,
+    MotionSample,
+)
 from prospector_engine.arrow import (
     ArrowDetector,
     DetectorConfig,
@@ -51,6 +58,7 @@ from prospector_engine.contracts import (
     DiagnosticObservation,
     DirectionObservation,
     EvidenceStatus,
+    InputKey,
     ModeResult,
     ModeResultKind,
     MotionObservation,
@@ -62,6 +70,7 @@ from prospector_engine.contracts import (
     monotonic_s,
 )
 from prospector_engine.coordinator import WorkerContext
+from prospector_engine.lifecycle import LifecycleStage
 from prospector_engine.motion import (
     UNCALIBRATED_BASELINE,
     ContactConfig,
@@ -1358,21 +1367,6 @@ class PerceptionPipeline:
 # ---------------------------------------------------------------------------
 
 
-def _motion_confirmed(motion: MotionObservation | None) -> bool | None:
-    """Did the world actually move? ``None`` when the estimator abstained.
-
-    Only meaningful next to an applied forward command: this says whether
-    perception corroborated it, which is the difference between "the keys are
-    down" and "the character is walking".
-    """
-    if motion is None or not motion.valid:
-        return None
-    speed = motion.forward_speed_norm
-    if speed is None:
-        return None
-    return abs(speed) > 0.0
-
-
 def _run_observer_loop(
     context: WorkerContext,
     pipeline: PerceptionPipeline,
@@ -1590,6 +1584,12 @@ def make_live_worker(
         pipeline.motion_enabled = True
         capabilities = capabilities_factory()
         navigator = Navigator(capabilities=capabilities)
+        context.lifecycle.note(
+            LifecycleStage.LIVE_WORKER_ENTERED,
+            context.worker_id,
+            generation=context.generation,
+        )
+        witness = ForwardMotionWitness()
 
         if prologue is not None:
             outcome = prologue(context, pipeline)
@@ -1602,6 +1602,12 @@ def make_live_worker(
                 )
             capabilities = outcome.capabilities or capabilities
             navigator.adopt_capabilities(capabilities)
+            # The prologue measured the idle noise floor moments ago with the
+            # character stationary; the witness starts from that rather than
+            # from nothing, so the first held frames are judged against a real
+            # number instead of an assumption.
+            if outcome.idle_noise_norm is not None:
+                witness = ForwardMotionWitness(seed_noise_norm=outcome.idle_noise_norm)
 
         if not capabilities.steering_enabled:
             session.release_navigation("not-ready")
@@ -1620,9 +1626,20 @@ def make_live_worker(
             decision: NavigationDecision, envelope: Any, result: PerceptionResult
         ) -> CommandVisualization:
             now = monotonic_s()
+            # Judge the frame we have *before* changing what is held: this
+            # frame was captured under the previous command, which is the only
+            # thing it can honestly report on.
+            confirmed = witness.observe(
+                MotionSample(
+                    envelope.frame.sequence,
+                    envelope.frame.captured_at_s,
+                    result.inputs.motion,
+                )
+            )
             if decision.release or decision.command is None:
                 session.release_navigation(decision.reason)
                 navigator.note_released(now_s=now)
+                witness.note_command(forward_held=False, at_s=now)
                 return CommandVisualization.released(detail=decision.reason, live=True)
             outcome = session.apply_navigation_command(
                 decision.command, envelope.evidence_token
@@ -1637,9 +1654,10 @@ def make_live_worker(
             # the same claim as "nothing moved": holding W against a wall and
             # having no motion estimate are different facts.
             view = CommandVisualization.for_live(
-                decision.command,
-                outcome,
-                motion_confirmed=_motion_confirmed(result.inputs.motion),
+                decision.command, outcome, motion_confirmed=confirmed
+            )
+            witness.note_command(
+                forward_held=outcome.applied and "w" in outcome.leases_held, at_s=now
             )
             if not outcome.applied:
                 session.release_navigation(f"apply-rejected:{outcome.detail}")
@@ -1688,6 +1706,9 @@ class LivePrologueResult:
     message: str
     capabilities: NavigationCapabilities | None = None
     detail: str = ""
+    #: The idle motion noise the acceptance probe measured, so the live
+    #: witness starts from a number taken on this machine moments ago.
+    idle_noise_norm: float | None = None
 
 
 class _LiveControlPort:
@@ -1695,9 +1716,12 @@ class _LiveControlPort:
 
     Everything it can do is bounded and released: one probe at a time, a hard
     cap on the lease horizon, and :meth:`release_turn` called by the machine
-    after every observation and in its ``finally``. It cannot press ``W`` - the
-    only key it can hold is a turn key, and the only mouse motion it can emit
-    is a bounded yaw delta.
+    after every observation and in its ``finally``.
+
+    Two kinds of edge, and they are deliberately not the same code path. The
+    turn probes hold a turn key or emit a bounded yaw delta and can never press
+    ``W``; :meth:`input_acceptance` is the one thing here that can, it presses
+    it exactly once for a bounded pulse, and it releases in a ``finally``.
     """
 
     #: A probe key may be held no longer than one evidence-bound lease,
@@ -1705,6 +1729,9 @@ class _LiveControlPort:
     MAX_PROBE_HOLD_MS = 100
     #: A probe mouse delta may never exceed this many units.
     MAX_PROBE_UNITS = 200
+    #: The forward pulse may never be asked to hold longer than this, whatever
+    #: the acceptance config says. A cap in the object that owns the edge.
+    MAX_FORWARD_PULSE_MS = 250
 
     def __init__(
         self,
@@ -1724,6 +1751,7 @@ class _LiveControlPort:
         self._envelope: Any = None
         self._held: str | None = None
         self._hold_until_s = 0.0
+        self._forward_held = False
 
     # -- shared frame plumbing -------------------------------------------
     def _refresh(self) -> PerceptionResult | None:
@@ -1737,7 +1765,75 @@ class _LiveControlPort:
         self._envelope = envelope
         return self._latest
 
-    # -- ControlSetupPort -------------------------------------------------
+    # -- ControlSetupPort: input acceptance -------------------------------
+    def next_motion(self, timeout_s: float) -> MotionSample | None:
+        """The next frame's motion reading, stamped with when it was captured."""
+        envelope = self._context.frames.wait_for_new(self._sequence, timeout_s)
+        if envelope is None:
+            return None
+        frame = envelope.frame
+        self._sequence = frame.sequence
+        self._latest_frame = frame
+        self._envelope = envelope
+        result = self._pipeline.analyze(frame, map_id="acceptance", approach_valid=False)
+        self._latest = result
+        return MotionSample(frame.sequence, frame.captured_at_s, result.inputs.motion)
+
+    def request_forward(self, hold_ms: int) -> ForwardRequest:
+        """One bounded forward lease. The only place this object presses ``W``."""
+        session = self._context.navigation
+        envelope = self._envelope
+        frame = self._latest_frame
+        now = monotonic_s()
+        if session is None or envelope is None or frame is None:
+            return ForwardRequest(False, (), "no live session or no frame yet", now)
+        hold_s = min(self.MAX_FORWARD_PULSE_MS, max(1, hold_ms)) / 1000.0
+        command = NavigationCommand(
+            generation=self._context.generation,
+            source_frame_sequence=frame.sequence,
+            source_captured_at_s=frame.captured_at_s,
+            forward_axis=1,
+            lateral_axis=0,
+            jump=False,
+            yaw_delta_px=0,
+            turn_axis=0,
+            issued_at_s=now,
+            valid_until_s=now + hold_s,
+            reason="input acceptance: bounded forward pulse",
+            kind=CommandKind.FOLLOW,
+        )
+        outcome = session.apply_navigation_command(command, envelope.evidence_token)
+        self._forward_held = outcome.applied and "w" in outcome.leases_held
+        return ForwardRequest(
+            applied=outcome.applied,
+            leases_held=outcome.leases_held,
+            detail=outcome.detail or outcome.status.name,
+            edge_at_s=now,
+        )
+
+    def forward_key_state(self) -> bool | None:
+        return self._context.key_state(InputKey.W)
+
+    def release_forward(self, reason: str) -> None:
+        session = self._context.navigation
+        if session is not None:
+            session.release_navigation(reason)
+        self._forward_held = False
+
+    def input_acceptance(self) -> AcceptanceResult:
+        """Run the bounded pulse. Released before this returns, on every path."""
+        probe = InputAcceptanceProbe(
+            self,
+            self._context.lifecycle,
+            cancelled=self._context.cancellation.is_cancelled,
+            on_progress=self._context.on_status,
+        )
+        try:
+            return probe.run()
+        finally:
+            self.release_forward("acceptance-complete")
+
+    # -- ControlSetupPort: camera -----------------------------------------
     def control_mode_sample(self) -> Any:
         from prospector_engine.autosetup import ControlModeSample
 
@@ -1863,18 +1959,24 @@ def make_live_prologue(
         with scope:
             progress, response = machine.run_control(port, limits=turn_limits, prior=prior)
         port.release_turn()
+        port.release_forward("prologue-complete")
+        acceptance = getattr(machine, "acceptance", None)
+        noise = acceptance.idle_noise_norm if acceptance is not None else None
         if response is None:
             failure = progress.failure
             return LivePrologueResult(
                 False,
                 failure.describe() if failure else "automatic setup could not finish",
                 detail=failure.detail if failure else "",
+                idle_noise_norm=noise,
             )
         if on_measured is not None:
             on_measured(response)
         capabilities = replace(
             capabilities_factory(), control_mode_ok=True, turn_response=response
         )
-        return LivePrologueResult(True, response.describe(), capabilities=capabilities)
+        return LivePrologueResult(
+            True, response.describe(), capabilities=capabilities, idle_noise_norm=noise
+        )
 
     return prologue

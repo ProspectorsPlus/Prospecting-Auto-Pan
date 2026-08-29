@@ -114,6 +114,17 @@ _OS_NAME = sys.platform
 _CHORD_START = chord_label(IntentType.START_LIVE, _OS_NAME)
 _CHORD_STOP = chord_label(IntentType.STOP, _OS_NAME)
 
+#: What the armed setup stages are actually doing, in the user's words. These
+#: run *inside* Live, after the arm, and none of them is navigation: the
+#: character stands still while one bounded probe at a time is pressed and
+#: released. A window that said "navigating" through all of them is what made
+#: a thirty-second failure indistinguishable from thirty seconds of walking.
+_LIVE_STAGE_WORDS: dict[SetupStage, str] = {
+    SetupStage.VERIFY_INPUT: "Testing whether Roblox accepts a key",
+    SetupStage.VERIFY_CONTROL_MODE: "Checking the camera control mode",
+    SetupStage.CHARACTERIZE_TURN: "Measuring how the camera turns",
+}
+
 
 #: Two or three words per binding. The full sentence lives in the registry's
 #: ``description`` and in the tooltip; the legend is a reminder, not a manual.
@@ -880,10 +891,20 @@ class Dashboard:
                 "under Advanced before navigating again.",
                 BAD,
             )
+        elif progress.running and progress.stage.emits_input:
+            # Armed, and *not* navigating. Saying "movement is being sent" here
+            # would be the single most misleading thing this window could do:
+            # these stages press one bounded probe at a time with the character
+            # standing still, and the last one has not run yet.
+            self.message.set(
+                f"{_LIVE_STAGE_WORDS[progress.stage]}. Press {_CHORD_STOP} to stop.", GOLD
+            )
         elif progress.running:
             self.message.set(f"Setting up: {progress.detail}", GOLD)
         elif snapshot is not None and snapshot.mode is RunMode.LIVE:
-            self.message.set("Navigating. Press Stop at any time.", OK)
+            self.message.set(
+                f"Navigating - your character is moving. Press {_CHORD_STOP} to stop.", OK
+            )
         elif progress.ok:
             self.message.set(
                 f"Ready. Focus Roblox and press {_CHORD_START} to let the navigator move "
@@ -936,16 +957,16 @@ class Dashboard:
         self.return_button.configure(
             state="normal" if snapshot.mode is RunMode.LIVE else "disabled"
         )
-        self.guide.set(
-            "Navigating - Stop is always available."
-            if snapshot.mode is RunMode.LIVE
-            else (
-                f"Armed. Focus Roblox and press {_CHORD_START}."
-                if armed
-                else "Open Roblox windowed with a map equipped, then press Start Navigator."
-            ),
-            GOLD if armed or snapshot.mode is RunMode.LIVE else MUTED,
-        )
+        setup = self.app.coordinator.setup_progress
+        if snapshot.mode is RunMode.LIVE and setup.running and setup.stage.emits_input:
+            guide = f"{_LIVE_STAGE_WORDS[setup.stage]} - Stop is always available."
+        elif snapshot.mode is RunMode.LIVE:
+            guide = "Navigating - Stop is always available."
+        elif armed:
+            guide = f"Armed. Focus Roblox and press {_CHORD_START}."
+        else:
+            guide = "Open Roblox windowed with a map equipped, then press Start Navigator."
+        self.guide.set(guide, GOLD if armed or snapshot.mode is RunMode.LIVE else MUTED)
 
     def _render_readout(self, snapshot: TelemetrySnapshot | None) -> None:
         geometry = self.app.guard.geometry
@@ -1186,7 +1207,9 @@ def main() -> int:
     def submit_from_hotkey(intent: Any) -> None:
         app.coordinator.submit(intent)
 
-    hotkeys = app.port.create_hotkey_source(submit_from_hotkey)
+    hotkeys = app.port.create_hotkey_source(
+        submit_from_hotkey, on_edge=app.coordinator.note_hotkey_edge
+    )
     # Held on the application so the dashboard can show whether it is running.
     # A listener that silently is not - the usual cause being Input Monitoring
     # not granted to whichever app launched this - is indistinguishable from a

@@ -46,6 +46,7 @@ from prospector_engine.contracts import (
     monotonic_s,
 )
 from prospector_engine.geometry import ViewportGeometry
+from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
 from prospector_engine.ports import PlatformPort
 
 __all__ = [
@@ -443,6 +444,7 @@ class InputAuthority:
         config: AuthorityConfig | None = None,
         run_id: str | None = None,
         on_safety_fault: Callable[[SafetyFault], None] | None = None,
+        lifecycle: LifecycleJournal | None = None,
     ) -> None:
         self._port = port
         self._deadman = deadman
@@ -450,6 +452,10 @@ class InputAuthority:
         self._config = config or AuthorityConfig()
         self._run_id = run_id or os.urandom(8).hex()
         self._on_safety_fault = on_safety_fault
+        # Optional so tests and the deadman path need no journal. When one
+        # is present, the authority is the only thing that can honestly say
+        # an OS edge went out and a lease is held, so it says both.
+        self._lifecycle = lifecycle or LifecycleJournal()
 
         self._edge_barrier = threading.RLock()
         self._lock = threading.RLock()
@@ -478,6 +484,12 @@ class InputAuthority:
     @property
     def run_id(self) -> str:
         return self._run_id
+
+    @property
+    def lifecycle(self) -> LifecycleJournal:
+        """The named-stage record. The authority is the only honest source for
+        ``OS_EDGE_POSTED``, ``LEASE_HELD`` and the release stages."""
+        return self._lifecycle
 
     @property
     def config(self) -> AuthorityConfig:
@@ -801,12 +813,25 @@ class InputAuthority:
                 return None
             try:
                 self._emit_down(key, button)
-            except Exception:
+            except Exception as exc:
                 with self._lock:
                     self._leases.pop(lease_id, None)
                 self._emit_up(key, button)
                 self._deadman.forget(lease_id)
+                self._lifecycle.note(
+                    LifecycleStage.OS_EDGE_POSTED,
+                    f"the post call raised for {target}",
+                    target=target,
+                    posted=False,
+                    error=repr(exc),
+                )
                 return None
+            # The post call returned. That is *all* this stage means: it is not
+            # evidence that anything received the event, and the loopback and
+            # motion stages exist because it is not.
+            self._lifecycle.note(
+                LifecycleStage.OS_EDGE_POSTED, target, target=target, posted=True
+            )
             with self._lock:
                 entry = self._leases.get(lease_id)
                 if entry is None or epoch != self._epoch:
@@ -820,6 +845,9 @@ class InputAuthority:
                 self._emit_up(key, button)
                 self._deadman.forget(lease_id)
                 return None
+        self._lifecycle.note(
+            LifecycleStage.LEASE_HELD, target, target=target, lease_id=lease_id
+        )
         return handle
 
     def _emit_down(self, key: InputKey | None, button: MouseButton | None) -> None:
@@ -873,6 +901,9 @@ class InputAuthority:
             if entry is not None:
                 try:
                     self._emit_up(entry.handle.key, entry.handle.button)
+                    self._lifecycle.note(
+                        LifecycleStage.W_RELEASE_POSTED, entry.target, target=entry.target
+                    )
                 except Exception:
                     self._latch_uncertain(f"release-failed:{entry.target}")
             self._deadman.forget(lease.lease_id)
@@ -938,6 +969,19 @@ class InputAuthority:
                     release_known_safe=safe and not self._release_uncertain,
                     reason=reason,
                 )
+        self._lifecycle.note(
+            LifecycleStage.W_RELEASE_POSTED,
+            f"release-all: {reason}",
+            edges=len(attempted),
+            failures=len(failures),
+        )
+        if ledger_empty:
+            self._lifecycle.note(
+                LifecycleStage.LEDGER_EMPTY,
+                reason,
+                deadman_acknowledged=deadman_ok,
+                failures=len(failures),
+            )
         return report
 
     def _latch_uncertain(self, reason: str) -> None:

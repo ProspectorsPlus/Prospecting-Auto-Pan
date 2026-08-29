@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from prospector_engine.bindings import HotkeyHealth, HotkeyState
 from prospector_engine.contracts import (
     CapturedFrame,
     FocusState,
@@ -341,6 +342,9 @@ class FakePlatformPort:
         self.settle_reads = 0
         self.min_client_logical: tuple[float, float] | None = None
         self.pin_should_fail = False
+        #: Scripts what the OS reports about a key, independently of what
+        #: was posted - the shape of a post that returned and landed nowhere.
+        self.key_state_override: bool | None = None
         #: When set, every read reports a slightly different size, so no three
         #: consecutive read-backs ever agree. A real window does this while it
         #: is being animated or fought over by a window manager.
@@ -467,14 +471,45 @@ class FakePlatformPort:
     def cursor_client_px(self) -> tuple[int, int] | None:
         return self.cursor_px
 
-    def create_hotkey_source(self, submit: Callable[[RuntimeIntent], None]) -> FakeHotkeySource:
-        return FakeHotkeySource(submit)
+    def key_state(self, key: InputKey) -> bool | None:
+        """What the OS would say, derived from the edges actually recorded.
+
+        ``key_state_override`` scripts the interesting case that cannot be
+        derived: a post that returned and an OS that never registered it.
+        """
+        if self.key_state_override is not None:
+            return self.key_state_override
+        code = self.key_code(key)
+        with self._lock:
+            transcript = list(self.transcript)
+        for entry in reversed(transcript):
+            if entry["args"] == [code]:
+                if entry["op"] == "key_down":
+                    return True
+                if entry["op"] == "key_up":
+                    return False
+        return False
+
+    def create_hotkey_source(
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        on_edge: Callable[[Any], None] | None = None,
+    ) -> FakeHotkeySource:
+        return FakeHotkeySource(submit, on_edge=on_edge)
 
 
 class FakeHotkeySource:
-    def __init__(self, submit: Callable[[RuntimeIntent], None]) -> None:
+    def __init__(
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        on_edge: Callable[[Any], None] | None = None,
+    ) -> None:
         self.submit = submit
+        self.on_edge = on_edge
         self.started = False
+        self.cleared: list[str] = []
 
     def start(self) -> None:
         self.started = True
@@ -484,6 +519,12 @@ class FakeHotkeySource:
 
     def is_running(self) -> bool:
         return self.started
+
+    def health(self) -> HotkeyHealth:
+        return HotkeyHealth(HotkeyState.READY if self.started else HotkeyState.STOPPED, "fake")
+
+    def clear_held_keys(self, reason: str = "focus-change") -> None:
+        self.cleared.append(reason)
 
 
 class FakeDeadmanClient(DeadmanClient):

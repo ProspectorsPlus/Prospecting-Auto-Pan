@@ -16,7 +16,7 @@ import sys
 from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
-from prospector_engine.bindings import HotkeyHealth
+from prospector_engine.bindings import ChordEvent, HotkeyHealth
 from prospector_engine.contracts import (
     FocusState,
     InputKey,
@@ -232,6 +232,17 @@ class PlatformPort(Protocol):
     def raw_scroll_lines(self, lines: int) -> None: ...
 
     # -- read-only diagnostics -------------------------------------------
+    def key_state(self, key: InputKey) -> bool | None:
+        """Whether the OS believes ``key`` is down right now. ``None`` if unknown.
+
+        Read-only, and the one cheap answer to a question ``CGEventPost``
+        returning cannot answer: *did the edge reach the window server at all?*
+        A post that returned and a key the OS does not believe is down are
+        different faults with different remedies, and until they were separated
+        the only available diagnosis was a guess.
+        """
+        ...
+
     def cursor_client_px(self) -> tuple[int, int] | None:
         """Cursor position in **canonical** client coordinates, or ``None``.
 
@@ -244,7 +255,16 @@ class PlatformPort(Protocol):
         ...
 
     # -- hotkeys ----------------------------------------------------------
-    def create_hotkey_source(self, submit: Callable[[RuntimeIntent], None]) -> HotkeySource: ...
+    def create_hotkey_source(
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        on_edge: Callable[[ChordEvent], None] | None = None,
+    ) -> HotkeySource:
+        """Build the listener. ``on_edge`` sees every normalized edge, whatever
+        policy later does with it - which is the only way "the chord never
+        arrived" and "the chord arrived and was refused" stay distinguishable."""
+        ...
 
 
 def current_platform_name() -> str:

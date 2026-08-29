@@ -1284,6 +1284,7 @@ class SetupStage(Enum):
     STABILIZE_CAPTURE = "stabilize_capture"
     SELECT_PROFILE = "select_profile"
     ESTABLISH_REFERENCE = "establish_reference"
+    VERIFY_INPUT = "verify_input"
     VERIFY_CONTROL_MODE = "verify_control_mode"
     CHARACTERIZE_TURN = "characterize_turn"
     SHADOW_QUALIFY = "shadow_qualify"
@@ -1299,11 +1300,16 @@ class SetupStage(Enum):
     def emits_input(self) -> bool:
         """Whether this stage can inject input into the game.
 
-        Only the two live probes can, and both run under an arm token with the
-        character stationary. Everything before them is read-only, which is why
-        Start Navigator is safe to press with no arming at all.
+        Only the three live probes can, and each runs under an arm token with
+        the character stationary and releases before the next observation.
+        Everything before them is read-only, which is why Start Navigator is
+        safe to press with no arming at all.
         """
-        return self in (SetupStage.VERIFY_CONTROL_MODE, SetupStage.CHARACTERIZE_TURN)
+        return self in (
+            SetupStage.VERIFY_INPUT,
+            SetupStage.VERIFY_CONTROL_MODE,
+            SetupStage.CHARACTERIZE_TURN,
+        )
 
 
 class SetupFailureKind(Enum):
@@ -1318,6 +1324,7 @@ class SetupFailureKind(Enum):
     CAPTURE_STALE = "capture_stale"
     PROFILE_AMBIGUOUS = "profile_ambiguous"
     REFERENCE_UNSTABLE = "reference_unstable"
+    INPUT_NOT_ACCEPTED = "input_not_accepted"
     CONTROL_MODE_UNVERIFIED = "control_mode_unverified"
     ACTUATOR_UNPROVEN = "actuator_unproven"
     TIMEOUT = "timeout"

@@ -1419,3 +1419,123 @@ Three consequences that are the actual work:
 
 **Deviation:** the plan's §11.2 hotkey table lists F1–F5. Superseded twice now
 (D-046, then here); the plan is not rewritten.
+
+---
+
+## D-052 — 2026-08-28 — Prove the game takes a key before measuring a camera
+
+**Plan text:** §3.4, §7.4, and the D-045 prologue this extends.
+
+**Decision:** a new bounded stage, `SetupStage.VERIFY_INPUT`, runs first in the
+live prologue. With the character stationary it measures the idle motion noise
+floor, posts one ~160 ms forward pulse, watches only frames captured *after*
+the down edge, releases, and reports one of six named outcomes.
+
+**Why:** read out of `logs/stop-epoch7-1886181997.jsonl` on this machine. Its
+last normal frame is at `1886148.84`; the file was exported at `1886181.997` —
+**33.15 s** later, which is the `characterize_turn` deadline plus the poll
+slack. Live entered, spent its whole budget failing to measure a camera, and
+reported a timeout. No `turn-response.json` has ever been written.
+
+Characterizing a turn *assumes* the game is acting on our input. When it is
+not — the commonest failure by far — that stage cannot discover it, because
+"the camera did not move" is what both faults look like. It spends thirty
+seconds proving nothing and then names the wrong problem.
+
+The six outcomes are kept separate because they have six different remedies:
+`NO_POST` (Accessibility), `NO_LOOPBACK` (the OS never registered the edge),
+`NO_LEASE` (the authority refused), `INSUFFICIENT_EVIDENCE` (too few usable
+frames), `NO_MOTION` (Roblox is not acting on the key), `MOVED`.
+
+`NO_LOOPBACK` is new and needs a new read-only port method, `key_state`:
+`CGEventSourceKeyState` on macOS, `GetAsyncKeyState` on Windows. It answers the
+one question a returning `CGEventPost` cannot — *did the edge reach the window
+server at all?* Verified read-only here: it reports `False` for every key at
+rest and flips to `True` while a key is physically held.
+
+**Deviation:** the plan's prologue has two armed stages. There are now three.
+
+---
+
+## D-053 — 2026-08-28 — Motion was read off the frame that produced the command
+
+**Plan text:** §7.4, §11.
+
+**Decision:** `_motion_confirmed(motion)` — `abs(forward_speed_norm) > 0.0` on
+`result.inputs.motion` — is deleted. `ForwardMotionWitness` replaces it.
+
+**Why:** two faults in one line, and together they made the overlay's motion
+claim meaningless in both directions.
+
+* **It was not causal.** `result` is the perception of the frame the decision
+  was made *from*. It describes the world before the edge went down. A command
+  can never be confirmed by the frame that produced it.
+* **`abs(speed) > 0` is not movement.** Optical flow is never exactly zero, so
+  a stationary character reported motion on essentially every frame.
+
+The witness records the hold's start on its *rising* edge only — restamping it
+on every renewal would make every frame arrive "before the edge" and it would
+abstain forever — discards frames captured at or before that instant, learns
+the idle noise floor from frames where forward is not held, and requires the
+median of a short held window to exceed a multiple of that floor with the
+signs agreeing. It is seeded from the acceptance probe's measurement so the
+first held frames are judged against a number taken on this machine seconds
+earlier rather than against nothing.
+
+`None` remains a real answer and is not `False`: holding W against a wall and
+having no motion estimate are different facts.
+
+**Deviation:** none.
+
+---
+
+## D-054 — 2026-08-28 — One file, the whole story
+
+**Plan text:** §11.1, §13.
+
+**Decision:** `prospector_engine/lifecycle.py` names sixteen stages between a
+physical keypress and a character that moved. The authority, the coordinator,
+the listener and the live worker all write to one journal, and `_export_trace`
+appends it — plus the raw `EventLog` stream — to the stop JSONL.
+
+**Why:** measured. Every stop trace in `logs/` contains exactly three row
+kinds: `frame`, `preview`, `governor`. `stop-epoch7-1886181997.jsonl` has 6574
+rows and not one of them mentions the arm, the worker, the prologue, an OS
+edge, a lease or a motion verdict. A session that armed, entered Live, failed
+input acceptance and stopped is byte-for-byte the same shape as a session that
+never armed. `EventLog` held the answer and was memory-only, so it died with
+the process.
+
+`CommandStage.OS_EDGE_POSTED` had existed as an enum member since D-045 and was
+emitted by nothing; it is now written by the only object that can honestly say
+it, at the moment `_emit_down` returns.
+
+The near-miss filter matters: every keystroke anywhere on the machine reaches
+the listener, so only recognized chords and named-key near-misses are recorded.
+Journalling all of them would push the events that matter out of a bounded ring
+within seconds of somebody typing.
+
+**Deviation:** none.
+
+---
+
+## D-055 — 2026-08-28 — The window may not call the prologue "navigating"
+
+**Plan text:** §11.2.
+
+**Decision:** `_LIVE_STAGE_WORDS` gives each armed stage its own sentence, and
+a test asserts every `SetupStage.emits_input` stage has one. The prologue's
+`SetupProgress` is published to the coordinator instead of into
+`lambda _p: None`.
+
+**Why:** the guidance line read `Navigating. Press Stop at any time.` for
+every `RunMode.LIVE` state, and the badge guide read `Navigating - Stop is
+always available.` Both were shown throughout the input-free prologue, so
+thirty seconds of failing to characterize a camera was indistinguishable from
+thirty seconds of walking — while the character stood still.
+
+The progress sink was the other half: the control phase published its stages
+into a lambda that discarded them, so even a correct renderer had nothing to
+render.
+
+**Deviation:** none.

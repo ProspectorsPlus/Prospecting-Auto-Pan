@@ -1283,6 +1283,17 @@ class MacPlatformPort:
             )
         )
 
+    def key_state(self, key: InputKey) -> bool | None:
+        """Whether the window server believes ``key`` is down. Emits nothing."""
+        try:
+            return bool(
+                Quartz.CGEventSourceKeyState(
+                    Quartz.kCGEventSourceStateCombinedSessionState, _MAC_KEYCODES[key]
+                )
+            )
+        except Exception:
+            return None
+
     def cursor_client_px(self) -> tuple[int, int] | None:
         """Cursor position in **canonical** coordinates, or ``None``."""
         geometry = self.window_geometry()
@@ -1299,8 +1310,13 @@ class MacPlatformPort:
         return (x, y)
 
     # -- PlatformPort: hotkeys -------------------------------------------
-    def create_hotkey_source(self, submit: Callable[[RuntimeIntent], None]) -> MacHotkeySource:
-        return MacHotkeySource(submit, focus_probe=self.focus_state)
+    def create_hotkey_source(
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        on_edge: Callable[[ChordEvent], None] | None = None,
+    ) -> MacHotkeySource:
+        return MacHotkeySource(submit, focus_probe=self.focus_state, on_edge=on_edge)
 
 
 class MacHotkeySource:
@@ -1352,9 +1368,13 @@ class MacHotkeySource:
         submit: Callable[[RuntimeIntent], None],
         *,
         focus_probe: Callable[[], FocusState],
+        on_edge: Callable[[ChordEvent], None] | None = None,
     ) -> None:
         self._submit = submit
         self._focus_probe = focus_probe
+        # A plain callback, not an engine binding: the port stays instance-based
+        # and knows nothing about what is on the other end (plan 4.2).
+        self._on_edge = on_edge or (lambda _event: None)
         self._sequence = 0
         self._lock = threading.Lock()
         self._recognizer = ChordRecognizer()
@@ -1387,6 +1407,7 @@ class MacHotkeySource:
             self._name_for_keycode(keycode), _modifiers_from_flags(flags)
         )
         self._journal.edge(event)
+        self._on_edge(event)
         if event.binding is not None:
             self.dispatch(event.binding)
         return event
@@ -1396,11 +1417,13 @@ class MacHotkeySource:
             self._name_for_keycode(keycode), _modifiers_from_flags(flags)
         )
         self._journal.edge(event)
+        self._on_edge(event)
         return event
 
     def handle_flags_changed(self, flags: int) -> ChordEvent:
         event = self._recognizer.modifiers_changed(_modifiers_from_flags(flags))
         self._journal.edge(event)
+        self._on_edge(event)
         return event
 
     def dispatch(self, binding: Binding) -> bool:

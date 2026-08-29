@@ -1246,3 +1246,56 @@ def test_the_action_layer_is_raised_above_the_caption_and_diagnostics(root: Any)
         item = canvas._items.get(name)
         if item is not None:
             assert action > order.index(item), f"{name} covers the action layer"
+
+
+# ---------------------------------------------------------------------------
+# The window may never claim the character is moving when it is not
+# ---------------------------------------------------------------------------
+
+
+def _guidance_text(dashboard: Any) -> str:
+    dashboard._render_setup()
+    dashboard.root.update_idletasks()
+    return " ".join(str(label.cget("text")) for label in _widgets(dashboard.root, ("Label",)))
+
+
+def test_the_armed_setup_stages_are_never_described_as_navigating(dashboard: Any) -> None:
+    """The prologue is armed and stationary. Calling it navigation is a lie.
+
+    Live enters, stands still, and runs three bounded probes before the first
+    navigation command exists. The window used to say "Navigating. Press Stop
+    at any time." for every one of them, which is why thirty seconds of failing
+    to characterize a camera looked exactly like thirty seconds of walking.
+    """
+    from dataclasses import replace
+
+    from prospector_engine.contracts import RunMode, SetupStage
+
+    for stage, expected in (
+        (SetupStage.VERIFY_INPUT, "accepts a key"),
+        (SetupStage.VERIFY_CONTROL_MODE, "camera control mode"),
+        (SetupStage.CHARACTERIZE_TURN, "how the camera turns"),
+    ):
+        progress = replace(
+            dashboard.app.coordinator.setup_progress,
+            stage=stage,
+            detail="running",
+            failure=None,
+            started_at_s=1.0,
+            updated_at_s=1.0,
+        )
+        dashboard.app.coordinator._setup_progress = progress
+        dashboard.app.coordinator._mode = RunMode.LIVE
+        text = _guidance_text(dashboard)
+        assert expected in text, f"{stage.value} is not described: {text[:200]}"
+        assert "your character is moving" not in text
+        assert "Navigating -" not in text
+
+
+def test_every_armed_stage_has_words_of_its_own() -> None:
+    """A stage added without a sentence would fall back to claiming movement."""
+    from prospector_engine.contracts import SetupStage
+    from treasure_gui import _LIVE_STAGE_WORDS
+
+    emitting = {stage for stage in SetupStage if stage.emits_input}
+    assert emitting == set(_LIVE_STAGE_WORDS)

@@ -123,6 +123,23 @@ SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
 
+#: Virtual keys for the read-only ``key_state`` probe. Separate from the
+#: scancode table because ``GetAsyncKeyState`` is keyed by virtual key and the
+#: input path is deliberately scancode-based.
+_WIN_KEY_STATE_VK: dict[InputKey, int] = {
+    InputKey.W: 0x57,
+    InputKey.A: 0x41,
+    InputKey.S: 0x53,
+    InputKey.D: 0x44,
+    InputKey.SPACE: 0x20,
+    InputKey.SHIFT: 0x10,
+    InputKey.ESCAPE: 0x1B,
+    InputKey.DIGIT_1: 0x31,
+    InputKey.DIGIT_2: 0x32,
+    InputKey.LEFT: 0x25,
+    InputKey.RIGHT: 0x27,
+}
+
 #: Windows virtual key codes for the ordinary half of every chord. No function
 #: keys: the F-row aliases are gone on both platforms.
 _WIN_HOTKEY_VK: dict[str, int] = {
@@ -598,10 +615,27 @@ class WindowsPlatformPort:
         return (x, y)
 
     # -- PlatformPort: hotkeys -------------------------------------------
+    def key_state(self, key: InputKey) -> bool | None:
+        """Whether Windows believes ``key`` is down. Emits nothing.
+
+        ``GetAsyncKeyState`` is keyed by virtual key, and the input path here
+        is scancode-based, so the two tables are separate on purpose.
+        """
+        code = _WIN_KEY_STATE_VK.get(key)
+        if code is None:
+            return None
+        try:
+            return bool(ctypes.windll.user32.GetAsyncKeyState(code) & 0x8000)
+        except Exception:
+            return None
+
     def create_hotkey_source(
-        self, submit: Callable[[RuntimeIntent], None]
+        self,
+        submit: Callable[[RuntimeIntent], None],
+        *,
+        on_edge: Callable[[ChordEvent], None] | None = None,
     ) -> WindowsHotkeySource:
-        return WindowsHotkeySource(submit, focus_probe=self.focus_state)
+        return WindowsHotkeySource(submit, focus_probe=self.focus_state, on_edge=on_edge)
 
 
 class WindowsHotkeySource:
@@ -635,9 +669,13 @@ class WindowsHotkeySource:
         submit: Callable[[RuntimeIntent], None],
         *,
         focus_probe: Callable[[], FocusState],
+        on_edge: Callable[[ChordEvent], None] | None = None,
     ) -> None:
         self._submit = submit
         self._focus_probe = focus_probe
+        # A plain callback, not an engine binding: the port stays instance-based
+        # and knows nothing about what is on the other end (plan 4.2).
+        self._on_edge = on_edge or (lambda _event: None)
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._sequence = 0
@@ -672,6 +710,7 @@ class WindowsHotkeySource:
                 else self._recognizer.key_up(name, modifiers)
             )
             self._journal.edge(event)
+            self._on_edge(event)
             edges.append(event)
             if event.binding is not None:
                 self.dispatch(event.binding)
