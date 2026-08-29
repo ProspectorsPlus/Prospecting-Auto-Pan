@@ -13,6 +13,13 @@
                                       Roblox client and reports whether the
                                       character moved. Roblox must be
                                       frontmost. See the note below.
+    python treasure.py --native-control-probe [--key w,a,s,d] [--hold-ms 600]
+                                      [--backend hid,session,pid] [--trials 2]
+                                      [--no-camera] [--json PATH]
+                                      SENDS BOUNDED INPUT: posts one edge per
+                                      trial at the real Roblox client and
+                                      measures whether the game moved. No
+                                      profile, no setup, no coordinator.
     python treasure.py --replay DIR   replay a recorded session, emits no input
     python treasure.py --detector-report [PROFILE] [--corpus DIR] [--json PATH]
                                       detector metrics on rendered stress frames,
@@ -1085,6 +1092,213 @@ def _run_setup_probe(json_path: str | None = None, restore: bool = True) -> int:
                 print(f"  restored: {_settled_geometry(port).describe()}")
 
 
+def _run_native_control_probe(
+    *,
+    keys: str = "w",
+    hold_ms: int = 600,
+    backends: str = "hid,session,pid",
+    trials: int = 2,
+    camera: bool = True,
+    scroll: bool = False,
+    countdown_s: float = 3.0,
+    json_path: str | None = None,
+) -> int:
+    """Post bounded edges at the real Roblox client and *look at the game*.
+
+    The one diagnostic that can answer "does Roblox act on what we post"
+    without anything else being true. It builds no application, starts no
+    coordinator, no input authority and no deadman; it needs no treasure map,
+    no profile, no automatic setup and no arrow. A platform port, a capture
+    service, and a frame-difference measurement.
+
+    Passing this flag *is* the authorization. Every edge is released in a
+    ``finally``, and the whole run is wrapped in a sweep of the entire
+    vocabulary, so no path through here can leave a key or button down.
+    """
+    import json as _json
+    import time
+
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+    )
+    from prospector_engine.contracts import CadenceMode, InputKey
+    from prospector_engine.nativeprobe import (
+        FrameTap,
+        NativeProbeConfig,
+        ProbeReport,
+        camera_ladder,
+        keyboard_ladder,
+        released_afterwards,
+        run_key_trial,
+        run_scroll_trial,
+    )
+    from prospector_engine.ports import create_platform_port
+
+    config = NativeProbeConfig(hold_ms=max(50, min(int(hold_ms), 1200)))
+    wanted = [name.strip().lower() for name in keys.split(",") if name.strip()]
+    try:
+        key_list = [InputKey(name) for name in wanted]
+    except ValueError:
+        print(f"  unknown key in {keys!r}; use w, a, s, d, left or right")
+        return 2
+    ladder = [name.strip().lower() for name in backends.split(",") if name.strip()]
+
+    print("Native control probe - THIS SENDS BOUNDED INPUT TO ROBLOX")
+    print(
+        f"  keys {', '.join(k.value for k in key_list)}; hold {config.hold_ms} ms; "
+        f"backends {', '.join(ladder)}; {trials} trial(s) each"
+    )
+
+    def _select_transport(target: object, name: str) -> bool:
+        setter = getattr(target, "set_event_backend", None)
+        return True if setter is None else bool(setter(name))
+
+    port = create_platform_port()
+    focus = port.focus_state()
+    if focus is not True:
+        print(f"  Roblox is not the positively identified frontmost window (focus={focus}).")
+        print("  Click into the Roblox window and run this again.")
+        return 2
+    guard = ViewportGuard(port)
+    geometry = guard.connect()
+    print(f"  viewport: {geometry.describe()}")
+    if not geometry.valid:
+        print("  Roblox client not available; nothing to measure against.")
+        return 1
+    window = geometry.window
+    print(f"  target:   {window.describe() if window is not None else 'unknown'}")
+
+    service = CaptureService(
+        guard,
+        EvidenceRegistry("native-control-probe"),
+        config=CaptureConfig(),
+        source_factory=port.create_capture_source,
+    )
+    service.set_cadence_mode(CadenceMode.BALANCED)
+    if not service.start():
+        print(f"  capture failed to start: {service.last_error()}")
+        return 1
+
+    for remaining in range(int(countdown_s), 0, -1):
+        print(f"  starting in {remaining}...", flush=True)
+        time.sleep(1.0)
+
+    tap = FrameTap(service, timeout_s=config.frame_timeout_s)
+    lines: list[str] = []
+
+    def progress(text: str) -> None:
+        lines.append(text)
+        print(f"  {text}", flush=True)
+
+    trial_results = []
+    selected_input: str | None = None
+    selected_camera: str | None = None
+    notes: list[str] = []
+    try:
+        with released_afterwards(port):
+            # 0. Transport. A W trial cannot tell "our events never arrive"
+            #    from "the game has nothing to move", and a client on its home
+            #    page is in the second state. Scroll can, and costs one pass.
+            if scroll:
+                for backend in ladder:
+                    if not _select_transport(port, backend):
+                        continue
+                    trial = run_scroll_trial(
+                        port=port,
+                        tap=tap,
+                        config=config,
+                        backend_name=backend,
+                        on_progress=progress,
+                    )
+                    trial_results.append(trial)
+                    progress(trial.describe())
+                    notes.append(
+                        f"Transport {backend}: Roblox "
+                        + (
+                            "acted on a posted event."
+                            if trial.moved
+                            else "did not visibly act on a posted event."
+                        )
+                    )
+            # 1. The forward key, through each backend, until one repeatedly moves.
+            forward = key_list[0]
+            results, selected_input = keyboard_ladder(
+                port=port,
+                tap=tap,
+                backends=ladder,
+                key=forward,
+                config=config,
+                trials_per_backend=max(1, int(trials)),
+                on_progress=progress,
+            )
+            trial_results.extend(results)
+            if selected_input is None:
+                notes.append(
+                    f"No keyboard backend moved the game repeatedly for "
+                    f"{forward.value.upper()}."
+                )
+            else:
+                notes.append(f"Input backend selected: {selected_input}.")
+                port.set_event_backend(selected_input)
+                # 2. The remaining keys, on the backend that won.
+                for key in key_list[1:]:
+                    trial = run_key_trial(
+                        port=port,
+                        tap=tap,
+                        key=key,
+                        config=config,
+                        backend_name=selected_input,
+                        on_progress=progress,
+                    )
+                    trial_results.append(trial)
+                    progress(trial.describe())
+            # 3. The camera ladder, on the selected backend.
+            if camera:
+                results, selected_camera = camera_ladder(
+                    port=port, tap=tap, config=config, on_progress=progress
+                )
+                trial_results.extend(results)
+                notes.append(
+                    f"Camera backend selected: {selected_camera}."
+                    if selected_camera is not None
+                    else "No camera backend turned the view in both directions."
+                )
+    finally:
+        service.stop(3.0)
+
+    report = ProbeReport(
+        trials=tuple(trial_results),
+        selected_input_backend=selected_input,
+        selected_camera_backend=selected_camera,
+        notes=tuple(notes),
+    )
+    print()
+    print("  trials:")
+    for trial in report.trials:
+        print(f"    {trial.describe()}")
+        print(f"      {trial.detail}")
+    print()
+    for note in report.notes:
+        print(f"  {note}")
+    if json_path:
+        payload = report.as_payload()
+        payload["viewport"] = geometry.describe()
+        payload["hold_ms_requested"] = config.hold_ms
+        Path(json_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(json_path).write_text(_json.dumps(payload, indent=1), encoding="utf-8")
+        print(f"  JSON written to {json_path}")
+    ok = selected_input is not None and (not camera or selected_camera is not None)
+    print(
+        "  Every key and button was released on the way out."
+        if ok
+        else "  Nothing is held. The ladder did not find a working backend for everything."
+    )
+    return 0 if ok else 1
+
+
 def _run_forward_probe(pulse_ms: int = 600, json_path: str | None = None) -> int:
     """Hold ``W`` once against the real client and say whether the world moved.
 
@@ -1157,7 +1371,7 @@ def _run_forward_probe(pulse_ms: int = 600, json_path: str | None = None) -> int
                 print(f"  blocked: {failure.summary}. {failure.remedy}")
             return 1
 
-        blocking = [b for b in coordinator.blockers() if b.status == "blocking"]
+        blocking = [b for b in coordinator.blockers() if b.blocking]
         if blocking:
             print(f"  blocked: {blocking[0].summary}. {blocking[0].remedy}")
             return 1
@@ -1465,6 +1679,7 @@ _MODES = (
     "--capture-probe",
     "--setup-probe",
     "--forward-probe",
+    "--native-control-probe",
     "--detector-report",
     "--soak",
     "--shadow-bench",
@@ -1546,6 +1761,18 @@ def main(argv: list[str] | None = None) -> int:
             return _run_forward_probe(
                 int(pulse) if pulse is not None else 600,
                 _option(arguments, "--json"),
+            )
+        if mode == "--native-control-probe":
+            hold = _option(arguments, "--hold-ms")
+            return _run_native_control_probe(
+                keys=_option(arguments, "--key") or "w",
+                hold_ms=int(hold) if hold is not None else 600,
+                backends=_option(arguments, "--backend") or "hid,session,pid",
+                trials=int(_option(arguments, "--trials") or 2),
+                camera="--no-camera" not in arguments,
+                scroll="--scroll" in arguments,
+                countdown_s=float(_option(arguments, "--countdown") or 3.0),
+                json_path=_option(arguments, "--json"),
             )
         if mode == "--detector-report":
             corpus = _option(arguments, "--corpus")

@@ -232,6 +232,28 @@ class PlatformPort(Protocol):
 
     def raw_scroll_lines(self, lines: int) -> None: ...
 
+    # -- which mechanism edges go out through -----------------------------
+    @property
+    def event_backend(self) -> str:
+        """The named mechanism outgoing edges currently use.
+
+        Every OS has at least one; macOS has three genuinely different ones
+        (see ``platform_mac.EVENT_BACKENDS``) and which of them Roblox acts on
+        is an empirical question, so the name is part of the evidence every
+        movement claim carries.
+        """
+        ...
+
+    def set_event_backend(self, name: str) -> bool:
+        """Select a mechanism by name. ``False`` if this port has no such one.
+
+        A port that cannot honour a name must say so rather than silently
+        continue on the previous one: an A/B ladder that cannot tell "I used
+        the backend you asked for" from "I used the old one" selects the wrong
+        winner and calls it evidence.
+        """
+        ...
+
     # -- read-only diagnostics -------------------------------------------
     def key_state(self, key: InputKey) -> bool | None:
         """Whether the OS believes ``key`` is down right now. ``None`` if unknown.

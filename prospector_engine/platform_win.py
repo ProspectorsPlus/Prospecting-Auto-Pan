@@ -557,6 +557,21 @@ class WindowsPlatformPort:
         """
         return WindowsPrintWindowSource()
 
+    # -- PlatformPort: which mechanism edges go out through ---------------
+    @property
+    def event_backend(self) -> str:
+        return "sendinput"
+
+    def set_event_backend(self, name: str) -> bool:
+        """Windows has exactly one mechanism, so only its own name is honoured.
+
+        ``SendInput`` is the injection path Roblox reads on Windows; there is
+        no second destination to A/B against the way macOS has three taps.
+        Refusing every other name keeps a macOS backend name from looking like
+        it took effect here.
+        """
+        return name in ("", "sendinput")
+
     # -- PlatformPort: raw edges -----------------------------------------
     def raw_key_down(self, code: int) -> None:
         _send(_key_input(code, up=False))

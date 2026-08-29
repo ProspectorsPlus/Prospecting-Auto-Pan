@@ -76,6 +76,7 @@ from prospector_engine.geometry import (
 )
 
 __all__ = [
+    "EVENT_BACKENDS",
     "TITLE_BAR_FALLBACK_PT",
     "MacHotkeySource",
     "MacPlatformPort",
@@ -173,7 +174,24 @@ def _modifiers_from_flags(flags: int) -> frozenset[Modifier]:
     return frozenset(mod for mask, mod in _MAC_FLAG_MODIFIERS if flags & mask)
 
 
+#: The three ways this process can hand a CGEvent to the window server, in the
+#: order the A/B ladder tries them. They are genuinely different destinations -
+#: not three wrappers over one call - and which of them Roblox acts on is an
+#: empirical question this module refuses to answer by assumption.
+#:
+#: ``hid``      the HID event tap: the lowest point, before session-level taps.
+#: ``session``  the session event tap: after HID taps have had the event.
+#: ``pid``      delivered straight to one process, bypassing the taps entirely.
+EVENT_BACKENDS: tuple[str, ...] = ("hid", "session", "pid")
+
+
 def _post(event: Any) -> None:
+    """Post through the HID tap. The release-only port's fixed path.
+
+    Deliberately not backend-selectable: the release floor must behave the same
+    whatever a diagnostic last chose, and the helper that owns it has no window
+    to target.
+    """
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
 
 
@@ -682,6 +700,10 @@ class MacPlatformPort:
         self._geometry = ViewportGeometry.unpinned()
         self._title_bar_pt: float = TITLE_BAR_FALLBACK_PT
         self._title_bar_measured = False
+        #: Which tap outgoing edges go through. Selected once per run by the
+        #: native probe and then held for the run; ``hid`` until told otherwise.
+        self._event_backend = "hid"
+        self._target_pid: int | None = None
 
     # -- identity ---------------------------------------------------------
     @property
@@ -1217,20 +1239,63 @@ class MacPlatformPort:
             return MacScreenCaptureKitSource()
         return MacQuartzWindowSource()
 
+    # -- PlatformPort: which tap edges go through -------------------------
+    @property
+    def event_backend(self) -> str:
+        return self._event_backend
+
+    def set_event_backend(self, name: str) -> bool:
+        """Choose the destination for outgoing edges. ``True`` if it took.
+
+        ``pid`` additionally needs a positively identified Roblox process, so
+        it refuses rather than silently falling back to a tap that behaves
+        differently - a backend that quietly becomes another backend is exactly
+        how an A/B ladder reports the wrong winner.
+        """
+        if name not in EVENT_BACKENDS:
+            return False
+        if name == "pid":
+            found = self._scan_roblox()
+            pid = found[0].process_id if found is not None else 0
+            if not pid or not hasattr(Quartz, "CGEventPostToPid"):
+                return False
+            self._target_pid = pid
+        self._event_backend = name
+        return True
+
+    def _emit(self, event: Any) -> None:
+        """One edge, through the currently selected backend.
+
+        A *release* never depends on the selection being valid: if the pid
+        target has gone away the event still goes out through the HID tap,
+        because a key that cannot be lifted is the one failure this port may
+        not have.
+        """
+        backend = self._event_backend
+        if backend == "pid":
+            pid = self._target_pid
+            if pid:
+                Quartz.CGEventPostToPid(pid, event)
+                return
+        elif backend == "session":
+            Quartz.CGEventPost(Quartz.kCGSessionEventTap, event)
+            return
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+
     # -- PlatformPort: raw edges -----------------------------------------
     def raw_key_down(self, code: int) -> None:
-        _post(Quartz.CGEventCreateKeyboardEvent(None, code, True))
+        self._emit(Quartz.CGEventCreateKeyboardEvent(None, code, True))
 
     def raw_key_up(self, code: int) -> None:
-        _post(Quartz.CGEventCreateKeyboardEvent(None, code, False))
+        self._emit(Quartz.CGEventCreateKeyboardEvent(None, code, False))
 
     def raw_button_down(self, button: MouseButton) -> None:
         down, _up, _drag, btn = _MAC_BUTTON_EVENTS[button]
-        _post(Quartz.CGEventCreateMouseEvent(None, down, _cursor_point_pt(), btn))
+        self._emit(Quartz.CGEventCreateMouseEvent(None, down, _cursor_point_pt(), btn))
 
     def raw_button_up(self, button: MouseButton) -> None:
         _down, up, _drag, btn = _MAC_BUTTON_EVENTS[button]
-        _post(Quartz.CGEventCreateMouseEvent(None, up, _cursor_point_pt(), btn))
+        self._emit(Quartz.CGEventCreateMouseEvent(None, up, _cursor_point_pt(), btn))
 
     def raw_pointer_move_client(self, point_px: tuple[int, int]) -> None:
         """Move to a point in **canonical** coordinates.
@@ -1250,7 +1315,7 @@ class MacPlatformPort:
         )
         with contextlib.suppress(Exception):
             Quartz.CGWarpMouseCursorPosition((x_pt, y_pt))
-        _post(
+        self._emit(
             Quartz.CGEventCreateMouseEvent(
                 None, Quartz.kCGEventMouseMoved, (x_pt, y_pt), Quartz.kCGMouseButtonLeft
             )
@@ -1274,10 +1339,10 @@ class MacPlatformPort:
             )
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaX, int(dx))
         Quartz.CGEventSetIntegerValueField(event, Quartz.kCGMouseEventDeltaY, int(dy))
-        _post(event)
+        self._emit(event)
 
     def raw_scroll_lines(self, lines: int) -> None:
-        _post(
+        self._emit(
             Quartz.CGEventCreateScrollWheelEvent(
                 None, Quartz.kCGScrollEventUnitLine, 1, int(lines)
             )

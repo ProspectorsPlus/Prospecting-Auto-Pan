@@ -22,6 +22,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -156,6 +157,53 @@ def test_the_forward_probe_is_an_exclusive_mode() -> None:
     code, output, _elapsed = _run(["--forward-probe", "--soak"], timeout_s=60.0)
     assert code == 2
     assert "Choose one mode" in output
+
+
+def test_the_native_control_probe_is_an_exclusive_mode() -> None:
+    """The second mode that sends input, and it must refuse without focus.
+
+    Passing the flag *is* the authorization, so the bound that matters is the
+    other one: it does nothing at all unless Roblox is the positively
+    identified frontmost window. A test machine's Roblox is not frontmost, so
+    the honest answer here is the refusal.
+    """
+    import treasure
+
+    assert "--native-control-probe" in treasure._MODES
+    code, output, _elapsed = _run(["--native-control-probe", "--soak"], timeout_s=60.0)
+    assert code == 2
+    assert "Choose one mode" in output
+
+
+def test_the_native_control_probe_needs_a_positively_frontmost_roblox(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """It refuses rather than posting an edge into whatever *is* in front.
+
+    Run in-process against a port that says "not frontmost", deliberately.
+    The obvious version of this test spawns the real CLI and asserts on its
+    refusal - and on a machine where Roblox *is* frontmost that version starts
+    posting keys and dragging the right mouse button across a live client from
+    inside ``pytest``. A default test run may never emit an OS edge
+    (``CLAUDE.md`` rule 2), and "it usually will not" is not that guarantee.
+    """
+    import treasure
+    from prospector_engine.ports import PlatformUnavailable
+
+    class NotFrontmost:
+        def focus_state(self) -> bool:
+            return False
+
+        def __getattr__(self, name: str) -> Any:
+            raise PlatformUnavailable(f"the probe reached {name} after refusing")
+
+    monkeypatch.setattr(
+        "prospector_engine.ports.create_platform_port", lambda *a, **k: NotFrontmost()
+    )
+    code = treasure.main(["--native-control-probe", "--countdown", "0"])
+
+    assert code == 2
+    assert "not the positively identified frontmost window" in capsys.readouterr().out
 
 
 def test_the_forward_probe_worker_is_not_wired_into_the_application() -> None:
