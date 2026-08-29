@@ -1,5 +1,17 @@
 # savePatel — F1/F6, Arm, and where new functionality goes
 
+> **HISTORICAL — do not read this as the current contract.** Written against a
+> repository state that no longer exists. Since then: the F-key bindings were
+> removed in favour of Ctrl chords (D-046), `NavigationGates` was deleted in
+> favour of `NavigationCapabilities` derived from what a run observed (D-036),
+> and the two-gesture arming protocol this document describes — an **Arm Live**
+> click that mints a token, then a hotkey that spends it — was replaced by a
+> single physical **Ctrl+N** that authorizes and starts in one transaction
+> (D-062). `IntentType.ARM_LIVE_FROM_UI` no longer exists. Kept because the
+> reasoning about *where new functionality goes* is still useful; every
+> specific reference to a key, a gate or an arm is stale. `CLAUDE.md` and
+> `TREASURE_NAVIGATION_PLAN.md` are the current contract.
+
 ## 1) What happens when you press F1, right now
 
 F1 is bound to `IntentType.START_LIVE` (`platform_mac.py:133`), which starts

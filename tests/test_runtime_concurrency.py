@@ -524,19 +524,51 @@ def test_a_second_chord_while_live_is_refused_rather_than_restarting(
     assert harness.started == ["live"], "the chord restarted a running session"
 
 
-def test_stop_always_releases_and_is_never_gated_on_the_start_path(
-    harness: Harness,
-) -> None:
+def test_stop_always_releases_from_every_mode(harness: Harness) -> None:
+    """Ctrl+X is unconditional. Not "usually", and not "once Live has started".
+
+    A stop that only works from the state you expected to be in is useless
+    exactly when it matters, so this walks the states a session actually passes
+    through - including a refusal, which is a state the old contract could sit
+    in indefinitely.
+    """
+    harness.register(IntentType.START_SHADOW, "shadow", _cancellable_worker())
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
+
+    # From IDLE, having done nothing at all.
+    harness.chord(IntentType.STOP)
+    assert harness.wait_for(lambda: harness.coordinator.stopped_by_user)
+    assert harness.authority.ledger_empty()
+
+    # From SHADOW.
+    harness.submit(IntentType.START_SHADOW)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.SHADOW)
+    harness.chord(IntentType.STOP)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.IDLE)
+    assert harness.authority.ledger_empty()
+
+    # From a refusal - the state the old contract could sit in forever.
+    harness.port.set_focus(False)
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(
+        lambda: harness.coordinator.live_authorization.startswith("refused")
+    )
+    harness.chord(IntentType.STOP)
+    # The ledger was already empty, so waiting on *that* would pass before the
+    # stop was even handled. Wait for the thing the stop actually changes.
+    assert harness.wait_for(lambda: harness.coordinator.live_authorization == "none")
+    assert harness.authority.ledger_empty()
+
+    # From LIVE.
+    harness.port.set_focus(True)
     harness.chord(IntentType.START_LIVE)
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
-
     harness.chord(IntentType.STOP)
-
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.IDLE)
     assert harness.authority.ledger_empty()
     assert harness.coordinator.stopped_by_user
+    assert not harness.authority.release_uncertain
 
 
 # ---------------------------------------------------------------------------
