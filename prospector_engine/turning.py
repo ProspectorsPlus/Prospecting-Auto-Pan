@@ -194,7 +194,15 @@ class TurnLimits:
     #: Fraction of probes that must produce the expected sign to be usable.
     min_reliability: float = 0.75
     #: Ceiling on one correction, so a bad estimate cannot spin the camera.
-    max_correction_deg: float = 14.0
+    #:
+    #: Raised from 14 when the follower learned to correct *while walking*. The
+    #: old ceiling was set for a controller that stood still to turn, where a
+    #: small step costs only time; a controller that is walking through its own
+    #: correction has to be able to out-turn the curve it is walking, and at
+    #: 14 degrees a correction it could not. It is still a hard ceiling - the
+    #: bands inside the controller are all below it - and it is still the thing
+    #: that stops one bad estimate spinning the camera.
+    max_correction_deg: float = 30.0
 
     provenance: Provenance = field(
         default_factory=lambda: Provenance(

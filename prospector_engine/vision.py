@@ -637,22 +637,53 @@ def _principal_axis_and_tip(
 # ---------------------------------------------------------------------------
 
 
+#: How long a track keeps its identity with no measurement, in seconds.
+#:
+#: Two different questions used to share one bound of five *frames*, and the
+#: answer was wrong for both. *Where should the detector look next* is a
+#: short-lived extrapolation and five frames is generous for it. *Is this still
+#: the same arrow* is a memory, and at 60 fps five frames is 83 milliseconds -
+#: so the tracker minted a brand new identity for every occlusion, while the
+#: controller was still coasting on the old one for a full two seconds. The
+#: controller then saw a "different arrow", refused it through its identity
+#: latch, and the two halves of the system disagreed about a target they were
+#: both looking straight at.
+#:
+#: This is the identity horizon, and it is deliberately a little longer than
+#: ``SteeringLimits.coast_grace_s`` so the tracker never forgets a target the
+#: controller still expects. Prediction keeps its own, much shorter, bound.
+TRACK_IDENTITY_HORIZON_S = 2.5
+
+
 class ArrowTracker:
     """Bounded constant-velocity track used to *prioritize* search only.
 
     It never fabricates a missing measurement: when the detector abstains the
     track ages and eventually drops, and the caller sees the abstention
     (plan 8).
+
+    Two horizons, because there are two questions. ``max_age_frames`` bounds
+    the *prediction* - extrapolating a constant velocity a hundred frames is
+    nonsense - and ``identity_horizon_s`` bounds the *identity*, which is a
+    memory and is measured on the monotonic clock so it means the same thing at
+    every cadence.
     """
 
-    def __init__(self, max_age_frames: int = 5, max_speed_px: float = 120.0) -> None:
+    def __init__(
+        self,
+        max_age_frames: int = 5,
+        max_speed_px: float = 120.0,
+        identity_horizon_s: float = TRACK_IDENTITY_HORIZON_S,
+    ) -> None:
         self._max_age = max_age_frames
         self._max_speed_px = max_speed_px
+        self._identity_horizon_s = identity_horizon_s
         self._track_id = 0
         self._last: tuple[float, float] | None = None
         self._velocity = (0.0, 0.0)
         self._age = 0
         self._switches = 0
+        self._last_seen_s: float | None = None
 
     @property
     def track_id(self) -> int | None:
@@ -670,10 +701,24 @@ class ArrowTracker:
             self._last[1] + self._velocity[1] * self._age,
         )
 
-    def update(self, observation: ArrowObservation) -> ArrowObservation:
+    def _forgotten(self, now_s: float | None) -> bool:
+        """Whether the identity horizon has passed since the last measurement."""
+        if now_s is None or self._last_seen_s is None:
+            # No clock was supplied. Fall back to the prediction bound, which
+            # is what this class did before the horizons were separated.
+            return self._age > self._max_age
+        return (now_s - self._last_seen_s) > self._identity_horizon_s
+
+    def update(
+        self, observation: ArrowObservation, *, now_s: float | None = None
+    ) -> ArrowObservation:
         if not observation.valid or observation.centroid_px is None:
             self._age += 1
             if self._age > self._max_age:
+                self._velocity = (0.0, 0.0)
+            if self._forgotten(now_s):
+                # Past the identity horizon the target is genuinely gone, and
+                # the next arrow seen is a new one.
                 self._last = None
                 self._velocity = (0.0, 0.0)
             return observation
@@ -691,6 +736,7 @@ class ArrowTracker:
                 self._velocity = (dx, dy)
         self._last = centroid
         self._age = 0
+        self._last_seen_s = now_s
         return ArrowObservation(
             profile_id=observation.profile_id,
             track_id=self._track_id,

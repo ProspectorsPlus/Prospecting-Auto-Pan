@@ -68,6 +68,7 @@ __all__ = [
     "PerformanceTier",
     "PinResult",
     "Provenance",
+    "PursuitTelemetry",
     "RateSummary",
     "RawFrame",
     "ResetOutcome",
@@ -981,6 +982,40 @@ class CommandVisualization:
             backend=str(getattr(outcome, "backend", "")),
         )
 
+    @classmethod
+    def for_held(
+        cls,
+        outcome: Any,
+        *,
+        key: RuntimeKey | None = None,
+        motion_confirmed: bool | None = None,
+    ) -> CommandVisualization:
+        """What is down when nobody asked for anything new this frame.
+
+        A level-triggered actuator holds until it is told otherwise, so a frame
+        that carried no new evidence - a repeat, or one just past its freshness
+        budget - changes nothing and still has a keyboard state worth drawing.
+        There is no ``requested`` command because there was no request: the
+        overlay draws the ledger, which is the honest thing to draw.
+        """
+        held = tuple(sorted(key_.value for key_ in outcome.held))
+        blocked = bool(outcome.block.blocking)
+        return cls(
+            CommandOutcome.REJECTED if blocked else CommandOutcome.APPLIED,
+            key=key,
+            requested=None,
+            status=NavigationApplyStatus.REJECTED_HEALTH
+            if blocked
+            else NavigationApplyStatus.APPLIED,
+            leases_held=() if blocked else held,
+            detail=outcome.block.value if blocked else outcome.detail,
+            live=True,
+            motion_confirmed=motion_confirmed,
+            yaw_applied_px=int(getattr(outcome, "yaw_posted_px", 0)),
+            held_ms=float(getattr(outcome, "held_ms", 0.0)),
+            backend=str(getattr(outcome, "backend", "")),
+        )
+
     def freeze(self) -> CommandVisualization:
         """The terminal form: nothing is held, and it says so."""
         return replace(
@@ -1225,18 +1260,75 @@ class CommandKind(Enum):
 
 
 class ControlState(Enum):
-    """The Shift-Lock steering controller's state (mission section 11)."""
+    """The steering controller's state.
+
+    Five of these are *moving* states, and that is the whole point of the set.
+    The controller this replaces had exactly one - ``FOLLOW`` - so every other
+    thing it could be doing (correcting a heading, riding out an occlusion,
+    looking for a target it lost) implied standing still, and the character
+    stopped dead several times a second on an ordinary route.
+
+    Correcting a heading and standing still are different facts. So are "the
+    arrow is behind a bush" and "there is nothing to walk towards".
+    """
 
     ACQUIRE = "acquire"
+    """Standing still, waiting for a first trustworthy heading. Bounded."""
+
     ALIGN = "align"
+    """Standing still and turning, because the target is behind us. Only a
+    genuinely severe heading error reaches this, and only after confirmation."""
+
     FOLLOW = "follow"
+    """Walking, inside the deadband, no correction wanted."""
+
+    CORRECT = "correct"
+    """Walking *and* turning. The ordinary state of a route with any curve in
+    it, and the one the previous controller could not express."""
+
+    COAST = "coast"
+    """Walking on a remembered heading because the arrow is momentarily
+    unreadable. Turning is decayed out; the forward hold is kept."""
+
+    SEARCH = "search"
+    """Walking a bounded shallow sweep because the arrow has been unreadable
+    past the coast grace. Terminates in its own budget, never loops."""
+
     REACQUIRE = "reacquire"
+    """Standing still with nothing to steer by. Bounded, and never the answer
+    to an occlusion while the character is already walking."""
+
     BLOCKED = "blocked"
+    """Contact suspected or a recovery maneuver in progress."""
+
     SAFE_STOP = "safe_stop"
 
     @property
     def holds_forward(self) -> bool:
-        return self is ControlState.FOLLOW
+        """Whether this state walks. Five of nine, by design."""
+        return self in (
+            ControlState.FOLLOW,
+            ControlState.CORRECT,
+            ControlState.COAST,
+            ControlState.SEARCH,
+            ControlState.BLOCKED,
+        )
+
+    @property
+    def pursuing(self) -> bool:
+        """Whether this state is following a target, moving or not.
+
+        Used to decide whether controller memory survives a transition: moving
+        between pursuing states preserves the heading filter and the target
+        identity, leaving them does not.
+        """
+        return self in (
+            ControlState.FOLLOW,
+            ControlState.CORRECT,
+            ControlState.COAST,
+            ControlState.SEARCH,
+            ControlState.ALIGN,
+        )
 
 
 @dataclass(frozen=True)
@@ -1316,9 +1408,19 @@ class RunMode(Enum):
 
 
 class NavigationPhase(Enum):
+    """The route's lifecycle state, as the navigator reports it.
+
+    Deliberately the same vocabulary as :class:`ControlState` for the states
+    the two share, so a reader never has to translate between "the controller
+    says CORRECT" and "the phase says something else".
+    """
+
     ACQUIRE = auto()
     ALIGN = auto()
     FOLLOW = auto()
+    CORRECT = auto()
+    COAST = auto()
+    SEARCH = auto()
     CONTACT = auto()
     RECOVERY = auto()
     REACQUIRE = auto()
@@ -1326,6 +1428,25 @@ class NavigationPhase(Enum):
     ARRIVED = auto()
     ABANDONED = auto()
     FAILED = auto()
+
+    @property
+    def terminal(self) -> bool:
+        return self in (
+            NavigationPhase.ARRIVED,
+            NavigationPhase.ABANDONED,
+            NavigationPhase.FAILED,
+        )
+
+    @property
+    def moving(self) -> bool:
+        """Whether the character is expected to be walking in this phase."""
+        return self in (
+            NavigationPhase.FOLLOW,
+            NavigationPhase.CORRECT,
+            NavigationPhase.COAST,
+            NavigationPhase.SEARCH,
+            NavigationPhase.RECOVERY,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1869,6 +1990,96 @@ class RuntimeKey:
 
 
 @dataclass(frozen=True)
+class PursuitTelemetry:
+    """One state-change's worth of navigation state, in numbers a person reads.
+
+    Deliberately flat and deliberately small: it is emitted on every frame but
+    only *written out* when something in it changed, so it has to be cheap to
+    build and cheap to compare. Every field is an observation - what is held,
+    what was measured, how much budget is left - and none of it is a request.
+
+    The distinction that runs through it: ``held_keys`` comes from the
+    actuator's own ledger and ``wanted_keys`` from the controller. When the two
+    differ, something refused a press, and that is precisely the case no
+    earlier version of this could show.
+    """
+
+    state: ControlState
+    phase: NavigationPhase
+    #: What the actuator reports it is physically holding, right now.
+    held_keys: tuple[str, ...] = ()
+    #: What the controller asked for on this frame.
+    wanted_keys: tuple[str, ...] = ()
+    reason: str = ""
+
+    #: Target memory.
+    track_id: int | None = None
+    arrow_age_ms: float | None = None
+    error_deg: float | None = None
+    raw_error_deg: float | None = None
+    heading_rate_deg_s: float = 0.0
+    heading_confidence: float = 0.0
+    heading_spread_deg: float = 0.0
+
+    #: Motion evidence.
+    speed_norm: float | None = None
+    baseline_norm: float | None = None
+    progress_ratio: float | None = None
+    stall_ms: float = 0.0
+    forward_held_ms: float = 0.0
+
+    #: The bounded episodes.
+    search_elapsed_ms: float = 0.0
+    recovery_rung: str = ""
+    recovery_side: int = 0
+    recovery_jumps: int = 0
+    recovery_elapsed_ms: float = 0.0
+    recovery_input_ms: float = 0.0
+    #: Why a maneuver escalated, resolved, or was abandoned. Written once per
+    #: transition, not per frame.
+    escalation: str = ""
+    #: Sector costs as ``(centre_deg, cost)``, decayed to this instant.
+    sectors: tuple[tuple[float, float], ...] = ()
+
+    def movement_line(self) -> str:
+        """The composite movement, as the overlay draws it: ``W + D + > + JUMP``."""
+        return " + ".join(self.held_keys) if self.held_keys else "nothing held"
+
+    def changed_from(self, other: PursuitTelemetry | None) -> bool:
+        """Whether this is worth a new log line rather than a repeat.
+
+        State, what is actually held, and the recovery rung. Numbers churn
+        every frame and are deliberately not part of the comparison - they are
+        carried on the line, they do not cause one.
+        """
+        if other is None:
+            return True
+        return (
+            self.state is not other.state
+            or self.phase is not other.phase
+            or self.held_keys != other.held_keys
+            or self.recovery_rung != other.recovery_rung
+            or self.escalation != other.escalation
+        )
+
+    def describe(self) -> str:
+        """One line for the log a person reads."""
+        parts = [f"{self.state.value.upper()} {self.movement_line()}"]
+        if self.error_deg is not None:
+            parts.append(f"err {self.error_deg:+.0f}deg")
+        if self.arrow_age_ms is not None and self.arrow_age_ms > 50.0:
+            parts.append(f"arrow {self.arrow_age_ms:.0f}ms old")
+        if self.progress_ratio is not None:
+            parts.append(f"speed {self.progress_ratio:.0%} of baseline")
+        if self.recovery_rung:
+            side = {-1: "left", 1: "right"}.get(self.recovery_side, "")
+            parts.append(f"recovery {self.recovery_rung} {side}".strip())
+        if self.escalation:
+            parts.append(self.escalation)
+        return "; ".join(parts)
+
+
+@dataclass(frozen=True)
 class DiagnosticObservation:
     """Everything derived from ONE frame, produced once and shared.
 
@@ -1936,6 +2147,9 @@ class DiagnosticObservation:
     blockers: tuple[str, ...] = ()
     #: Stage timings and the tracker's verdict for this frame.
     timing: PerceptionTiming | None = None
+    #: What the pursuit controller and the recovery ladder were doing when this
+    #: frame was decided. ``None`` outside a navigation mode.
+    pursuit: PursuitTelemetry | None = None
 
     @property
     def frame_sequence(self) -> int:
