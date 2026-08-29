@@ -85,6 +85,8 @@ __all__ = [
     "SetupStage",
     "TelemetrySnapshot",
     "ViewportFit",
+    "WiggleOutcome",
+    "WiggleResult",
     "WorkerCompletion",
     "freeze_array",
     "monotonic_s",
@@ -1629,6 +1631,15 @@ class IntentType(Enum):
     #: through the coordinator like everything else. It samples pixels and shows
     #: a popup; it can never reach an input session.
     PIXEL_INFO = auto()
+    #: Recorded in DECISIONS.md (D-088). A bounded SERVICE mode, same shape as
+    #: RESET_CHARACTER/PAN_SWAP_TEST/DIG_LOOP: a standalone strafe-wiggle test
+    #: driven off the arrow's current heading error when one is available.
+    WIGGLE_TEST = auto()
+    #: Recorded in DECISIONS.md (D-089). (Re)arms the background heading-error
+    #: poller and resets its stored angle to 0. Same class of exception as
+    #: PIXEL_INFO: it never reaches an input session, so it never transitions
+    #: the mode and can run alongside Shadow, Live, or any SERVICE.
+    DEGREE_MONITOR = auto()
 
     @property
     def priority(self) -> int:
@@ -1853,6 +1864,22 @@ class ResetOutcome(Enum):
 @dataclass(frozen=True)
 class ResetResult:
     outcome: ResetOutcome
+    elapsed_s: float
+    detail: str
+    evidence: tuple[str, ...] = ()
+
+
+class WiggleOutcome(Enum):
+    SUCCESS = auto()
+    TIMEOUT = auto()
+    CANCELLED = auto()
+    FAILED = auto()
+
+
+@dataclass(frozen=True)
+class WiggleResult:
+    outcome: WiggleOutcome
+    degree_deg: float
     elapsed_s: float
     detail: str
     evidence: tuple[str, ...] = ()

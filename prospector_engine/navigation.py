@@ -24,6 +24,8 @@ a *session* is what this session can see.
 from __future__ import annotations
 
 import contextlib
+import threading
+import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -71,6 +73,7 @@ from prospector_engine.contracts import (
     monotonic_s,
 )
 from prospector_engine.coordinator import WorkerContext
+from prospector_engine.engine import FrameSource
 from prospector_engine.lifecycle import LifecycleStage
 from prospector_engine.motion import (
     UNCALIBRATED_BASELINE,
@@ -103,6 +106,7 @@ from prospector_engine.vision import (
 )
 
 __all__ = [
+    "DegreeMonitor",
     "MotionConfig",
     "NavigationCapabilities",
     "Navigator",
@@ -2109,6 +2113,131 @@ class PerceptionPipeline:
             timing=result.timing,
             pursuit=decision.telemetry,
         )
+
+
+class DegreeMonitor:
+    """Ctrl+5: keeps a heading-error reading warm, independent of RunMode.
+
+    Wiggle (Ctrl+4) used to call ``pipeline.observe()`` cold, once, at the
+    moment it was pressed. The shared ``pipeline``'s tracker and direction
+    estimator carry state across frames - a reversal latch, a heading filter
+    - and a single isolated call on a tracker that has gone cold (nothing
+    called ``analyze``/``observe`` on it since the mode last left Shadow/
+    Live) frequently could not produce a confident reading, which is why the
+    first Ctrl+4 press after leaving Shadow worked and the second, minutes
+    later, did not (D-089).
+
+    This keeps a *second*, independent :class:`PerceptionPipeline` warm on
+    its own thread, polling at a fixed cadence regardless of what mode the
+    coordinator is in, and remembers the last reading it actually trusted.
+    It deliberately does not touch the pipeline Shadow/Live update:
+    ``PerceptionPipeline`` and its tracker carry no lock and are not meant to
+    be called from two threads at once, so sharing the live instance would
+    race its state against whatever mode worker is running. It never reaches
+    an input session either - same class of exception as ``PIXEL_INFO`` - so
+    it can run alongside Shadow, Live, or any bounded service without
+    touching the single input-owning mode slot.
+    """
+
+    def __init__(
+        self,
+        *,
+        frames: FrameSource,
+        primary: PerceptionPipeline,
+        mirror: PerceptionPipeline,
+        map_id: str = "degree-monitor",
+        poll_interval_s: float = 0.5,
+        on_update: Callable[[float | None], None] | None = None,
+    ) -> None:
+        self._frames = frames
+        self._primary = primary
+        self._mirror = mirror
+        self._map_id = map_id
+        self._poll_interval_s = poll_interval_s
+        #: Fired on every poll: the new angle if this tick found a valid
+        #: reading, ``None`` if it did not (so a caller can tell "still
+        #: searching" from "found something" rather than only ever seeing
+        #: the last good value repeat). Never raises into ``_poll_once``.
+        self._on_update = on_update
+        self._lock = threading.Lock()
+        self._angle_deg = 0.0
+        self._running = False
+        self._thread: threading.Thread | None = None
+        #: Bumped on every ``start_or_reset()`` call. A UI with no push
+        #: channel into this thread (the GUI, which imports no application
+        #: internals the other way around) can poll this instead of the
+        #: value to notice "Ctrl+5 was pressed" versus "the value is still 0".
+        self._armed_count = 0
+
+    def current(self) -> float:
+        with self._lock:
+            return self._angle_deg
+
+    def armed_count(self) -> int:
+        with self._lock:
+            return self._armed_count
+
+    def start_or_reset(self) -> None:
+        """(Re)arm the monitor and reset the stored angle to 0.
+
+        Idempotent: pressing Ctrl+5 again while already running does not
+        spawn a second thread, it just resets the value the way the owner
+        asked - a visible sign that a fresh reading has not landed yet.
+        """
+        with self._lock:
+            self._angle_deg = 0.0
+            self._armed_count += 1
+            already_running = self._running
+            self._running = True
+        if self._on_update is not None:
+            with contextlib.suppress(Exception):
+                self._on_update(0.0)
+        if already_running:
+            return
+        thread = threading.Thread(target=self._run, name="treasure-degree-monitor", daemon=True)
+        self._thread = thread
+        thread.start()
+
+    def stop(self) -> None:
+        with self._lock:
+            self._running = False
+
+    def _run(self) -> None:
+        while True:
+            with self._lock:
+                if not self._running:
+                    return
+            self._poll_once()
+            time.sleep(self._poll_interval_s)
+
+    def _poll_once(self) -> None:
+        # ReferenceFrame is frozen; copying the reference the live pipeline
+        # last established is a plain attribute swap, safe without a lock.
+        self._mirror.reference = self._primary.reference
+        envelope = self._frames.latest()
+        if envelope is None:
+            self._notify(None)
+            return
+        try:
+            inputs = self._mirror.observe(
+                envelope.frame, map_id=self._map_id, approach_valid=False
+            )
+        except Exception:
+            # Best-effort: a diagnostic thread must never die from a bad
+            # frame, it should just try again next tick.
+            self._notify(None)
+            return
+        if inputs.direction.valid and inputs.direction.error_deg is not None:
+            with self._lock:
+                self._angle_deg = inputs.direction.error_deg
+            self._notify(inputs.direction.error_deg)
+        else:
+            self._notify(None)
+
+    def _notify(self, angle_deg: float | None) -> None:
+        if self._on_update is not None:
+            with contextlib.suppress(Exception):
+                self._on_update(angle_deg)
 
 
 # ---------------------------------------------------------------------------

@@ -48,9 +48,11 @@ def test_the_documented_chords_are_the_ones_that_are_bound() -> None:
         IntentType.START_LIVE: "Ctrl+N",
         IntentType.START_SHADOW: "Ctrl+O",
         IntentType.STOP: "Ctrl+X",
-        IntentType.RESET_CHARACTER: "Ctrl+R",
-        IntentType.PAN_SWAP_TEST: "Ctrl+P",
-        IntentType.DIG_LOOP: "Ctrl+D",
+        IntentType.RESET_CHARACTER: "Ctrl+1",
+        IntentType.PAN_SWAP_TEST: "Ctrl+2",
+        IntentType.DIG_LOOP: "Ctrl+3",
+        IntentType.WIGGLE_TEST: "Ctrl+4",
+        IntentType.DEGREE_MONITOR: "Ctrl+5",
         IntentType.PIXEL_INFO: "Ctrl+I",
     }
     for intent, label in expected.items():
@@ -69,7 +71,7 @@ def test_no_function_key_is_bound_anywhere() -> None:
     """An alias that still fires is not removed, it is hidden."""
     for binding in BINDINGS:
         assert not binding.chord.key.startswith("f") or binding.chord.key == "f"
-    assert {"n", "o", "x", "r", "p", "d", "i"} == ORDINARY_KEYS
+    assert {"n", "o", "x", "1", "2", "3", "4", "5", "i"} == ORDINARY_KEYS
     assert not any(key.startswith("f") and key[1:].isdigit() for key in ORDINARY_KEYS)
 
 
@@ -180,16 +182,18 @@ def test_quarantine_lifts_only_when_the_key_is_physically_released() -> None:
 
 
 def test_a_bare_movement_key_can_never_fire_an_intent() -> None:
-    """What the input authority emits is unmodified W/A/S/D and arrows.
+    """What the input authority emits is unmodified W/A/S/D, arrows, and 1/2.
 
-    ``D`` overlaps a chord key, which is exactly why this matters: the
-    authority emits it *bare*, and bare it matches nothing. The second line of
-    defence is that the ports drop injected events before the recognizer is
-    reached at all, so our own D cannot come back as Ctrl+D even if the user
-    happens to be holding Ctrl - see ``test_mac_injected_events_are_ignored``.
+    ``1`` and ``2`` overlap chord keys (``InputKey.DIGIT_1``/``DIGIT_2`` are
+    what ``run_dequip_pan`` taps mid pan-swap/reset), which is exactly why
+    this matters: the authority emits them *bare*, and bare they match
+    nothing. The second line of defence is that the ports drop injected
+    events before the recognizer is reached at all, so our own bare 1 cannot
+    come back as Ctrl+1 even if the user happens to be holding Ctrl - see
+    ``test_mac_injected_events_are_ignored``.
     """
     recognizer = ChordRecognizer()
-    for key in ("w", "a", "s", "d", "left", "right", "space"):
+    for key in ("w", "a", "s", "d", "left", "right", "space", "1", "2"):
         assert recognizer.key_down(key, NONE).binding is None
         recognizer.key_up(key, NONE)
 
@@ -207,7 +211,18 @@ pytestmark_mac = pytest.mark.skipif(
     sys.platform != "darwin", reason="drives real CGEvent objects"
 )
 
-_MAC_VK = {"n": 45, "o": 31, "x": 7, "r": 15, "p": 35, "d": 2, "i": 34, "a": 0}
+_MAC_VK = {
+    "n": 45,
+    "o": 31,
+    "x": 7,
+    "1": 18,
+    "2": 19,
+    "3": 20,
+    "4": 21,
+    "5": 23,
+    "i": 34,
+    "a": 0,
+}
 
 
 def _mac_source(focus: FocusState = True) -> tuple[Any, list[RuntimeIntent]]:

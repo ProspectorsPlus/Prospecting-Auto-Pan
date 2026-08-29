@@ -52,7 +52,7 @@ navigator stops with the exact sentence that says what to enable.
 | Per-frame diagnostic packet, Minimal and Full Diagnostics overlays | implemented |
 | Single input authority, leases, watchdog, out-of-process deadman | implemented; 10 000 stop races clean |
 | Bounded dig / dequip / pan-swap / reset services | implemented; behavior characterized against the previous build |
-| Standalone dig loop (**Ctrl+D**) | implemented; **pixels pending reverification** |
+| Standalone dig loop (**Ctrl+3**) | implemented; **pixels pending reverification** |
 | Observation mode, telemetry, evidence recorder, dashboard | implemented |
 | Arrow detection by shape and local contrast, one temporal transaction per frame | implemented; **measured on a real-frame corpus** (eval: recall 80 %, 0 false locks, 0 identity switches); **E-PROF pending** |
 | Signed direction from barb asymmetry, notch line, tip and axis, with reversal hysteresis | implemented; eval sign accuracy 91 %, median 10 deg; **E-DIR-E2E pending** |
@@ -307,9 +307,11 @@ Hotkeys are **Ctrl** chords, identical on macOS and Windows:
 | **Ctrl+N** | Start armed navigation | yes |
 | **Ctrl+O** | Start observing - no input is sent | no |
 | **Ctrl+X** | Stop and release all input | **no** |
-| **Ctrl+R** | Reset the character | yes |
-| **Ctrl+P** | Pan swap service | yes |
-| **Ctrl+D** | Dig service | yes |
+| **Ctrl+1** | Reset the character | yes |
+| **Ctrl+2** | Pan swap service | yes |
+| **Ctrl+3** | Dig service | yes |
+| **Ctrl+4** | Wiggle move test | yes |
+| **Ctrl+5** | Find/resize the Roblox client, then boot up / reset the degree monitor | no |
 | **Ctrl+I** | Read the pixel under the cursor | no |
 
 Ctrl alone, and exactly Ctrl: `Ctrl+Option+N` does not match `Ctrl+N`. Shift
@@ -324,11 +326,40 @@ alias that still fires has not been removed. F1 is Help in most applications,
 the row is brightness and volume by default on a Mac, and a single unmodified
 keypress is one slip away from starting a character moving.
 
-**Ctrl+D** is the pre-navigator dig loop, rebuilt on the bounded services: tap
+**Ctrl+3** is the pre-navigator dig loop, rebuilt on the bounded services: tap
 while both terrain check points match, pan-swap when the capacity bar reads
 full, stop on anything else — now with an attempt cap, a deadline, and instant
 cancellation. Re-derive the pixels with `--calibrate` first, or it will
 correctly report `CUE_LOST` and do nothing.
+
+**Ctrl+4** is the wiggle-move test: a standalone strafe-wiggle (D-088), ported
+from the legacy `wiggleMove()` onto leased keys so a cancellation can never
+leave a direction key stuck down. It wiggles toward whatever heading error
+**Ctrl+5** (below) last measured for 5s, then a smaller mirrored wiggle back
+for 0.5s; if the degree monitor has never been armed, or has not yet found a
+valid reading, it wiggles straight ahead (degree 0) instead of refusing.
+
+**Ctrl+5** finds and binds to the Roblox client and resizes it to the
+canonical size (the same `CONNECT_WINDOW`/`FIT_VIEWPORT` actions the GUI's own
+window-management controls run - composed, not duplicated), then (re)arms the
+degree monitor and resets its stored angle to 0. Neither the connect nor the
+resize touches game input or needs a physical arm - resizing the client is not
+"operating Roblox" in the sense rule 1 means it; automatic setup already does
+this, unarmed, every run. The monitor itself runs a second, independent
+perception pipeline on its own thread, polling twice a second, regardless of
+what mode the coordinator is in - it never reaches an input session, so it can
+run alongside Shadow, Live, or any other service. It exists because a single
+cold call to the *shared* pipeline Shadow/Live update could not reliably
+reacquire a confident heading once that pipeline's tracker had gone cold
+(D-089): the first Ctrl+4 after leaving Shadow worked off the tracker's still-
+warm state, and the second, minutes later, did not. The monitor keeps a
+reading warm continuously instead, so Ctrl+4 always has the most recent one it
+trusted, however long ago that was.
+
+The current reading is also always visible on screen: the first Ctrl+5 press
+opens a small "Degree Monitor" window showing just the number (`+0.0°` before
+anything has been measured, never blank), which keeps updating as long as it
+stays open (D-091).
 
 ## How the automatic setup is bounded
 

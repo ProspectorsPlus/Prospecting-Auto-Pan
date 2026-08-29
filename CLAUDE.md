@@ -149,9 +149,13 @@ looks exactly like a broken backend and is not one (D-074).
    a key — unless the owner has asked for exactly that in the current session,
    and then only against a client the owner has said is ready.
 2. **Never press a game hotkey to test it.** The Ctrl chords (Ctrl+N, O, X,
-   R, P, D, I — identical on both platforms, no F-key aliases) drive real
-   input into Roblox. Their handlers are covered by tests that use fakes and
-   synthetic CGEvents; an agent must never fire them on the real machine.
+   1, 2, 3, 4, 5, I — identical on both platforms, no F-key aliases) drive
+   real input into Roblox, with one exception: Ctrl+5 finds and resizes the
+   Roblox client (geometry only — the same unarmed action automatic setup
+   already runs every session) and arms a read-only heading-error poller; it
+   never reaches an input session and never presses a key. Their handlers
+   are covered by tests that use fakes and synthetic CGEvents; an agent must
+   never fire them on the real machine.
 3. **Never fabricate native evidence.** macOS and Windows gates are tracked
    separately. If hardware, a real Roblox session, or owner observation was
    not available, the gate status is `pending` with the exact steps needed.

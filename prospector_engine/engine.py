@@ -20,6 +20,7 @@ they are carried over as ``EvidenceStatus.PENDING`` and must be re-derived with
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Protocol, runtime_checkable
@@ -33,12 +34,15 @@ from prospector_engine.contracts import (
     EvidenceStatus,
     FrameEnvelope,
     InputKey,
+    LeaseHandle,
     MouseButton,
     PanSwapOutcome,
     PanSwapResult,
     Provenance,
     ResetOutcome,
     ResetResult,
+    WiggleOutcome,
+    WiggleResult,
     monotonic_s,
 )
 from prospector_engine.input_authority import ServiceInputSession
@@ -46,10 +50,12 @@ from prospector_engine.input_authority import ServiceInputSession
 __all__ = [
     "DEFAULT_PIXELS",
     "DEFAULT_TIMINGS",
+    "DEFAULT_WIGGLE_CONFIG",
     "FrameSource",
     "ServiceContext",
     "ServiceTimings",
     "TreasurePixels",
+    "WiggleConfig",
     "capacity_full",
     "color_close",
     "is_white",
@@ -60,6 +66,7 @@ __all__ = [
     "run_dig_loop",
     "run_pan_swap",
     "run_reset",
+    "run_wiggle",
     "sample_client_pixel",
 ]
 
@@ -729,3 +736,220 @@ def run_dig_loop(ctx: ServiceContext, limits: DigLoopLimits | None = None) -> Di
         return DigLoopResult(
             outcome, taps, swaps, monotonic_s() - started_s, str(stop), tuple(evidence)
         )
+
+
+# ---------------------------------------------------------------------------
+# Wiggle: a directional strafe-wiggle test (D-088)
+#
+# Ported from the legacy standalone macro's wiggleMove(). Everything is
+# planned in a LOCAL frame - forward is (0, 1), right is (1, 0) - then rotated
+# clockwise by ``degree`` into a world-space vector, decomposed into per-key
+# duty-cycle weights, and realized as leased key holds rather than raw
+# key_down/key_up: a stall or cancellation here releases through the same
+# input authority as every other service, instead of a raw Quartz/pynput call
+# that nothing would ever lift (bugs B1, B7).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WiggleConfig:
+    """Cadence and bounds for the strafe-wiggle test service.
+
+    ``forward_half_ms``/``backward_half_ms`` reproduce the legacy
+    ``wiggleMove()`` timing exactly: a 250ms half-phase bookending the forward
+    run, 125ms bookending the mirrored backward one. ``lease_horizon_ms`` is
+    kept short and renewed every tick, so a stalled tick loop can never hold a
+    key past one horizon after the stall (the authority's own ceiling is a
+    second bound behind this one, per ``AuthorityConfig.max_hold_ms``).
+    """
+
+    tick_ms: int = 20
+    forward_half_ms: float = 250.0
+    backward_half_ms: float = 125.0
+    lease_horizon_ms: int = 250
+    max_forward_s: float = 30.0
+    max_backward_s: float = 10.0
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="legacy engine.py wiggleMove(), commit 5b81120",
+            note="reproduces the timing that worked on raw key events; not "
+            "re-measured on the leased input authority",
+        )
+    )
+
+
+DEFAULT_WIGGLE_CONFIG = WiggleConfig()
+
+
+def _rotate_cw(x: float, y: float, degree: float) -> tuple[float, float]:
+    """Clockwise rotation: 0 deg leaves ``(x, y)`` unchanged, 90 deg turns
+    forward ``(0, 1)`` into right ``(1, 0)``."""
+    theta = math.radians(degree)
+    return (
+        x * math.cos(theta) + y * math.sin(theta),
+        -x * math.sin(theta) + y * math.cos(theta),
+    )
+
+
+def _wiggle_key_weights(x: float, y: float) -> dict[InputKey, float]:
+    """A world-space vector, decomposed into W/A/S/D weights in ``[0, 1]``,
+    normalized so the dominant axis is always fully held."""
+    weights = {
+        InputKey.D: max(x, 0.0),
+        InputKey.A: max(-x, 0.0),
+        InputKey.W: max(y, 0.0),
+        InputKey.S: max(-y, 0.0),
+    }
+    peak = max(weights.values())
+    if peak <= 1e-9:
+        return weights
+    return {key: value / peak for key, value in weights.items()}
+
+
+def _wiggle_side_phases(total_ms: float, target_half_ms: float) -> list[tuple[int, float]]:
+    """``[(side_sign, duration_ms), ...]``: half, full, full, ..., full, half -
+    symmetric, starting and ending on ``side_sign = -1``. The number of full
+    alternating swings is chosen (forced odd, so the pattern starts and ends
+    on the same side) to fit ``total_ms`` around the requested half-phase
+    length as closely as an integer count allows.
+    """
+    if total_ms <= 0:
+        return []
+    swings = max(1, round((total_ms / target_half_ms - 2) / 2))
+    if swings % 2 == 0:
+        swings += 1
+    half_ms = total_ms / (2 + 2 * swings)
+    full_ms = 2 * half_ms
+    phases: list[tuple[int, float]] = [(-1, half_ms)]
+    sign = 1
+    for _ in range(swings):
+        phases.append((sign, full_ms))
+        sign *= -1
+    phases.append((-1, half_ms))
+    return phases
+
+
+def _wiggle_weights_at(
+    degree: float, forward_sign: int, side_sign: int
+) -> dict[InputKey, float]:
+    forward_x, forward_y = _rotate_cw(0.0, float(forward_sign), degree)
+    side_x, side_y = _rotate_cw(float(side_sign), 0.0, degree)
+    return _wiggle_key_weights(forward_x + side_x, forward_y + side_y)
+
+
+@dataclass
+class _DutyKeyState:
+    """One key's held lease and its fractional duty-cycle accumulator."""
+
+    lease: LeaseHandle | None = None
+    accumulator: float = 0.0
+
+
+def run_wiggle(
+    ctx: ServiceContext,
+    degree: float,
+    forward_s: float,
+    backward_s: float,
+    config: WiggleConfig = DEFAULT_WIGGLE_CONFIG,
+) -> WiggleResult:
+    """Strafe-wiggle toward ``degree`` (0 = forward/W, clockwise), then a
+    smaller mirrored wiggle back, holding space throughout.
+
+    ``degree`` is taken mod 360, so any float is accepted. ``forward_s`` and
+    ``backward_s`` are clipped to ``config.max_forward_s`` / ``max_backward_s``
+    so a bad caller cannot ask for an unbounded hold. Every key this acquires
+    is released on every exit path, cancelled or not (bug B1/B7 class, same as
+    every other service here): nothing here can leave a direction key stuck
+    down the way the legacy raw ``key_down``/``key_up`` calls could.
+    """
+    started_s = monotonic_s()
+    degree = degree % 360.0
+    forward_s = max(0.0, min(forward_s, config.max_forward_s))
+    backward_s = max(0.0, min(backward_s, config.max_backward_s))
+    evidence: list[str] = [
+        f"degree={degree:.1f}",
+        f"forward_s={forward_s:.2f}",
+        f"backward_s={backward_s:.2f}",
+    ]
+
+    duty: dict[InputKey, _DutyKeyState] = {
+        key: _DutyKeyState() for key in (InputKey.W, InputKey.A, InputKey.S, InputKey.D)
+    }
+    space_lease: LeaseHandle | None = None
+
+    def release_all() -> None:
+        nonlocal space_lease
+        for state in duty.values():
+            if state.lease is not None:
+                ctx.session.release(state.lease)
+                state.lease = None
+        if space_lease is not None:
+            ctx.session.release(space_lease)
+            space_lease = None
+
+    def apply_weights(weights: dict[InputKey, float]) -> None:
+        for key, weight in weights.items():
+            state = duty[key]
+            if weight >= 0.999:
+                if state.lease is None:
+                    state.lease = ctx.session.hold_key(key, config.lease_horizon_ms)
+                else:
+                    ctx.session.renew(state.lease, config.lease_horizon_ms)
+                state.accumulator = 0.0
+                continue
+            if weight <= 0.001:
+                if state.lease is not None:
+                    ctx.session.release(state.lease)
+                    state.lease = None
+                state.accumulator = 0.0
+                continue
+            state.accumulator += weight
+            if state.accumulator >= 1.0:
+                state.accumulator -= 1.0
+                if state.lease is None:
+                    state.lease = ctx.session.hold_key(key, config.lease_horizon_ms)
+                else:
+                    ctx.session.renew(state.lease, config.lease_horizon_ms)
+            elif state.lease is not None:
+                ctx.session.release(state.lease)
+                state.lease = None
+
+    def run_phase(total_s: float, forward_sign: int, target_half_ms: float) -> None:
+        total_ms = total_s * 1000.0
+        for side_sign, duration_ms in _wiggle_side_phases(total_ms, target_half_ms):
+            phase_deadline_s = monotonic_s() + duration_ms / 1000.0
+            weights = _wiggle_weights_at(degree, forward_sign, side_sign)
+            while monotonic_s() < phase_deadline_s:
+                ctx.check()
+                apply_weights(weights)
+                if space_lease is not None:
+                    ctx.session.renew(space_lease, config.lease_horizon_ms)
+                ctx.sleep_ms(config.tick_ms)
+
+    try:
+        space_lease = ctx.session.hold_key(InputKey.SPACE, config.lease_horizon_ms)
+        if space_lease is None:
+            return WiggleResult(
+                WiggleOutcome.FAILED,
+                degree,
+                monotonic_s() - started_s,
+                "space lease refused",
+                tuple(evidence),
+            )
+        run_phase(forward_s, +1, config.forward_half_ms)
+        run_phase(backward_s, -1, config.backward_half_ms)
+        return WiggleResult(
+            WiggleOutcome.SUCCESS,
+            degree,
+            monotonic_s() - started_s,
+            "wiggle complete",
+            tuple(evidence),
+        )
+    except ServiceCancelled as stop:
+        outcome = WiggleOutcome.CANCELLED if str(stop) == "cancelled" else WiggleOutcome.TIMEOUT
+        return WiggleResult(
+            outcome, degree, monotonic_s() - started_s, str(stop), tuple(evidence)
+        )
+    finally:
+        release_all()

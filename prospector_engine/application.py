@@ -62,6 +62,7 @@ from prospector_engine.engine import (
     run_dig_loop,
     run_pan_swap,
     run_reset,
+    run_wiggle,
 )
 from prospector_engine.geometry import ViewportGeometry
 from prospector_engine.input_authority import (
@@ -71,6 +72,7 @@ from prospector_engine.input_authority import (
     InputAuthority,
 )
 from prospector_engine.navigation import (
+    DegreeMonitor,
     NavigationCapabilities,
     PerceptionPipeline,
     make_forward_probe_worker,
@@ -133,6 +135,60 @@ def _service_worker(kind: str) -> WorkerFactory:
             f"pan swap: {swap.detail}",
             swap.evidence,
         )
+
+    return worker
+
+
+def _wiggle_worker(monitor: DegreeMonitor) -> WorkerFactory:
+    """Ctrl+4: strafe-wiggle at the degree monitor's last trusted heading error.
+
+    Reads ``monitor.current()`` rather than calling the perception pipeline
+    itself: a single cold call, isolated from Shadow/Live's own continuous
+    calls, frequently could not reacquire a confident reading (D-089). The
+    monitor (Ctrl+5) is what keeps a reading warm; this just reads it, and
+    that reading is 0.0 (straight forward) until Ctrl+5 has been pressed at
+    least once and produced a valid frame.
+    """
+
+    def worker(context: WorkerContext) -> ModeResult:
+        session = context.service
+        if session is None:
+            return ModeResult(ModeResultKind.FAILED, "wiggle started without an input session")
+        degree = monitor.current()
+        service_context = ServiceContext(
+            frames=context.frames,
+            session=session,
+            cancel=context.cancellation,
+            deadline_s=monotonic_s() + 90.0,
+            on_status=context.on_status,
+        )
+        result = run_wiggle(service_context, degree, forward_s=5.0, backward_s=0.5)
+        kind_map = {
+            "SUCCESS": ModeResultKind.COMPLETED,
+            "CANCELLED": ModeResultKind.CANCELLED,
+        }
+        return ModeResult(
+            kind_map.get(result.outcome.name, ModeResultKind.FAILED),
+            f"wiggle: {result.detail} (degree={result.degree_deg:.1f})",
+            result.evidence,
+        )
+
+    return worker
+
+
+def _degree_monitor_worker(monitor: DegreeMonitor) -> WorkerFactory:
+    """Ctrl+5: (re)arm the degree monitor and reset its stored angle to 0.
+
+    Never reaches an input session and never touches ``context.frames``
+    itself - the monitor already owns its own frame reads on its own thread,
+    started here and left running. This factory just starts (or resets) it
+    and returns immediately.
+    """
+
+    def worker(context: WorkerContext) -> ModeResult:
+        del context
+        monitor.start_or_reset()
+        return ModeResult(ModeResultKind.COMPLETED, "degree monitor armed, angle reset to 0")
 
     return worker
 
@@ -391,6 +447,10 @@ class Application:
     #: One pipeline shared with the running worker, so a profile change in the
     #: UI takes effect on the very next frame instead of the next session.
     pipeline: PerceptionPipeline
+    #: Ctrl+5's heading-error reading, kept warm independent of RunMode
+    #: (D-089). The dashboard polls ``current()``/``armed_count()`` to drive
+    #: its own small degree-readout window; nothing else needs to reach in.
+    degree_monitor: DegreeMonitor
     profiles: ProfileAuthority
     turn_cache: TurnResponseCache
     #: What this run has proven, read live. Automatic setup and the live
@@ -585,6 +645,19 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
     library = load_profiles()
     profiles = ProfileAuthority(library, profile_id)
     pipeline = PerceptionPipeline(segmenter=ArrowSegmenter(profiles.active), profiles=profiles)
+    # A separate instance, not a second reference to `pipeline`: the tracker
+    # and direction estimator inside PerceptionPipeline carry state across
+    # calls and are not locked, so a second thread calling into the one
+    # Shadow/Live update would race it (D-089).
+    degree_pipeline = PerceptionPipeline(
+        segmenter=ArrowSegmenter(profiles.active), profiles=profiles
+    )
+
+    # No on_update callback: this module imports no UI (see the module
+    # docstring), so it cannot own a widget. The dashboard instead polls
+    # `degree_monitor.current()`/`armed_count()` from its own Tk-scheduled
+    # timer to drive the small degree-readout window (D-091).
+    degree_monitor = DegreeMonitor(frames=capture, primary=pipeline, mirror=degree_pipeline)
     turn_cache = TurnResponseCache(paths.config / "turn-response.json")
 
     state: dict[str, Any] = {
@@ -697,6 +770,8 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         IntentType.RESET_CHARACTER: _service_worker("reset"),
         IntentType.PAN_SWAP_TEST: _service_worker("pan_swap"),
         IntentType.DIG_LOOP: _service_worker("dig_loop"),
+        IntentType.WIGGLE_TEST: _wiggle_worker(degree_monitor),
+        IntentType.DEGREE_MONITOR: _degree_monitor_worker(degree_monitor),
         IntentType.PIXEL_INFO: _pixel_info_worker(port, report),
     }
     coordinator = RuntimeCoordinator(
@@ -732,6 +807,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         reports=reports,
         paths=paths,
         pipeline=pipeline,
+        degree_monitor=degree_monitor,
         profiles=profiles,
         turn_cache=turn_cache,
         plain=plain,

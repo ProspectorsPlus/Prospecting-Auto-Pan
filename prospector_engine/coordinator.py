@@ -801,6 +801,8 @@ class RuntimeCoordinator:
             IntentType.RESET_CHARACTER: self._on_service,
             IntentType.PAN_SWAP_TEST: self._on_service,
             IntentType.DIG_LOOP: self._on_service,
+            IntentType.WIGGLE_TEST: self._on_service,
+            IntentType.DEGREE_MONITOR: self._on_degree_monitor,
             IntentType.FORWARD_PROBE: self._on_service,
             IntentType.PIXEL_INFO: self._on_service,
             IntentType.RECOVER_RELEASE: self._on_recover_release,
@@ -1248,11 +1250,14 @@ class RuntimeCoordinator:
         )
         self.publish_transition("Starting Live - navigating")
 
+    #: Diagnostics that never reach an input session, so they never transition
+    #: the mode or disturb an arm token - dispatched to a detached thread
+    #: instead of the single mode worker.
+    _DETACHED_DIAGNOSTICS = (IntentType.PIXEL_INFO, IntentType.DEGREE_MONITOR)
+
     def _on_service(self, intent: RuntimeIntent) -> None:
-        if intent.intent_type is IntentType.PIXEL_INFO:
-            # Read-only diagnostic: it never reaches an input session, so it
-            # does not transition the mode or disturb an arm token.
-            factory = self._workers.get(IntentType.PIXEL_INFO)
+        if intent.intent_type in self._DETACHED_DIAGNOSTICS:
+            factory = self._workers.get(intent.intent_type)
             if factory is not None:
                 self._run_detached_diagnostic(factory, intent)
             return
@@ -1261,6 +1266,22 @@ class RuntimeCoordinator:
             self._events.add("service.refused", ",".join(readiness.reasons))
             return
         self._begin_mode(RunMode.SERVICE, intent, intent.intent_type)
+
+    def _on_degree_monitor(self, intent: RuntimeIntent) -> None:
+        """Ctrl+5: find + resize the Roblox client, then (re)arm the monitor.
+
+        Connect and fit are the same bounded, non-input-emitting operations
+        the GUI's own window-management actions already run (mission section
+        4) - composed here rather than duplicated, so this needs no window
+        handling of its own. Neither touches game input or requires a
+        physical arm: resizing the client is not "operating Roblox" in the
+        sense rule 1 means it (automatic setup already does this, unarmed,
+        every run). Order matters - connect before fit, so a fit that moves
+        the window still fits the client this call just bound to.
+        """
+        self._on_connect(intent)
+        self._on_fit(intent)
+        self._on_service(intent)
 
     def _run_detached_diagnostic(self, factory: WorkerFactory, intent: RuntimeIntent) -> None:
         context = WorkerContext(

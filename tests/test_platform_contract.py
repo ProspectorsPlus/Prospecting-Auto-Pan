@@ -213,6 +213,8 @@ def test_every_advertised_chord_is_bound_on_this_platform() -> None:
         IntentType.RESET_CHARACTER,
         IntentType.PAN_SWAP_TEST,
         IntentType.DIG_LOOP,
+        IntentType.WIGGLE_TEST,
+        IntentType.DEGREE_MONITOR,
     }
 
 

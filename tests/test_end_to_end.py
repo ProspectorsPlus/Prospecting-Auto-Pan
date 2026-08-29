@@ -268,6 +268,20 @@ def test_a_geometry_change_flushes_state_and_bumps_the_revision(wired: Any) -> N
     assert _await(lambda: guard.revision > before, 3.0), "the revision never advanced"
 
 
+def test_degree_monitor_intent_also_connects_and_fits_the_client(wired: Any) -> None:
+    """Ctrl+5 finds/resizes the window too (D-091), composed from the same
+    CONNECT_WINDOW/FIT_VIEWPORT handlers the GUI's own window-management
+    actions use - this proves the composition actually fires them, not just
+    the degree monitor arming."""
+    coordinator, guard, port = wired["coordinator"], wired["guard"], wired["port"]
+    before = guard.revision
+
+    port.set_geometry(make_geometry(size=(1024.0, 768.0)))
+    coordinator.submit(coordinator.next_intent(IntentType.DEGREE_MONITOR, "test"))
+
+    assert _await(lambda: guard.revision > before, 3.0), "Ctrl+5 never connected to the client"
+
+
 def test_the_dashboard_renders_a_real_packet_without_crashing(
     wired: Any, tmp_path: Path
 ) -> None:

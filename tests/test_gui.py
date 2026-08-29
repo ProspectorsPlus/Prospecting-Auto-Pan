@@ -143,7 +143,7 @@ def test_the_chords_are_shown_as_guidance(dashboard: Any) -> None:
     labels = [str(label.cget("text")) for label in _widgets(dashboard.root, ("Label",))]
     joined = " ".join(labels)
     assert "Ctrl+" in joined
-    for key in ("N navigate", "X stop", "R reset", "P pan", "D dig"):
+    for key in ("N navigate", "X stop", "1 reset", "2 pan", "3 dig", "4 wiggle", "5 degree"):
         assert key in joined, f"the legend does not mention {key}"
 
 
@@ -710,12 +710,86 @@ def test_long_log_lines_do_not_widen_the_window(dashboard: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Ctrl+5's degree-readout box
+#
+# ``dashboard.app.degree_monitor`` is swapped for a tiny fake here rather than
+# armed for real: the real one spawns a background poll thread, and this
+# fixture's whole point is that no background thread is involved (see the
+# module docstring). ``_render_degree_box`` is exercised directly instead of
+# through a ticker tick, same as the drawer/log tests above.
+# ---------------------------------------------------------------------------
+
+
+class _FakeDegreeMonitor:
+    def __init__(self) -> None:
+        self.armed = 0
+        self.angle = 0.0
+
+    def armed_count(self) -> int:
+        return self.armed
+
+    def current(self) -> float:
+        return self.angle
+
+
+def test_degree_box_does_not_exist_before_it_is_ever_armed(dashboard: Any) -> None:
+    dashboard._render_degree_box()
+    assert dashboard._degree_window is None
+
+
+def test_degree_box_opens_and_reads_zero_on_first_arm(dashboard: Any) -> None:
+    fake = _FakeDegreeMonitor()
+    dashboard.app.degree_monitor = fake
+    fake.armed = 1
+
+    dashboard._render_degree_box()
+
+    assert dashboard._degree_window is not None
+    assert dashboard._degree_label_var is not None
+    assert dashboard._degree_label_var.get() == "+0.0°"
+
+
+def test_degree_box_tracks_the_current_angle(dashboard: Any) -> None:
+    fake = _FakeDegreeMonitor()
+    dashboard.app.degree_monitor = fake
+    fake.armed = 1
+    dashboard._render_degree_box()
+
+    fake.angle = -12.3
+    dashboard._render_degree_box()
+
+    assert dashboard._degree_label_var is not None
+    assert dashboard._degree_label_var.get() == "-12.3°"
+
+
+def test_degree_box_does_not_reopen_without_a_fresh_arm(dashboard: Any) -> None:
+    fake = _FakeDegreeMonitor()
+    dashboard.app.degree_monitor = fake
+    fake.armed = 1
+    dashboard._render_degree_box()
+    window = dashboard._degree_window
+
+    fake.angle = 7.0
+    dashboard._render_degree_box()
+    dashboard._render_degree_box()
+
+    assert dashboard._degree_window is window
+
+
+# ---------------------------------------------------------------------------
 # Timers: one cancellable handle per loop
 # ---------------------------------------------------------------------------
 
 
 def test_each_polling_loop_owns_exactly_one_timer(dashboard: Any) -> None:
-    assert set(dashboard.tickers) == {"preview", "status", "setup", "metrics", "drawer"}
+    assert set(dashboard.tickers) == {
+        "preview",
+        "status",
+        "setup",
+        "metrics",
+        "drawer",
+        "degree",
+    }
     for ticker in dashboard.tickers.values():
         assert ticker.running
 

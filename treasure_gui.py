@@ -170,6 +170,8 @@ _LEGEND_VERBS: dict[IntentType, str] = {
     IntentType.RESET_CHARACTER: "reset",
     IntentType.PAN_SWAP_TEST: "pan",
     IntentType.DIG_LOOP: "dig",
+    IntentType.WIGGLE_TEST: "wiggle",
+    IntentType.DEGREE_MONITOR: "degree",
     IntentType.PIXEL_INFO: "pixel",
 }
 
@@ -265,6 +267,7 @@ class Dashboard:
     SETUP_INTERVAL_MS = 120
     METRICS_INTERVAL_MS = 500
     DRAWER_INTERVAL_MS = 700
+    DEGREE_INTERVAL_MS = 200
 
     #: Below this the layout starts clipping. The Stop control is placed
     #: outside every resizable region so it survives regardless.
@@ -290,6 +293,13 @@ class Dashboard:
         self._layout_path = app.paths.config / "window.json"
         self._layout = WindowLayout.load(self._layout_path)
         self._closing = False
+        #: Ctrl+5's degree-readout box. Opened the first time the degree
+        #: monitor is armed, not before - `_degree_last_armed` is how the
+        #: ticker (which only ever polls, never gets pushed to; see
+        #: DegreeMonitor's own docstring) notices a fresh Ctrl+5 press.
+        self._degree_window: tk.Toplevel | None = None
+        self._degree_label_var: tk.StringVar | None = None
+        self._degree_last_armed = 0
 
         # Branch, short commit, and this process id, in the title bar. A
         # dashboard left open from an earlier run is indistinguishable from a
@@ -331,6 +341,9 @@ class Dashboard:
                 root, self.METRICS_INTERVAL_MS, self._render_metrics, name="metrics"
             ),
             "drawer": Ticker(root, self.DRAWER_INTERVAL_MS, self._render_drawer, name="drawer"),
+            "degree": Ticker(
+                root, self.DEGREE_INTERVAL_MS, self._render_degree_box, name="degree"
+            ),
         }
         for ticker in self.tickers.values():
             ticker.start()
@@ -1184,6 +1197,44 @@ class Dashboard:
         self._render_actuator(snapshot)
         recovery = observation.plain_summary if observation else ""
         self.readout_vars["recovery"].set(recovery[: self.READOUT_VALUE_CHARS] or "-")
+
+    def _render_degree_box(self) -> None:
+        """Ctrl+5's tiny standalone readout: just the number, always a number.
+
+        Polls rather than being pushed to, on purpose: ``DegreeMonitor`` runs
+        on its own thread and this module must never touch a Tk widget from
+        anything but the Tk thread. ``armed_count()`` is how a fresh Ctrl+5
+        press is noticed here - the value alone cannot distinguish "just
+        armed, still 0" from "pressed a while ago, still 0".
+        """
+        monitor = self.app.degree_monitor
+        armed = monitor.armed_count()
+        if armed != self._degree_last_armed:
+            self._degree_last_armed = armed
+            self._open_degree_window()
+        if self._degree_label_var is not None:
+            self._degree_label_var.set(f"{monitor.current():+.1f}°")
+
+    def _open_degree_window(self) -> None:
+        if self._degree_window is not None and self._degree_window.winfo_exists():
+            self._degree_window.deiconify()
+            self._degree_window.lift()
+            return
+        window = tk.Toplevel(self.root, bg=BG)
+        window.title("Degree Monitor")
+        window.resizable(False, False)
+        variable = tk.StringVar(value="+0.0°")
+        tk.Label(
+            window,
+            textvariable=variable,
+            bg=BG,
+            fg=GOLD,
+            font=self.fonts["title"],
+            padx=28,
+            pady=20,
+        ).pack()
+        self._degree_window = window
+        self._degree_label_var = variable
 
     def _render_actuator(self, snapshot: TelemetrySnapshot | None) -> None:
         """The physical half of the readout, read from the ledger.

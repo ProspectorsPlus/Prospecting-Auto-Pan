@@ -2681,3 +2681,145 @@ never fire. Rotation is now counted only while still approaching.
 
 Provisional throughout: geometry, not a fitted measurement. E-ARRIVE is still
 owed and this does not stand in for it.
+
+## D-088 — 2026-08-29 — Wiggle joins the bounded services, and the test chords go numeric
+
+**Decision:** The legacy standalone macro's `wiggleMove()` is ported onto the
+bounded-service pattern as `run_wiggle` (`prospector_engine/engine.py`): the
+same local-frame rotation and duty-cycle math, realized as leased `hold_key`/
+`renew`/`release` calls through `ServiceInputSession` instead of raw
+`key_down`/`key_up`, so a cancellation or a stalled tick can never leave a
+direction key stuck down. It is wired exactly like reset/pan-swap/dig-loop: a
+new `IntentType.WIGGLE_TEST`, dispatched by the coordinator's existing
+`_on_service`, run as a bounded `RunMode.SERVICE` worker
+(`_wiggle_worker` in `application.py`).
+
+Alongside it, `RESET_CHARACTER`/`PAN_SWAP_TEST`/`DIG_LOOP` move from
+`Ctrl+R`/`Ctrl+P`/`Ctrl+D` to `Ctrl+1`/`Ctrl+2`/`Ctrl+3`, and `WIGGLE_TEST`
+takes `Ctrl+4` — a deliberate rebind, not an addition alongside the old
+letters, so the test vocabulary stays one chord per intent rather than two.
+`bindings.py`, both platform hotkey-keycode tables, the pinned
+`test_bindings.py`/`test_platform_contract.py` chord assertions, and
+`README.md`'s hotkey table all moved together.
+
+**Why.** The owner asked for a `Ctrl+1..4` scheme covering all four test
+services. Three of the four already existed and worked under the letter
+chords; duplicating them under new numeric aliases would have left every
+service reachable two ways for no functional gain, so the letters were
+retired rather than kept alongside the numbers.
+
+**The angle wiring.** `Ctrl+4` reads `PerceptionPipeline.observe(...)
+.direction.error_deg` off whatever frame capture last published — the same
+shared `pipeline` object Shadow/Live already use — rather than standing up a
+second detector. It does not require Live or Shadow to be running, and it
+falls back to degree 0 (straight ahead) whenever no valid reading exists,
+rather than refusing: a missing arrow reading is not a fault worth failing a
+manual test over.
+
+Timings (`WiggleConfig`) and the wiggle-phase math reproduce the legacy
+constants unchanged; `Provenance` on both is `PROVISIONAL` — they worked on
+raw key events, not yet re-measured on the leased input authority. E-DIG-class
+evidence for wiggle specifically is `PENDING`.
+
+## D-089 — 2026-08-29 — A degree monitor, because a cold reading was not enough
+
+**Decision:** `Ctrl+4` (wiggle, D-088) originally called
+`pipeline.observe(...)` itself, once, cold, at the moment it was pressed. The
+owner reported: start Shadow, press Ctrl+4 — it wiggles the right way; press
+Ctrl+4 again — it wiggles straight ahead, no arrow detected. Root cause: the
+shared `PerceptionPipeline`'s tracker and `DirectionEstimator` carry state
+across frames (a reversal latch, a heading filter), and nothing was calling
+`analyze`/`observe` on that pipeline between the two presses — Shadow's own
+worker is torn down the instant a `SERVICE` intent (Ctrl+1-4) begins, and
+`_wiggle_worker`'s own single call was the only thing touching it, once, per
+press. The first press still had the tracker warm from Shadow's own
+just-stopped continuous calls; by the second press it had gone cold, and one
+isolated frame was not enough evidence for a confident direction.
+
+The fix is `DegreeMonitor` (`prospector_engine/navigation.py`): a background
+thread, armed by a new `Ctrl+5`, that polls twice a second regardless of
+`RunMode` and remembers the last heading error it actually trusted.
+`Ctrl+4` now just reads `DegreeMonitor.current()` instead of calling
+perception itself.
+
+**Why a second `PerceptionPipeline` instance, not the shared one.**
+`PerceptionPipeline` carries no lock and was never meant to be called from two
+threads — sharing the live instance would race the monitor's polling against
+whatever mode worker is running, corrupting the tracker Shadow/Live actually
+navigates on. The monitor owns a separate instance instead (`degree_pipeline`
+in `application.py`), copying the live instance's `reference` each tick — a
+plain attribute swap, safe without a lock because `ReferenceFrame` is frozen —
+so its heading is computed against the same forward reference Shadow/Live
+established, without ever touching Shadow/Live's own state.
+
+**Why a poll, not a callback from Shadow's own loop.** The monitor has to keep
+working when Shadow/Live is *not* running — that is exactly the case that
+broke Ctrl+4 the second time. A callback wired into Shadow's own per-frame
+loop would go silent the moment Shadow stopped, reproducing the same bug one
+layer up.
+
+**Why `Ctrl+5` resets to 0 on every press, not only the first.** The owner's
+own spec: a visible sign that a fresh reading has not landed yet, and a way to
+deliberately clear a stale angle without waiting for the poll interval.
+Idempotent by construction — pressing it while already running resets the
+value without spawning a second thread.
+
+Same class of exception as `PIXEL_INFO`: never reaches an input session, so it
+never transitions `RunMode` and can run alongside Shadow, Live, or any bounded
+service. Dispatched through `_run_detached_diagnostic`, generalized off a
+single-intent special case into `RuntimeCoordinator._DETACHED_DIAGNOSTICS`.
+
+## D-090 — 2026-08-29 — The degree monitor prints, because the owner asked to see it
+
+**Decision:** `DegreeMonitor` takes an optional `on_update: Callable[[float |
+None], None]` (`prospector_engine/navigation.py`), fired on every poll - the
+angle on a valid reading, `None` on a miss, so a caller can tell "still
+searching" from "found something" rather than watching the last good value
+repeat. `build_application()` wires it to a plain `print()`
+(`[degree monitor] +12.3 deg` / `[degree monitor] no reading`), deliberately
+not the plainlog/telemetry path, so it shows up directly in whatever terminal
+launched the process - no dashboard widget required.
+
+**Why plain `print`, not `PlainLog`.** The owner asked for "some sort of
+temporary output... where I can see" the angle while iterating on D-089 by
+eye. `PlainLog`/`Topic` entries are the durable, structured commentary
+surfaced through the GUI's own transcript; this is closer to a debug tap and
+is expected to be pulled back out (routed through `PlainLog`, rate-limited, or
+removed) once the owner has actually watched it track a real arrow and trusts
+the monitor's readings without staring at a terminal.
+
+*(Superseded by D-091: the print was pulled back out, as anticipated above, in
+favor of a small dashboard window.)*
+
+## D-091 — 2026-08-29 — A small window instead of a terminal, and Ctrl+5 also sizes the window
+
+**Decision:** The D-090 terminal print is gone. `Dashboard` (`treasure_gui.py`)
+now owns a `"degree"` `Ticker` polling `degree_monitor.current()`/
+`armed_count()` at 200ms and driving a small `Toplevel` — just a number
+(`+0.0°` before anything has been measured, never blank) — opened the first
+time Ctrl+5 arms the monitor. `Application` gained a `degree_monitor` field so
+the dashboard can reach it; `application.py` itself still imports no UI (its
+own rule, restated in its module docstring) and passes no `on_update`
+callback any more.
+
+**Why poll instead of push.** `DegreeMonitor` polls on its own background
+thread and Tk widgets may only be touched from the Tk thread. Rather than
+marshal a cross-thread callback through `root.after(0, ...)`, the dashboard
+reads the monitor's own thread-safe getters from a `Ticker` it already owns —
+the same pattern every other readout in this window already uses (`_capture`,
+`coordinator.snapshot()`, the `reports` queue), so no new cross-thread channel
+was needed at all. `armed_count()` exists because the value alone cannot tell
+"just armed, still 0" from "armed a while ago, still 0" — the ticker needs to
+know a *fresh* Ctrl+5 happened to decide whether to (re)open the window.
+
+**Ctrl+5 also finds and resizes the client.** `RuntimeCoordinator.
+_on_degree_monitor` composes the already-existing `_on_connect`/`_on_fit`
+handlers (the same ones the GUI's own window-management controls call) ahead
+of arming the monitor, rather than duplicating window-handling logic. Neither
+touches game input or needs a physical arm: resizing the client is not
+"operating Roblox" in the sense rule 1 means it — automatic setup already runs
+both, unarmed, every session, and `--setup-probe` explicitly documents this
+same resize as safe to run from a bare command line. `bindings.py`'s
+description and `requires_focus=False` are unchanged; a resize is targeted by
+window identity, not by whatever currently has focus, so focus was never the
+relevant guard for it.
