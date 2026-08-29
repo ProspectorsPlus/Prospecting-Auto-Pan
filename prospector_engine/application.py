@@ -509,14 +509,41 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
     def capture_age_s() -> float | None:
         return capture.latest_age_s()
 
+    #: Set once the coordinator exists. The authority is built first because
+    #: the coordinator needs it, so the fault path is closed here rather than
+    #: at construction - a late binding, but a total one: every fault the
+    #: authority raises reaches the mode owner.
+    fault_sink: dict[str, Any] = {}
+
     def on_safety_fault(fault: SafetyFault) -> None:
-        # Previously computed and discarded: this is the one place that knows
-        # *why* the watchdog just cancelled a running service (focus lost,
-        # viewport invalid, capture stale, ...), and nothing surfaced it.
+        """A terminal authority fault. Recorded *and* submitted.
+
+        It used to only be recorded. The authority's watchdog would release
+        every edge and disarm the movement actuator, and the coordinator - the
+        one object that owns ``RunMode`` - was never told, so the dashboard
+        went on saying LIVE over a runtime whose actuator was stopped and whose
+        next ``apply`` could only answer "the navigator is stopped". A zombie
+        Live is worse than a stop, because the person watching it has no reason
+        to press anything.
+
+        Submitted, not called: the coordinator owns its own thread and its
+        queue puts safety ahead of every other intent, so this returns
+        immediately and cannot deadlock the watchdog behind a mode transition.
+        """
         events.add(
             "safety.fault",
             f"{fault.kind.name} gen={fault.generation} {' '.join(fault.evidence)}",
         )
+        plain.say(
+            Topic.STATE,
+            Verdict.FAIL,
+            f"Safety fault {fault.kind.name.replace('_', ' ').lower()}: "
+            f"{' '.join(fault.evidence) or 'no detail'}. Everything is released.",
+        )
+        sink = fault_sink.get("submit")
+        if sink is not None:
+            with contextlib.suppress(Exception):
+                sink(fault)
 
     #: The readable running commentary. Created here, before anything that
 
@@ -529,8 +556,14 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
     plain = PlainLog()
 
     def narrate(verdict: str, text: str) -> None:
+        """One line from the actuator. An OS edge gets its own topic.
 
-        plain.say(Topic.FORWARD, Verdict(verdict), text)
+        ``Topic.INPUT`` is not a per-frame topic, so a key-down line can never
+        be evicted by the frame telemetry around it - which is what a person
+        reading "why did nothing move" is looking for first.
+        """
+        topic = Topic.INPUT if verdict == "input" else Topic.FORWARD
+        plain.say(topic, Verdict(verdict), text)
 
     authority = InputAuthority(
         port,
@@ -683,6 +716,9 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         key_state_probe=port.key_state,
     )
     setup_sink.append(coordinator._publish_setup)
+    # Close the safety loop. Until this line a terminal fault released every
+    # edge and left the coordinator believing it was still in Live.
+    fault_sink["submit"] = coordinator.submit_fault
 
     application = Application(
         port=port,

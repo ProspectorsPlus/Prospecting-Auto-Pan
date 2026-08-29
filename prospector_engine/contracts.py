@@ -21,7 +21,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -890,6 +890,15 @@ class CommandVisualization:
     #: motion is the exact failure "it says APPLIED and nothing happens"
     #: describes, so it is recorded rather than assumed away.
     motion_confirmed: bool | None = None
+    #: The yaw delta that **went out**, as opposed to the one that was asked
+    #: for. ``None`` when nothing reported one. A yaw post can fail on its own
+    #: without blocking the whole command, so drawing the request would show a
+    #: camera movement that never happened.
+    yaw_applied_px: int | None = None
+    #: How long the longest current hold has been down, in milliseconds.
+    held_ms: float = 0.0
+    #: The mechanism the edges went through, for the overlay caption.
+    backend: str = ""
 
     @classmethod
     def none(cls, *, detail: str = "", live: bool = False) -> CommandVisualization:
@@ -967,6 +976,9 @@ class CommandVisualization:
             detail=outcome.block.value if blocked else outcome.detail,
             live=True,
             motion_confirmed=motion_confirmed,
+            yaw_applied_px=int(getattr(outcome, "yaw_posted_px", 0)),
+            held_ms=float(getattr(outcome, "held_ms", 0.0)),
+            backend=str(getattr(outcome, "backend", "")),
         )
 
     def freeze(self) -> CommandVisualization:
@@ -1021,11 +1033,16 @@ class CommandVisualization:
         A refused yaw edge fails the whole apply, so a non-zero value here on
         an APPLIED packet means the edge landed.
         """
-        if self.frozen or self.requested is None:
+        if self.frozen:
             return 0
         if self.outcome not in (CommandOutcome.APPLIED, CommandOutcome.WOULD):
             return 0
-        return self.requested.yaw_delta_px
+        if self.yaw_applied_px is not None:
+            # The actuator's answer. A yaw post can fail without blocking the
+            # command, and drawing the request in that case would put a camera
+            # movement on screen that never left the process.
+            return self.yaw_applied_px
+        return 0 if self.requested is None else self.requested.yaw_delta_px
 
     @property
     def stage(self) -> CommandStage:
@@ -1049,18 +1066,34 @@ class CommandVisualization:
 
     @property
     def label(self) -> str:
-        """The word drawn beside the glyphs."""
+        """The word drawn beside the glyphs, with the evidence behind it.
+
+        On an applied command the word alone was never enough: ACTIVE said
+        nothing about *how long* the key had been down or *which mechanism* it
+        went through, and both are the first things asked when a character is
+        not moving. They are appended only when they are known, so Shadow's
+        badge stays the single word it has always been.
+        """
         if self.outcome is CommandOutcome.APPLIED and self.motion_confirmed is False:
             # Held, and the world is not moving. Saying ACTIVE here would be
             # the single most misleading thing the overlay could do.
-            return "NO MOTION"
-        return {
-            CommandOutcome.NONE: "",
-            CommandOutcome.WOULD: "WOULD",
-            CommandOutcome.APPLIED: "ACTIVE",
-            CommandOutcome.REJECTED: "REJECTED",
-            CommandOutcome.RELEASED: "RELEASED",
-        }[self.outcome]
+            head = "NO MOTION"
+        else:
+            head = {
+                CommandOutcome.NONE: "",
+                CommandOutcome.WOULD: "WOULD",
+                CommandOutcome.APPLIED: "ACTIVE",
+                CommandOutcome.REJECTED: "REJECTED",
+                CommandOutcome.RELEASED: "RELEASED",
+            }[self.outcome]
+        if self.outcome is not CommandOutcome.APPLIED:
+            return head
+        parts = [head]
+        if self.held_ms >= 1.0:
+            parts.append(f"{self.held_ms / 1000.0:.1f}s")
+        if self.backend:
+            parts.append(self.backend)
+        return "  ".join(parts)
 
     @property
     def active(self) -> bool:
@@ -1612,6 +1645,18 @@ class LiveBlocker:
     detail: str
     remedy: str
     evidence: str = ""
+
+    #: Statuses that describe the world rather than refuse anything. A caller
+    #: asking "is Live blocked" must filter on :attr:`blocking` rather than on
+    #: a status string, because adding a fourth status to the string test in
+    #: two separate modules is how the dashboard and the coordinator came to
+    #: disagree about the same row in the first place.
+    ADVISORY_STATUSES: ClassVar[frozenset[str]] = frozenset({"expected", "advisory"})
+
+    @property
+    def blocking(self) -> bool:
+        """Whether this row actually stops Live."""
+        return self.status not in self.ADVISORY_STATUSES
 
     def describe(self) -> str:
         return f"{self.code}: {self.summary}"

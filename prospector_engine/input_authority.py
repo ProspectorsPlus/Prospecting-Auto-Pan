@@ -48,6 +48,7 @@ from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
 from prospector_engine.movement import (
     DesiredMovement,
     MovementActuator,
+    MovementBlock,
     MovementLimits,
     MovementOutcome,
     desired_from_command,
@@ -478,8 +479,36 @@ class NavigationInputSession:
     def movement(self) -> MovementActuator:
         return self._authority.movement
 
+    @property
+    def current(self) -> bool:
+        """Whether this session still belongs to the running mode.
+
+        One comparison of two integers, taken once per call. It is deliberately
+        **not** the machinery D-067 removed: that validated an evidence token
+        by object identity and then ten properties of the *frame* - sequence,
+        capture instant, capture duration, two age budgets, viewport identity -
+        on every key, every tick, and a healthy 55 fps pipeline could not pass
+        it. This asks a different question, about the *session* rather than
+        about a frame: is the worker holding me the worker the coordinator is
+        running? That answer changes only on a mode transition, never on a slow
+        screenshot, so it cannot refuse a press for being late.
+        """
+        return self._generation == self._authority.generation
+
     def move(self, desired: DesiredMovement) -> MovementOutcome:
-        """Make the keyboard match ``desired``. Level-triggered; see D-067."""
+        """Make the keyboard match ``desired``. Level-triggered; see D-067.
+
+        A session from a superseded generation presses nothing. A cancelled
+        worker can outlive its cancellation by one tick - it is blocked in a
+        native screen grab when the transition happens - and without this it
+        would land that tick's keys on top of the mode that replaced it.
+        """
+        if not self.current:
+            return MovementOutcome(
+                held=self._authority.movement.held,
+                block=MovementBlock.STOPPED,
+                detail=f"session generation {self._generation} has been superseded",
+            )
         return self._authority.movement.apply(desired)
 
     def apply_command(self, command: NavigationCommand | None) -> MovementOutcome:
@@ -493,7 +522,13 @@ class NavigationInputSession:
         hold, one occluded frame. It lifts what is held and nothing else, so
         the next frame can press again - which is the whole difference between
         this and the release path it replaces (D-067).
+
+        A superseded session lifts nothing: the keys it might have been holding
+        were released by the transition that superseded it, and anything down
+        now belongs to the mode that replaced it.
         """
+        if not self.current:
+            return ()
         return self._authority.movement.release_held(reason)
 
     def release_navigation(self, reason: str) -> ReleaseReport:
@@ -570,6 +605,10 @@ class InputAuthority:
 
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
+        #: How many safety polls read an ambiguous frontmost state. Counted
+        #: rather than acted on, so "the focus probe is flaky" stays a visible
+        #: fact without being a reason to stop.
+        self._unknown_focus_polls = 0
 
         #: The navigation actuator. It shares this object's port, helper,
         #: focus probe and journal, so there is still exactly one thing that
@@ -753,17 +792,31 @@ class InputAuthority:
         if not input_generation_live:
             return None
 
+        # Positive focus loss releases at once: another application is in
+        # front and our keys must not land in it.
         focus = self._safe_call(self._health.focus, None)
         if focus is False:
             return self._fault_release(
                 SafetyFault(self._generation, SafetyFaultKind.FOCUS_LOST, ("focus=False",), now)
             )
+        # An *unknown* reading does not, and this is the second half of the
+        # asymmetry ``MovementActuator._blocking_condition`` states: only a
+        # positive "another application is frontmost" may stop input, and a
+        # release is never gated on this probe at all.
+        #
+        # Two owners disagreeing about one word is how a Live run became a
+        # zombie. macOS's frontmost probe is a window-list scan that returns
+        # ``None`` on any error or ambiguity - a Space change, a scan racing a
+        # window update. The actuator treats that as "carry on"; this watchdog
+        # treated it as a terminal fault, called the full release floor, and
+        # disarmed the actuator the actuator believed was fine. Whichever ran
+        # first won, which is not a safety property, it is a race.
+        #
+        # ``FOCUS_UNKNOWN`` therefore no longer releases. It is still a fault
+        # kind, still raised by anything that positively knows better, and
+        # still reported by ``describe_readiness``.
         if focus is None:
-            return self._fault_release(
-                SafetyFault(
-                    self._generation, SafetyFaultKind.FOCUS_UNKNOWN, ("focus=None",), now
-                )
-            )
+            self._unknown_focus_polls += 1
 
         rect = self._safe_call(self._health.client_rect, None)
         if rect is None or not rect.valid:
@@ -1377,7 +1430,40 @@ class InputAuthority:
 
     # -- navigation -------------------------------------------------------
     def release_navigation(self, generation: int, reason: str) -> ReleaseReport:
-        del generation
+        """The navigation release floor, refused for a superseded generation.
+
+        It used to ``del generation`` - the argument was accepted and thrown
+        away - so a straggling worker's ``finally: release_navigation()`` ran
+        the *whole* floor against whatever mode was running by then. Shadow
+        blocks inside a native screen grab, the coordinator cancels it, joins
+        for its bounded deadline, gives up, starts Live; the straggler wakes,
+        unwinds, and disarms the Live actuator that had just been armed.
+        Nothing in the trace says which worker did it, because the call had
+        already forgotten which worker it came from.
+
+        Refusing is the safe answer, not merely the correct one: the transition
+        that superseded this generation ran its own ``release_all`` before the
+        new mode started, so there is nothing of this worker's left to lift,
+        and anything held now belongs to the mode that replaced it.
+        """
+        with self._lock:
+            current = self._generation
+        if generation != current:
+            self._lifecycle.note(
+                LifecycleStage.LEDGER_EMPTY,
+                f"refused a release from superseded generation {generation}",
+                reason=reason,
+                generation=generation,
+                current_generation=current,
+            )
+            return ReleaseReport(
+                attempted_edges=(),
+                failures=(),
+                deadman_acknowledged=True,
+                ledger_empty=self.ledger_empty(),
+                release_known_safe=self.ledger_empty() and not self.release_uncertain,
+                reason=f"superseded-generation:{generation}:{reason}",
+            )
         return self.release_all(f"navigation:{reason}")
 
     # -- session factories ------------------------------------------------
@@ -1388,6 +1474,11 @@ class InputAuthority:
         return ServiceInputSession(self, generation)
 
     # -- diagnostics ------------------------------------------------------
+    @property
+    def unknown_focus_polls(self) -> int:
+        """Safety polls that could not tell whether Roblox was frontmost."""
+        return self._unknown_focus_polls
+
     def describe_readiness(self) -> dict[str, str]:
         focus = self._safe_call(self._health.focus, None)
         rect = self._safe_call(self._health.client_rect, None)

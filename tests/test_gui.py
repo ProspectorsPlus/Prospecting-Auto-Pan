@@ -936,7 +936,7 @@ def test_a_ready_message_and_the_coordinator_contract_agree(dashboard: Any) -> N
     from treasure_gui import RunState
 
     state, _ = dashboard.run_state(SetupProgress.idle())
-    blocking = [b for b in dashboard.app.coordinator.blockers() if b.status != "expected"]
+    blocking = [b for b in dashboard.app.coordinator.blockers() if b.blocking]
 
     assert blocking, "the fixture is supposed to have a standing blocker"
     assert state is not RunState.READY

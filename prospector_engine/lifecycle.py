@@ -149,10 +149,17 @@ NATIVE_MOTION_PATH: tuple[LifecycleStage, ...] = (
 
 #: The stages a bounded forward pulse must reach, in order. The first one
 #: missing from a run is the thing to show a person.
+#:
+#: ``OS_EDGE_LOOPBACK_OBSERVED`` used to sit between the post and the lease,
+#: and a run where the window server answered "not down" was therefore
+#: reported as *blocked at os edge loopback observed* - the exact sentence the
+#: owner was shown while ``W`` was, in the same trace, physically held for
+#: 322.7 ms and six frames were captured after the edge. A read that races the
+#: event it asks about is not a step in a causal chain. Both loopback stages
+#: are still journaled and are still worth reading; neither is on the path.
 FORWARD_PULSE_PATH: tuple[LifecycleStage, ...] = (
     LifecycleStage.W_REQUESTED,
     LifecycleStage.OS_EDGE_POSTED,
-    LifecycleStage.OS_EDGE_LOOPBACK_OBSERVED,
     LifecycleStage.LEASE_HELD,
     LifecycleStage.POST_EDGE_FRAME_OBSERVED,
     LifecycleStage.GAME_MOTION_CONFIRMED,

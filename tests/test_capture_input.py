@@ -266,17 +266,40 @@ def test_non_positive_focus_prevents_new_presses(rig: Any, focus: bool | None) -
     assert rig.session().hold_key(InputKey.W, 500) is None
 
 
-@pytest.mark.parametrize("focus", [False, None])
-def test_non_positive_focus_releases_held_input(rig: Any, focus: bool | None) -> None:
+def test_positive_focus_loss_releases_held_input(rig: Any) -> None:
+    """Another application is in front. Everything comes up at once."""
     rig.activate()
     rig.session().hold_key(InputKey.W, 5000)
-    rig.port.set_focus(focus)
+    rig.port.set_focus(False)
 
     fault = rig.authority.poll_safety()
 
     assert fault is not None
-    assert fault.kind in (SafetyFaultKind.FOCUS_LOST, SafetyFaultKind.FOCUS_UNKNOWN)
+    assert fault.kind is SafetyFaultKind.FOCUS_LOST
     assert rig.authority.ledger_empty()
+
+
+def test_an_unknown_focus_reading_does_not_release(rig: Any) -> None:
+    """One word, two owners, and a race that made Live a zombie.
+
+    macOS's frontmost probe is a window-list scan that answers ``None`` on any
+    error or ambiguity. ``MovementActuator._blocking_condition`` treats that as
+    "carry on" - deliberately, because refusing to press on "I don't know" is a
+    macro that cannot move. This watchdog used to treat the same word as a
+    terminal fault, run the full release floor and disarm that actuator.
+    Whichever ran first won, which is a race and not a safety property.
+
+    A *positive* loss still releases immediately; that is the test above.
+    """
+    rig.activate()
+    rig.session().hold_key(InputKey.W, 5000)
+    rig.port.set_focus(None)
+
+    fault = rig.authority.poll_safety()
+
+    assert fault is None
+    assert not rig.authority.ledger_empty(), "an ambiguous scan lifted a held key"
+    assert rig.authority.unknown_focus_polls == 1, "and it is still counted"
 
 
 def test_release_is_never_focus_gated(rig: Any) -> None:

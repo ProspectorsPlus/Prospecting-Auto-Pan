@@ -1973,11 +1973,28 @@ class _LiveControlPort:
         return self._context.key_state(InputKey.W)
 
     def release_forward(self, reason: str) -> None:
+        """Let go of ``W``. **Level, not lifecycle** - the session stays armed.
+
+        This used to call ``release_navigation``, and that one line is why a
+        healthy Live start could not walk. Ordinary success runs through here
+        three times - the acceptance probe's ``finally``, ``input_acceptance``'s
+        ``finally``, and the prologue's own tail - and each one reached
+        ``InputAuthority.release_all``, which closes ``_admission_open`` and
+        calls ``MovementActuator.disarm``. Admission is reopened in exactly one
+        place, ``activate_generation``, and only on a mode transition. So by
+        the time the prologue returned "the camera turns, go and navigate", the
+        actuator that would do the navigating had been disarmed by the probe
+        that proved it worked, and the follower's first ``apply`` came back
+        ``STOPPED`` for the rest of the session.
+
+        The full floor still exists and is still reached by everything that
+        should reach it: Stop, worker exit, a terminal safety fault and process
+        shutdown. It is no longer reached by *succeeding*.
+        """
         session = self._context.navigation
         if session is not None:
-            session.release_navigation(reason)
+            session.stop_moving(reason)
         self._forward_held = False
-        self._forward_until_s = 0.0
         self._forward_until_s = 0.0
 
     def input_acceptance(self) -> AcceptanceResult:
@@ -2123,9 +2140,11 @@ class _LiveControlPort:
         return frame
 
     def release_turn(self) -> None:
+        """Let go of the turn key. Level, not lifecycle - see
+        :meth:`release_forward` for why this distinction is the whole bug."""
         session = self._context.navigation
         if session is not None and self._held is not None:
-            session.release_navigation("setup probe complete")
+            session.stop_moving("setup probe complete")
         self._held = None
 
     def control_fingerprint(self) -> Any:

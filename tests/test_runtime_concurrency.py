@@ -39,6 +39,7 @@ from prospector_engine.coordinator import (
 )
 from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
 from prospector_engine.lifecycle import LifecycleStage
+from prospector_engine.plainlog import PlainLog, Topic, Verdict
 from tests.fakes import (
     FakeCaptureSource,
     FakeDeadmanClient,
@@ -69,6 +70,11 @@ class Harness:
             config=CaptureConfig(max_frame_age_ms=5000, start_tier=PerformanceTier.MINIMUM),
             source_factory=lambda: self.source,
         )
+        # Created before the authority and shared with the coordinator, exactly
+        # as ``build_application`` does it. Without the shared log the actuator
+        # narrates into nothing, and a rig that cannot show a key-down line
+        # cannot test that a run is legible.
+        self.plain = PlainLog()
         self.authority = InputAuthority(
             self.port,
             deadman=self.deadman,
@@ -78,6 +84,9 @@ class Harness:
                 capture_age_s=self.capture.latest_age_s,
             ),
             config=AuthorityConfig(safety_poll_interval_ms=10),
+            narrate=lambda verdict, text: self.plain.say(
+                Topic.INPUT if verdict == "input" else Topic.FORWARD, Verdict(verdict), text
+            ),
         )
         self.registry = EvidenceRegistry(
             self.authority.run_id, on_token=self.authority.register_evidence
@@ -97,6 +106,7 @@ class Harness:
                 component_join_deadline_s=0.5,
                 idle_poll_s=0.01,
             ),
+            plain=self.plain,
         )
 
     def worker(self, name: str, body: Any) -> Any:
@@ -866,51 +876,46 @@ def _event_details(harness: Harness) -> list[str]:
     return [detail for _name, detail in _events(harness)]
 
 
-def test_a_chord_is_refused_while_the_cadence_is_not_live_eligible(
-    harness: Harness,
-) -> None:
-    """The window and this method must not disagree about the same blocker.
+def test_an_unsettled_cadence_does_not_refuse_the_chord(harness: Harness) -> None:
+    """Ctrl+N during governor WARMUP, with a fresh frame, enters Live.
 
-    The dashboard showed **BLOCKED - CADENCE** while ``_on_start_live`` checked
-    only ``Readiness``, which has no cadence term - so the chord would have
-    started Live against a pipeline the window had just said was not ready.
-    That is the D-062 disagreement running the other way.
+    This is the state a real machine is in for the first seconds after Start
+    Navigator, and it used to be a refusal. The trace that retired it recorded
+    seven physical Ctrl+N presses turned away with ``cadence:cooldown at 30 Hz``
+    while frames were arriving 24 ms apart, and other runs turned away with
+    ``cadence:stable at 60 Hz`` - a status whose own name says the pipeline is
+    healthy. A governor tier is an adaptive scheduling decision about how hard
+    to drive capture. It is not permission to press a key.
     """
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
 
-    # Deliberately *not* settled: this is the state a real machine is in for
-    # the first seconds after Start Navigator.
+    # Deliberately *not* settled, and deliberately with a fresh frame: the two
+    # facts the old gate could not tell apart.
     assert not harness.capture.metrics().live_eligible
+    assert harness.coordinator.readiness().capture_fresh
+
     intent = harness.coordinator.chord_authority().intent(IntentType.START_LIVE, "Ctrl+N")
     harness.coordinator.submit(intent)
-    assert harness.wait_for(
-        lambda: harness.coordinator.live_authorization.startswith("refused")
-    )
 
-    assert harness.started == []
-    assert "cadence" in harness.coordinator.live_authorization
-    assert "observe" in harness.coordinator.live_refusal_detail
-
-    # ...and once the cadence settles, the same chord works.
-    harness.chord(IntentType.START_LIVE)
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+    assert harness.started == ["live"]
 
 
-def test_the_window_and_the_coordinator_agree_about_cadence(harness: Harness) -> None:
-    """Whatever the dashboard calls blocking, the chord must refuse - and vice versa."""
+def test_an_unsettled_cadence_is_shown_as_advice_not_as_a_blocker(
+    harness: Harness,
+) -> None:
+    """The row stays; its status does not. A person should be able to see that
+    the pipeline is warming up without being told it is stopping them."""
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
 
-    def cadence_blocking() -> bool:
-        return any(
-            b.code == "CADENCE" and b.status == "blocking"
-            for b in harness.coordinator.blockers()
-        )
-
-    assert cadence_blocking(), "the window would show BLOCKED here"
-    harness.settle_cadence()
-    assert not cadence_blocking(), "the window would still show BLOCKED here"
+    rows = [b for b in harness.coordinator.blockers() if b.code == "CADENCE"]
+    assert rows, "the cadence state is still reported"
+    assert rows[0].status == "advisory"
+    assert not any(
+        b.status == "blocking" and b.code == "CADENCE" for b in harness.coordinator.blockers()
+    )
 
     harness.chord(IntentType.START_LIVE)
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)

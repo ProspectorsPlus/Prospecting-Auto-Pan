@@ -148,7 +148,7 @@ def test_stop_releases_within_a_bounded_number_of_edges(rig: Any) -> None:
 
 @pytest.mark.parametrize(
     "condition",
-    ["focus-lost", "focus-unknown", "viewport-invalid", "capture-stale"],
+    ["focus-lost", "viewport-invalid", "capture-stale"],
 )
 def test_every_watchdog_condition_releases_held_input(rig: Any, condition: str) -> None:
     from prospector_engine.geometry import ViewportGeometry
@@ -158,8 +158,6 @@ def test_every_watchdog_condition_releases_held_input(rig: Any, condition: str) 
 
     if condition == "focus-lost":
         rig.port.set_focus(False)
-    elif condition == "focus-unknown":
-        rig.port.set_focus(None)
     elif condition == "viewport-invalid":
         rig.port.set_geometry(ViewportGeometry.invalid("window closed"))
     else:
@@ -169,6 +167,23 @@ def test_every_watchdog_condition_releases_held_input(rig: Any, condition: str) 
 
     assert fault is not None
     assert rig.authority.ledger_empty(), f"{condition} left an input held"
+
+
+def test_an_ambiguous_frontmost_scan_is_not_a_watchdog_condition(rig: Any) -> None:
+    """``focus-unknown`` is deliberately absent from the list above.
+
+    It was a releasing condition, and it disagreed with the one other object
+    that decides whether a key may stay down. See
+    ``tests/test_capture_input.py::test_an_unknown_focus_reading_does_not_release``
+    for the whole of the argument; this asserts the same rule on the service
+    lease path, so the two owners cannot drift apart again.
+    """
+    rig.activate(generation=1)
+    assert rig.authority.acquire_key(1, InputKey.W, 500) is not None
+    rig.port.set_focus(None)
+
+    assert rig.authority.poll_safety() is None
+    assert not rig.authority.ledger_empty()
 
 
 def test_a_release_is_never_focus_gated(rig: Any) -> None:

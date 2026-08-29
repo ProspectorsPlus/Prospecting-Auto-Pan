@@ -62,7 +62,7 @@ from prospector_engine.input_authority import (
     ServiceInputSession,
 )
 from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
-from prospector_engine.plainlog import PlainLog, Topic
+from prospector_engine.plainlog import PlainLog, Topic, Verdict
 from prospector_engine.telemetry import (
     AppPaths,
     EventLog,
@@ -844,6 +844,9 @@ class RuntimeCoordinator:
         except OSError as exc:  # best effort; a trace is never worth a crash
             self._events.add("trace.append-failed", repr(exc))
         self._events.add("trace.exported", str(written))
+        readable = self._plain.write_text(self._paths.logs, label=label)
+        if readable is not None:
+            self._events.add("log.exported", str(readable))
 
     def _on_shutdown(self, intent: RuntimeIntent) -> None:
         self._events.add("intent.shutdown", intent.source)
@@ -1129,21 +1132,40 @@ class RuntimeCoordinator:
             )
             return
 
-        # Cadence is a Live precondition and is *not* part of ``Readiness``,
-        # which also gates the bounded services - a dig loop does not need
-        # steering cadence. Checking it here rather than there is what makes
-        # the window and this method agree: the dashboard has been showing a
-        # CADENCE blocker while this method would happily have started Live,
-        # which is the D-062 disagreement running in the opposite direction.
+        # Cadence is **not** an authorization. It used to be checked right
+        # here and it refused Ctrl+N outright, which is how a run came to be
+        # turned away with the reason ``cadence:stable at 60 Hz`` - a status
+        # whose own name says the pipeline is healthy - and, in the trace that
+        # retired it, repeatedly with ``cadence:cooldown at 30 Hz`` while
+        # frames were arriving 24 ms apart. A governor tier is an adaptive
+        # scheduling decision about how hard to drive the capture source. It
+        # describes the recent past, it is reset by every source, geometry and
+        # profile change, and it has never been a statement about whether the
+        # picture in front of the operator is usable *now*. That question is
+        # answered by the age of the latest frame, which ``readiness()``
+        # already asks, and Live measures its own cadence epoch once it owns
+        # the pipeline.
+        #
+        # So the tier is reported and never obeyed.
         metrics = self._capture.metrics()
-        if not metrics.live_eligible:
-            self._refuse_live(
-                f"cadence:{metrics.governor.reason}",
-                f"{metrics.governor.reason}. Let the navigator observe for a few "
-                f"seconds while the cadence settles, then press {_START_CHORD} again.",
-                intent,
+        age_s = self._capture.latest_age_s()
+        limit_ms = self._capture.config.max_frame_age_ms
+        if age_s is None:
+            self._plain.say(
+                Topic.GATE, Verdict("warn"), f"No frame yet - limit {limit_ms:.0f} ms."
             )
-            return
+        else:
+            self._plain.passed(
+                Topic.GATE,
+                f"Latest frame {age_s * 1000:.0f} ms old - limit {limit_ms:.0f} ms.",
+            )
+        if not metrics.live_eligible:
+            self._plain.say(
+                Topic.GATE,
+                Verdict("warn"),
+                f"Cadence {metrics.governor.reason} - adaptive only, not blocking.",
+            )
+            self._events.add("cadence.advisory", metrics.governor.reason)
 
         # One snapshot, read once, for every decision below.
         readiness = self.readiness()
@@ -1251,12 +1273,22 @@ class RuntimeCoordinator:
             return False
 
         # 1-4: invalidate, cancel, release, join the previous worker.
+        outgoing = self._worker_id
         self._authority.invalidate(f"transition:{mode.name}")
         if self._worker_cancel is not None:
             self._worker_cancel.cancel()
         release = self._authority.release_all(f"transition:{mode.name}")
         if not self._join_worker(self._config.worker_join_deadline_s):
-            self._events.add("mode.worker-survivor", "previous worker did not join")
+            # A survivor can no longer reach the input path: its session
+            # belongs to the superseded generation, and both
+            # ``NavigationInputSession.move`` and ``.stop_moving`` refuse for
+            # one that is not current. It is still worth saying out loud.
+            self._events.add("mode.worker-survivor", f"{outgoing} did not join")
+            self._plain.say(
+                Topic.STATE,
+                Verdict.WARN,
+                f"Worker {outgoing} did not exit in time; it can no longer reach the keyboard.",
+            )
 
         # 5: an input mode needs an empty ledger and a known-safe release.
         if mode.emits_input and not (release.ledger_empty and release.release_known_safe):
@@ -1319,6 +1351,12 @@ class RuntimeCoordinator:
         )
         self._worker_cancel = cancellation
         self._worker_id = worker_id
+        self._plain.say(
+            Topic.STATE,
+            Verdict.STATE,
+            f"ENTER {mode.name} - worker {worker_id}"
+            + (f"; {outgoing} cancelled" if outgoing and outgoing != worker_id else ""),
+        )
         self._enter(mode)
 
         def _run() -> None:
@@ -1480,6 +1518,15 @@ class RuntimeCoordinator:
     def _enter(self, mode: RunMode) -> None:
         if mode is not self._mode:
             self._events.add("mode", f"{self._mode.name}->{mode.name}")
+            # ...and in the log a person reads, not only in the ring a person
+            # has to open a drawer for. A mode edge is the single most useful
+            # line in a run and it was only ever in the engineering ring.
+            self._plain.say(
+                Topic.STATE,
+                Verdict.STATE,
+                f"{self._mode.name} -> {mode.name}"
+                + (f" - worker {self._worker_id}" if self._worker_id else ""),
+            )
             # Every mode edge is a new world. Bumping the session id here is
             # what lets a terminal packet outrank the frames it terminates.
             self._mode_session += 1
@@ -1634,11 +1681,16 @@ class RuntimeCoordinator:
                 LiveBlocker(
                     "CADENCE",
                     BlockerScope.LIVE,
-                    "blocking",
-                    "Capture cadence is not Live-eligible",
+                    # Advisory, not blocking. The row stays - a person should
+                    # be able to see that the pipeline is warming up or has
+                    # downshifted - but it no longer claims to stop anything,
+                    # and ``_on_start_live`` no longer consults it.
+                    "advisory",
+                    "Capture cadence is still settling",
                     f"{metrics.governor.reason}. Judged on the last "
-                    f"{self._capture.config.recent_window_s:g} s of processed frames.",
-                    "Let the navigator observe for a few seconds while the cadence settles.",
+                    f"{self._capture.config.recent_window_s:g} s of processed frames. "
+                    "This adapts how hard capture is driven; it does not gate Live.",
+                    "Nothing to do. Live judges freshness on the latest frame instead.",
                 )
             )
         found.extend(self._setup_blockers())
@@ -1821,12 +1873,22 @@ class RuntimeCoordinator:
         :class:`~prospector_engine.contracts.ActuatorState` is read from the
         ledger, so a worker cannot make the dashboard claim a key is down.
         """
-        if turn_backend is not None:
+        if turn_backend is not None and turn_backend != self._turn_backend:
+            self._turn_backend = turn_backend
+            self._plain.say(Topic.BACKEND, Verdict.PASS, f"Camera backend: {turn_backend}.")
+        elif turn_backend is not None:
             self._turn_backend = turn_backend
         if displacement_norm is not None:
             self._last_displacement_norm = displacement_norm
+            self._plain.say(
+                Topic.MOTION,
+                Verdict.PASS if abs(displacement_norm) > 0.0 else Verdict.INFO,
+                f"Motion {displacement_norm:+.2f} of a screen height per second.",
+            )
         if blocked_reason is not None:
             self._worker_block_reason = blocked_reason
+            if blocked_reason:
+                self._plain.say(Topic.FORWARD, Verdict.WARN, f"Not moving: {blocked_reason}.")
 
     def _movement_block_reason(self) -> str:
         """The most specific reason no input is being sent right now."""

@@ -189,8 +189,16 @@ class SteeringLimits:
     lease_horizon_ms: int = 250
 
     #: How stale accepted evidence may be before the controller releases.
+    #: This is the *only* freshness rule that may stop movement: it asks how
+    #: old the picture in front of the controller is, which is the question
+    #: safety actually turns on.
     max_evidence_age_ms: int = 100
-    #: Minimum processed frames per second before Live is refused.
+    #: Processed frames per second below which the controller *warns and
+    #: adapts*. It is deliberately not a release condition and not a Live
+    #: precondition. A throughput average describes the recent past; a frame
+    #: age describes the evidence being steered on right now, and only the
+    #: second one can make a decision unsafe. Judging Live on the first is what
+    #: produced a run that refused to start while reporting "stable at 60 Hz".
     min_processed_fps: int = 30
     #: How long FOLLOW may keep walking with no usable arrow reading.
     #:
@@ -283,6 +291,10 @@ class ControlDecision:
     #: arrow again" and "something is wrong" are different instructions and
     #: telling them apart by parsing a sentence is how they get confused.
     lost_target: bool = False
+    #: Things worth telling a person that are explicitly **not** reasons to
+    #: stop. Kept apart from ``blockers`` so a degraded cadence cannot be
+    #: rendered, counted, or acted on as though it were a refusal.
+    advisories: tuple[str, ...] = ()
 
     @property
     def moves(self) -> bool:
@@ -419,6 +431,32 @@ class ArrowFollowerController:
 
     # -- the tick ---------------------------------------------------------
     def update(self, inputs: SteeringInputs) -> ControlDecision:
+        """One decision, with any non-blocking observations attached.
+
+        The split is deliberate. :meth:`_decide` may only return reasons to act
+        or to stop; anything that is merely *worth saying* is computed here and
+        carried alongside, where no branch can accidentally start treating it
+        as a refusal.
+        """
+        advisories = self._advisories(inputs)
+        decision = self._decide(inputs)
+        return replace(decision, advisories=advisories) if advisories else decision
+
+    def _advisories(self, inputs: SteeringInputs) -> tuple[str, ...]:
+        """Things worth telling a person. Never reasons to release."""
+        limits = self._limits
+        advisories: list[str] = []
+        # A rate of exactly zero is "not measured yet", not "the pipeline is
+        # dead": the counter reports 0.0 until it holds two stamps, and this
+        # loop reads it before ticking it, so every healthy run starts there.
+        if 0.0 < inputs.processed_fps < limits.min_processed_fps:
+            advisories.append(
+                f"cadence {inputs.processed_fps:.0f} fps below "
+                f"{limits.min_processed_fps}; adapting, not stopping"
+            )
+        return tuple(advisories)
+
+    def _decide(self, inputs: SteeringInputs) -> ControlDecision:
         """One decision. Every early return releases; none of them coasts."""
         limits = self._limits
         backend = self.backend or TurnBackend.MOUSE_YAW
@@ -434,19 +472,18 @@ class ArrowFollowerController:
             return self._release(
                 ControlState.REACQUIRE, f"evidence is {inputs.frame_age_ms:.0f} ms old"
             )
-        # A rate of exactly zero is "not measured yet", not "the pipeline is
-        # dead". Entering Live resets the processed-rate window, and the rate
-        # counter reports 0.0 until it holds two stamps - while this loop reads
-        # the rate *before* it ticks the counter. So the first two frames of
-        # every healthy Live run, on any machine, said "only 0 processed fps;
-        # Live needs 30" and released. That released before the pipeline had a
-        # chance to prove it was running at 56 (D-067).
-        if 0.0 < inputs.processed_fps < limits.min_processed_fps:
-            return self._release(
-                ControlState.SAFE_STOP,
-                f"only {inputs.processed_fps:.0f} processed fps; Live needs "
-                f"{limits.min_processed_fps}",
-            )
+        # Cadence is deliberately absent from this method. It used to release:
+        #
+        #     if 0.0 < processed_fps < min_processed_fps: release(SAFE_STOP)
+        #
+        # which stopped the character for a throughput average, on a frame that
+        # had already passed the age check immediately above. The age check is
+        # the safety rule - it asks how old the evidence in front of this tick
+        # is - and a rolling rate cannot add anything to it: a 20 fps pipeline
+        # delivering 50 ms-old frames is slower than we would like and is not
+        # dangerous, while a 60 fps pipeline whose last frame is 400 ms old is
+        # dangerous and is already caught above. It now lives in
+        # ``_advisories``, where it can be said and not obeyed.
         if inputs.cursor_safe is False:
             # Release first, recentre second. The pointer leaving the safe
             # region while W is held is how a drag ends up outside the window.

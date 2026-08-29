@@ -9,7 +9,9 @@ frame is as useless as no log at all.
 
 from __future__ import annotations
 
+import re
 import time
+from pathlib import Path
 
 from prospector_engine.plainlog import PlainLog, Topic, Verdict
 
@@ -59,12 +61,51 @@ def test_a_running_stage_is_rewritten_in_place_when_it_resolves() -> None:
     assert _texts(log) == ["Found the Roblox window."]
 
 
-def test_elapsed_time_is_readable_and_relative() -> None:
+def test_a_line_is_stamped_with_the_wall_clock_and_its_verdict() -> None:
+    """The stamp a person can match against the moment they pressed the key."""
     log = PlainLog()
     log.passed(Topic.NOTE, "Started.")
     line = log.lines()[0]
 
-    assert line.render(log.started_at_s).startswith("+0:00 OK ")
+    rendered = line.render(log.started_at_s)
+    assert re.fullmatch(r"\[\d{2}:\d{2}:\d{2}\.\d{3}\] PASS  Started\.", rendered), rendered
+    # Elapsed time is still available, for anything reading a run as a story.
+    assert line.render_elapsed(log.started_at_s).startswith("+0:00 PASS ")
+
+
+def test_every_verdict_renders_as_one_readable_word() -> None:
+    log = PlainLog()
+    for verdict in Verdict:
+        log.say(Topic.NOTE, verdict, f"a {verdict.value} line")
+
+    marks = {line.verdict.mark.strip() for line in log.lines()}
+    assert marks == {"PASS", "WARN", "FAIL", "INFO", "INPUT", "STATE"}
+
+
+def test_a_run_id_is_minted_once_and_reminted_only_by_a_restart() -> None:
+    """Two runs' stories must never be readable as one."""
+    log = PlainLog()
+    first = log.run_id
+    log.passed(Topic.NOTE, "Started.")
+    assert log.run_id == first
+    assert all(row["run_id"] == first for row in log.as_rows())
+
+    log.restart()
+    assert log.run_id != first
+
+
+def test_the_plain_text_log_is_written_per_run(tmp_path: Path) -> None:
+    log = PlainLog()
+    log.say(Topic.STATE, Verdict.STATE, "ENTER LIVE - worker live-7")
+    log.say(Topic.INPUT, Verdict.INPUT, "backend=hid key=W DOWN")
+
+    written = log.write_text(tmp_path, label="run")
+
+    assert written is not None and written.name == f"run-{log.run_id}.log"
+    body = written.read_text(encoding="utf-8")
+    assert "ENTER LIVE - worker live-7" in body
+    assert "backend=hid key=W DOWN" in body
+    assert log.run_id in body
 
 
 def test_a_stop_does_not_clear_the_log_but_a_new_start_does() -> None:
@@ -146,9 +187,11 @@ def test_the_actuator_narrates_what_it_presses_and_releases() -> None:
         actuator.stop_watchdog()
 
     story = " ".join(_texts(log))
-    assert "Holding W" in story
+    assert "key=W DOWN" in story
+    assert "backend=" in story, "which mechanism the edge went through is half the fact"
     assert "following the arrow" in story
-    assert "Released W" in story
+    assert "key=W UP" in story
+    assert "HOLD W" in story
 
 
 def test_a_refused_chord_reaches_the_plain_log_in_plain_words() -> None:

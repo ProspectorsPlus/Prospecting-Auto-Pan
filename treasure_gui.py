@@ -1057,7 +1057,7 @@ class Dashboard:
             )
         # Setup is done. Whether the window may say READY is not this module's
         # opinion: it is the coordinator's own readiness, read live.
-        blocking = [b for b in coordinator.blockers() if b.status != "expected"]
+        blocking = [b for b in coordinator.blockers() if b.blocking]
         if blocking:
             return (RunState.BLOCKED, f"{blocking[0].summary}. {blocking[0].remedy}")
         refusal = coordinator.live_authorization
@@ -1364,7 +1364,7 @@ class Dashboard:
         elif snapshot is None:
             live_head, live_detail = "Waiting", ""
         else:
-            real = [b for b in snapshot.blockers if b.status != "expected"]
+            real = [b for b in snapshot.blockers if b.blocking]
             if real:
                 live_head = f"Blocked - {len(real)}"
                 live_detail = f"{real[0].code}: {real[0].summary}"

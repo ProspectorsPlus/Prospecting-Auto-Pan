@@ -189,9 +189,19 @@ def test_stale_evidence_releases() -> None:
     assert decision.release and "ms old" in decision.reason
 
 
-def test_low_processed_throughput_releases() -> None:
+def test_low_processed_throughput_warns_and_keeps_going() -> None:
+    """A throughput average is not a safety condition.
+
+    The frame-age check immediately above it already asks the question that
+    matters - how old is the picture this tick is steering on - and a rolling
+    rate cannot add to it. Judging Live on the rate is what produced a run
+    refused with the reason ``cadence:stable at 60 Hz``.
+    """
     decision = _controller().update(_inputs(1.0, processed_fps=5.0))
-    assert decision.release and "processed fps" in decision.reason
+
+    assert not decision.release
+    assert any("adapting, not stopping" in note for note in decision.advisories)
+    assert decision.blockers == (), "an advisory must never be rendered as a blocker"
 
 
 def test_a_changed_viewport_releases_rather_than_reinterpreting_angles() -> None:
@@ -698,13 +708,16 @@ def test_an_unmeasured_frame_rate_does_not_stop_the_run() -> None:
     assert not decision.release, f"an unmeasured frame rate stopped the run: {decision.reason}"
 
 
-def test_a_genuinely_slow_pipeline_still_stops_the_run() -> None:
+def test_a_genuinely_slow_pipeline_is_reported_and_not_obeyed() -> None:
+    """Slow is not unsafe; *stale* is unsafe, and stale has its own check."""
     controller = _controller()
 
-    decision = controller.update(_inputs(2.0, sequence=1, processed_fps=11.0))
+    slow = controller.update(_inputs(2.0, sequence=1, processed_fps=11.0))
+    assert not slow.release
+    assert any("11 fps" in note for note in slow.advisories)
 
-    assert decision.release
-    assert "processed fps" in decision.reason
+    stale = _controller().update(_inputs(2.0, sequence=1, age_ms=500.0, processed_fps=60.0))
+    assert stale.release and "ms old" in stale.reason
 
 
 def test_an_unknown_pointer_position_does_not_stop_the_run() -> None:

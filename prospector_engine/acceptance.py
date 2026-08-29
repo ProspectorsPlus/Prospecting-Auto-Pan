@@ -14,14 +14,30 @@ things happened:
 
 =========================  ================================================
 ``NO_POST``                the post call did not return cleanly
-``NO_LOOPBACK``            it returned, and the OS does not believe W is down
 ``NO_LEASE``               the authority refused - focus, evidence, viewport
 ``INSUFFICIENT_EVIDENCE``  too few usable frames after the edge to judge
 ``NO_MOTION``              W was genuinely held and the world did not move
 ``MOVED``                  the world moved, causally, after the edge
 =========================  ================================================
 
-**Three rules it exists to enforce**, each of which was previously violated:
+``NO_LOOPBACK`` was a sixth answer and is no longer produced. The OS key-state
+read is kept, journaled and reported - it is genuinely useful when it is
+*true* - but it is telemetry and never a verdict, because it was never evidence
+about Roblox. The runtime trace that retired it
+(``stop-epoch4-1914449166.jsonl``) recorded, in this order: the down edge
+posted, ``CGEventSourceKeyState`` answering "not down" in the same breath, six
+usable frames captured after the edge, and ``W`` physically released 322.7 ms
+later. The key was demonstrably held for a third of a second and the run was
+failed on a read taken microseconds after the post, before those six frames
+were ever examined. A read that races the event it is asking about answers a
+question about timing, not about receipt.
+
+**Four rules it exists to enforce**, each of which was previously violated:
+
+* *A loopback read is not game receipt.* The only thing that can say Roblox
+  acted on a key is the picture Roblox is drawing. Loopback is sampled once,
+  a bounded delay after the edge rather than immediately, and it may narrow
+  the *advice* attached to a failure - never the failure itself.
 
 * *The frame that produced a command can never confirm it.* Motion was being
   read off the same pre-command frame the decision was made from, so it
@@ -66,7 +82,11 @@ __all__ = [
 
 
 class AcceptanceOutcome(Enum):
-    """The six distinguishable answers. Never merged into "it failed"."""
+    """The distinguishable answers. Never merged into "it failed".
+
+    ``NO_LOOPBACK`` is retained so an archived report still parses and is
+    **never produced**: see the module docstring for the trace that retired it.
+    """
 
     NOT_RUN = "not_run"
     NO_POST = "no_post"
@@ -90,9 +110,7 @@ class AcceptanceOutcome(Enum):
                 "whichever application launched it, then restart it."
             ),
             AcceptanceOutcome.NO_LOOPBACK: (
-                "The key edge went out and the OS did not register it. Restart the "
-                "application; if it persists, Accessibility is granted to a "
-                "different copy than the one running."
+                "Retained for archived reports; this is no longer produced."
             ),
             AcceptanceOutcome.NO_LEASE: (
                 "The input authority refused the command. Focus Roblox and try again."
@@ -167,7 +185,11 @@ class AcceptancePort(Protocol):
         ...
 
     def forward_key_state(self) -> bool | None:
-        """Whether the OS believes the forward key is down. ``None`` if unknown."""
+        """Whether the OS believes the forward key is down. ``None`` if unknown.
+
+        Diagnostic only. Nothing in this module may branch on a ``False`` from
+        here, and a port is free to return ``None`` always.
+        """
         ...
 
     def release_forward(self, reason: str) -> None:
@@ -209,6 +231,11 @@ class AcceptanceConfig:
     #: ...at this mean estimator confidence or better.
     min_confidence: float = 0.15
     frame_timeout_s: float = 0.30
+    #: How long after the down edge to sample the OS key state. Reading it in
+    #: the same breath as the post is what produced ``NO_LOOPBACK`` on a key
+    #: that was held for 322 ms; a bounded delay makes the reading worth
+    #: printing. It is still never a verdict.
+    loopback_delay_ms: int = 80
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
@@ -297,6 +324,10 @@ class InputAcceptanceProbe:
         self._config = config or AcceptanceConfig()
         self._cancelled = cancelled or (lambda: False)
         self._on_progress = on_progress or (lambda _message: None)
+        #: Sampled once, a bounded delay after the down edge, from inside the
+        #: collection loop. Diagnostic; nothing branches on it being ``False``.
+        self._loopback: bool | None = None
+        self._loopback_read = False
 
     def run(self) -> AcceptanceResult:
         """Measure, pulse, watch, release, classify. Never raises past here."""
@@ -327,25 +358,28 @@ class InputAcceptanceProbe:
                 threshold_norm=round(threshold, 5),
             )
             request = self._port.request_forward(config.pulse_ms)
-            loopback = self._port.forward_key_state()
-            self._journal.note(
-                LifecycleStage.OS_EDGE_LOOPBACK_OBSERVED
-                if loopback
-                else LifecycleStage.OS_EDGE_LOOPBACK_MISSING,
-                f"the OS reports forward {'down' if loopback else 'not down'}",
-                loopback=loopback,
-            )
             if request.holds_forward:
                 # Watch for the *whole* pulse, not until the sample count is
                 # satisfied. Releasing the moment three frames have arrived
                 # makes the press as short as the pipeline is fast, which is
                 # exactly the tap this was written to stop being.
+                #
+                # The loopback sample is taken from inside this loop, once,
+                # ``loopback_delay_ms`` after the edge - so it is a reading
+                # about a key that has had time to be down, not a reading that
+                # raced the post.
                 post = self._collect(
                     config.min_post_edge_samples,
                     config.post_edge_deadline_s,
                     after_s=request.edge_at_s,
                     min_duration_s=config.pulse_ms / 1000.0,
+                    loopback_at_s=request.edge_at_s + config.loopback_delay_ms / 1000.0,
                 )
+            # Once per probe, whatever happened above: the collection may have
+            # ended before the delay elapsed, and a reading taken at the end of
+            # a short hold is still a reading taken after the edge.
+            self._sample_loopback()
+            loopback = self._loopback
         except Exception as exc:  # a probe must never take the worker down
             return AcceptanceResult(
                 AcceptanceOutcome.NOT_RUN,
@@ -372,6 +406,24 @@ class InputAcceptanceProbe:
         )
 
     # -- collection --------------------------------------------------------
+    def _sample_loopback(self) -> None:
+        """Read the OS key state at most once per probe. Never raises."""
+        if self._loopback_read:
+            return
+        self._loopback_read = True
+        try:
+            self._loopback = self._port.forward_key_state()
+        except Exception:
+            self._loopback = None
+        self._journal.note(
+            LifecycleStage.OS_EDGE_LOOPBACK_OBSERVED
+            if self._loopback
+            else LifecycleStage.OS_EDGE_LOOPBACK_MISSING,
+            f"the OS reports forward {'down' if self._loopback else 'not down'} "
+            "(diagnostic; the verdict comes from the frames)",
+            loopback=self._loopback,
+        )
+
     def _collect(
         self,
         wanted: int,
@@ -379,6 +431,7 @@ class InputAcceptanceProbe:
         *,
         after_s: float | None = None,
         min_duration_s: float = 0.0,
+        loopback_at_s: float | None = None,
     ) -> list[MotionSample]:
         """Usable motion readings, bounded by a count *and* a monotonic deadline.
 
@@ -395,6 +448,8 @@ class InputAcceptanceProbe:
         collected: list[MotionSample] = []
         first_post_noted = False
         while monotonic_s() < deadline:
+            if loopback_at_s is not None and monotonic_s() >= loopback_at_s:
+                self._sample_loopback()
             if len(collected) >= wanted and monotonic_s() - started >= min_duration_s:
                 break
             if self._cancelled():
@@ -452,11 +507,9 @@ class InputAcceptanceProbe:
                 AcceptanceOutcome.NO_POST,
                 f"no key edge reached the OS ({request.detail or 'no detail'})",
             )
-        if loopback is False:
-            return result(
-                AcceptanceOutcome.NO_LOOPBACK,
-                "the edge was posted and the OS does not report the key as down",
-            )
+        # There is deliberately no ``if loopback is False: fail`` here. The
+        # only question this probe answers is whether Roblox acted, and a
+        # window-server key-state read cannot answer it either way.
         if not request.holds_forward:
             return result(
                 AcceptanceOutcome.NO_LEASE,
@@ -501,6 +554,10 @@ class InputAcceptanceProbe:
             f"agreement {agreement:.0%}, confidence {confidence:.2f}, "
             f"{len(post)} post-edge frames"
         )
+        if not moved and loopback is False:
+            # Reported, not acted on: two independent things both looking wrong
+            # is worth telling a person, and is still not a different verdict.
+            detail = f"{detail}; the OS also did not report the key as down"
         return result(
             AcceptanceOutcome.MOVED if moved else AcceptanceOutcome.NO_MOTION,
             detail,

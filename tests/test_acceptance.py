@@ -165,13 +165,38 @@ def test_no_post_is_distinguished_from_no_motion() -> None:
     assert "Accessibility" in result.outcome.remedy
 
 
-def test_a_posted_edge_the_os_never_registered_is_its_own_answer() -> None:
+def test_a_false_loopback_does_not_preempt_the_motion_evidence() -> None:
+    """The regression that cost a whole night of runs.
+
+    In ``stop-epoch4-1914449166.jsonl`` the window server answered "W is not
+    down" microseconds after the post; ``W`` was then physically held for
+    322.7 ms, six frames were captured after the edge, and the run was failed
+    on the loopback without any of those six frames being looked at. The
+    reading is kept - it is genuinely useful when it is true - and it may no
+    longer decide anything.
+    """
     journal = LifecycleJournal()
     port = FakePort(idle_speeds=STILL, moving_speeds=WALKING, loopback=False)
     result = _probe(port, journal).run()
-    assert result.outcome is AcceptanceOutcome.NO_LOOPBACK
-    assert result.first_missing is LifecycleStage.OS_EDGE_LOOPBACK_OBSERVED
+
+    assert result.outcome is AcceptanceOutcome.MOVED
+    assert result.loopback is False, "the reading is still reported"
     assert journal.reached(LifecycleStage.OS_EDGE_LOOPBACK_MISSING)
+
+
+def test_a_false_loopback_with_no_motion_is_reported_as_no_motion() -> None:
+    """Posted-but-not-received, not "the OS did not register the key".
+
+    Both facts are in the detail; only one of them is the verdict, because
+    only one of them is about Roblox.
+    """
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=STILL, moving_speeds=STILL, loopback=False)
+    result = _probe(port, journal).run()
+
+    assert result.outcome is AcceptanceOutcome.NO_MOTION
+    assert "did not report the key as down" in result.detail
+    assert "Roblox is not acting on the key" in result.outcome.remedy
 
 
 def test_an_unknown_loopback_does_not_fail_the_probe() -> None:

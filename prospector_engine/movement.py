@@ -213,6 +213,15 @@ class MovementOutcome:
     yaw_posted_px: int = 0
     block: MovementBlock = MovementBlock.NONE
     detail: str = ""
+    #: How long the longest current hold has been down, in milliseconds. Zero
+    #: when nothing is held. The overlay draws this rather than a duration it
+    #: worked out for itself, because only the actuator knows when the edge
+    #: went out.
+    held_ms: float = 0.0
+    #: Which mechanism the edges went through. On macOS the same keycode posted
+    #: through a different tap reaches a different set of listeners, so "W is
+    #: down" is only half a fact without it.
+    backend: str = ""
 
     @property
     def moving(self) -> bool:
@@ -254,6 +263,11 @@ class MovementActuator:
         self._port = port
         self._deadman = deadman
         self._focus_probe = focus_probe
+        #: The mechanism edges are going out through, named in every INPUT
+        #: line. "W went down" is not a complete fact on macOS, where the same
+        #: keycode posted through three different taps reaches three different
+        #: sets of listeners; which tap it went through is half the evidence.
+        self._backend = str(getattr(port, "event_backend", "") or "default")
         self._journal = journal or LifecycleJournal()
         #: ``(verdict, sentence)`` for the plain log. Never raises past here.
         self._narrate = narrate or (lambda _verdict, _text: None)
@@ -280,6 +294,12 @@ class MovementActuator:
     @property
     def limits(self) -> MovementLimits:
         return self._limits
+
+    @property
+    def backend(self) -> str:
+        """The port's current edge mechanism, re-read so a run-time selection
+        made by the native probe shows up in the very next INPUT line."""
+        return str(getattr(self._port, "event_backend", "") or self._backend)
 
     @property
     def held(self) -> frozenset[InputKey]:
@@ -422,12 +442,17 @@ class MovementActuator:
             if self._post_yaw(bounded):
                 yaw = bounded
 
+        now = monotonic_s()
+        with self._edge_lock:
+            longest = max((now - began for began in self._held.values()), default=0.0)
         return MovementOutcome(
             held=self.held,
             pressed=tuple(pressed_ok),
             released=released,
             yaw_posted_px=yaw,
             detail=desired.reason,
+            held_ms=longest * 1000.0,
+            backend=self.backend,
         )
 
     # -- edges ------------------------------------------------------------
@@ -459,10 +484,18 @@ class MovementActuator:
             self._down_edges += 1
             self._held[key] = monotonic_s()
         self._journal.note(
-            LifecycleStage.OS_EDGE_POSTED, key.value, target=key.value, posted=True
+            LifecycleStage.OS_EDGE_POSTED,
+            key.value,
+            target=key.value,
+            posted=True,
+            backend=self.backend,
         )
         self._journal.note(LifecycleStage.LEASE_HELD, key.value, target=key.value)
-        self._narrate("pass", f"Holding {key.value.upper()}{f' - {reason}' if reason else ''}.")
+        self._narrate(
+            "input",
+            f"backend={self.backend} key={key.value.upper()} DOWN"
+            + (f" - {reason}" if reason else ""),
+        )
         return True
 
     def _lift(self, key: InputKey, reason: str) -> None:
@@ -496,8 +529,9 @@ class MovementActuator:
                 held_ms=round(held_ms, 1),
             )
             self._narrate(
-                "info",
-                f"Released {key.value.upper()} after {held_ms / 1000.0:.1f}s - {reason}.",
+                "input",
+                f"HOLD {key.value.upper()} {held_ms:.0f} ms, then "
+                f"backend={self.backend} key={key.value.upper()} UP - {reason}",
             )
 
     def _post_yaw(self, dx: int) -> bool:
@@ -513,6 +547,10 @@ class MovementActuator:
             self._last_yaw_at_s = monotonic_s()
         self._journal.note(
             LifecycleStage.TURN_POSTED, f"mouse {dx:+d} px", delta_px=dx, backend="mouse_yaw"
+        )
+        self._narrate(
+            "input",
+            f"backend={self.backend} camera yaw {dx:+d} px ({'right' if dx > 0 else 'left'})",
         )
         return True
 
