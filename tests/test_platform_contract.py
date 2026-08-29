@@ -395,3 +395,151 @@ def test_the_turn_keys_are_in_the_release_floor_on_every_platform() -> None:
     assert InputKey.LEFT.is_turn and InputKey.RIGHT.is_turn
     assert not InputKey.A.is_turn, "strafing is not turning"
     assert not InputKey.W.is_turn
+
+
+# ---------------------------------------------------------------------------
+# The movement primitives, against the implementation already proven in the
+# field by Prospector Lite
+# ---------------------------------------------------------------------------
+
+
+#: Prospector Lite's `V3_KEYCODES` table for the keys Treasure shares with it,
+#: transcribed here as a literal. Lite has driven a Roblox character with these
+#: numbers for months, which makes them the one part of the movement path with
+#: real field evidence behind it. Treasure must not drift from them, and a test
+#: that imported Lite's table would drift silently the day Lite moved.
+_LITE_MAC_KEYCODES = {
+    "w": 13,
+    "a": 0,
+    "s": 1,
+    "d": 2,
+    "space": 49,
+    "shift": 56,
+    "escape": 53,
+    "1": 18,
+    "2": 19,
+}
+
+
+@pytest.mark.skipif(current_platform_name() != "macos", reason="macOS keycodes")
+def test_the_mac_keycodes_match_the_implementation_proven_in_the_field() -> None:
+    """The keycodes are not where the movement bug was, and must stay so.
+
+    Treasure's forward key was already the same virtual keycode, posted
+    through the same Quartz call, as the one that has been walking a character
+    in Prospector Lite for months. Recording that here means the next person
+    reading "the character does not move" can rule this out in one test run
+    rather than by rediscovering it.
+    """
+    from prospector_engine.contracts import InputKey
+    from prospector_engine.platform_mac import _MAC_KEYCODES
+
+    for name, expected in _LITE_MAC_KEYCODES.items():
+        key = InputKey(name)
+        assert _MAC_KEYCODES[key] == expected, f"{name} drifted from the proven keycode"
+
+
+@pytest.mark.skipif(current_platform_name() != "macos", reason="macOS event fields")
+def test_the_mac_yaw_delta_sets_the_fields_roblox_actually_reads() -> None:
+    """A camera delta lives in ``kCGMouseEventDeltaX``, not in the location.
+
+    An absolute move does nothing to a Shift-Locked camera even while a button
+    is genuinely held; Roblox reads the HID delta fields. This asserts the
+    signed value that reaches ``CGEventSetIntegerValueField`` for both
+    directions, with and without a held button, without posting anything.
+    """
+    import Quartz
+
+    from prospector_engine.contracts import MouseButton
+    from prospector_engine.platform_mac import MacPlatformPort
+
+    recorded: list[tuple[int, int]] = []
+    posted: list[object] = []
+
+    def fake_set(event: object, field: int, value: int) -> None:
+        recorded.append((field, int(value)))
+
+    port = MacPlatformPort()
+    original_set = Quartz.CGEventSetIntegerValueField
+    original_post = Quartz.CGEventPost
+    Quartz.CGEventSetIntegerValueField = fake_set  # type: ignore[assignment]
+    Quartz.CGEventPost = lambda *_args: posted.append(_args)  # type: ignore[assignment]
+    try:
+        for dx in (12, -12):
+            for button in (None, MouseButton.RIGHT):
+                recorded.clear()
+                port.raw_pointer_delta(dx, 0, button)
+                fields = dict(recorded)
+                assert fields[Quartz.kCGMouseEventDeltaX] == dx, (dx, button, fields)
+                assert fields[Quartz.kCGMouseEventDeltaY] == 0
+    finally:
+        Quartz.CGEventSetIntegerValueField = original_set  # type: ignore[assignment]
+        Quartz.CGEventPost = original_post  # type: ignore[assignment]
+
+    assert len(posted) == 4, "one event per request, and no more"
+
+
+def test_the_windows_yaw_delta_is_relative_and_signed() -> None:
+    """``MOUSEEVENTF_MOVE`` without ``ABSOLUTE`` is the relative camera delta.
+
+    Structure only, inspected from macOS. What Roblox does with it can only be
+    checked on Windows, and that check is listed as pending in STATUS.md.
+    """
+    environment = dict(os.environ)
+    environment["TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from prospector_engine.platform_win import ("
+            "  MOUSEEVENTF_MOVE, _mouse_input)\n"
+            "assert MOUSEEVENTF_MOVE == 0x0001\n"
+            "for dx in (12, -12):\n"
+            "    mi = _mouse_input(MOUSEEVENTF_MOVE, dx=dx, dy=0).u.mi\n"
+            "    assert mi.dx == dx, (dx, mi.dx)\n"
+            "    assert mi.dy == 0\n"
+            "    assert mi.dwFlags == MOUSEEVENTF_MOVE, mi.dwFlags\n"
+            "    assert not (mi.dwFlags & 0x8000), 'ABSOLUTE would not turn the camera'\n"
+            "print('ok')\n",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        env=environment,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"
+
+
+def test_the_windows_movement_keys_are_hardware_scancodes() -> None:
+    """Scancodes, not virtual keys: a game reading raw input sees these."""
+    environment = dict(os.environ)
+    environment["TREASURE_ALLOW_CROSS_PLATFORM_IMPORT"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from prospector_engine.platform_win import ("
+            "  KEYEVENTF_SCANCODE, _WIN_SCANCODES, _key_input)\n"
+            "from prospector_engine.contracts import InputKey\n"
+            "assert KEYEVENTF_SCANCODE == 0x0008\n"
+            "assert _WIN_SCANCODES[InputKey.W] == 0x11\n"
+            "assert _WIN_SCANCODES[InputKey.A] == 0x1E\n"
+            "assert _WIN_SCANCODES[InputKey.S] == 0x1F\n"
+            "assert _WIN_SCANCODES[InputKey.D] == 0x20\n"
+            "for key in InputKey:\n"
+            "    flags = _key_input(_WIN_SCANCODES[key], False).u.ki.dwFlags\n"
+            "    assert flags & KEYEVENTF_SCANCODE, key\n"
+            "print('ok')\n",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        env=environment,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok"

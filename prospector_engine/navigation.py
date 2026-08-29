@@ -2009,7 +2009,7 @@ class _LiveControlPort:
             return None
         direction = result.inputs.direction
         health = self._context.health()
-        return TurnObservation(
+        observation = TurnObservation(
             frame_sequence=result.inputs.frame.sequence,
             now_s=monotonic_s(),
             error_deg=direction.error_deg if direction.valid else None,
@@ -2019,6 +2019,14 @@ class _LiveControlPort:
             stationary=True,
             focus_ok=health.focus_ok,
         )
+        self._context.lifecycle.note(
+            LifecycleStage.TURN_OBSERVED,
+            "no heading" if observation.error_deg is None else f"{observation.error_deg:+.1f}",
+            error_deg=observation.error_deg,
+            confidence=round(direction.confidence, 3),
+            frame_sequence=observation.frame_sequence,
+        )
+        return observation
 
     def emit_turn(self, backend_value: str, units: int) -> bool:
         """Run one camera probe to completion, then release.
@@ -2035,6 +2043,13 @@ class _LiveControlPort:
         Mouse yaw is a single relative delta and has no hold to renew.
         """
         backend = TurnBackend(backend_value)
+        journal = self._context.lifecycle
+        journal.note(
+            LifecycleStage.TURN_REQUESTED,
+            f"{backend.label} {units:+d} {backend.unit_name}",
+            backend=backend_value,
+            units=int(units),
+        )
         if backend is not TurnBackend.ARROW_KEYS:
             delta = max(-self.MAX_PROBE_UNITS, min(self.MAX_PROBE_UNITS, units))
             outcome = self._issue(
@@ -2045,8 +2060,15 @@ class _LiveControlPort:
             )
             if outcome is None or not outcome.applied:
                 detail = "no frame yet" if outcome is None else outcome.detail
+                journal.note(LifecycleStage.TURN_UNAVAILABLE, detail, backend=backend_value)
                 self._context.on_status(f"probe refused: {detail}")
                 return False
+            journal.note(
+                LifecycleStage.TURN_POSTED,
+                f"{backend.label} {delta:+d} px",
+                backend=backend_value,
+                delta_px=delta,
+            )
             self._held = backend_value
             self._hold_until_s = monotonic_s()
             return True
@@ -2057,8 +2079,16 @@ class _LiveControlPort:
         outcome = self._issue(forward_axis=0, turn_axis=axis, yaw_delta_px=0, reason=reason)
         if outcome is None or not outcome.applied:
             detail = "no frame yet" if outcome is None else outcome.detail
+            journal.note(LifecycleStage.TURN_UNAVAILABLE, detail, backend=backend_value)
             self._context.on_status(f"probe refused: {detail}")
             return False
+        journal.note(
+            LifecycleStage.TURN_POSTED,
+            f"{backend.label} held {hold_ms} ms {'right' if axis > 0 else 'left'}",
+            backend=backend_value,
+            hold_ms=hold_ms,
+            axis=axis,
+        )
         self._held = backend_value
         deadline = monotonic_s() + hold_ms / 1000.0
         self._hold_until_s = deadline
@@ -2145,12 +2175,26 @@ def make_live_prologue(
         noise = acceptance.idle_noise_norm if acceptance is not None else None
         if response is None:
             failure = progress.failure
+            context.lifecycle.note(
+                LifecycleStage.TURN_UNAVAILABLE,
+                failure.summary if failure else "automatic setup could not finish",
+                evidence=failure.detail if failure else "",
+            )
             return LivePrologueResult(
                 False,
                 failure.describe() if failure else "automatic setup could not finish",
                 detail=failure.detail if failure else "",
                 idle_noise_norm=noise,
             )
+        context.lifecycle.note(
+            LifecycleStage.TURN_BACKEND_SELECTED,
+            response.describe(),
+            backend=response.backend.value,
+            degrees_per_unit=round(response.degrees_per_unit, 5),
+            min_effective_units=response.min_effective_units,
+            latency_ms=round(response.latency_s * 1000.0, 1),
+            reliability=round(response.reliability, 3),
+        )
         if on_measured is not None:
             on_measured(response)
         capabilities = replace(

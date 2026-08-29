@@ -30,6 +30,11 @@ then read out of one file rather than guessed at:
 ``GAME_MOTION_CONFIRMED``        that frame shows the world moved
 ``W_RELEASE_POSTED``             the up edge went out
 ``LEDGER_EMPTY``                 nothing is held
+``TURN_REQUESTED``               a signed camera correction was asked for
+``TURN_POSTED``                  the authority accepted and emitted it
+``TURN_OBSERVED``                the heading afterwards, measured
+``TURN_BACKEND_SELECTED``        which actuator this run turns with
+``TURN_UNAVAILABLE``             and why none could be chosen
 ===============================  ==========================================
 
 **Naming is exact and the stages do not merge.** ``OS_EDGE_POSTED`` means
@@ -96,6 +101,16 @@ class LifecycleStage(Enum):
     GAME_MOTION_NOT_CONFIRMED = "game_motion_not_confirmed"
     W_RELEASE_POSTED = "w_release_posted"
     LEDGER_EMPTY = "ledger_empty"
+    #: Camera. Requested and posted are separate for the same reason the
+    #: forward stages are: a delta the authority refused is not a delta the
+    #: game saw, and a run that turns nowhere has to say which of the two it
+    #: was. TURN_BACKEND_SELECTED carries the backend the characterizer chose;
+    #: TURN_UNAVAILABLE carries why it could not choose one.
+    TURN_REQUESTED = "turn_requested"
+    TURN_POSTED = "turn_posted"
+    TURN_OBSERVED = "turn_observed"
+    TURN_BACKEND_SELECTED = "turn_backend_selected"
+    TURN_UNAVAILABLE = "turn_unavailable"
 
     @property
     def label(self) -> str:
@@ -180,8 +195,25 @@ class LifecycleJournal:
         self._events: deque[LifecycleEvent] = deque(maxlen=capacity)
         self._lock = threading.Lock()
 
-    def note(self, stage: LifecycleStage, detail: str = "", **fields: Any) -> LifecycleEvent:
-        event = LifecycleEvent(stage, monotonic_s(), detail, dict(fields))
+    def note(self, stage: LifecycleStage, detail: str = "", /, **fields: Any) -> LifecycleEvent:
+        """Record one stage. Never raises, whatever it is handed.
+
+        ``stage`` and ``detail`` are positional-only, so a caller that passes
+        ``detail=`` as a *field* lands in ``fields`` instead of raising
+        ``TypeError`` for "multiple values for argument 'detail'". That is a bad place for an
+        exception: journalling happens on the coordinator thread, inside the
+        handler for the thing being journalled, so a mistyped diagnostic
+        safe-stopped the run it was trying to describe. The collision is
+        absorbed instead - the field wins and the positional is kept beside
+        it - because a wrong label is a smaller failure than a stopped
+        session, and both end up in the row either way.
+        """
+        extra = dict(fields)
+        collided = extra.pop("detail", None)
+        if collided is not None:
+            extra["note"] = detail
+            detail = str(collided)
+        event = LifecycleEvent(stage, monotonic_s(), detail, extra)
         with self._lock:
             self._events.append(event)
         return event

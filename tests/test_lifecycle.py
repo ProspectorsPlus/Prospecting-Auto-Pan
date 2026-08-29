@@ -306,3 +306,25 @@ def test_a_terminal_packet_carries_no_actionable_command() -> None:
     assert terminal.packet_kind is PacketKind.TERMINAL
     assert terminal.command is None
     assert terminal.frame is live.frame, "the picture may persist"
+
+
+def test_a_detail_keyword_collision_is_absorbed_rather_than_raised() -> None:
+    """Journalling must never take down the run it is describing.
+
+    ``note(stage, "reason", detail="...")`` used to raise ``TypeError`` for
+    "multiple values for argument 'detail'". It raised on the coordinator
+    thread, inside the handler for the very event being recorded, so a mistyped
+    diagnostic safe-stopped the session instead of explaining it.
+    """
+    from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
+
+    journal = LifecycleJournal()
+    event = journal.note(
+        LifecycleStage.LIVE_REFUSED, "focus:False", detail="Roblox is not frontmost"
+    )
+
+    assert event.detail == "Roblox is not frontmost"
+    assert event.fields["note"] == "focus:False"
+    row = journal.rows()[-1]
+    assert row["detail"] == "Roblox is not frontmost"
+    assert row["note"] == "focus:False"
