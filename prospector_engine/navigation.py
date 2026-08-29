@@ -816,6 +816,8 @@ class Navigator:
                 profile_revision=self._profile_revision,
             )
         )
+        if decision.lost_target:
+            return self._reacquire(inputs, now_s, decision.reason)
         if decision.release:
             return self._release(_CONTROL_TO_PHASE[decision.state], decision.reason)
         if not decision.moves:
@@ -841,6 +843,32 @@ class Navigator:
             ),
             "steering",
         )
+
+    def _reacquire(
+        self, inputs: NavigationInputs, now_s: float, reason: str
+    ) -> NavigationDecision:
+        """The arrow has been gone past its whole grace. Do something bounded.
+
+        Standing in REACQUIRE forever with nothing on screen explaining it is
+        the state this exists to make unreachable. The recovery ladder is
+        already the bounded "try something, then give up" machine - its second
+        rung is literally *waiting for a fresh view of the arrow* - so this
+        starts one rather than inventing a second maneuver vocabulary.
+
+        Without a measured locomotion baseline the ladder cannot tell "stuck"
+        from "slow", so it is not started; the run ends instead, with the
+        reason, rather than pretending to recover.
+        """
+        if self._recovery.active:
+            return self._release(NavigationPhase.REACQUIRE, reason)
+        if not self._capabilities.recovery_enabled:
+            return self._release(NavigationPhase.ABANDONED, reason)
+        self._recovery.begin(
+            now_s,
+            side=choose_detour_side(error_deg=None, motion=inputs.motion),
+            error_deg=None,
+        )
+        return self._release(NavigationPhase.REACQUIRE, reason)
 
     def _release(self, phase: NavigationPhase, reason: str) -> NavigationDecision:
         self._phase = phase

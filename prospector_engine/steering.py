@@ -33,7 +33,7 @@ rotation rather than a journey.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 
 from prospector_engine.contracts import (
@@ -192,10 +192,25 @@ class SteeringLimits:
     max_evidence_age_ms: int = 100
     #: Minimum processed frames per second before Live is refused.
     min_processed_fps: int = 30
-    #: Consecutive frames without a usable arrow before FOLLOW gives up its
-    #: forward lease. One frame of noise should not stop a walk; a second of
-    #: blindness must.
-    arrow_loss_grace_frames: int = 2
+    #: How long FOLLOW may keep walking with no usable arrow reading.
+    #:
+    #: It was two *frames*, which is a different quantity at every cadence: at
+    #: 60 fps it is 33 ms of tolerance, and the character stopped dead every
+    #: time the character model crossed the map. The arrow disappearing behind
+    #: something for a moment is not a reason to stop - the heading was right
+    #: an instant ago and the character is already walking it - so the grace is
+    #: a duration, measured on the monotonic clock like every other rate here.
+    #:
+    #: Yaw is *not* graced. Turning blind is never justified: a correction
+    #: computed from a heading that no longer exists is worse than no
+    #: correction at all. Only the forward hold coasts.
+    arrow_loss_grace_s: float = 2.0
+    #: How long the controller may sit in REACQUIRE with no usable arrow
+    #: before it says so and stops rather than waiting forever. Standing still
+    #: indefinitely with nothing on screen explaining it is the failure this
+    #: bound exists to prevent; the navigator turns it into a bounded
+    #: reacquisition episode, and that episode has its own budget.
+    arrow_loss_abandon_s: float = 10.0
     #: Direction confidence below which the controller releases rather than
     #: scaling the correction down. Confidence *scaling* is right for an
     #: estimate that is merely uncertain; a collapsed one is not evidence at
@@ -263,6 +278,11 @@ class ControlDecision:
     blockers: tuple[str, ...] = ()
     #: Signed heading error this decision was made from, for the dashboard.
     error_deg: float | None = None
+    #: The arrow has been unreadable past its whole bounded grace. A flag
+    #: rather than a phrase the caller has to match on, because "look for the
+    #: arrow again" and "something is wrong" are different instructions and
+    #: telling them apart by parsing a sentence is how they get confused.
+    lost_target: bool = False
 
     @property
     def moves(self) -> bool:
@@ -334,6 +354,12 @@ class ArrowFollowerController:
         self._limits = limits or SteeringLimits()
         self._turn_limits = turn_limits or TurnLimits()
         self._response = response
+        # Deliberately outside ``reset()``. The loss clock has to survive the
+        # release that losing the arrow causes, or every release would restart
+        # it and the controller would coast for two seconds, release, coast for
+        # two seconds again, forever - which is the *opposite* of a bound.
+        self._arrow_lost_since_s: float | None = None
+        self._last_stable_error_deg: float | None = None
         self.reset()
 
     # -- lifecycle --------------------------------------------------------
@@ -351,7 +377,6 @@ class ArrowFollowerController:
         self._track_id: int | None = None
         self._geometry_revision: int | None = None
         self._profile_revision: int | None = None
-        self._arrow_missing_frames = 0
 
     @property
     def state(self) -> ControlState:
@@ -451,25 +476,33 @@ class ArrowFollowerController:
             )
 
         if not inputs.arrow.valid:
-            return self._on_arrow_lost(inputs, backend)
-        self._arrow_missing_frames = 0
+            return self._on_arrow_lost(
+                inputs, backend, inputs.arrow.abstain_reason or "no reading"
+            )
         if inputs.arrow.track_id != self._track_id:
             # A different arrow identity is a different target. Drop the pulse
             # in flight rather than crediting its rotation to the new one.
             self._track_id = inputs.arrow.track_id
             self._pulse = None
             self._growing_pulses = 0
+        # A rejected *heading* is the same fact as a missing arrow as far as
+        # the forward hold is concerned: there is nothing to steer by this
+        # frame. Releasing here while the arrow branch coasted meant a walk
+        # stopped dead on a single abstaining direction estimate, which is the
+        # commoner of the two and was not covered by any grace at all.
         if not inputs.direction.valid or inputs.direction.error_deg is None:
-            return self._release(
-                ControlState.ALIGN,
-                f"direction abstained: {inputs.direction.abstain_reason}",
+            return self._on_arrow_lost(
+                inputs, backend, f"direction abstained: {inputs.direction.abstain_reason}"
             )
         if inputs.direction.confidence < limits.min_direction_confidence:
-            return self._release(
-                ControlState.REACQUIRE,
+            return self._on_arrow_lost(
+                inputs,
+                backend,
                 f"direction confidence collapsed to {inputs.direction.confidence:.2f}",
             )
 
+        # A usable reading. The loss clock is cleared here, and only here.
+        self._arrow_lost_since_s = None
         self._consumed_sequence = inputs.frame_sequence
         error = wrap_deg(inputs.direction.error_deg)
         if self._episode_yaw_deg > limits.max_episode_yaw_deg:
@@ -478,6 +511,7 @@ class ArrowFollowerController:
                 f"turned {self._episode_yaw_deg:.0f} degrees without converging",
             )
 
+        self._last_stable_error_deg = error
         settled = self._settle_pulse(error, inputs.now_s)
         if settled is not None:
             return settled
@@ -515,19 +549,30 @@ class ArrowFollowerController:
         )
 
     # -- internals --------------------------------------------------------
-    def _on_arrow_lost(self, inputs: SteeringInputs, backend: TurnBackend) -> ControlDecision:
-        """A frame with no usable arrow. Yaw stops immediately; W gets a grace.
+    def _on_arrow_lost(
+        self, inputs: SteeringInputs, backend: TurnBackend, why: str
+    ) -> ControlDecision:
+        """A frame with no usable heading. Yaw stops at once; W gets a grace.
 
         Turning blind is never justified: the correction was computed from a
-        heading that no longer exists. Walking blind for a frame or two is,
+        heading that no longer exists. Walking blind for a second or two is,
         because the character is already going the right way and stopping dead
-        on one noisy frame is what makes a route stutter.
+        every time the map arrow passes behind something is what makes a route
+        stutter. So the forward hold coasts on the last stable heading and the
+        turn plan is empty for the whole grace.
+
+        The grace is bounded twice: by ``arrow_loss_grace_s`` for the coast,
+        and by ``arrow_loss_abandon_s`` for how long the controller may then
+        sit in REACQUIRE before saying so out loud.
         """
         self._consumed_sequence = inputs.frame_sequence
         self._pulse = None
-        self._arrow_missing_frames += 1
-        within_grace = self._arrow_missing_frames <= self._limits.arrow_loss_grace_frames
-        if self._state is ControlState.FOLLOW and within_grace:
+        if self._arrow_lost_since_s is None:
+            self._arrow_lost_since_s = inputs.now_s
+        lost_s = inputs.now_s - self._arrow_lost_since_s
+        if self._state is ControlState.FOLLOW and lost_s <= self._limits.arrow_loss_grace_s:
+            heading = self._last_stable_error_deg
+            held = "" if heading is None else f" on {heading:+.1f} degrees"
             return ControlDecision(
                 state=ControlState.FOLLOW,
                 kind=CommandKind.FOLLOW,
@@ -535,13 +580,18 @@ class ArrowFollowerController:
                 plan=TurnPlan.none(backend),
                 release=False,
                 reason=(
-                    f"arrow lost for {self._arrow_missing_frames} frame(s); "
-                    "holding course, turning released"
+                    f"arrow lost for {lost_s * 1000:.0f} ms; holding course{held}, "
+                    "turning released"
                 ),
+                error_deg=heading,
             )
-        return self._release(
-            ControlState.REACQUIRE, f"arrow abstained: {inputs.arrow.abstain_reason}"
-        )
+        if lost_s > self._limits.arrow_loss_abandon_s:
+            released = self._release(
+                ControlState.REACQUIRE,
+                f"the arrow has not been readable for {lost_s:.0f} s ({why})",
+            )
+            return replace(released, lost_target=True)
+        return self._release(ControlState.REACQUIRE, f"arrow abstained: {why}")
 
     def _release(
         self, state: ControlState, reason: str, blockers: tuple[str, ...] = ()

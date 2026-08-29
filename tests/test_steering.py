@@ -222,25 +222,73 @@ def test_a_lost_arrow_releases_turning_immediately() -> None:
     assert not decision.plan.moves
 
 
-def test_a_lost_arrow_while_walking_holds_course_briefly_but_never_turns() -> None:
-    """Turning blind is never justified; walking blind for a frame or two is."""
-    controller = _controller(align_confirm_frames=2, arrow_loss_grace_frames=2)
+def test_a_lost_arrow_while_walking_holds_course_for_seconds_but_never_turns() -> None:
+    """Turning blind is never justified; walking blind for a second or two is.
+
+    The grace is a *duration*, not a frame count. Two frames is 33 ms at 60 fps
+    and 200 ms at 10 fps, so a frame-counted grace meant the same occlusion
+    stopped the character at one cadence and not at another.
+    """
+    controller = _controller(align_confirm_frames=2, arrow_loss_grace_s=2.0)
     _drive(controller, 0.5, 6)
     assert controller.state is ControlState.FOLLOW
 
-    first = controller.update(_inputs(None, sequence=20, now_s=1.0, arrow_valid=False))
-    second = controller.update(_inputs(None, sequence=21, now_s=1.02, arrow_valid=False))
-    third = controller.update(_inputs(None, sequence=22, now_s=1.04, arrow_valid=False))
+    sequence = 20
+    now = 1.0
+    for _ in range(40):  # 40 frames at 30 ms is 1.2 s of blindness
+        now += 0.03
+        sequence += 1
+        held = controller.update(_inputs(None, sequence=sequence, now_s=now, arrow_valid=False))
+        assert held.forward == 1, f"the walk stopped after {now - 1.0:.2f} s"
+        assert not held.plan.moves, "it turned while blind"
 
-    assert first.forward == 1 and not first.plan.moves
-    assert second.forward == 1 and not second.plan.moves
-    assert third.release and third.forward == 0
+    # Past the grace it releases, and says how long it was blind for.
+    past = controller.update(_inputs(None, sequence=999, now_s=1.0 + 2.5, arrow_valid=False))
+    assert past.release and past.forward == 0
 
 
-def test_an_abstaining_direction_releases() -> None:
+def test_a_reacquired_arrow_clears_the_loss_clock() -> None:
+    controller = _controller(align_confirm_frames=2, arrow_loss_grace_s=2.0)
+    _drive(controller, 0.5, 6)
+
+    controller.update(_inputs(None, sequence=30, now_s=1.0, arrow_valid=False))
+    controller.update(_inputs(0.5, sequence=31, now_s=1.5))
+    later = controller.update(_inputs(None, sequence=32, now_s=3.0, arrow_valid=False))
+
+    # Without the clock being cleared this would be 2 s of loss and a release.
+    assert later.forward == 1
+
+
+def test_a_permanently_unreadable_arrow_is_bounded_and_named() -> None:
+    """It must never stand still forever with nothing on screen saying why."""
+    controller = _controller(align_confirm_frames=2, arrow_loss_abandon_s=4.0)
+    _drive(controller, 0.5, 6)
+
+    controller.update(_inputs(None, sequence=40, now_s=1.0, arrow_valid=False))
+    late = controller.update(_inputs(None, sequence=41, now_s=6.0, arrow_valid=False))
+
+    assert late.release
+    assert late.lost_target, "the navigator was not told to try to reacquire"
+    assert late.state is ControlState.REACQUIRE
+    assert "not been readable" in late.reason
+
+
+def test_an_abstaining_direction_from_a_standstill_releases() -> None:
     decision = _controller().update(_inputs(None))
     assert decision.release
-    assert decision.state is ControlState.ALIGN
+    assert decision.state is ControlState.REACQUIRE
+
+
+def test_an_abstaining_direction_while_walking_is_graced_like_a_lost_arrow() -> None:
+    """The commoner of the two losses, and it used to have no grace at all."""
+    controller = _controller(align_confirm_frames=2, arrow_loss_grace_s=2.0)
+    _drive(controller, 0.5, 6)
+    assert controller.state is ControlState.FOLLOW
+
+    decision = controller.update(_inputs(None, sequence=50, now_s=1.0))
+
+    assert decision.forward == 1
+    assert not decision.plan.moves
 
 
 def test_a_frame_authorizes_exactly_one_decision() -> None:

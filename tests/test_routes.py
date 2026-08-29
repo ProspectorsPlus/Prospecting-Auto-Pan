@@ -354,11 +354,27 @@ def test_a_brief_arrow_loss_does_not_stop_the_route() -> None:
     assert not result.terminated, "two lost frames must not end a route"
 
 
-def test_a_long_arrow_loss_releases_rather_than_walking_blind() -> None:
-    world = World(error_deg=0.0, lost_frames=frozenset(range(40, 200)))
-    result = drive(world, ticks=220)
+def test_a_long_arrow_loss_coasts_for_the_grace_and_then_releases() -> None:
+    """Both halves of the contract, on one blackout.
 
-    blind = result.phases[45:190]
+    A short occlusion must not stop the route - the character is already going
+    the right way. A long one must, because after a few seconds of blindness
+    "the right way" is a guess. The grace is a duration, so the boundary is
+    computed from it here rather than written down as a frame index.
+    """
+    from prospector_engine.steering import SteeringLimits
+
+    fps = 60.0
+    start = 40
+    world = World(error_deg=0.0, lost_frames=frozenset(range(start, 400)))
+    result = drive(world, ticks=380)
+
+    grace_frames = int(SteeringLimits().arrow_loss_grace_s * fps)
+    # It coasts: the first half of the grace is still walking.
+    coasting = result.phases[start + 2 : start + grace_frames // 2]
+    assert NavigationPhase.FOLLOW in coasting, "one occlusion stopped the route dead"
+    # And it stops: nothing past the grace is still walking.
+    blind = result.phases[start + grace_frames + 5 : 380]
     assert NavigationPhase.FOLLOW not in blind, "it kept walking through the blackout"
 
 
@@ -458,3 +474,21 @@ def test_no_scenario_runs_forever_in_recovery(name: str) -> None:
     assert not all(phase is NavigationPhase.RECOVERY for phase in tail), (
         f"{name} was still recovering after {result.ticks} ticks"
     )
+
+
+def test_a_permanently_unreadable_arrow_starts_a_bounded_reacquisition() -> None:
+    """It must try something bounded, not stand still with nothing on screen.
+
+    The recovery ladder already *is* the bounded "try, then give up" machine -
+    its second rung is waiting for a fresh view of the arrow - so a long loss
+    starts one rather than inventing a second maneuver vocabulary.
+    """
+    from prospector_engine.steering import SteeringLimits
+
+    fps = 60.0
+    start = 40
+    abandon_frames = int(SteeringLimits().arrow_loss_abandon_s * fps)
+    world = World(error_deg=0.0, lost_frames=frozenset(range(start, 2000)))
+    result = drive(world, ticks=start + abandon_frames + 120)
+
+    assert NavigationPhase.RECOVERY in result.phases, "it stood still and did nothing"
