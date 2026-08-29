@@ -114,3 +114,25 @@ def test_a_missing_replay_directory_is_a_usage_error_not_a_hang() -> None:
     assert code == 2
     assert "needs a recorded session directory" in output
     assert elapsed < 30.0
+
+
+def test_the_hotkey_self_test_is_an_exclusive_bounded_mode() -> None:
+    """It listens. It never arms, never presses, and always returns.
+
+    The submit callback is a list rather than the coordinator, so a chord
+    recognized during the self-test cannot start a mode or spend an arm token.
+    """
+    import treasure
+
+    assert "--hotkey-test" in treasure._MODES
+    code, output, _elapsed = _run(["--hotkey-test", "0.5", "--soak"], timeout_s=60.0)
+    assert code == 2
+    assert "Choose one mode" in output
+
+    code, output, elapsed = _run(["--hotkey-test", "1"], timeout_s=60.0)
+    # Exit 1 with no chord pressed is the honest answer, not a failure of the
+    # mode; what matters is that it is bounded and says what it saw.
+    assert code in (0, 1), output
+    assert elapsed < 30.0
+    assert "Nothing here arms or presses anything" in output
+    assert "intents submitted" in output

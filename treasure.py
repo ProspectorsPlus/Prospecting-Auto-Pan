@@ -1116,6 +1116,95 @@ def _run_calibrate() -> int:
     return 0
 
 
+def _run_hotkey_test(seconds: float = 30.0) -> int:
+    """Watch the hotkey listener hear the keyboard. Emits nothing, arms nothing.
+
+    The submit callback is a list, not the coordinator, so a chord recognized
+    here cannot start a mode, consume an arm token, or reach an input session.
+    Nothing in this mode can press a key.
+
+    It answers the three questions separately, because they have three
+    different remedies:
+
+    * **Is the listener alive?**  ``state`` is READY only when the event source
+      exists, is enabled, and its loop has ticked.
+    * **Did the edge arrive?**  every key you press prints a raw edge, whatever
+      it normalizes to. Silence here means the OS is not delivering events -
+      Input Monitoring, almost always.
+    * **Did the chord complete?**  a recognized chord prints its label. A chord
+      that never prints while raw edges do is a normalization or exactness
+      problem, not a permission one.
+    """
+    import time
+
+    from prospector_engine.bindings import HotkeyState, chord_label
+    from prospector_engine.contracts import IntentType, RuntimeIntent, monotonic_s
+    from prospector_engine.ports import create_platform_port
+
+    start_chord = chord_label(IntentType.START_LIVE, sys.platform)
+    port = create_platform_port()
+    submitted: list[RuntimeIntent] = []
+    source = port.create_hotkey_source(submitted.append)
+
+    print(f"Hotkey self-test - {seconds:.0f}s. Nothing here arms or presses anything.")
+    print(f"Press {start_chord}. Ordinary keys and a lone Ctrl are shown too;")
+    print("neither may stop the listener. Ctrl+C to finish early.\n")
+
+    source.start()
+    health = source.health()
+    print(f"listener: {health.state.value} - {health.describe()}")
+    if health.state is not HotkeyState.READY:
+        print(f"\nBLOCKED: {health.detail}")
+        source.stop()
+        return 1
+
+    deadline = monotonic_s() + max(1.0, seconds)
+    last_edge = ""
+    last_chord = ""
+    edges = 0
+    try:
+        while monotonic_s() < deadline:
+            time.sleep(0.05)
+            health = source.health()
+            if health.last_edge and health.last_edge != last_edge:
+                last_edge = health.last_edge
+                edges += 1
+                print(f"  RAW EDGE      {last_edge}")
+            if health.last_chord and health.last_chord != last_chord:
+                last_chord = health.last_chord
+                print(f"  RECOGNIZED    {last_chord} -> {health.last_chord_disposition}")
+            if health.state is not HotkeyState.READY:
+                print(f"\nLISTENER LOST: {health.state.value} - {health.detail}")
+                break
+    except KeyboardInterrupt:
+        print()
+    finally:
+        source.stop()
+
+    health = source.health()
+    print("\n--- summary ---")
+    print(f"  backend            {health.backend}")
+    print(f"  edges seen         {health.events_seen}")
+    print(f"  chords recognized  {health.chords_recognized}")
+    print(f"  last edge          {health.last_edge or '(none)'}")
+    print(f"  last chord         {health.last_chord or '(none)'}")
+    print(f"  disposition        {health.last_chord_disposition or '(none)'}")
+    print(f"  tap re-enables     {health.restarts}")
+    print(f"  last exception     {health.last_error or '(none)'}")
+    print(f"  intents submitted  {len(submitted)} (to a list, never to the coordinator)")
+    if health.events_seen == 0:
+        print(
+            "\nNo key edge arrived at all. Grant Input Monitoring to whichever "
+            "application launched this process, then restart it."
+        )
+        return 1
+    if health.chords_recognized == 0:
+        print(f"\nEdges arrived but no chord completed. {start_chord} was never seen.")
+        return 1
+    print(f"\n{start_chord} was heard. The listener half is working.")
+    return 0
+
+
 _MODES = (
     "--deadman",
     "--self-test",
@@ -1127,6 +1216,7 @@ _MODES = (
     "--soak",
     "--shadow-bench",
     "--calibrate",
+    "--hotkey-test",
 )
 
 
@@ -1215,6 +1305,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         if mode == "--calibrate":
             return _run_calibrate()
+        if mode == "--hotkey-test":
+            seconds = _positional_after(arguments, "--hotkey-test")
+            return _run_hotkey_test(float(seconds) if seconds is not None else 30.0)
         return 2
     finally:
         _lifecycle_probe()

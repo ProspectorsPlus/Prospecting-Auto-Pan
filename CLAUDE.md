@@ -68,6 +68,7 @@ not silently degrade.
 .venv/bin/python treasure.py --shadow-bench 15 --json bench.json
                                               # native capture + headless perception
 .venv/bin/python treasure.py --setup-probe    # real automatic setup, no input sent
+.venv/bin/python treasure.py --hotkey-test 30 # watch the listener hear keys, no input
 ```
 
 `--detector-report` (rendered) and `--soak` use the fixtures in `tests/`, and
@@ -89,6 +90,11 @@ input; opt in with `-m native` only while physically at the machine.
 
 `--capture-probe` and `--calibrate` read pixels. They move no window and send
 no input, but they do need Screen Recording permission.
+
+`--hotkey-test` starts the real global listener and prints every key edge it
+normalizes, so a person can see whether a chord is heard. It submits to a list
+rather than to the coordinator, so nothing it recognizes can start a mode,
+spend an arm token, or reach an input session; it needs Input Monitoring.
 
 ## 4. Hard rules for any agent working here
 
