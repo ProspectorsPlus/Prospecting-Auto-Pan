@@ -2487,3 +2487,36 @@ equipped; the client sat idle. The instrument works and the conditions did not
 exist, which is a different statement from a passing measurement and is
 recorded as such. A gap still open when the bench ends is reported separately
 and never counted as a closed one, because its length is unknown.
+
+## D-083 — 2026-08-29 — A bound on not converging, not a bound on how far a route may bend
+
+**Decision:** `_episode_yaw_deg` resets whenever the heading error comes inside
+`follow_band_deg`, and the bounded search no longer charges its rotation
+against it as well as against its own `search_max_yaw_deg`.
+
+**Why:** `max_episode_yaw_deg = 540.0` means "a controller that has turned 540
+degrees without converging is not converging". Under the old stop-turn-go
+follower that read correctly, because an alignment *episode* ended the moment
+`W` went down and every release called `reset()`. Continuous pursuit has no
+such episode, so the accumulator never reset and the number quietly became a
+ceiling on **total rotation** — which is a ceiling on how far a route may bend.
+
+Measured on a 90-second route whose bearing drifts steadily, the way a
+shoreline does, with the character on course every single frame:
+
+| bend | outcome before the fix |
+|---|---|
+| 10 deg/s | FAILED after 32 s |
+| 20 deg/s | FAILED after 27 s |
+| 35 deg/s | FAILED after 19 s |
+
+After the fix all twelve combinations of {10, 20, 35, 60} deg/s and
+{30, 60, 90, 120} Hz complete ninety seconds at 98.8–100 % forward duty cycle.
+`test_a_controller_that_never_converges_still_gives_up` keeps the original
+property honest against a camera that ignores every commanded rotation, which
+is the only shape "not converging" actually has.
+
+**Found by asking the simulations a question none of them asked.** Every other
+scenario presents a *fixed* heading error that the controller closes and then
+holds; a real route never does that. The scenario matrix now includes one that
+bends the whole way.

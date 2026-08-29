@@ -211,8 +211,17 @@ class SteeringLimits:
     #: Error inside which a pivot ends and pursuit resumes. Well below
     #: ``strong_band_deg`` so the two cannot chatter.
     pivot_release_deg: float = 45.0
-    #: Whole-episode ceiling on rotation, so a controller that is not
-    #: converging gives up rather than spinning.
+    #: Rotation the controller may spend **without ever converging** before it
+    #: gives up rather than spinning.
+    #:
+    #: The accumulator resets every time the error comes inside
+    #: ``follow_band_deg``, and that reset is the whole meaning of the bound.
+    #: Without it the number is a ceiling on total rotation, which under
+    #: continuous pursuit is a ceiling on how far a route may bend: a shoreline
+    #: curving at a steady 20 degrees a second is converging perfectly, on
+    #: course, every single frame, and it accumulated 540 degrees of entirely
+    #: correct correction in half a minute and safe-stopped. Measured: FAILED
+    #: after 19 s at 35 deg/s, 27 s at 20, 32 s at 10.
     max_episode_yaw_deg: float = 540.0
 
     # -- the correction itself --------------------------------------------
@@ -833,6 +842,10 @@ class ArrowFollowerController:
         """
         limits = self._limits
         error = self._lead(estimate)
+        if abs(error) <= limits.follow_band_deg:
+            # On course. Whatever rotation it took to get here was not a
+            # controller failing to converge, so it stops counting against one.
+            self._episode_yaw_deg = 0.0
         pivoting = self._pivot_wanted(error, inputs.now_s)
         plan = self._correction_for(error, estimate, now_s=inputs.now_s, pivoting=pivoting)
 
@@ -1230,9 +1243,12 @@ class ArrowFollowerController:
             step = limits.search_step_deg * (1.0 + 0.5 * (leg // 2))
             issued = response.plan_for(direction * step, self._turn_limits)
             if issued.moves:
+                # Counted against the search's own budget and *not* against the
+                # convergence guard: a search is bounded by
+                # ``search_max_yaw_deg`` already, and charging it twice let a
+                # legitimate bounded search trip a rule about not converging.
                 episode.yaw_spent_deg += abs(issued.expected_deg)
                 episode.legs = leg + 1
-                self._episode_yaw_deg += abs(issued.expected_deg)
                 hold_s = issued.hold_ms / 1000.0 if backend is TurnBackend.ARROW_KEYS else 0.0
                 self._correction = _Correction(
                     units=issued.units,

@@ -166,6 +166,9 @@ class World:
     duplicate_frames: frozenset[int] = field(default_factory=frozenset)
     #: A second arrow-like candidate that steals the reading for these frames.
     decoy_frames: frozenset[int] = field(default_factory=frozenset)
+    #: Set false for a camera that ignores every commanded rotation - the only
+    #: honest shape of "this controller is not converging".
+    camera_responds: bool = True
     fps: float = 60.0
 
     sequence: int = 0
@@ -190,8 +193,9 @@ class World:
             self.pending.append((self.now_s + MEASURED.latency_s, turn_deg))
         landed = [entry for entry in self.pending if entry[0] <= self.now_s]
         self.pending = [entry for entry in self.pending if entry[0] > self.now_s]
-        for _, degrees in landed:
-            self.error_deg = wrap_deg(self.error_deg - degrees)
+        if self.camera_responds:
+            for _, degrees in landed:
+                self.error_deg = wrap_deg(self.error_deg - degrees)
         self.applied_forward = forward
         self.applied_lateral = lateral
         if self.obstacle is not None:
@@ -248,6 +252,26 @@ class World:
             valid=visible,
             abstain_reason=None if visible else "no-candidate",
         )
+
+
+@dataclass
+class CurvingWorld(World):
+    """A route that bends continuously, the way a shoreline does.
+
+    Every other scenario here presents a *fixed* heading error that the
+    controller closes and then holds. That is not what a treasure route looks
+    like: the target bearing drifts the whole way, so the controller corrects
+    continuously and never stops converging. Which is exactly the case that
+    broke - see ``test_a_long_curving_route_does_not_give_up``.
+    """
+
+    #: How fast the bearing to the target drifts while walking.
+    bend_deg_s: float = 20.0
+
+    def apply(self, *, forward: int, lateral: int, jump: bool, turn_deg: float) -> None:
+        super().apply(forward=forward, lateral=lateral, jump=jump, turn_deg=turn_deg)
+        if forward > 0:
+            self.error_deg = wrap_deg(self.error_deg + self.bend_deg_s / self.fps)
 
 
 @dataclass
@@ -497,6 +521,45 @@ def test_open_ground_is_never_mistaken_for_an_obstacle(fps: float) -> None:
     assert false_stuck / result.ticks < 0.01, (
         f"{false_stuck} of {result.ticks} open-ground ticks looked stuck"
     )
+
+
+@pytest.mark.parametrize("fps", CADENCES)
+@pytest.mark.parametrize("bend", [10.0, 20.0, 35.0, 60.0])
+def test_a_long_curving_route_does_not_give_up(fps: float, bend: float) -> None:
+    """Ninety seconds of continuous bending, which is what a real route is.
+
+    The convergence guard - "a controller that has turned 540 degrees is not
+    converging" - had no reset, so under continuous pursuit it stopped being a
+    rule about converging and became a ceiling on how far a route may bend. A
+    shoreline curving at a steady 20 degrees a second is on course every single
+    frame, and it accumulated 540 degrees of entirely correct correction and
+    safe-stopped: FAILED after 19 s at 35 deg/s, 27 s at 20, 32 s at 10. The
+    accumulator now resets every time the error comes inside the follow band,
+    which is the only reading of the bound that means anything.
+    """
+    world = CurvingWorld(error_deg=0.0, fps=fps, bend_deg_s=bend)
+    result = drive(world, ticks=int(fps * 90))
+
+    assert not result.terminated, (
+        f"a {bend:.0f} deg/s bend ended the route as {result.final.name} after "
+        f"{result.ticks / fps:.0f} s"
+    )
+    assert result.duty_cycle > 0.95, f"walked only {result.duty_cycle:.0%} of the time"
+
+
+def test_a_controller_that_never_converges_still_gives_up() -> None:
+    """The guard the reset must not have disarmed.
+
+    A camera that ignores every commanded rotation is the honest shape of "not
+    converging": the controller asks and asks, the error never moves, and it
+    has to stop rather than spin forever. That is what the 540 degrees is for,
+    and adding the reset must not have cost it.
+    """
+    world = World(error_deg=90.0, camera_responds=False)
+    result = drive(world, ticks=60 * 60)
+
+    assert result.terminated, "it corrected forever against a camera that never moved"
+    assert result.held == set()
 
 
 # ---------------------------------------------------------------------------

@@ -977,20 +977,26 @@ class Navigator:
         age_ms = frame.age_s(now_s) * 1000.0
         if frame.capture_error is not None:
             return self._release(
-                NavigationPhase.REACQUIRE, f"capture-error:{frame.capture_error}"
+                NavigationPhase.REACQUIRE,
+                f"capture-error:{frame.capture_error}",
+                now_s=now_s,
             )
         if not frame.geometry.valid:
-            return self._release(NavigationPhase.REACQUIRE, "viewport-invalid")
+            return self._release(NavigationPhase.REACQUIRE, "viewport-invalid", now_s=now_s)
         if age_ms > self._max_evidence_age_ms + limits.stale_coast_ms:
-            return self._release(NavigationPhase.REACQUIRE, f"stale-frame:{age_ms:.0f}ms")
+            return self._release(
+                NavigationPhase.REACQUIRE, f"stale-frame:{age_ms:.0f}ms", now_s=now_s
+            )
 
         # 2. Arrival preempts recovery and steering.
         arrival = inputs.arrival
         if arrival is not None and arrival.valid:
             self._arrival_latches += 1
             if self._arrival_latches >= self.ARRIVAL_LATCHES:
-                return self._release(NavigationPhase.ARRIVED, "arrival confirmed")
-            return self._release(NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate")
+                return self._release(NavigationPhase.ARRIVED, "arrival confirmed", now_s=now_s)
+            return self._release(
+                NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate", now_s=now_s
+            )
         self._arrival_latches = 0
 
         # 3. Progress and contact. The guard abstains until it has a reference,
@@ -1010,7 +1016,9 @@ class Navigator:
         # 4. Ordinary pursuit.
         if not self._capabilities.steering_enabled:
             reason = "; ".join(self._capabilities.explain()) or "not ready to steer"
-            return self._release(NavigationPhase.ALIGN, f"observing only: {reason}")
+            return self._release(
+                NavigationPhase.ALIGN, f"observing only: {reason}", now_s=now_s
+            )
         return self._steer(inputs, generation=generation, now_s=now_s)
 
     # -- helpers -----------------------------------------------------------
@@ -1080,7 +1088,7 @@ class Navigator:
             # Nothing measured can tell "stuck" from "slow". The only safe
             # answer is to stop pushing, not to invent a detour.
             self._escalation = "no way to tell stuck from slow; stopping instead"
-            return self._release(NavigationPhase.CONTACT, verdict.reason)
+            return self._release(NavigationPhase.CONTACT, verdict.reason, now_s=now_s)
         drift = None
         if inputs.motion is not None and inputs.motion.valid:
             drift = inputs.motion.lateral_speed_norm
@@ -1132,7 +1140,7 @@ class Navigator:
             reason = self._recovery.over_budget(now_s) or "recovery ladder exhausted"
             self._recovery.resolve(reason)
             self._escalation = reason
-            return self._release(NavigationPhase.ABANDONED, reason)
+            return self._release(NavigationPhase.ABANDONED, reason, now_s=now_s)
 
         self._last_recovery = step
         self._phase = NavigationPhase.RECOVERY
@@ -1195,7 +1203,9 @@ class Navigator:
         if decision.lost_target:
             return self._lost(inputs, now_s, decision.reason)
         if decision.release:
-            return self._release(_CONTROL_TO_PHASE[decision.state], decision.reason)
+            return self._release(
+                _CONTROL_TO_PHASE[decision.state], decision.reason, now_s=now_s
+            )
 
         movement = _movement_from(decision)
         phase = _CONTROL_TO_PHASE[decision.state]
@@ -1236,9 +1246,8 @@ class Navigator:
         is to end the run and name the reason.
         """
         del inputs
-        del now_s
         self._escalation = reason
-        return self._release(NavigationPhase.ABANDONED, reason)
+        return self._release(NavigationPhase.ABANDONED, reason, now_s=now_s)
 
     # -- assembling a decision ---------------------------------------------
     def _decision(
@@ -1316,16 +1325,28 @@ class Navigator:
             ),
         )
 
-    def _release(self, phase: NavigationPhase, reason: str) -> NavigationDecision:
-        """Let go, and forget. Safety, terminal states, and world changes only."""
+    def _release(
+        self, phase: NavigationPhase, reason: str, *, now_s: float | None = None
+    ) -> NavigationDecision:
+        """Let go, and forget. Safety, terminal states, and world changes only.
+
+        ``now_s`` is the tick's own clock, not the wall clock. The telemetry
+        this builds carries elapsed budgets, and a replay or a simulation runs
+        on recorded time - reading ``monotonic_s()`` here made a released
+        packet report a stall accumulator and a recovery budget measured
+        against a completely different clock from the packet beside it.
+        """
         self._phase = phase
         self._follower.reset()
         if phase.terminal:
             self._recovery.resolve(reason)
             self._terrain.reset()
-        return self._decision(
-            phase, None, reason, movement=IDLE, now_s=monotonic_s(), release=True
-        )
+        if now_s is None:
+            # A caller with no tick of its own - only the construction-time
+            # paths - falls back to the last tick, and to the wall clock only
+            # when there has not been one.
+            now_s = self._last_tick_s if self._last_tick_s is not None else monotonic_s()
+        return self._decision(phase, None, reason, movement=IDLE, now_s=now_s, release=True)
 
     def _command(
         self,
