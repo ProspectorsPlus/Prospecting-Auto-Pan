@@ -197,13 +197,21 @@ def test_navigation_phases_have_terminal_states() -> None:
 
 
 def test_an_abstained_observation_cannot_build_a_command() -> None:
+    """It may keep a hold it already had; it may never authorize a new one.
+
+    The two are different, and the difference is the whole of the occlusion
+    work. A frame with no heading cannot *justify* a command - so none is built
+    - but from a standstill that is a reason to look around, and while walking
+    it is a reason to keep going on the remembered heading. Neither is a reason
+    to build a command out of nothing.
+    """
     from prospector_engine.navigation import Navigator
     from tests.test_navigation import READY, _inputs
 
     navigator = Navigator(capabilities=READY)
     decision = navigator.decide(_inputs(error_deg=None), generation=1, now_s=0.0)
     assert decision.command is None
-    assert decision.release
+    assert decision.movement.idle, "an abstained frame asked for a key"
 
 
 def test_a_command_cannot_be_built_with_an_impossible_axis() -> None:

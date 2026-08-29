@@ -24,9 +24,8 @@ a *session* is what this session can see.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from typing import Any
 
 from prospector_engine.acceptance import (
@@ -67,6 +66,7 @@ from prospector_engine.contracts import (
     NavigationCommand,
     NavigationPhase,
     Provenance,
+    PursuitTelemetry,
     RuntimeKey,
     monotonic_s,
 )
@@ -81,10 +81,15 @@ from prospector_engine.motion import (
     RuntimeBaselineEstimator,
     estimate_lk_affine,
 )
-from prospector_engine.movement import DesiredMovement, MovementOutcome
-from prospector_engine.steering import ArrowFollowerController, SteeringInputs
+from prospector_engine.movement import IDLE, DesiredMovement, MovementOutcome
+from prospector_engine.steering import (
+    ArrowFollowerController,
+    ControlDecision,
+    SteeringInputs,
+)
 from prospector_engine.trace import FrameTrace, PerceptionTiming
-from prospector_engine.turning import TurnBackend, TurnPlan, TurnResponse
+from prospector_engine.traversability import TraversabilityMemory
+from prospector_engine.turning import TurnBackend, TurnResponse
 from prospector_engine.vision import (
     ArrivalDetector,
     ArrowProfile,
@@ -98,10 +103,10 @@ __all__ = [
     "MotionConfig",
     "NavigationCapabilities",
     "Navigator",
-    "RecoveryAction",
     "RecoveryBudget",
     "RecoveryLadder",
-    "RecoveryLevel",
+    "RecoveryMove",
+    "RecoveryRung",
     "describe_decision",
     "make_forward_probe_worker",
     "make_live_worker",
@@ -199,11 +204,28 @@ class NavigationCapabilities:
 
     @property
     def recovery_enabled(self) -> bool:
-        """Recovery needs to be able to tell "stuck" from "slow"."""
-        return self.steering_enabled and self.motion_baseline.usable
+        """Whether this run may maneuver at all.
+
+        It used to also require a matured locomotion baseline, and that turned
+        out to be the wrong place for the question. The baseline only arrives
+        after a dozen clean frames of unobstructed walking, so a route that met
+        a bush in its first few seconds had recovery switched off and simply
+        stopped - and the capability had no way to know that
+        :class:`~prospector_engine.motion.ProgressGuard` now has a relative
+        fallback that can answer "has this character's own speed collapsed"
+        without one.
+
+        So the split is: this says whether maneuvering is *permitted*, and the
+        guard says whether there is evidence *right now*. The guard abstains
+        honestly when there is not, which is the property that made the extra
+        gate here redundant rather than protective.
+        """
+        return self.steering_enabled
 
     @property
     def progress_enabled(self) -> bool:
+        """Whether a *frozen* baseline is in force, as opposed to a runtime or
+        relative reference. Reported, never used to gate a maneuver."""
         return self.motion_baseline.usable
 
     @property
@@ -285,65 +307,118 @@ class MotionConfig:
 # ---------------------------------------------------------------------------
 
 
-class RecoveryAction(Enum):
-    """One rung of the ladder. Each is a *maneuver*, not a label."""
+@dataclass(frozen=True)
+class RecoveryMove:
+    """One bounded segment of a rung: a keyboard level, and how long to hold it.
 
-    RELEASE = "release"
-    REACQUIRE = "reacquire"
-    STRAFE = "strafe"
-    PROBE_FORWARD = "probe_forward"
-    JUMP = "jump"
-    ABANDON = "abandon"
+    ``strafe`` and ``turn`` are expressed *relative to the episode's chosen
+    side*: ``+1`` means the side the ladder locked onto and ``-1`` means the
+    other one. The absolute axis is resolved once, at the moment a step is
+    handed out, so a rung can be read without holding the side in your head.
+    """
 
-    @property
-    def emits_input(self) -> bool:
-        return self in (
-            RecoveryAction.STRAFE,
-            RecoveryAction.PROBE_FORWARD,
-            RecoveryAction.JUMP,
-        )
+    duration_ms: int
+    forward: int = 0
+    strafe: int = 0
+    turn: int = 0
+    jump: bool = False
+    label: str = ""
 
 
 @dataclass(frozen=True)
-class RecoveryLevel:
+class RecoveryRung:
+    """One escalation of the ladder, as a short sequence of moves."""
+
     name: str
-    action: RecoveryAction
     description: str
-    duration_ms: int
-    max_attempts: int
-    #: Whether this rung uses the opposite side from the one first locked.
-    flips_side: bool = False
+    moves: tuple[RecoveryMove, ...]
+    max_attempts: int = 1
+
+    @property
+    def duration_ms(self) -> int:
+        return sum(move.duration_ms for move in self.moves)
+
+    @property
+    def jumps(self) -> int:
+        return sum(1 for move in self.moves if move.jump)
 
 
-#: Escalating and finite. The first two rungs cost nothing and fix the common
-#: case (a momentary snag, a lost arrow); the maneuvers come after, one side
-#: locked, and the whole thing abandons rather than looping.
-RECOVERY_LADDER: tuple[RecoveryLevel, ...] = (
-    RecoveryLevel("R0", RecoveryAction.RELEASE, "letting go of the controls", 200, 1),
-    RecoveryLevel(
-        "R1", RecoveryAction.REACQUIRE, "waiting for a fresh view of the arrow", 500, 1
+#: Escalating, finite, and every rung a *maneuver a player would actually make*.
+#:
+#: The ladder this replaces started with two rungs that released the controls
+#: and waited, and then offered ``A`` on its own, ``W`` on its own, and ``SPACE``
+#: on its own. None of those is how anybody gets past a bush. A running jump
+#: needs ``W`` and ``SPACE`` together; a hedge or a curb needs a forward *arc*,
+#: which is ``W`` and a strafe and usually a little camera. Standing still and
+#: strafing sideways into the same obstacle is a wiggle, not a detour.
+RECOVERY_LADDER: tuple[RecoveryRung, ...] = (
+    RecoveryRung(
+        "R0",
+        "hopping over it without breaking stride",
+        (
+            RecoveryMove(80, forward=1, jump=True, label="W + SPACE"),
+            RecoveryMove(300, forward=1, label="W"),
+        ),
     ),
-    RecoveryLevel("R2", RecoveryAction.STRAFE, "stepping to one side", 450, 2),
-    RecoveryLevel("R3", RecoveryAction.PROBE_FORWARD, "trying a short step forward", 350, 2),
-    RecoveryLevel("R4", RecoveryAction.JUMP, "hopping over the obstruction", 250, 1),
-    RecoveryLevel(
-        "R5", RecoveryAction.STRAFE, "stepping to the other side", 450, 1, flips_side=True
+    RecoveryRung(
+        "R1",
+        "arcing forward around it",
+        (RecoveryMove(500, forward=1, strafe=1, turn=1, label="W + side + camera"),),
+        max_attempts=2,
+    ),
+    RecoveryRung(
+        "R2",
+        "hopping the other way",
+        (
+            RecoveryMove(80, forward=1, strafe=-1, jump=True, label="W + other side + SPACE"),
+            RecoveryMove(560, forward=1, strafe=-1, label="W + other side"),
+        ),
+    ),
+    RecoveryRung(
+        "R3",
+        "backing out and going round",
+        (
+            RecoveryMove(300, forward=-1, turn=1, label="S + camera"),
+            RecoveryMove(80, forward=1, strafe=1, jump=True, label="W + side + SPACE"),
+            RecoveryMove(520, forward=1, strafe=1, label="W + side"),
+        ),
+    ),
+    RecoveryRung(
+        "R4",
+        "taking the long way round",
+        (RecoveryMove(850, forward=1, strafe=1, turn=1, label="W + side + camera"),),
     ),
 )
 
 
 @dataclass(frozen=True)
 class RecoveryBudget:
-    """Hard caps on one recovery episode. Exhaustion is a safe stop."""
+    """Hard caps on one recovery episode. Exhaustion is a safe stop.
+
+    Six separate ceilings rather than one, because they bound six different
+    ways an episode can go wrong: running too long, holding keys too long,
+    jumping repeatedly, reversing into something behind, flip-flopping between
+    sides, and re-entering recovery in a loop.
+    """
 
     total_time_ms: int = 9000
-    total_input_ms: int = 4000
-    #: Once a side is chosen it is held for the episode; only R5 flips it, once.
+    total_input_ms: int = 6000
+    max_jumps: int = 3
+    max_reverse_ms: int = 700
+    #: Once a side is chosen it is held for the episode. One evidence-backed
+    #: flip is allowed; a second is a wiggle.
     side_flips_allowed: int = 1
+    #: No two ``SPACE`` presses closer together than this.
+    jump_cooldown_ms: int = 700
+    #: Fresh frames of restored progress before the episode is called resolved.
+    restore_frames: int = 3
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
-            source="TREASURE_NAVIGATION_PLAN.md section 9.3; mission section E",
+            source=(
+                "TREASURE_NAVIGATION_PLAN.md section 9.3; "
+                "mission section 'advanced composite recovery'"
+            ),
             note="budgets are chosen bounds; no route corpus has been used to fit them",
         )
     )
@@ -351,29 +426,56 @@ class RecoveryBudget:
 
 @dataclass(frozen=True)
 class RecoveryStep:
-    """What recovery wants done this tick, already bounded."""
+    """What recovery wants held this tick, already bounded and side-resolved."""
 
-    level: RecoveryLevel
+    rung: RecoveryRung
+    move: RecoveryMove
     side: int
+    forward: int
+    strafe: int
+    turn: int
+    jump: bool
     remaining_ms: int
     description: str
 
     @property
-    def action(self) -> RecoveryAction:
-        return self.level.action
+    def level(self) -> RecoveryRung:
+        """The rung. Named ``level`` as well for the dashboards that say so."""
+        return self.rung
+
+    def describe(self) -> str:
+        parts: list[str] = []
+        if self.forward > 0:
+            parts.append("W")
+        elif self.forward < 0:
+            parts.append("S")
+        if self.strafe < 0:
+            parts.append("A")
+        elif self.strafe > 0:
+            parts.append("D")
+        if self.turn < 0:
+            parts.append("<")
+        elif self.turn > 0:
+            parts.append(">")
+        if self.jump:
+            parts.append("JUMP")
+        return " + ".join(parts) if parts else "nothing"
 
 
 class RecoveryLadder:
-    """A finite escalation with a total time cap and a total input cap.
+    """A finite escalation with six caps and one sticky side.
 
-    Two properties matter more than the rungs themselves:
+    Three properties matter more than the rungs themselves:
 
     * **The side is sticky.** Choosing left on one frame and right on the next
       is a wiggle, not a detour. The side is locked when the episode begins and
-      only R5 may flip it, once.
+      may be flipped once, and only on evidence.
     * **Success is measured, never assumed.** An episode resolves when progress
-      is observed again *and* the heading error has not got worse. Elapsed time
-      only ever ends an episode in failure.
+      has been observed again over ``restore_frames`` *fresh* frames and the
+      heading has not rotted. Elapsed time only ever ends an episode in failure.
+    * **A rung ends early when the evidence says so.** A maneuver that has
+      already worked is not run to its planned duration, because the planned
+      duration was a guess and the restored motion is a measurement.
     """
 
     def __init__(self, budget: RecoveryBudget | None = None) -> None:
@@ -381,11 +483,18 @@ class RecoveryLadder:
         self._index = len(RECOVERY_LADDER)
         self._attempts = 0
         self._started_s: float | None = None
-        self._level_started_s: float | None = None
+        self._move_index = 0
+        self._move_started_s: float | None = None
         self._input_ms = 0.0
+        self._reverse_ms = 0.0
+        self._jumps = 0
+        self._last_jump_s: float | None = None
         self._side = 0
         self._flips = 0
+        self._restored_frames = 0
         self._entry_error_deg: float | None = None
+        self._entry_reason = ""
+        self._outcome = ""
 
     # -- state ------------------------------------------------------------
     @property
@@ -397,7 +506,7 @@ class RecoveryLadder:
         return self._index >= len(RECOVERY_LADDER)
 
     @property
-    def level(self) -> RecoveryLevel | None:
+    def rung(self) -> RecoveryRung | None:
         return None if self.exhausted else RECOVERY_LADDER[self._index]
 
     @property
@@ -408,110 +517,178 @@ class RecoveryLadder:
     def input_ms(self) -> float:
         return self._input_ms
 
+    @property
+    def jumps(self) -> int:
+        return self._jumps
+
+    @property
+    def budget(self) -> RecoveryBudget:
+        return self._budget
+
+    @property
+    def entry_reason(self) -> str:
+        return self._entry_reason
+
+    @property
+    def outcome(self) -> str:
+        """Why the last episode ended: resolved, escalated out, or abandoned."""
+        return self._outcome
+
+    def elapsed_ms(self, now_s: float) -> float:
+        started = self._started_s
+        return 0.0 if started is None else max(0.0, (now_s - started) * 1000.0)
+
     # -- lifecycle --------------------------------------------------------
-    def begin(self, now_s: float, *, side: int, error_deg: float | None) -> None:
+    def begin(
+        self, now_s: float, *, side: int, error_deg: float | None, reason: str = ""
+    ) -> None:
         """Start an episode with one locked side. Idempotent while active."""
         if self.active:
             return
         self._index = 0
         self._attempts = 0
         self._started_s = now_s
-        self._level_started_s = now_s
+        self._move_index = 0
+        self._move_started_s = now_s
         self._input_ms = 0.0
+        self._reverse_ms = 0.0
+        self._jumps = 0
+        self._last_jump_s = None
         self._side = side if side in (-1, 1) else 1
         self._flips = 0
+        self._restored_frames = 0
         self._entry_error_deg = error_deg
+        self._entry_reason = reason
+        self._outcome = ""
 
-    def resolve(self) -> None:
-        """End the episode successfully. Called only on measured progress."""
+    def resolve(self, outcome: str = "") -> None:
+        """End the episode. Called on measured progress, or on exhaustion."""
         self._index = len(RECOVERY_LADDER)
         self._started_s = None
-        self._level_started_s = None
+        self._move_started_s = None
+        self._restored_frames = 0
+        if outcome:
+            self._outcome = outcome
 
     reset = resolve
+
+    def flip_side(self, reason: str) -> bool:
+        """Swap the sticky side, at most ``side_flips_allowed`` times."""
+        if self._flips >= self._budget.side_flips_allowed:
+            return False
+        self._flips += 1
+        self._side = -self._side
+        self._outcome = f"flipped side: {reason}"
+        return True
 
     def over_budget(self, now_s: float) -> str | None:
         if self._started_s is None:
             return None
-        if (now_s - self._started_s) * 1000.0 > self._budget.total_time_ms:
+        budget = self._budget
+        if self.elapsed_ms(now_s) > budget.total_time_ms:
             return "recovery ran out of time"
-        if self._input_ms > self._budget.total_input_ms:
+        if self._input_ms > budget.total_input_ms:
             return "recovery ran out of its input budget"
+        if self._reverse_ms > budget.max_reverse_ms:
+            return "recovery reversed as far as it is allowed to"
         return None
 
-    def succeeded(self, *, progressing: bool, error_deg: float | None) -> bool:
-        """Whether the episode may end. Progress *and* a heading that did not rot."""
+    def note_progress(self, *, progressing: bool, error_deg: float | None) -> bool:
+        """Fold one fresh frame in. ``True`` when the episode may end happily.
+
+        Restoration is counted over consecutive frames rather than taken from
+        one, because a single frame of movement during a maneuver is exactly
+        what a maneuver produces - the character sliding along the obstacle -
+        and calling that success is how a ladder resolves into the same wall.
+        """
         if not progressing:
+            self._restored_frames = 0
             return False
         entry = self._entry_error_deg
-        if entry is None or error_deg is None:
-            return True
-        return abs(wrap_deg(error_deg)) <= abs(wrap_deg(entry)) + 15.0
+        if (
+            entry is not None
+            and error_deg is not None
+            and abs(wrap_deg(error_deg)) > abs(wrap_deg(entry)) + 25.0
+        ):
+            # Moving, but the maneuver has thrown the heading away.
+            self._restored_frames = 0
+            return False
+        self._restored_frames += 1
+        return self._restored_frames >= self._budget.restore_frames
 
     # -- the tick ---------------------------------------------------------
     def step(self, now_s: float, *, delta_s: float) -> RecoveryStep | None:
         """The maneuver for this tick, or ``None`` when the ladder is spent."""
         over = self.over_budget(now_s)
         if over is not None:
+            self.resolve(over)
             self._index = len(RECOVERY_LADDER)
             return None
-        level = self.level
-        if level is None or self._level_started_s is None:
+        rung = self.rung
+        if rung is None or self._move_started_s is None:
             return None
-        if level.action.emits_input:
-            self._input_ms += max(0.0, delta_s) * 1000.0
-        elapsed_ms = (now_s - self._level_started_s) * 1000.0
-        if elapsed_ms >= level.duration_ms:
-            self._advance(now_s)
-            level = self.level
-            if level is None:
+
+        elapsed_ms = (now_s - self._move_started_s) * 1000.0
+        move = rung.moves[self._move_index]
+        while elapsed_ms >= move.duration_ms:
+            elapsed_ms -= move.duration_ms
+            if not self._advance(now_s - elapsed_ms / 1000.0):
                 return None
-            elapsed_ms = 0.0
-        side = -self._side if level.flips_side else self._side
+            rung = self.rung
+            if rung is None:
+                return None
+            move = rung.moves[self._move_index]
+
+        step_ms = max(0.0, delta_s) * 1000.0
+        if move.forward or move.strafe or move.turn or move.jump:
+            self._input_ms += step_ms
+        if move.forward < 0:
+            self._reverse_ms += step_ms
+
+        jump = move.jump and self._jump_allowed(now_s)
+        if jump:
+            self._jumps += 1
+            self._last_jump_s = now_s
         return RecoveryStep(
-            level=level,
-            side=side,
-            remaining_ms=max(0, int(level.duration_ms - elapsed_ms)),
-            description=level.description,
+            rung=rung,
+            move=move,
+            side=self._side,
+            forward=move.forward,
+            strafe=move.strafe * self._side,
+            turn=move.turn * self._side,
+            jump=jump,
+            remaining_ms=max(0, int(move.duration_ms - elapsed_ms)),
+            description=f"{rung.description} ({move.label or rung.name})",
         )
 
-    def _advance(self, now_s: float) -> None:
-        level = self.level
-        if level is None:
-            return
+    def _jump_allowed(self, now_s: float) -> bool:
+        """One ``SPACE`` per rung segment, never inside the cooldown.
+
+        A jump that fires every frame is not a jump, it is a held space bar
+        with extra steps, and the character never leaves the ground.
+        """
+        if self._jumps >= self._budget.max_jumps:
+            return False
+        last = self._last_jump_s
+        return last is None or (now_s - last) * 1000.0 >= self._budget.jump_cooldown_ms
+
+    def _advance(self, now_s: float) -> bool:
+        """Move to the next segment, or the next rung. ``False`` when spent."""
+        rung = self.rung
+        if rung is None:
+            return False
+        self._move_started_s = now_s
+        if self._move_index + 1 < len(rung.moves):
+            self._move_index += 1
+            return True
+        self._move_index = 0
         self._attempts += 1
-        if self._attempts >= level.max_attempts:
-            self._index += 1
-            self._attempts = 0
-            next_level = self.level
-            if (
-                next_level is not None
-                and next_level.flips_side
-                and self._flips < self._budget.side_flips_allowed
-            ):
-                self._flips += 1
-        self._level_started_s = now_s
-
-
-def choose_detour_side(*, error_deg: float | None, motion: MotionObservation | None) -> int:
-    """Which way to step around whatever is in front of us.
-
-    Local evidence, in order of how much it is worth:
-
-    1. the way the character was already sliding - if contact has already
-       deflected it along a surface, continuing that way follows the surface;
-    2. the way the target is - stepping toward the arrow keeps the detour
-       useful rather than merely different.
-
-    Never a coin flip, and never re-decided mid-episode: the caller locks it.
-    """
-    if motion is not None and motion.valid and motion.lateral_speed_norm is not None:
-        drift = motion.lateral_speed_norm
-        if abs(drift) > 0.02:
-            return 1 if drift > 0 else -1
-    if error_deg is not None:
-        return 1 if wrap_deg(error_deg) >= 0 else -1
-    return 1
+        if self._attempts < rung.max_attempts:
+            return True
+        self._attempts = 0
+        self._index += 1
+        self._outcome = f"{rung.name} did not restore movement"
+        return not self.exhausted
 
 
 # ---------------------------------------------------------------------------
@@ -533,20 +710,45 @@ class NavigationInputs:
 
 @dataclass(frozen=True)
 class NavigationDecision:
+    """What the keyboard should look like when this tick is over, and why.
+
+    ``movement`` is the whole instruction and it is a *level*: the caller hands
+    it to the input authority and the actuator works out which edges that
+    implies. ``command`` is the same thing in the shape the overlay and the
+    trace already speak, present only when this tick had new evidence to
+    justify it.
+
+    ``release`` is not "hold nothing". It means *let go and forget* - drop the
+    level and the controller's memory of what it was pursuing - and it is
+    reserved for safety, terminal states, and world changes. An ordinary
+    transition between FOLLOW, CORRECT, COAST, SEARCH and RECOVERY sets a new
+    level and keeps every piece of memory, which is the difference between
+    stepping round a bush and starting the route again.
+    """
+
     phase: NavigationPhase
     command: NavigationCommand | None
     reason: str
     release: bool = False
     recovery: RecoveryStep | None = None
+    movement: DesiredMovement = IDLE
+    telemetry: PursuitTelemetry | None = None
+
+    @property
+    def holds_forward(self) -> bool:
+        return self.movement.forward > 0
 
 
 #: The navigation FSM and the follower describe the same run from two angles:
-#: one in lifecycle terms, one in "is W held right now" terms. The mapping is
+#: one in lifecycle terms, one in "what is held right now" terms. The mapping is
 #: explicit so the two can never drift into disagreeing.
 _CONTROL_TO_PHASE: dict[ControlState, NavigationPhase] = {
     ControlState.ACQUIRE: NavigationPhase.ACQUIRE,
     ControlState.ALIGN: NavigationPhase.ALIGN,
     ControlState.FOLLOW: NavigationPhase.FOLLOW,
+    ControlState.CORRECT: NavigationPhase.CORRECT,
+    ControlState.COAST: NavigationPhase.COAST,
+    ControlState.SEARCH: NavigationPhase.SEARCH,
     ControlState.REACQUIRE: NavigationPhase.REACQUIRE,
     ControlState.BLOCKED: NavigationPhase.CONTACT,
     ControlState.SAFE_STOP: NavigationPhase.FAILED,
@@ -556,6 +758,9 @@ _PHASE_TO_CONTROL: dict[NavigationPhase, ControlState] = {
     NavigationPhase.ACQUIRE: ControlState.ACQUIRE,
     NavigationPhase.ALIGN: ControlState.ALIGN,
     NavigationPhase.FOLLOW: ControlState.FOLLOW,
+    NavigationPhase.CORRECT: ControlState.CORRECT,
+    NavigationPhase.COAST: ControlState.COAST,
+    NavigationPhase.SEARCH: ControlState.SEARCH,
     NavigationPhase.REACQUIRE: ControlState.REACQUIRE,
     NavigationPhase.CONTACT: ControlState.BLOCKED,
     NavigationPhase.RECOVERY: ControlState.BLOCKED,
@@ -566,12 +771,43 @@ _PHASE_TO_CONTROL: dict[NavigationPhase, ControlState] = {
 }
 
 
+def _movement_from(decision: ControlDecision) -> DesiredMovement:
+    """The controller's level, in the vocabulary the actuator accepts."""
+    return DesiredMovement(
+        forward=decision.forward,
+        strafe=decision.lateral,
+        turn=decision.plan.turn_axis,
+        jump=decision.jump,
+        yaw_px=decision.plan.yaw_delta_px,
+        reason=decision.reason,
+    )
+
+
+def _movement_from_recovery(step: RecoveryStep) -> DesiredMovement:
+    return DesiredMovement(
+        forward=step.forward,
+        strafe=step.strafe,
+        turn=step.turn,
+        jump=step.jump,
+        yaw_px=0,
+        reason=step.description,
+    )
+
+
 class Navigator:
     """The navigation FSM. Pure decision logic - it emits no input itself.
 
     Both the Shadow observer and the Live worker drive the same instance of
-    this class; the only difference is what they do with the returned command,
+    this class; the only difference is what they do with the returned level,
     and what :class:`NavigationCapabilities` says this run has proven.
+
+    The event priority inside one update is fixed: safety and evidence
+    validity, then a credible arrival, then contact and recovery, then ordinary
+    pursuit. What changed from the version this replaces is what happens
+    *between* those states. Moving from pursuit into recovery and back no
+    longer runs through the release floor, so the heading filter, the target
+    identity and the traversability memory all survive an obstacle. Only a
+    fault, a terminal state or a changed world resets anything.
     """
 
     #: Consecutive arrival candidates before the run terminates. One frame of
@@ -585,6 +821,7 @@ class Navigator:
         follower: ArrowFollowerController | None = None,
         recovery: RecoveryLadder | None = None,
         progress: ProgressGuard | None = None,
+        terrain: TraversabilityMemory | None = None,
         max_evidence_age_ms: int = 100,
     ) -> None:
         self._capabilities = capabilities
@@ -593,11 +830,16 @@ class Navigator:
         )
         self._recovery = recovery or RecoveryLadder()
         self._progress = progress or ProgressGuard(capabilities.motion_baseline)
+        self._terrain = terrain or TraversabilityMemory()
         self._max_evidence_age_ms = max_evidence_age_ms
         self._phase = NavigationPhase.ACQUIRE
         self._arrival_latches = 0
         self._last_tick_s: float | None = None
         self._last_recovery: RecoveryStep | None = None
+        self._last_movement = IDLE
+        self._held_keys: tuple[str, ...] = ()
+        self._forward_held_ms = 0.0
+        self._escalation = ""
         #: Runtime health the controller consults. Set by the live worker from
         #: the authority and the capture metrics, so the controller never has
         #: to reach for something that might be stale.
@@ -624,19 +866,50 @@ class Navigator:
         self._geometry_revision = geometry_revision
         self._profile_revision = profile_revision
 
-    def note_applied(self, result: NavigationApplyResult, *, now_s: float) -> None:
-        """Feed the *authority's* answer into the progress ledger.
+    def note_held(
+        self,
+        held: Iterable[Any],
+        *,
+        now_s: float,
+        yaw_posted_px: int = 0,
+        held_ms: float = 0.0,
+    ) -> None:
+        """Feed the *actuator's own ledger* into progress and stuck detection.
 
-        "The navigator asked for forward" and "the authority accepted a forward
-        lease" are different facts, and only the second one means the character
-        was being told to walk. Judging progress against the first is how a run
-        of rejected commands looks exactly like a wall (mission section E).
+        This is the wire that was missing, and its absence is why nothing about
+        obstacle recovery could ever work in production. The live worker called
+        ``apply_command`` and then told the navigator nothing, so the
+        applied-forward ledger stayed empty for the whole session: held
+        duration was always zero, the locomotion baseline was never sampled
+        from real walking, the progress guard abstained on every frame, and
+        recovery was permanently disabled while looking, from the outside, like
+        working code. Tests did not catch it because they called
+        ``note_applied`` by hand.
+
+        Every path calls this - applied, blocked, released - and every call
+        passes what the actuator says is *physically held*, never what was
+        requested. "The navigator asked for forward" and "the keyboard has W
+        down" are different facts, and only the second one means the character
+        is being told to walk.
         """
-        applied_forward = result.applied and "w" in result.leases_held
-        self._progress.note_applied(now_s, forward=applied_forward)
+        keys = tuple(sorted(_key_name(key) for key in held))
+        self._held_keys = keys
+        self._forward_held_ms = held_ms if "w" in keys else 0.0
+        self._progress.note_applied(now_s, forward="w" in keys)
+        if yaw_posted_px or "left" in keys or "right" in keys:
+            # A camera movement contaminates the next few motion estimates.
+            # Told from what went out, not from what was planned.
+            self._progress.note_yaw(now_s)
+
+    def note_applied(self, result: NavigationApplyResult, *, now_s: float) -> None:
+        """The authority-shaped form of :meth:`note_held`, kept for callers
+        that hold a :class:`NavigationApplyResult` rather than an actuator
+        outcome."""
+        held = result.leases_held if result.applied else ()
+        self.note_held(held, now_s=now_s)
 
     def note_released(self, *, now_s: float) -> None:
-        self._progress.note_applied(now_s, forward=False)
+        self.note_held((), now_s=now_s)
 
     def adopt_capabilities(self, capabilities: NavigationCapabilities) -> None:
         """Adopt what the live prologue measured, mid-session."""
@@ -662,6 +935,10 @@ class Navigator:
         return self._recovery
 
     @property
+    def terrain(self) -> TraversabilityMemory:
+        return self._terrain
+
+    @property
     def phase(self) -> NavigationPhase:
         return self._phase
 
@@ -677,6 +954,10 @@ class Navigator:
     def last_recovery(self) -> RecoveryStep | None:
         return self._last_recovery
 
+    @property
+    def held_keys(self) -> tuple[str, ...]:
+        return self._held_keys
+
     # -- the tick ---------------------------------------------------------
     def decide(
         self, inputs: NavigationInputs, *, generation: int, now_s: float
@@ -685,8 +966,14 @@ class Navigator:
         frame = inputs.frame
         delta_s = 0.0 if self._last_tick_s is None else max(0.0, now_s - self._last_tick_s)
         self._last_tick_s = now_s
+        limits = self._follower.limits
 
-        # 1. Safety / evidence validity. A stale or failed frame releases.
+        # 1. Safety / evidence validity. A failed frame releases outright; a
+        #    *slightly* stale one does not, because letting go of W and pressing
+        #    it again on the next frame is the chatter the coast window exists
+        #    to stop. Past the coast window it releases like anything else, and
+        #    a genuinely dead pipeline is released by the actuator heartbeat and
+        #    the deadman regardless of anything decided here.
         age_ms = frame.age_s(now_s) * 1000.0
         if frame.capture_error is not None:
             return self._release(
@@ -694,7 +981,7 @@ class Navigator:
             )
         if not frame.geometry.valid:
             return self._release(NavigationPhase.REACQUIRE, "viewport-invalid")
-        if age_ms > self._max_evidence_age_ms:
+        if age_ms > self._max_evidence_age_ms + limits.stale_coast_ms:
             return self._release(NavigationPhase.REACQUIRE, f"stale-frame:{age_ms:.0f}ms")
 
         # 2. Arrival preempts recovery and steering.
@@ -706,40 +993,73 @@ class Navigator:
             return self._release(NavigationPhase.ARRIVAL_CONFIRM, "arrival candidate")
         self._arrival_latches = 0
 
-        # 3. Progress and contact. The guard abstains until it has a baseline,
+        # 3. Progress and contact. The guard abstains until it has a reference,
         #    and abstention is never a reason to do anything.
-        heading = (
-            wrap_deg(inputs.direction.error_deg)
-            if inputs.direction.valid and inputs.direction.error_deg is not None
-            else None
-        )
+        heading = self._heading_deg(inputs, now_s)
         verdict = self._progress.update(
             inputs.motion,
             now_s=now_s,
             commanded_heading_deg=heading,
         )
+        self._learn_terrain(inputs, verdict, now_s, heading)
         if self._recovery.active:
-            return self._continue_recovery(inputs, verdict, generation, now_s, delta_s, heading)
-        if verdict.release_forward:
-            if not self._capabilities.recovery_enabled:
-                # Without a measured baseline the only safe answer to "we may
-                # be stuck" is to stop pushing, not to invent a detour.
-                return self._release(NavigationPhase.CONTACT, verdict.reason)
-            self._recovery.begin(
-                now_s,
-                side=choose_detour_side(error_deg=heading, motion=inputs.motion),
-                error_deg=heading,
-            )
-            return self._release(NavigationPhase.CONTACT, verdict.reason)
+            return self._continue_recovery(inputs, verdict, generation, now_s, delta_s)
+        if verdict.recover:
+            return self._begin_recovery(inputs, verdict, generation, now_s, delta_s, heading)
 
-        # 4. Ordinary steering.
+        # 4. Ordinary pursuit.
         if not self._capabilities.steering_enabled:
             reason = "; ".join(self._capabilities.explain()) or "not ready to steer"
             return self._release(NavigationPhase.ALIGN, f"observing only: {reason}")
         return self._steer(inputs, generation=generation, now_s=now_s)
 
+    # -- helpers -----------------------------------------------------------
+    def _heading_deg(self, inputs: NavigationInputs, now_s: float) -> float | None:
+        """The best heading available, filtered first and raw as a fallback.
+
+        The filter is the authority while it has anything, so the traversability
+        memory and the recovery side-choice see the same angle the controller
+        steered on rather than a second, noisier copy.
+        """
+        estimate = self._follower.heading.coast(now_s)
+        if estimate is not None:
+            return estimate.error_deg
+        direction = inputs.direction
+        if direction.valid and direction.error_deg is not None:
+            return wrap_deg(direction.error_deg)
+        return None
+
+    def _learn_terrain(
+        self,
+        inputs: NavigationInputs,
+        verdict: Any,
+        now_s: float,
+        heading: float | None,
+    ) -> None:
+        """Fold this frame's outcome into the sector memory.
+
+        Only frames where something was genuinely being held count, and only
+        the direction that was actually pushed - which is the commanded
+        movement's own bearing, not the target's.
+        """
+        movement = self._last_movement
+        if movement.forward <= 0:
+            return
+        bearing = 0.0
+        if movement.strafe:
+            bearing += 45.0 * movement.strafe
+        if heading is not None and not movement.strafe:
+            bearing += max(-30.0, min(30.0, heading))
+        if verdict.state is ProgressState.PROGRESSING:
+            self._terrain.reward(bearing, now_s)
+        elif verdict.state in (
+            ProgressState.NO_PROGRESS_SUSPECTED,
+            ProgressState.NO_PROGRESS_CONFIRMED,
+        ):
+            self._terrain.penalize(bearing, now_s)
+
     # -- recovery ---------------------------------------------------------
-    def _continue_recovery(
+    def _begin_recovery(
         self,
         inputs: NavigationInputs,
         verdict: Any,
@@ -748,142 +1068,264 @@ class Navigator:
         delta_s: float,
         heading: float | None,
     ) -> NavigationDecision:
+        """Contact is confirmed. Start a bounded episode - without stopping.
+
+        The previous version released forward here and let the ladder open with
+        two rungs that did nothing at all, so the visible behaviour of meeting a
+        bush was: stop, stand still for 700 ms, and only then try something. The
+        first rung is now a running hop, which needs ``W`` to still be down, so
+        the transition into recovery deliberately does not go through a release.
+        """
+        if not self._capabilities.recovery_enabled:
+            # Nothing measured can tell "stuck" from "slow". The only safe
+            # answer is to stop pushing, not to invent a detour.
+            self._escalation = "no way to tell stuck from slow; stopping instead"
+            return self._release(NavigationPhase.CONTACT, verdict.reason)
+        drift = None
+        if inputs.motion is not None and inputs.motion.valid:
+            drift = inputs.motion.lateral_speed_norm
+        side, why = self._terrain.choose_side(
+            now_s=now_s,
+            target_error_deg=heading,
+            lateral_drift_norm=drift,
+            failed_side=0,
+        )
+        self._recovery.begin(now_s, side=side, error_deg=heading, reason=verdict.reason)
+        self._escalation = f"contact confirmed; going {_side_word(side)} because {why}"
+        self._follower.soften()
+        return self._continue_recovery(inputs, verdict, generation, now_s, delta_s)
+
+    def _continue_recovery(
+        self,
+        inputs: NavigationInputs,
+        verdict: Any,
+        generation: int,
+        now_s: float,
+        delta_s: float,
+    ) -> NavigationDecision:
+        """Drive one tick of the ladder, and keep the target memory alive.
+
+        The controller is still fed every frame through :meth:`absorb`, so when
+        the episode resolves the heading filter and the track identity are
+        current and pursuit resumes moving rather than through a fresh
+        stationary acquisition.
+        """
+        estimate = self._follower.absorb(self._steering_inputs(inputs, now_s))
+        heading = None if estimate is None else estimate.error_deg
         progressing = verdict.state is ProgressState.PROGRESSING
-        if self._recovery.succeeded(progressing=progressing, error_deg=heading):
-            self._recovery.resolve()
+        if self._recovery.note_progress(progressing=progressing, error_deg=heading):
+            rung = self._recovery.rung
+            outcome = f"{rung.name if rung else 'recovery'} restored movement"
+            self._recovery.resolve(outcome)
             self._last_recovery = None
+            self._escalation = outcome
             self._progress.reset()
-            return self._release(NavigationPhase.REACQUIRE, "recovered; resuming")
+            if heading is not None:
+                self._terrain.reward(heading, now_s)
+            # Straight back into pursuit, on the frame that proved it worked.
+            # Releasing and re-acquiring here is what made every obstacle cost
+            # a stationary restart.
+            return self._steer(inputs, generation=generation, now_s=now_s)
+
         step = self._recovery.step(now_s, delta_s=delta_s)
         if step is None:
-            self._recovery.resolve()
-            return self._release(
-                NavigationPhase.ABANDONED,
-                self._recovery.over_budget(now_s) or "recovery ladder exhausted",
-            )
+            reason = self._recovery.over_budget(now_s) or "recovery ladder exhausted"
+            self._recovery.resolve(reason)
+            self._escalation = reason
+            return self._release(NavigationPhase.ABANDONED, reason)
+
         self._last_recovery = step
         self._phase = NavigationPhase.RECOVERY
-        if not step.action.emits_input:
-            return NavigationDecision(
-                NavigationPhase.RECOVERY, None, step.description, release=True, recovery=step
-            )
-        forward = 1 if step.action is RecoveryAction.PROBE_FORWARD else 0
-        lateral = step.side if step.action is RecoveryAction.STRAFE else 0
-        jump = step.action is RecoveryAction.JUMP
+        movement = _movement_from_recovery(step)
         command = self._command(
             generation,
             inputs.frame,
             now_s,
-            forward=forward,
-            lateral=lateral,
-            jump=jump,
-            plan=TurnPlan.none(self._follower.backend or TurnBackend.MOUSE_YAW),
-            reason=f"recovery {step.level.name}: {step.description}",
-            kind=CommandKind.FOLLOW if forward else CommandKind.ALIGN,
+            movement=movement,
+            reason=f"recovery {step.rung.name}: {step.description}",
+            # Any movement axis at all - including the back-out rung's reverse -
+            # is a movement command. ``ALIGN`` forbids every one of them, not
+            # just a forward one.
+            kind=CommandKind.FOLLOW if movement.forward else CommandKind.ALIGN,
         )
-        return NavigationDecision(
-            NavigationPhase.RECOVERY, command, step.description, recovery=step
+        return self._decision(
+            NavigationPhase.RECOVERY,
+            command,
+            step.description,
+            movement=movement,
+            recovery=step,
+            now_s=now_s,
+            heading=estimate,
+            verdict=verdict,
         )
 
     # -- steering ---------------------------------------------------------
+    def _steering_inputs(self, inputs: NavigationInputs, now_s: float) -> SteeringInputs:
+        frame = inputs.frame
+        return SteeringInputs(
+            arrow=inputs.arrow,
+            direction=inputs.direction,
+            frame_sequence=frame.sequence,
+            frame_age_ms=frame.age_s(now_s) * 1000.0,
+            now_s=now_s,
+            focus_ok=self._focus_ok,
+            viewport_ok=frame.geometry.valid,
+            processed_fps=self._processed_fps,
+            # The pointer only matters while it *is* the actuator. Holding an
+            # arrow key does not drag anything out of the window, so a pointer
+            # parked on the dashboard is not a fault there.
+            cursor_safe=(
+                True if self._follower.backend is TurnBackend.ARROW_KEYS else self._cursor_safe
+            ),
+            geometry_revision=self._geometry_revision,
+            profile_revision=self._profile_revision,
+        )
+
     def _steer(
         self, inputs: NavigationInputs, *, generation: int, now_s: float
     ) -> NavigationDecision:
         """Hand the frame to the follower and translate its answer.
 
-        The follower decides; this only turns its decision into the one command
-        type the input authority accepts. Splitting them means the control law
-        can be exercised with no authority in sight, which is what the
-        deterministic steering tests do.
+        The follower decides; this only turns its decision into the level the
+        input authority accepts. Splitting them means the control law can be
+        exercised with no authority in sight, which is what the deterministic
+        steering tests do.
         """
-        frame = inputs.frame
-        decision = self._follower.update(
-            SteeringInputs(
-                arrow=inputs.arrow,
-                direction=inputs.direction,
-                frame_sequence=frame.sequence,
-                frame_age_ms=frame.age_s(now_s) * 1000.0,
-                now_s=now_s,
-                focus_ok=self._focus_ok,
-                viewport_ok=frame.geometry.valid,
-                processed_fps=self._processed_fps,
-                # The pointer only matters while it *is* the actuator. Holding
-                # an arrow key does not drag anything out of the window, so a
-                # pointer parked on the dashboard is not a fault there.
-                cursor_safe=(
-                    True
-                    if self._follower.backend is TurnBackend.ARROW_KEYS
-                    else self._cursor_safe
-                ),
-                geometry_revision=self._geometry_revision,
-                profile_revision=self._profile_revision,
-            )
-        )
+        decision = self._follower.update(self._steering_inputs(inputs, now_s))
         if decision.lost_target:
-            return self._reacquire(inputs, now_s, decision.reason)
+            return self._lost(inputs, now_s, decision.reason)
         if decision.release:
             return self._release(_CONTROL_TO_PHASE[decision.state], decision.reason)
-        if not decision.moves:
-            # A frame that authorized nothing. The existing lease is left to
-            # expire rather than renewed, because renewing it would be reusing
-            # this frame's evidence for a second decision.
-            self._phase = _CONTROL_TO_PHASE[decision.state]
-            return NavigationDecision(self._phase, None, decision.reason)
 
-        self._phase = _CONTROL_TO_PHASE[decision.state]
-        return NavigationDecision(
-            self._phase,
-            self._command(
+        movement = _movement_from(decision)
+        phase = _CONTROL_TO_PHASE[decision.state]
+        self._phase = phase
+        # A hold restates a level; it never mints a command. The frame that
+        # would justify one has already authorized a command, and issuing a
+        # second from it is exactly the lease renewal this forbids.
+        command = (
+            None
+            if movement.idle or decision.held
+            else self._command(
                 generation,
-                frame,
+                inputs.frame,
                 now_s,
-                forward=decision.forward,
-                lateral=0,
-                jump=False,
-                plan=decision.plan,
+                movement=movement,
                 reason=decision.reason,
                 kind=decision.kind,
-            ),
-            "steering",
+            )
+        )
+        return self._decision(
+            phase,
+            command,
+            decision.reason,
+            movement=movement,
+            now_s=now_s,
+            heading=decision.heading,
+            verdict=None,
         )
 
-    def _reacquire(
-        self, inputs: NavigationInputs, now_s: float, reason: str
-    ) -> NavigationDecision:
-        """The arrow has been gone past its whole grace. Do something bounded.
+    def _lost(self, inputs: NavigationInputs, now_s: float, reason: str) -> NavigationDecision:
+        """The arrow is gone past the whole search budget. Stop, and say so.
 
-        Standing in REACQUIRE forever with nothing on screen explaining it is
-        the state this exists to make unreachable. The recovery ladder is
-        already the bounded "try something, then give up" machine - its second
-        rung is literally *waiting for a fresh view of the arrow* - so this
-        starts one rather than inventing a second maneuver vocabulary.
-
-        Without a measured locomotion baseline the ladder cannot tell "stuck"
-        from "slow", so it is not started; the run ends instead, with the
-        reason, rather than pretending to recover.
+        This used to start a recovery episode, on the theory that the ladder's
+        second rung was "wait for a fresh view of the arrow". It no longer is:
+        the ladder is a set of obstacle maneuvers, and driving into one because
+        the *arrow* is missing would answer the wrong question. The controller
+        has already searched for as long as its budget allows, so what is left
+        is to end the run and name the reason.
         """
-        if self._recovery.active:
-            return self._release(NavigationPhase.REACQUIRE, reason)
-        if not self._capabilities.recovery_enabled:
-            return self._release(NavigationPhase.ABANDONED, reason)
-        self._recovery.begin(
-            now_s,
-            side=choose_detour_side(error_deg=None, motion=inputs.motion),
-            error_deg=None,
+        del inputs
+        del now_s
+        self._escalation = reason
+        return self._release(NavigationPhase.ABANDONED, reason)
+
+    # -- assembling a decision ---------------------------------------------
+    def _decision(
+        self,
+        phase: NavigationPhase,
+        command: NavigationCommand | None,
+        reason: str,
+        *,
+        movement: DesiredMovement,
+        now_s: float,
+        heading: Any = None,
+        verdict: Any = None,
+        recovery: RecoveryStep | None = None,
+        release: bool = False,
+    ) -> NavigationDecision:
+        self._last_movement = movement
+        return NavigationDecision(
+            phase,
+            command,
+            reason,
+            release=release,
+            recovery=recovery,
+            movement=movement,
+            telemetry=self._telemetry(
+                phase, movement, reason, now_s, heading=heading, verdict=verdict
+            ),
         )
-        return self._release(NavigationPhase.REACQUIRE, reason)
+
+    def _telemetry(
+        self,
+        phase: NavigationPhase,
+        movement: DesiredMovement,
+        reason: str,
+        now_s: float,
+        *,
+        heading: Any,
+        verdict: Any,
+    ) -> PursuitTelemetry:
+        """One flat record of what this tick knew. Emitted every frame, logged
+        only when it changes."""
+        ladder = self._recovery
+        rung = ladder.rung if ladder.active else None
+        observation = getattr(verdict, "observation", None)
+        return PursuitTelemetry(
+            state=_PHASE_TO_CONTROL.get(phase, ControlState.ACQUIRE),
+            phase=phase,
+            held_keys=tuple(_glyph(name) for name in self._held_keys),
+            wanted_keys=tuple(sorted(key.value.upper() for key in movement.keys)),
+            reason=reason,
+            track_id=self._follower.track_id,
+            arrow_age_ms=(
+                None if heading is None else float(getattr(heading, "age_s", 0.0)) * 1000.0
+            ),
+            error_deg=None if heading is None else float(heading.error_deg),
+            raw_error_deg=None if heading is None else float(heading.raw_deg),
+            heading_rate_deg_s=0.0 if heading is None else float(heading.rate_deg_s),
+            heading_confidence=0.0 if heading is None else float(heading.confidence),
+            heading_spread_deg=0.0 if heading is None else float(heading.spread_deg),
+            speed_norm=(
+                None if observation is None else _optional_float(observation.forward_speed_norm)
+            ),
+            baseline_norm=self._progress.baseline.min_forward_speed_norm,
+            progress_ratio=self._progress.ratio,
+            stall_ms=self._progress.stall_ms(now_s),
+            forward_held_ms=self._forward_held_ms,
+            search_elapsed_ms=self._follower.search_elapsed_s(now_s) * 1000.0,
+            recovery_rung="" if rung is None else rung.name,
+            recovery_side=ladder.side if ladder.active else 0,
+            recovery_jumps=ladder.jumps,
+            recovery_elapsed_ms=ladder.elapsed_ms(now_s),
+            recovery_input_ms=ladder.input_ms,
+            escalation=self._escalation,
+            sectors=tuple(
+                (sector.centre_deg, sector.cost) for sector in self._terrain.sectors(now_s)
+            ),
+        )
 
     def _release(self, phase: NavigationPhase, reason: str) -> NavigationDecision:
+        """Let go, and forget. Safety, terminal states, and world changes only."""
         self._phase = phase
         self._follower.reset()
-        terminal = (
-            NavigationPhase.ARRIVED,
-            NavigationPhase.ABANDONED,
-            NavigationPhase.FAILED,
+        if phase.terminal:
+            self._recovery.resolve(reason)
+            self._terrain.reset()
+        return self._decision(
+            phase, None, reason, movement=IDLE, now_s=monotonic_s(), release=True
         )
-        if phase in terminal:
-            self._recovery.resolve()
-        return NavigationDecision(phase, None, reason, release=True)
 
     def _command(
         self,
@@ -891,10 +1333,7 @@ class Navigator:
         frame: CapturedFrame,
         now_s: float,
         *,
-        forward: int,
-        lateral: int,
-        jump: bool,
-        plan: TurnPlan,
+        movement: DesiredMovement,
         reason: str,
         kind: CommandKind = CommandKind.FOLLOW,
     ) -> NavigationCommand:
@@ -904,16 +1343,35 @@ class Navigator:
             generation=generation,
             source_frame_sequence=frame.sequence,
             source_captured_at_s=frame.captured_at_s,
-            forward_axis=forward,  # type: ignore[arg-type]
-            lateral_axis=lateral,  # type: ignore[arg-type]
-            jump=jump,
-            yaw_delta_px=plan.yaw_delta_px,
-            turn_axis=plan.turn_axis,  # type: ignore[arg-type]
+            forward_axis=movement.forward,  # type: ignore[arg-type]
+            lateral_axis=movement.strafe,  # type: ignore[arg-type]
+            jump=movement.jump,
+            yaw_delta_px=movement.yaw_px,
+            turn_axis=movement.turn,  # type: ignore[arg-type]
             issued_at_s=now_s,
-            valid_until_s=min(now_s + lease_s, max_valid_s),
+            valid_until_s=max(now_s, min(now_s + lease_s, max_valid_s)),
             reason=reason,
             kind=kind,
         )
+
+
+def _side_word(side: int) -> str:
+    return {-1: "left", 1: "right"}.get(side, "straight on")
+
+
+def _key_name(key: Any) -> str:
+    """The lower-case target name, from an :class:`InputKey` or a bare string."""
+    value = getattr(key, "value", key)
+    return str(value).lower()
+
+
+def _glyph(name: str) -> str:
+    """The single symbol the overlay and the log both use for one held key."""
+    return {"left": "<", "right": ">", "space": "JUMP"}.get(name, name.upper())
+
+
+def _optional_float(value: Any) -> float | None:
+    return None if value is None else float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -1390,6 +1848,7 @@ class PerceptionPipeline:
             plain_summary=describe_decision(inputs, decision),
             blockers=blockers,
             timing=result.timing,
+            pursuit=decision.telemetry,
         )
 
 
@@ -1483,6 +1942,12 @@ def _run_observer_loop(
                 if command_view.outcome is CommandOutcome.APPLIED:
                     applied += 1
 
+            # One typed record per frame; the sink writes a line only when
+            # something in it changed. Shared by Shadow and Live so the two
+            # cannot report the same run in different words.
+            if decision.telemetry is not None:
+                context.on_navigation(decision.telemetry)
+
             observation = pipeline.diagnostic(
                 frame,
                 result,
@@ -1559,11 +2024,19 @@ def make_shadow_worker(
             decision: NavigationDecision, envelope: Any, result: PerceptionResult
         ) -> CommandVisualization:
             del envelope, result
+            # Shadow has no actuator, so the navigator would otherwise never
+            # learn what "is held" - and the progress guard would abstain for
+            # the whole run. Feeding it the level Shadow *would* have applied
+            # keeps the observation path exercising the same code Live does,
+            # while the session it holds remains physically incapable of an edge.
+            navigator.note_held(
+                sorted(key.value for key in decision.movement.keys),
+                now_s=monotonic_s(),
+                yaw_posted_px=decision.movement.yaw_px,
+            )
             if decision.command is None or observer is None:
-                context.on_status(f"{decision.phase.name}: {decision.reason}")
                 return CommandVisualization.none(detail=decision.reason)
             observer.propose(decision.command)
-            context.on_status(f"WOULD_APPLY {decision.command.reason}")
             # A proposal, and physically incapable of being anything else: the
             # observer holds a NoInputSession with no route to a platform port.
             return CommandVisualization.for_shadow(decision.command)
@@ -1667,7 +2140,7 @@ def make_live_worker(
         ) -> CommandVisualization:
             now = monotonic_s()
             # Judge the frame we have *before* changing what is held: this
-            # frame was captured under the previous command, which is the only
+            # frame was captured under the previous level, which is the only
             # thing it can honestly report on.
             confirmed = witness.observe(
                 MotionSample(
@@ -1683,37 +2156,52 @@ def make_live_worker(
                 # "holding W against a wall" and "no motion estimate" are
                 # different facts and the dashboard must not merge them.
                 context.on_movement(displacement_norm=float(sample.forward_speed_norm or 0.0))
-            if decision.release or decision.command is None:
+
+            if decision.release:
                 # An ordinary stop. It lifts the keys and leaves the session
                 # able to press again on the very next frame.
                 session.stop_moving(decision.reason)
-                navigator.note_released(now_s=now)
+                _feed_back(now)
                 witness.note_command(forward_held=False, at_s=now)
                 context.on_movement(blocked_reason=decision.reason)
                 return CommandVisualization.released(detail=decision.reason, live=True)
 
-            # One call, level-triggered: the actuator works out the edges.
-            moved = session.apply_command(decision.command)
+            # One call, level-triggered: the actuator works out the edges. This
+            # runs on *every* non-releasing tick, including the ones that carry
+            # no new command - a repeated frame, or one slightly past its
+            # freshness budget - because restating the level is what keeps a
+            # steady walk to a single down edge instead of a rattle.
+            moved = session.move(decision.movement)
             held_forward = InputKey.W in moved.held
-            # Built from what the actuator reports it is *physically holding*,
-            # never from the command that was requested.
-            #
-            # motion_confirmed answers a different question from "is the key
-            # down", and the two are only the same when nothing is wrong. An
-            # estimator that abstains reports None, which is not the claim
-            # "nothing moved": holding W against a wall and having no motion
-            # estimate are different facts.
-            view = CommandVisualization.for_movement(
-                decision.command, moved, motion_confirmed=confirmed
+
+            # THE FEEDBACK WIRE. What the actuator reports it is *physically
+            # holding* goes straight back into the navigator, which is what
+            # feeds the applied-forward ledger, the locomotion baseline and the
+            # stuck detector. Without this line the ledger is empty for the
+            # whole session: held duration is always zero, no baseline is ever
+            # sampled from real walking, and obstacle recovery is silently
+            # disabled while looking, from the outside, like working code.
+            _feed_back(now, moved)
+
+            # Built from what the actuator reports it is holding, never from
+            # the level that was requested. motion_confirmed answers a
+            # different question from "is the key down", and the two are only
+            # the same when nothing is wrong.
+            view = (
+                CommandVisualization.for_movement(
+                    decision.command, moved, motion_confirmed=confirmed
+                )
+                if decision.command is not None
+                else CommandVisualization.for_held(moved, motion_confirmed=confirmed)
             )
             witness.note_command(forward_held=held_forward, at_s=now)
             if moved.block.blocking:
-                navigator.note_released(now_s=now)
                 context.on_movement(blocked_reason=moved.block.value)
                 return view
             context.on_movement(blocked_reason="")
             # The baseline is learned from frames where forward was genuinely
-            # down - the actuator's answer, never the request.
+            # down - the actuator's answer, never the request - and its held
+            # duration now comes from a ledger that is actually being written.
             observed = baseline.observe(
                 result.inputs.motion,
                 forward_applied=held_forward,
@@ -1729,6 +2217,21 @@ def make_live_worker(
                     "obstacle detection is now active"
                 )
             return view
+
+        def _feed_back(now_s: float, moved: MovementOutcome | None = None) -> None:
+            """Tell the navigator what the keyboard actually looks like."""
+            outcome = moved if moved is not None else _current_outcome()
+            navigator.note_held(
+                outcome.held,
+                now_s=now_s,
+                yaw_posted_px=outcome.yaw_posted_px,
+                held_ms=outcome.held_ms,
+            )
+
+        def _current_outcome() -> MovementOutcome:
+            """The actuator's own ledger, for the paths that pressed nothing."""
+            actuator = session.movement
+            return MovementOutcome(held=actuator.held, backend=actuator.backend)
 
         try:
             processed, applied, kind, detail = _run_observer_loop(

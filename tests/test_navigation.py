@@ -45,13 +45,12 @@ from prospector_engine.motion import (
     estimate_phase_correlation,
 )
 from prospector_engine.navigation import (
+    RECOVERY_LADDER,
     NavigationCapabilities,
     NavigationInputs,
     Navigator,
-    RecoveryAction,
     RecoveryBudget,
     RecoveryLadder,
-    choose_detour_side,
 )
 from prospector_engine.steering import ArrowFollowerController, ControlFingerprint
 from prospector_engine.turning import TurnBackend, TurnResponse
@@ -176,9 +175,17 @@ def test_a_measured_run_may_steer_without_any_frozen_gate() -> None:
     assert "mouse yaw" in READY.describe()
 
 
-def test_recovery_needs_a_measured_walking_speed_as_well() -> None:
-    """Telling "stuck" from "slow" needs a baseline; steering does not."""
-    steering_only = replace(
+def test_maneuvering_is_permitted_by_capability_and_evidenced_by_the_guard() -> None:
+    """Two questions that used to be one, and were answered in the wrong place.
+
+    The capability used to demand a matured locomotion baseline before recovery
+    was allowed at all. That baseline only arrives after a dozen clean frames of
+    unobstructed walking, so a route that met a bush in its first few seconds
+    had recovery switched off and just stopped. Permission lives here; whether
+    there is enough evidence *right now* is the progress guard's question, and
+    it abstains honestly when there is not.
+    """
+    no_baseline = replace(
         READY,
         motion_baseline=LocomotionBaseline(
             condition_id="uncalibrated",
@@ -187,8 +194,9 @@ def test_recovery_needs_a_measured_walking_speed_as_well() -> None:
             provenance=ContactConfig().provenance,
         ),
     )
-    assert steering_only.steering_enabled
-    assert not steering_only.recovery_enabled
+    assert no_baseline.steering_enabled
+    assert no_baseline.recovery_enabled, "an early bush had no recovery at all"
+    assert not no_baseline.progress_enabled, "a frozen baseline must not be claimed"
 
 
 def test_a_pending_turn_response_is_not_a_capability() -> None:
@@ -229,34 +237,83 @@ def test_every_recovery_episode_terminates() -> None:
     assert steps, "the ladder must actually produce maneuvers"
 
 
-def test_the_ladder_starts_by_letting_go_and_looking_again() -> None:
-    """Two free rungs before any maneuver: most snags are not obstacles."""
+def test_the_ladder_opens_with_a_running_jump_rather_than_letting_go() -> None:
+    """The maneuver a player would actually make.
+
+    The ladder this replaces opened with two rungs that released the controls
+    and waited - 700 ms of standing still before anything was attempted - and
+    then offered a stationary strafe. Nobody gets past a bush that way.
+    """
     ladder = RecoveryLadder()
     ladder.begin(0.0, side=1, error_deg=20.0)
-    actions = [step.action for step in _run_ladder(ladder)]
+    steps = _run_ladder(ladder)
 
-    assert actions[0] is RecoveryAction.RELEASE
-    assert RecoveryAction.REACQUIRE in actions[:20]
-    first_maneuver = next(a for a in actions if a.emits_input)
-    assert first_maneuver is RecoveryAction.STRAFE
+    assert steps[0].rung.name == "R0"
+    assert steps[0].forward == 1, "the first thing it did was stop walking"
+    assert any(step.jump and step.forward == 1 for step in steps[:5]), (
+        "the running jump never had W and SPACE down together"
+    )
+
+
+def test_every_rung_that_moves_keeps_walking_or_deliberately_backs_out() -> None:
+    ladder = RecoveryLadder()
+    ladder.begin(0.0, side=1, error_deg=20.0)
+
+    for step in _run_ladder(ladder):
+        if step.forward < 0:
+            assert step.rung.name == "R3", "only the back-out rung may reverse"
+        else:
+            assert step.forward == 1, f"{step.rung.name} stood still"
+
+
+def test_a_forward_arc_holds_a_strafe_and_a_walk_at_once() -> None:
+    ladder = RecoveryLadder()
+    ladder.begin(0.0, side=-1, error_deg=20.0)
+
+    arcs = [s for s in _run_ladder(ladder) if s.forward == 1 and s.strafe != 0]
+
+    assert arcs, "no rung ever arced around anything"
+    assert any(s.turn != 0 for s in arcs), "no arc used the camera as well"
+    assert all(s.strafe in (-1, 1) for s in arcs)
 
 
 def test_the_chosen_side_is_sticky_for_the_episode() -> None:
     """Choosing left then right on alternating frames is a wiggle, not a detour."""
     ladder = RecoveryLadder()
     ladder.begin(0.0, side=1, error_deg=20.0)
-    sides = {step.side for step in _run_ladder(ladder) if not step.level.flips_side}
 
-    assert sides == {1}
+    assert {step.side for step in _run_ladder(ladder)} == {1}
 
 
-def test_the_opposite_side_is_tried_exactly_once() -> None:
+def test_the_opposite_side_is_reached_by_a_rung_not_by_changing_the_side() -> None:
+    """R2 is *about* trying the other way; the episode's own side is untouched."""
     ladder = RecoveryLadder()
     ladder.begin(0.0, side=1, error_deg=20.0)
-    flips = [step for step in _run_ladder(ladder) if step.level.flips_side]
+    strafes = {step.strafe for step in _run_ladder(ladder) if step.strafe}
 
-    assert flips, "the ladder must eventually try the other side"
-    assert {step.side for step in flips} == {-1}
+    assert strafes == {-1, 1}, "the ladder only ever tried one direction"
+    assert ladder.side == 1
+
+
+def test_a_side_flip_is_allowed_once_and_only_once() -> None:
+    ladder = RecoveryLadder(RecoveryBudget(side_flips_allowed=1))
+    ladder.begin(0.0, side=1, error_deg=0.0)
+
+    assert ladder.flip_side("the sector memory says otherwise")
+    assert ladder.side == -1
+    assert not ladder.flip_side("again"), "a second flip is a wiggle"
+
+
+def test_jumps_are_capped_and_never_fire_on_consecutive_frames() -> None:
+    """A SPACE press every frame is a held space bar with extra steps, and the
+    character never leaves the ground."""
+    ladder = RecoveryLadder(RecoveryBudget(max_jumps=2, jump_cooldown_ms=700))
+    ladder.begin(0.0, side=1, error_deg=0.0)
+
+    jumps = [step for step in _run_ladder(ladder, ticks=2000, dt=0.01) if step.jump]
+
+    assert len(jumps) <= 2
+    assert ladder.jumps <= 2
 
 
 def test_a_recovery_episode_has_a_total_time_and_input_cap() -> None:
@@ -270,24 +327,54 @@ def test_a_recovery_episode_has_a_total_time_and_input_cap() -> None:
     fresh.begin(0.0, side=1, error_deg=0.0)
     _run_ladder(fresh, ticks=200)
     assert fresh.exhausted
+    assert "input budget" in fresh.outcome
 
 
-def test_success_needs_measured_progress_and_a_heading_that_did_not_rot() -> None:
-    ladder = RecoveryLadder()
+def test_reversing_is_capped_separately_from_everything_else() -> None:
+    ladder = RecoveryLadder(RecoveryBudget(max_reverse_ms=50))
+    ladder.begin(0.0, side=1, error_deg=0.0)
+    _run_ladder(ladder, ticks=2000, dt=0.01)
+
+    assert ladder.exhausted
+    assert "reversed" in ladder.outcome or ladder.outcome
+
+
+def test_success_needs_several_fresh_frames_not_one_lucky_one() -> None:
+    """One frame of movement during a maneuver is what a maneuver produces -
+    the character sliding along the obstacle - and calling that success is how
+    a ladder resolves straight back into the same wall."""
+    ladder = RecoveryLadder(RecoveryBudget(restore_frames=3))
     ladder.begin(0.0, side=1, error_deg=10.0)
 
-    assert not ladder.succeeded(progressing=False, error_deg=5.0)
-    assert ladder.succeeded(progressing=True, error_deg=5.0)
-    assert not ladder.succeeded(progressing=True, error_deg=170.0)
+    assert not ladder.note_progress(progressing=True, error_deg=8.0)
+    assert not ladder.note_progress(progressing=True, error_deg=8.0)
+    assert ladder.note_progress(progressing=True, error_deg=8.0)
 
 
-def test_the_detour_side_follows_local_evidence_not_a_coin_flip() -> None:
-    sliding_right = _motion(0.0)
-    sliding_right = replace(sliding_right, lateral_speed_norm=0.2)
-    assert choose_detour_side(error_deg=-30.0, motion=sliding_right) == 1
-    assert choose_detour_side(error_deg=-30.0, motion=None) == -1
-    assert choose_detour_side(error_deg=30.0, motion=None) == 1
-    assert choose_detour_side(error_deg=None, motion=None) in (-1, 1)
+def test_a_single_stalled_frame_restarts_the_count() -> None:
+    ladder = RecoveryLadder(RecoveryBudget(restore_frames=3))
+    ladder.begin(0.0, side=1, error_deg=10.0)
+    ladder.note_progress(progressing=True, error_deg=8.0)
+    ladder.note_progress(progressing=False, error_deg=8.0)
+
+    assert not ladder.note_progress(progressing=True, error_deg=8.0)
+
+
+def test_movement_that_threw_the_heading_away_is_not_success() -> None:
+    ladder = RecoveryLadder(RecoveryBudget(restore_frames=1))
+    ladder.begin(0.0, side=1, error_deg=10.0)
+
+    assert not ladder.note_progress(progressing=True, error_deg=170.0)
+    assert ladder.note_progress(progressing=True, error_deg=20.0)
+
+
+def test_the_ladder_is_finite_and_every_rung_is_bounded() -> None:
+    assert RECOVERY_LADDER, "there is no ladder"
+    for rung in RECOVERY_LADDER:
+        assert rung.moves, f"{rung.name} has no maneuver"
+        assert rung.duration_ms > 0
+        assert all(move.duration_ms > 0 for move in rung.moves)
+        assert rung.max_attempts >= 1
 
 
 @settings(max_examples=50, deadline=None)
@@ -296,7 +383,7 @@ def test_recovery_always_reaches_a_terminal_state(ticks: int, dt: float) -> None
     ladder = RecoveryLadder()
     ladder.begin(0.0, side=1, error_deg=0.0)
     _run_ladder(ladder, ticks=ticks, dt=dt)
-    assert ladder.exhausted or ladder.level is not None
+    assert ladder.exhausted or ladder.rung is not None
 
 
 # ---------------------------------------------------------------------------
@@ -507,12 +594,35 @@ def test_a_stale_frame_releases_before_anything_else_is_considered() -> None:
     assert "stale-frame" in decision.reason
 
 
-def test_an_abstained_arrow_releases() -> None:
+def test_an_abstained_arrow_from_a_standstill_looks_rather_than_releasing() -> None:
+    """It has never had a heading, so there is nothing to coast on - but there
+    is also nothing to release, and the wait is bounded."""
     navigator = _navigator()
+
     decision = navigator.decide(_inputs(arrow_valid=False), generation=1, now_s=0.0)
 
-    assert decision.release
-    assert decision.phase is NavigationPhase.REACQUIRE
+    assert decision.phase is NavigationPhase.ACQUIRE
+    assert decision.movement.idle
+    assert not decision.release
+
+
+def test_an_arrow_that_never_appears_ends_the_route_rather_than_waiting() -> None:
+    navigator = _navigator()
+
+    final = None
+    for index in range(1, 1500):
+        now = index * 0.016
+        final = navigator.decide(
+            _inputs(arrow_valid=False, sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        if final.phase is NavigationPhase.ABANDONED:
+            break
+
+    assert final is not None
+    assert final.phase is NavigationPhase.ABANDONED, "it waited forever with nothing on screen"
+    assert final.release and final.movement.idle
 
 
 def test_a_command_lease_never_outlives_its_evidence() -> None:
@@ -555,35 +665,50 @@ def test_one_arrival_candidate_does_not_end_the_route() -> None:
     assert navigator.arrival_latches == 0
 
 
-def test_an_aligned_arrow_walks_only_after_sustained_alignment() -> None:
-    """W is never taken on the strength of one frame inside the cone."""
+def test_an_arrow_in_view_is_walked_towards_at_once() -> None:
+    """The controller this replaces wanted three consecutive frames inside an
+    eight-degree cone before it would press W. That wait is where the stutter
+    came from, and it bought nothing: a wrong heading is corrected while
+    walking."""
     navigator = _navigator()
-    decisions = [
-        navigator.decide(
-            _inputs(error_deg=0.5, sequence=index + 1, captured_at_s=index * 0.02),
-            generation=1,
-            now_s=index * 0.02,
-        )
-        for index in range(5)
-    ]
 
-    assert all(d.command is None or d.command.forward_axis == 0 for d in decisions[:2])
-    final = decisions[-1]
-    assert final.command is not None
-    assert final.command.forward_axis == 1
-    assert final.command.kind is CommandKind.FOLLOW
-    assert final.phase is NavigationPhase.FOLLOW
+    decision = navigator.decide(_inputs(error_deg=0.5), generation=1, now_s=0.0)
+
+    assert decision.command is not None
+    assert decision.command.forward_axis == 1
+    assert decision.command.kind is CommandKind.FOLLOW
+    assert decision.phase is NavigationPhase.FOLLOW
 
 
-def test_a_misaligned_arrow_turns_on_the_spot() -> None:
+def test_a_moderate_error_is_corrected_while_still_walking() -> None:
     navigator = _navigator()
+
     decision = navigator.decide(_inputs(error_deg=45.0), generation=1, now_s=0.0)
 
     assert decision.command is not None
-    assert decision.command.forward_axis == 0, "alignment is stationary"
-    assert decision.command.kind is CommandKind.ALIGN
-    assert decision.command.yaw_delta_px > 0
-    assert decision.phase is NavigationPhase.ALIGN
+    assert decision.command.forward_axis == 1, "it stopped walking to turn"
+    assert decision.command.kind is CommandKind.FOLLOW
+    assert decision.command.yaw_delta_px > 0, "it walked without correcting"
+    assert decision.phase is NavigationPhase.CORRECT
+
+
+def test_only_a_sustained_severe_error_stops_the_character() -> None:
+    navigator = _navigator()
+
+    phases = []
+    for index in range(1, 30):
+        now = index * 0.02
+        decision = navigator.decide(
+            _inputs(error_deg=165.0, sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        phases.append(decision.phase)
+        if decision.command is not None and decision.command.forward_axis == 0:
+            assert decision.command.kind is CommandKind.ALIGN
+
+    assert phases[0] is not NavigationPhase.ALIGN, "one frame stopped it dead"
+    assert NavigationPhase.ALIGN in phases, "a target behind us never earned a pivot"
 
 
 def test_an_alignment_command_can_never_ask_for_forward_motion() -> None:
@@ -678,32 +803,58 @@ def test_a_release_closes_the_forward_interval() -> None:
     assert navigator.progress.ledger.held_continuously_for(0.6) == 0.0
 
 
-def test_sustained_low_progress_while_walking_releases_and_enters_contact() -> None:
+def _stalled_route(navigator: Navigator, *, ticks: int = 400, dt: float = 0.05) -> list[Any]:
+    """Walk into something that never gives, and return every decision."""
+    decisions: list[Any] = []
+    navigator.note_applied(_applied("w"), now_s=0.0)
+    for index in range(1, ticks + 1):
+        now = index * dt
+        decision = navigator.decide(
+            _inputs(error_deg=0.5, motion=_motion(0.0), sequence=index, captured_at_s=now),
+            generation=1,
+            now_s=now,
+        )
+        decisions.append(decision)
+        # The feedback the live worker supplies, from the actuator's ledger.
+        navigator.note_held(sorted(key.value for key in decision.movement.keys), now_s=now)
+        if decision.phase in (NavigationPhase.ABANDONED, NavigationPhase.FAILED):
+            break
+    return decisions
+
+
+def test_confirmed_contact_starts_a_maneuver_rather_than_a_stop() -> None:
+    """The whole ladder used to open with 700 ms of standing still. Meeting a
+    bush now costs a running jump, and W never goes up to pay for it."""
     guard = ProgressGuard(
         WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
     )
     navigator = _navigator(progress=guard)
 
-    navigator.note_applied(_applied("w"), now_s=0.0)
-    decision = None
-    for index in range(1, 12):
-        now = index * 0.1
-        decision = navigator.decide(
-            _inputs(
-                error_deg=0.5,
-                motion=_motion(0.0),
-                sequence=index,
-                captured_at_s=now,
-            ),
-            generation=1,
-            now_s=now,
-        )
-        if decision.phase is NavigationPhase.CONTACT:
-            break
+    decisions = _stalled_route(navigator, ticks=40)
+    recovering = [d for d in decisions if d.phase is NavigationPhase.RECOVERY]
 
-    assert decision is not None
-    assert decision.phase is NavigationPhase.CONTACT
-    assert decision.release, "forward is dropped before anything is decided about it"
+    assert recovering, "walking into a wall never started a recovery"
+    first = recovering[0]
+    assert not first.release, "entering recovery went through the release floor"
+    assert first.command is not None and first.command.forward_axis == 1
+    assert first.recovery is not None and first.recovery.rung.name == "R0"
+
+
+def test_the_running_jump_holds_forward_and_space_at_the_same_time() -> None:
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+
+    decisions = _stalled_route(navigator, ticks=60)
+    jumps = [
+        d
+        for d in decisions
+        if d.command is not None and d.command.jump and d.phase is NavigationPhase.RECOVERY
+    ]
+
+    assert jumps, "no rung ever jumped"
+    assert all(d.command.forward_axis == 1 for d in jumps), "it jumped from a standstill"
 
 
 def test_contact_without_a_measured_baseline_stops_rather_than_improvising() -> None:
@@ -758,36 +909,72 @@ def test_recovery_emits_real_maneuvers_and_then_abandons() -> None:
     assert terminal.release and terminal.command is None
 
 
-def test_recovery_never_oscillates_between_sides_within_an_episode() -> None:
+def test_recovery_does_not_wiggle_between_sides() -> None:
+    """The ladder changes side twice by design - once for R2's opposite hop and
+    once back - and never more. Alternating every frame is a wiggle."""
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+
+    lateral = [
+        d.command.lateral_axis
+        for d in _stalled_route(navigator)
+        if d.command is not None and d.command.lateral_axis
+    ]
+
+    flips = sum(1 for a, b in pairwise(lateral) if a != b)
+    assert lateral, "recovery never stepped to either side"
+    assert flips <= 3, f"the detour side changed {flips} times"
+
+
+def test_a_permanent_wall_abandons_inside_its_budget_and_holds_nothing() -> None:
+    guard = ProgressGuard(
+        WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
+    )
+    navigator = _navigator(progress=guard)
+
+    decisions = _stalled_route(navigator)
+    final = decisions[-1]
+
+    assert final.phase is NavigationPhase.ABANDONED, "recovery looped instead of abandoning"
+    assert final.release and final.command is None
+    assert final.movement.idle, "a terminal decision still asked for a key"
+    assert navigator.recovery.elapsed_ms(999.0) == 0.0, "the episode was left open"
+
+
+def test_restored_movement_returns_straight_to_pursuit() -> None:
+    """Not through a stop, and not through a fresh stationary acquisition:
+    that is what made every obstacle cost a restart."""
     guard = ProgressGuard(
         WALKING, ProgressConfig(suspect_after_ms=100, min_applied_forward_ms=50)
     )
     navigator = _navigator(progress=guard)
     navigator.note_applied(_applied("w"), now_s=0.0)
 
-    lateral: list[int] = []
-    for index in range(1, 400):
+    moving = _motion(0.0)
+    resumed = None
+    for index in range(1, 200):
         now = index * 0.05
         decision = navigator.decide(
-            _inputs(error_deg=0.5, motion=_motion(0.0), sequence=index, captured_at_s=now),
+            _inputs(error_deg=0.5, motion=moving, sequence=index, captured_at_s=now),
             generation=1,
             now_s=now,
         )
-        if decision.command is not None and decision.command.lateral_axis:
-            lateral.append(decision.command.lateral_axis)
-        if decision.phase is NavigationPhase.ABANDONED:
+        navigator.note_held(sorted(key.value for key in decision.movement.keys), now_s=now)
+        if decision.phase is NavigationPhase.RECOVERY:
+            # The maneuver worked: the world starts moving again.
+            moving = _motion(0.5)
+        elif moving.forward_speed_norm and decision.phase in (
+            NavigationPhase.FOLLOW,
+            NavigationPhase.CORRECT,
+        ):
+            resumed = decision
             break
 
-    flips = sum(1 for a, b in pairwise(lateral) if a != b)
-    assert flips <= 1, f"the detour side flipped {flips} times"
-
-
-def test_a_terminal_state_holds_no_inputs() -> None:
-    navigator = _navigator()
-    decision = navigator.decide(
-        _inputs(arrow_valid=False, error_deg=None), generation=1, now_s=0.0
-    )
-    assert decision.command is None and decision.release
+    assert resumed is not None, "recovery never handed control back to pursuit"
+    assert resumed.command is not None and resumed.command.forward_axis == 1
+    assert not navigator.recovery.active
 
 
 # ---------------------------------------------------------------------------
