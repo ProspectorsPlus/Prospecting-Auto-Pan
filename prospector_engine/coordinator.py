@@ -1361,9 +1361,19 @@ class RuntimeCoordinator:
         """Whether the pointer is inside the safe region of the client.
 
         A pointer drifting to the edge while a yaw drag is in flight is how a
-        drag ends up outside the window entirely. Unknown is *unsafe*: the
-        follower releases and the pointer is recentred before anything resumes.
-        A backend that does not use the pointer ignores this (see
+        drag ends up outside the window entirely, so a pointer we can *see* is
+        outside the safe region is unsafe and the follower releases.
+
+        Unknown is **not** unsafe, and that is a correction (D-067).
+        ``cursor_client_px`` returns ``None`` both for a failed read and for a
+        pointer outside the client rect - and outside the client rect is the
+        normal case, because the user clicked Start Navigator on the dashboard
+        and left the pointer there. Treating that as unsafe released on every
+        frame of a mouse-yaw run and the character never moved. It is the same
+        asymmetry the focus probe had: refusing on "I do not know" makes a
+        macro that cannot move.
+
+        A backend that does not use the pointer ignores this entirely (see
         ``Navigator._steer``).
         """
         probe = self._cursor_probe
@@ -1372,9 +1382,9 @@ class RuntimeCoordinator:
         try:
             point = probe()
         except Exception:
-            return False
+            return True
         if point is None:
-            return False
+            return True
         width, height = self._guard.geometry.canonical_px
         margin = (1.0 - self.CURSOR_SAFE_FRACTION) / 2.0
         return width * margin <= point[0] <= width * (

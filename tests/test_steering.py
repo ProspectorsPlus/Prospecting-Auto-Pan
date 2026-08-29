@@ -675,3 +675,54 @@ def test_a_merely_uncertain_direction_still_steers_but_smaller() -> None:
 
     assert unsure.plan.moves and not unsure.release
     assert abs(unsure.plan.expected_deg) < abs(confident.plan.expected_deg)
+
+
+# ---------------------------------------------------------------------------
+# Gates that fired on frame one of every healthy run
+# ---------------------------------------------------------------------------
+
+
+def test_an_unmeasured_frame_rate_does_not_stop_the_run() -> None:
+    """Zero is "not measured yet", not "the pipeline is dead".
+
+    Entering Live resets the processed-rate window, and the rate counter reads
+    0.0 until it holds two stamps - while the observer loop reads the rate
+    *before* it ticks the counter. So the first two frames of every healthy
+    Live run, on any machine, said "only 0 processed fps; Live needs 30" and
+    released, before the pipeline could prove it was running at 56 (D-067).
+    """
+    controller = _controller()
+
+    decision = controller.update(_inputs(2.0, sequence=1, processed_fps=0.0))
+
+    assert not decision.release, f"an unmeasured frame rate stopped the run: {decision.reason}"
+
+
+def test_a_genuinely_slow_pipeline_still_stops_the_run() -> None:
+    controller = _controller()
+
+    decision = controller.update(_inputs(2.0, sequence=1, processed_fps=11.0))
+
+    assert decision.release
+    assert "processed fps" in decision.reason
+
+
+def test_an_unknown_pointer_position_does_not_stop_the_run() -> None:
+    """``cursor_client_px`` returns None for a failed read *and* for a pointer
+    outside the client - and outside the client is the normal case, because the
+    user clicked Start Navigator on the dashboard and left the pointer there.
+    Treating that as unsafe released on every frame of a mouse-yaw run."""
+    controller = _controller()
+
+    decision = controller.update(_inputs(2.0, sequence=1, cursor_safe=True))
+
+    assert not decision.release
+
+
+def test_a_pointer_known_to_be_outside_the_safe_region_still_stops_the_run() -> None:
+    controller = _controller()
+
+    decision = controller.update(_inputs(2.0, sequence=1, cursor_safe=False))
+
+    assert decision.release
+    assert "safe region" in decision.reason

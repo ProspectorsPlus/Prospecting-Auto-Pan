@@ -757,7 +757,12 @@ def test_the_cursor_probe_is_a_callable_not_a_port() -> None:
         ((200, 360), True),
         ((10, 360), False),
         ((640, 10), False),
-        (None, False),
+        # Unknown is *not* unsafe. ``cursor_client_px`` returns None both for a
+        # failed read and for a pointer outside the client rect, and outside
+        # the client rect is the normal case: the user clicked Start Navigator
+        # on the dashboard and left the pointer there. Treating that as unsafe
+        # released on every frame of a mouse-yaw run (D-067).
+        (None, True),
     ],
 )
 def test_the_safe_region_is_the_middle_of_the_client(
@@ -803,11 +808,23 @@ def test_the_safe_region_is_the_middle_of_the_client(
     assert coordinator._cursor_safe() is expected
 
 
-def test_a_probe_that_raises_is_unsafe_rather_than_fatal(
-    tmp_path: Any, monkeypatch: Any
-) -> None:
-    from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
-    from prospector_engine.coordinator import RuntimeCoordinator
+def test_a_probe_that_raises_is_not_treated_as_unsafe(tmp_path: Any, monkeypatch: Any) -> None:
+    """A window-list read that fails must not become a macro that cannot move.
+
+    It must also not crash the coordinator, which is the half of this that has
+    not changed.
+    """
+
+    def angry() -> Any:
+        raise OSError("CGWindowList failed")
+
+    from prospector_engine.capture import (
+        CaptureConfig,
+        CaptureService,
+        EvidenceRegistry,
+        ViewportGuard,
+    )
+    from prospector_engine.coordinator import CoordinatorConfig, RuntimeCoordinator
     from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
     from tests.fakes import FakeDeadmanClient, FakePlatformPort, VirtualClock, make_geometry
 
@@ -816,31 +833,29 @@ def test_a_probe_that_raises_is_unsafe_rather_than_fatal(
     guard = ViewportGuard(port)
     guard.connect()
     registry = EvidenceRegistry("cursor")
-    capture = CaptureService(guard, registry)
-
-    def boom() -> tuple[int, int] | None:
-        raise OSError("scripted")
-
-    coordinator = RuntimeCoordinator(
-        authority=InputAuthority(
-            port,
-            deadman=FakeDeadmanClient(),
-            health=HealthSources(
-                focus=port.focus_state,
-                client_rect=lambda: guard.geometry,
-                capture_age_s=capture.latest_age_s,
-            ),
-            config=AuthorityConfig(),
-            run_id="cursor",
+    capture = CaptureService(guard, registry, config=CaptureConfig())
+    authority = InputAuthority(
+        port,
+        deadman=FakeDeadmanClient(),
+        health=HealthSources(
+            focus=port.focus_state,
+            client_rect=lambda: guard.geometry,
+            capture_age_s=capture.latest_age_s,
         ),
+        config=AuthorityConfig(),
+        run_id="cursor",
+    )
+    coordinator = RuntimeCoordinator(
+        authority=authority,
         guard=guard,
         capture=capture,
         registry=registry,
         workers={},
-        cursor_probe=boom,
+        config=CoordinatorConfig(),
+        cursor_probe=angry,
     )
 
-    assert coordinator._cursor_safe() is False
+    assert coordinator._cursor_safe() is True
 
 
 def _events(harness: Harness) -> list[tuple[str, str]]:

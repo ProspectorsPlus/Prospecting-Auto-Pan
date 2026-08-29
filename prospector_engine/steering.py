@@ -434,15 +434,30 @@ class ArrowFollowerController:
             return self._release(
                 ControlState.REACQUIRE, f"evidence is {inputs.frame_age_ms:.0f} ms old"
             )
-        if inputs.processed_fps < limits.min_processed_fps:
+        # A rate of exactly zero is "not measured yet", not "the pipeline is
+        # dead". Entering Live resets the processed-rate window, and the rate
+        # counter reports 0.0 until it holds two stamps - while this loop reads
+        # the rate *before* it ticks the counter. So the first two frames of
+        # every healthy Live run, on any machine, said "only 0 processed fps;
+        # Live needs 30" and released. That released before the pipeline had a
+        # chance to prove it was running at 56 (D-067).
+        if 0.0 < inputs.processed_fps < limits.min_processed_fps:
             return self._release(
                 ControlState.SAFE_STOP,
                 f"only {inputs.processed_fps:.0f} processed fps; Live needs "
                 f"{limits.min_processed_fps}",
             )
-        if not inputs.cursor_safe:
+        if inputs.cursor_safe is False:
             # Release first, recentre second. The pointer leaving the safe
             # region while W is held is how a drag ends up outside the window.
+            #
+            # ``False`` only, never "unknown". ``cursor_client_px`` returns
+            # None for a pointer outside the client rect *and* for any failed
+            # read, and the pointer is outside the client rect in the normal
+            # case: the user clicked Start Navigator on the dashboard and left
+            # it there. Treating unknown as unsafe released on every frame of a
+            # mouse-yaw run, which is the same asymmetry the focus probe got
+            # wrong - see ``MovementActuator._blocking_condition``.
             return self._release(
                 ControlState.BLOCKED, "pointer left the safe region; recentring"
             )

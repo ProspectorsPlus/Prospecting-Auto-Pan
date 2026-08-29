@@ -1999,3 +1999,107 @@ for", the same shape D-060 recorded. `settle_cadence_for_live` now drives the
 **production** `CadenceGovernor.update` with healthy polls until it reports
 eligible, so the rigs satisfy the gate by measurement rather than skipping it.
 A test that wants the gate to fail simply does not call it.
+
+---
+
+## D-067 — 2026-08-29 — The movement path could not press a key, and was replaced
+
+**Plan text:** §4.3 makes `apply_navigation_command` the sole navigation input
+path, validating an authority-issued `EvidenceToken` before translating axes
+into bounded leases.
+
+**Decision:** deviate. That method and `_translate_navigation` are deleted. The
+navigation path is now `prospector_engine/movement.py` — a level-triggered
+actuator owned by the input authority, modelled on Prospector Lite's proven
+`input_lease` contract.
+
+**The measurement that came first.** The owner's report was that Lite works on
+this machine, a colleague's branch works on this machine, and this did not move
+at all. Posting an inert keycode through Treasure's *own* `platform_mac._post`,
+on that machine, with Roblox frontmost:
+
+```
+before   : F13 down = False
+key_down : F13 down = True
+key_up   : F13 down = False
+Accessibility (event posting) trusted: True
+```
+
+The poster works. The keycodes are byte-identical to Lite's. And
+`OS_EDGE_POSTED` — recorded the instant `CGEventPost` returns — never once
+appeared in any runtime trace. Nothing was ever calling it.
+
+**Two permanent latches, both reproduced against the real classes.**
+
+1. `InputAuthority.release_all` set `_admission_open = False`. That flag is set
+   True in exactly one place, `activate_generation`, which only the coordinator
+   calls and only on a mode transition — there is no re-open inside a running
+   session. And `release_navigation` was hard-wired to `release_all`, so the
+   *first* ordinary "stop walking" muted the session for the rest of the run.
+   Reproduced: acquire W ok → `release_navigation` → acquire W refused
+   `admission-closed`, with focus ok, viewport ok, capture 10 ms old, helper ok
+   and ledger empty.
+
+2. `DeadmanHelper.release_all` incremented its generation, and `_register`
+   refuses any generation below its own. After the first release the helper sat
+   one ahead of the parent forever, so every registration returned
+   `stale-generation` — and the parent will not post a down edge without a
+   positive ACK. A second, fully independent, permanent mute.
+
+**And both were tripped on the success path of every healthy start.**
+`make_live_worker` called `session.release_navigation("prologue-complete")`
+three lines before the navigation loop read its first frame. Two more gates
+fired on frame one for good measure: the processed-rate counter reads 0.0 until
+it holds two stamps and the loop read it before ticking it, and `cursor_safe`
+treated an unreadable pointer as unsafe while the pointer was sitting on the
+dashboard where the user had just clicked Start Navigator.
+
+**What the rebuild keeps.** Every property that is about a person or a running
+game, expressed as a condition that *releases* rather than one that refuses a
+press, checked by an independent watchdog thread: Stop releases everything from
+any state; another window in front releases everything; a hold has a ceiling; a
+worker that stops calling loses the keys; an unhealthy helper refuses new
+presses; process death releases out of process; a release is never focus-gated
+and always sweeps the whole vocabulary. `release_all` still disarms, so a Stop
+racing a press still stops it — that property was briefly lost during this work
+and `tests/test_stop_safety.py` caught it.
+
+**What it drops.** Evidence tokens on the press path, per-press generation and
+viewport-identity matching, the strictly-newer-frame rule, and any coupling
+between the *existence* of an edge and the age of a frame. A key already down
+does not become dangerous because the next screenshot was slow; it becomes
+dangerous when nobody is watching it, which is what the heartbeat and the hold
+ceiling are for.
+
+**The asymmetry that runs through all of it.** `if focus is not True: refuse`
+turned every ambiguous `CGWindowList` scan into a refused keypress, because that
+probe returns `None` on any error. Lite refuses only on a positive "another app
+is in front" and has driven a character for months that way. The same mistake
+was in `_cursor_safe`. Refusing to press on "I do not know" makes a macro that
+cannot move; releasing on "I do not know" would make one that cannot be
+trusted — so releases are never gated on either reading. Both directions are
+now pinned by tests.
+
+---
+
+## D-068 — 2026-08-29 — A log the owner can read
+
+**Decision:** `prospector_engine/plainlog.py`, rendered in a panel of its own
+between the preview and the Advanced disclosure.
+
+**Why:** there were sixteen lifecycle stages, a governor trace and two event
+rings, and none of them answered *"why is nothing moving"* in a sentence. It is
+not in the diagnostics drawer on purpose: the drawer is the engineering half,
+and it only renders while expanded, so a log living there is a log nobody reads
+at the moment they need it.
+
+Three rules keep it legible while a character is walking: one line per change
+rather than per frame; per-frame topics rate-capped, and collapsing only a
+sentence that is a *variation* of the one already there, judged on its first
+word — "Facing 40 degrees" to "Facing 45 degrees" costs no line, "Holding W" to
+"Released W" keeps both; and every failure ending in one physical action, so
+that a line with no action is information rather than red.
+
+Not cleared on Stop — reading back why the last run ended is most of what it is
+for. Only Start Navigator clears it, and the whole story is exported with the
+stop trace beside the numbers.
