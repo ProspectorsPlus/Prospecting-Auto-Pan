@@ -17,10 +17,24 @@ from typing import Any
 import pytest
 
 from prospector_engine import engine
+from prospector_engine.capture import EvidenceRegistry
 from prospector_engine.contracts import InputKey, WiggleOutcome
-from tests.fakes import FakeCancellation
+from tests.fakes import FakeCancellation, FakeFrameSource, make_frame
 
 WASD_AND_SPACE = (InputKey.W, InputKey.A, InputKey.S, InputKey.D, InputKey.SPACE)
+
+
+def _push_frames(
+    context: engine.ServiceContext, clock: Any, pixel_scripts: list[dict[Any, Any]]
+) -> None:
+    """Load a scripted sequence of pixel states; the last one repeats once exhausted."""
+    registry = EvidenceRegistry("wiggle-to-chest-test")
+    source = FakeFrameSource()
+    for index, pixels in enumerate(pixel_scripts, start=1):
+        source.push(
+            registry.envelope_for(make_frame(index, captured_at_s=clock.now(), pixels=pixels))
+        )
+    context.frames = source
 
 
 def test_wiggle_holds_space_once_for_the_whole_run(
@@ -166,3 +180,187 @@ def test_wiggle_side_phases_alternate_sign_between_the_bookends() -> None:
 def test_wiggle_side_phases_is_empty_for_zero_or_negative_duration() -> None:
     assert engine._wiggle_side_phases(0.0, 250.0) == []
     assert engine._wiggle_side_phases(-10.0, 250.0) == []
+
+
+# ---------------------------------------------------------------------------
+# on_chest_spot: the X_MARKS_THE_SPOT detector (D-092)
+# ---------------------------------------------------------------------------
+
+CHEST = engine.DEFAULT_CHEST_PIXEL
+CHEST_FOUND = {CHEST.point_px: (81, 124, 65), CHEST.point_b_px: (78, 116, 56)}
+CHEST_NOT_FOUND = {CHEST.point_px: (0, 0, 0), CHEST.point_b_px: (0, 0, 0)}
+
+
+def test_on_chest_spot_true_when_both_points_match() -> None:
+    frame = make_frame(1, pixels=CHEST_FOUND)
+    assert engine.on_chest_spot(frame) is True
+
+
+def test_on_chest_spot_false_when_only_the_first_point_matches() -> None:
+    frame = make_frame(1, pixels={CHEST.point_px: (81, 124, 65), CHEST.point_b_px: (0, 0, 0)})
+    assert engine.on_chest_spot(frame) is False
+
+
+def test_on_chest_spot_false_when_only_the_second_point_matches() -> None:
+    frame = make_frame(1, pixels={CHEST.point_px: (0, 0, 0), CHEST.point_b_px: (78, 116, 56)})
+    assert engine.on_chest_spot(frame) is False
+
+
+def test_on_chest_spot_true_within_tolerance() -> None:
+    r, g, b = CHEST.target_rgb
+    rb, gb, bb = CHEST.target_b_rgb
+    half_tolerance = round(CHEST.tolerance_pct / 100.0 * 255.0 / 2.0)
+    half_tolerance_b = round(CHEST.tolerance_b_pct / 100.0 * 255.0 / 2.0)
+    frame = make_frame(
+        1,
+        pixels={
+            CHEST.point_px: (int(r) + half_tolerance, int(g), int(b) - half_tolerance),
+            CHEST.point_b_px: (int(rb) + half_tolerance_b, int(gb), int(bb) - half_tolerance_b),
+        },
+    )
+    assert engine.on_chest_spot(frame) is True
+
+
+def test_on_chest_spot_false_outside_tolerance() -> None:
+    r, g, b = CHEST.target_rgb
+    tolerance = round(CHEST.tolerance_pct / 100.0 * 255.0)
+    frame = make_frame(
+        1,
+        pixels={
+            CHEST.point_px: (int(r) + tolerance + 5, int(g), int(b)),
+            CHEST.point_b_px: (78, 116, 56),
+        },
+    )
+    assert engine.on_chest_spot(frame) is False
+
+
+def test_on_chest_spot_false_on_unrelated_colour() -> None:
+    frame = make_frame(1, pixels=CHEST_NOT_FOUND)
+    assert engine.on_chest_spot(frame) is False
+
+
+# ---------------------------------------------------------------------------
+# run_wiggle_to_chest: Ctrl+4's repeat-until-found behaviour (D-092)
+# ---------------------------------------------------------------------------
+
+
+def test_wiggle_to_chest_stops_before_moving_if_already_found(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    """Chest is checked before movement is applied each tick, so a spot
+    already on screen when Ctrl+4 fires must produce zero W/A/S/D presses."""
+    _push_frames(service_context, rig.clock, [CHEST_FOUND])
+
+    result = engine.run_wiggle_to_chest(service_context, angle_source=lambda: 0.0)
+
+    assert result.outcome is WiggleOutcome.SUCCESS
+    assert "found after 1 pass" in result.detail
+    directional = {
+        rig.port.key_code(key) for key in (InputKey.W, InputKey.A, InputKey.S, InputKey.D)
+    }
+    codes = {args[0] for op, args in rig.port.ops() if op in ("key_down", "key_up")}
+    assert not (codes & directional), "no directional key should ever be pressed"
+
+
+def test_wiggle_to_chest_stops_mid_pass_once_found_and_releases_every_key(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    _push_frames(service_context, rig.clock, [CHEST_NOT_FOUND, CHEST_FOUND])
+
+    result = engine.run_wiggle_to_chest(
+        service_context, angle_source=lambda: 0.0, forward_s=1.0, backward_s=0.5
+    )
+
+    assert result.outcome is WiggleOutcome.SUCCESS
+    downs = sorted(args[0] for op, args in rig.port.ops() if op == "key_down")
+    ups = sorted(args[0] for op, args in rig.port.ops() if op == "key_up")
+    assert downs == ups, "every key press has a matching release"
+    assert rig.authority.ledger_empty()
+    w_code = rig.port.key_code(InputKey.W)
+    assert w_code in downs, "degree=0 should have driven forward (W) before the spot was found"
+
+
+def test_wiggle_to_chest_never_commands_outside_wasd_and_space(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    _push_frames(service_context, rig.clock, [CHEST_NOT_FOUND, CHEST_FOUND])
+
+    engine.run_wiggle_to_chest(
+        service_context, angle_source=lambda: 123.0, forward_s=1.0, backward_s=0.5
+    )
+
+    allowed = {rig.port.key_code(key) for key in WASD_AND_SPACE}
+    codes = {args[0] for op, args in rig.port.ops() if op in ("key_down", "key_up")}
+    assert codes <= allowed
+
+
+def test_wiggle_to_chest_reads_the_angle_source_fresh_on_every_pass(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    """Whether Ctrl+5 is active must not matter to this loop - it just reads
+    whatever ``angle_source`` reports, every pass, live."""
+    _push_frames(service_context, rig.clock, [CHEST_NOT_FOUND])
+    angles = iter([0.0, 90.0, 725.0])
+    calls: list[float] = []
+
+    def angle_source() -> float:
+        value = next(angles)
+        calls.append(value)
+        return value
+
+    limits = engine.WiggleToChestLimits(max_passes=3)
+    result = engine.run_wiggle_to_chest(
+        service_context,
+        angle_source=angle_source,
+        forward_s=0.1,
+        backward_s=0.05,
+        limits=limits,
+    )
+
+    assert result.outcome is WiggleOutcome.TIMEOUT
+    assert calls == [0.0, 90.0, 725.0], "each pass must read a fresh angle, not a cached one"
+    assert result.degree_deg == pytest.approx(5.0), "725 deg mod 360, from the final pass"
+    assert "pass cap (3) reached" in result.detail
+
+
+def test_wiggle_to_chest_releases_every_key_on_cancellation(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    _push_frames(service_context, rig.clock, [CHEST_NOT_FOUND])
+    cancellation = FakeCancellation(rig.clock, cancel_after_waits=3)
+    service_context.cancel = cancellation
+    rig.authority.activate_generation(
+        1,
+        emits_input=True,
+        cancellation=cancellation,
+        requires_capture=True,
+        pinned_rect=rig.port.window_geometry(),
+    )
+
+    result = engine.run_wiggle_to_chest(
+        service_context, angle_source=lambda: 0.0, forward_s=5.0, backward_s=0.5
+    )
+
+    assert result.outcome is WiggleOutcome.CANCELLED
+    downs = sorted(args[0] for op, args in rig.port.ops() if op == "key_down")
+    ups = sorted(args[0] for op, args in rig.port.ops() if op == "key_up")
+    assert downs == ups
+    assert rig.authority.ledger_empty()
+
+
+def test_wiggle_to_chest_refuses_cleanly_when_the_space_lease_is_refused(
+    rig: Any, service_context: engine.ServiceContext
+) -> None:
+    _push_frames(service_context, rig.clock, [CHEST_NOT_FOUND])
+    unarmed = engine.ServiceContext(
+        frames=service_context.frames,
+        session=rig.authority.service_session(999),
+        cancel=service_context.cancel,
+        deadline_s=service_context.deadline_s,
+    )
+
+    result = engine.run_wiggle_to_chest(unarmed, angle_source=lambda: 0.0)
+
+    assert result.outcome is WiggleOutcome.FAILED
+    assert rig.port.ops() == []
+    assert rig.authority.ledger_empty()

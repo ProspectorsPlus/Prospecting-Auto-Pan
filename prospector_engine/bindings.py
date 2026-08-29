@@ -130,7 +130,7 @@ BINDINGS: tuple[Binding, ...] = (
     Binding(IntentType.RESET_CHARACTER, _ctrl("1"), "Reset the character"),
     Binding(IntentType.PAN_SWAP_TEST, _ctrl("2"), "Pan swap service"),
     Binding(IntentType.DIG_LOOP, _ctrl("3"), "Dig service"),
-    Binding(IntentType.WIGGLE_TEST, _ctrl("4"), "Wiggle move test"),
+    Binding(IntentType.WIGGLE_TEST, _ctrl("4"), "Wiggle until X marks the spot"),
     Binding(
         IntentType.DEGREE_MONITOR,
         _ctrl("5"),

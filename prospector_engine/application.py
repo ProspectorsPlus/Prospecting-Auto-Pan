@@ -62,7 +62,7 @@ from prospector_engine.engine import (
     run_dig_loop,
     run_pan_swap,
     run_reset,
-    run_wiggle,
+    run_wiggle_to_chest,
 )
 from prospector_engine.geometry import ViewportGeometry
 from prospector_engine.input_authority import (
@@ -140,29 +140,35 @@ def _service_worker(kind: str) -> WorkerFactory:
 
 
 def _wiggle_worker(monitor: DegreeMonitor) -> WorkerFactory:
-    """Ctrl+4: strafe-wiggle at the degree monitor's last trusted heading error.
+    """Ctrl+4: wiggle toward the degree monitor's heading error until
+    X_MARKS_THE_SPOT is found, then release every key it holds.
 
-    Reads ``monitor.current()`` rather than calling the perception pipeline
-    itself: a single cold call, isolated from Shadow/Live's own continuous
-    calls, frequently could not reacquire a confident reading (D-089). The
-    monitor (Ctrl+5) is what keeps a reading warm; this just reads it, and
-    that reading is 0.0 (straight forward) until Ctrl+5 has been pressed at
-    least once and produced a valid frame.
+    Reads ``monitor.current()`` fresh on every wiggle pass rather than once:
+    whether Ctrl+5 is armed never changes how the loop behaves, only what
+    angle it sees - it either keeps tracking a live reading, or holds
+    whatever it last reported (0.0 if Ctrl+5 has never been pressed). See
+    D-089 for why a single cold perception call was replaced with the warm
+    monitor in the first place, and D-092 for the repeat-until-found chest
+    behaviour itself.
     """
 
     def worker(context: WorkerContext) -> ModeResult:
         session = context.service
         if session is None:
             return ModeResult(ModeResultKind.FAILED, "wiggle started without an input session")
-        degree = monitor.current()
+        # Unlike the other one-shot services this loops until it finds the
+        # chest, so it gets the same "runs for as long as it needs to" treatment
+        # as the dig loop's own deadline override, not the 90 s one-shot bound.
         service_context = ServiceContext(
             frames=context.frames,
             session=session,
             cancel=context.cancellation,
-            deadline_s=monotonic_s() + 90.0,
+            deadline_s=monotonic_s() + 10 * 60.0,
             on_status=context.on_status,
         )
-        result = run_wiggle(service_context, degree, forward_s=5.0, backward_s=0.5)
+        result = run_wiggle_to_chest(
+            service_context, monitor.current, forward_s=3.0, backward_s=0.5
+        )
         kind_map = {
             "SUCCESS": ModeResultKind.COMPLETED,
             "CANCELLED": ModeResultKind.CANCELLED,

@@ -2823,3 +2823,40 @@ same resize as safe to run from a bare command line. `bindings.py`'s
 description and `requires_focus=False` are unchanged; a resize is targeted by
 window identity, not by whatever currently has focus, so focus was never the
 relevant guard for it.
+
+## D-092 — 2026-08-29 — Ctrl+4 wiggles until it finds the chest, not once
+
+**Decision:** Ctrl+4 stopped being a one-shot wiggle test. `engine.py` gains
+`run_wiggle_to_chest`, which repeats the same forward/backward strafe-wiggle
+(3 s forward, 0.5 s back per pass) until a new pixel detector,
+`on_chest_spot`, reads `X_MARKS_THE_SPOT` at the owner-supplied client point
+`(542, 563)` against target colour `(81, 124, 65)` within 5% tolerance — then
+releases every key it holds (W/A/S/D and space) and stops. The chest pixel is
+polled at least ten times a second (`ChestPixel.poll_s = 0.1`) throughout
+every phase of every pass, not just between passes, so a spot that appears
+mid-swing is not missed, and it is checked *before* that tick's movement is
+applied, so a spot already on screen when Ctrl+4 fires costs zero directional
+key presses. `application._wiggle_worker` now calls this instead of the old
+single-pass `run_wiggle`, still reading `monitor.current()` — but fresh on
+every pass rather than once at the start.
+
+**Whether Ctrl+5 is armed never changes this loop's behaviour, only what
+angle it sees.** `run_wiggle_to_chest` takes `angle_source: Callable[[],
+float]` instead of a `degree: float`, so it reads the degree monitor live: if
+Ctrl+5 has never been pressed that is a constant 0.0 every pass, and if it is
+armed and tracking, each pass turns a little further toward wherever the
+monitor's heading error has drifted to since the last pass. Passing a
+callable instead of a value is also what keeps `engine.py` from importing
+`navigation.DegreeMonitor` — `navigation.py` already imports `engine.py` for
+`FrameSource`, so the reverse import would cycle.
+
+**Bounded like every other retry loop here.** A new `WiggleToChestLimits.
+max_passes` (2000, provisional) caps the pass count the same way
+`DigLoopLimits.max_taps` caps digging, and the caller's own `ctx.deadline_s`
+bounds it independently on wall-clock time — the coordinator gives this
+worker ten minutes rather than the 90 s the other one-shot services get,
+because "wiggle until found" is expected to run far longer than a single
+pass, the same reasoning `dig_loop` already gets its own longer deadline for.
+`WiggleResult`/`WiggleOutcome` needed no new variants: `SUCCESS` is "chest
+found", `TIMEOUT` covers both the deadline and the pass cap, `CANCELLED` and
+`FAILED` (space lease refused) are unchanged from `run_wiggle`.

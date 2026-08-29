@@ -48,18 +48,23 @@ from prospector_engine.contracts import (
 from prospector_engine.input_authority import ServiceInputSession
 
 __all__ = [
+    "DEFAULT_CHEST_PIXEL",
     "DEFAULT_PIXELS",
     "DEFAULT_TIMINGS",
     "DEFAULT_WIGGLE_CONFIG",
+    "DEFAULT_WIGGLE_TO_CHEST_LIMITS",
+    "ChestPixel",
     "FrameSource",
     "ServiceContext",
     "ServiceTimings",
     "TreasurePixels",
     "WiggleConfig",
+    "WiggleToChestLimits",
     "capacity_full",
     "color_close",
     "is_white",
     "is_yellow",
+    "on_chest_spot",
     "on_dig_spot",
     "run_dequip_pan",
     "run_dig_at_current_spot",
@@ -67,6 +72,7 @@ __all__ = [
     "run_pan_swap",
     "run_reset",
     "run_wiggle",
+    "run_wiggle_to_chest",
     "sample_client_pixel",
 ]
 
@@ -196,6 +202,37 @@ DEFAULT_PIXELS = TreasurePixels()
 
 
 @dataclass(frozen=True)
+class ChestPixel:
+    """The two X_MARKS_THE_SPOT sample points that stop ``run_wiggle_to_chest``.
+
+    *Both* points must match for the stop condition to fire. Owner-supplied
+    client-relative physical pixels and target colours, not yet re-derived
+    with ``treasure.py --calibrate``.
+    """
+
+    point_px: Point = (542, 563)
+    target_rgb: Rgb = (81.0, 124.0, 65.0)
+    tolerance_pct: float = 5.0
+    point_b_px: Point = (553, 564)
+    target_b_rgb: Rgb = (78.0, 116.0, 56.0)
+    tolerance_b_pct: float = 5.0
+    sample_box_px: int = 6
+    poll_s: float = 0.1
+
+    status: EvidenceStatus = EvidenceStatus.PENDING
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PENDING,
+            source="owner-supplied X_MARKS_THE_SPOT sample",
+            note="not yet re-derived with --calibrate",
+        )
+    )
+
+
+DEFAULT_CHEST_PIXEL = ChestPixel()
+
+
+@dataclass(frozen=True)
 class DigLoopLimits:
     """Bounds for the standalone dig loop (D-015).
 
@@ -298,6 +335,15 @@ def on_dig_spot(frame: CapturedFrame, pixels: TreasurePixels = DEFAULT_PIXELS) -
 def capacity_full(frame: CapturedFrame, pixels: TreasurePixels = DEFAULT_PIXELS) -> bool:
     rgb = sample_client_pixel(frame, pixels.capacity_px, pixels.sample_box_px)
     return is_yellow(rgb, pixels.yellow_min, pixels.yellow_blue_gap)
+
+
+def on_chest_spot(frame: CapturedFrame, chest: ChestPixel = DEFAULT_CHEST_PIXEL) -> bool:
+    """True when ``X_MARKS_THE_SPOT`` reads at *both* chest pixels, from one frame."""
+    a = sample_client_pixel(frame, chest.point_px, chest.sample_box_px)
+    b = sample_client_pixel(frame, chest.point_b_px, chest.sample_box_px)
+    return color_close(a, chest.target_rgb, chest.tolerance_pct) and color_close(
+        b, chest.target_b_rgb, chest.tolerance_b_pct
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -944,6 +990,176 @@ def run_wiggle(
             degree,
             monotonic_s() - started_s,
             "wiggle complete",
+            tuple(evidence),
+        )
+    except ServiceCancelled as stop:
+        outcome = WiggleOutcome.CANCELLED if str(stop) == "cancelled" else WiggleOutcome.TIMEOUT
+        return WiggleResult(
+            outcome, degree, monotonic_s() - started_s, str(stop), tuple(evidence)
+        )
+    finally:
+        release_all()
+
+
+# ---------------------------------------------------------------------------
+# Wiggle-to-chest: repeat the wiggle until X_MARKS_THE_SPOT is on screen
+# (D-092)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class WiggleToChestLimits:
+    """Bounds for ``run_wiggle_to_chest`` (D-092), same shape as ``DigLoopLimits``.
+
+    ``max_passes`` exists so an unmet stop condition ends the loop on its own
+    rather than wiggling forever; ``ctx.deadline_s`` bounds it independently
+    on wall-clock time, so both an attempt cap and a monotonic deadline hold
+    at once, like every other retry loop here.
+    """
+
+    max_passes: int = 2000
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="DECISIONS.md D-092",
+            note="pass cap chosen so an unmet stop condition ends on its own; not measured",
+        )
+    )
+
+
+DEFAULT_WIGGLE_TO_CHEST_LIMITS = WiggleToChestLimits()
+
+
+def run_wiggle_to_chest(
+    ctx: ServiceContext,
+    angle_source: Callable[[], float],
+    chest: ChestPixel = DEFAULT_CHEST_PIXEL,
+    forward_s: float = 3.0,
+    backward_s: float = 0.5,
+    config: WiggleConfig = DEFAULT_WIGGLE_CONFIG,
+    limits: WiggleToChestLimits = DEFAULT_WIGGLE_TO_CHEST_LIMITS,
+) -> WiggleResult:
+    """Ctrl+4: repeat the strafe-wiggle until ``X_MARKS_THE_SPOT`` is found.
+
+    Each pass reads ``angle_source()`` fresh rather than once at the start, so
+    this tracks the degree monitor (Ctrl+5) live while it is armed and simply
+    holds its last value - 0.0 if Ctrl+5 has never been pressed - while it is
+    not; whether the monitor is armed never changes how this loop behaves,
+    only what angle it sees. The chest pixel is polled at least once every
+    ``chest.poll_s`` throughout every phase of every pass, not just between
+    passes, so a spot that appears mid-swing is not missed. As soon as it is
+    found every key this holds - W/A/S/D and space - is released before this
+    returns, the same unconditional release every other exit path here uses
+    (bug B1/B7 class).
+    """
+    started_s = monotonic_s()
+    evidence: list[str] = []
+
+    duty: dict[InputKey, _DutyKeyState] = {
+        key: _DutyKeyState() for key in (InputKey.W, InputKey.A, InputKey.S, InputKey.D)
+    }
+    space_lease: LeaseHandle | None = None
+    last_poll_s = -math.inf
+    found = False
+    degree = 0.0
+
+    def release_all() -> None:
+        nonlocal space_lease
+        for state in duty.values():
+            if state.lease is not None:
+                ctx.session.release(state.lease)
+                state.lease = None
+        if space_lease is not None:
+            ctx.session.release(space_lease)
+            space_lease = None
+
+    def apply_weights(weights: dict[InputKey, float]) -> None:
+        for key, weight in weights.items():
+            state = duty[key]
+            if weight >= 0.999:
+                if state.lease is None:
+                    state.lease = ctx.session.hold_key(key, config.lease_horizon_ms)
+                else:
+                    ctx.session.renew(state.lease, config.lease_horizon_ms)
+                state.accumulator = 0.0
+                continue
+            if weight <= 0.001:
+                if state.lease is not None:
+                    ctx.session.release(state.lease)
+                    state.lease = None
+                state.accumulator = 0.0
+                continue
+            state.accumulator += weight
+            if state.accumulator >= 1.0:
+                state.accumulator -= 1.0
+                if state.lease is None:
+                    state.lease = ctx.session.hold_key(key, config.lease_horizon_ms)
+                else:
+                    ctx.session.renew(state.lease, config.lease_horizon_ms)
+            elif state.lease is not None:
+                ctx.session.release(state.lease)
+                state.lease = None
+
+    def chest_spotted() -> bool:
+        """At most one frame read/sample per ``chest.poll_s``, never more often."""
+        nonlocal last_poll_s
+        now = monotonic_s()
+        if now - last_poll_s < chest.poll_s:
+            return False
+        last_poll_s = now
+        spotted = on_chest_spot(ctx.frame(), chest)
+        if spotted:
+            evidence.append(f"chest_spotted@{now - started_s:.2f}s")
+        return spotted
+
+    def run_phase(total_s: float, forward_sign: int, target_half_ms: float) -> bool:
+        """One forward or backward phase. Returns True the instant the chest is found."""
+        total_ms = total_s * 1000.0
+        for side_sign, duration_ms in _wiggle_side_phases(total_ms, target_half_ms):
+            phase_deadline_s = monotonic_s() + duration_ms / 1000.0
+            weights = _wiggle_weights_at(degree, forward_sign, side_sign)
+            while monotonic_s() < phase_deadline_s:
+                ctx.check()
+                if chest_spotted():
+                    return True
+                apply_weights(weights)
+                if space_lease is not None:
+                    ctx.session.renew(space_lease, config.lease_horizon_ms)
+                ctx.sleep_ms(config.tick_ms)
+        return False
+
+    try:
+        space_lease = ctx.session.hold_key(InputKey.SPACE, config.lease_horizon_ms)
+        if space_lease is None:
+            return WiggleResult(
+                WiggleOutcome.FAILED,
+                degree,
+                monotonic_s() - started_s,
+                "space lease refused",
+                tuple(evidence),
+            )
+        passes = 0
+        while not found:
+            ctx.check()
+            if passes >= limits.max_passes:
+                return WiggleResult(
+                    WiggleOutcome.TIMEOUT,
+                    degree,
+                    monotonic_s() - started_s,
+                    f"pass cap ({limits.max_passes}) reached without finding the chest",
+                    tuple(evidence),
+                )
+            passes += 1
+            degree = angle_source() % 360.0
+            evidence.append(f"pass{passes}:degree={degree:.1f}")
+            found = run_phase(forward_s, +1, config.forward_half_ms) or run_phase(
+                backward_s, -1, config.backward_half_ms
+            )
+        return WiggleResult(
+            WiggleOutcome.SUCCESS,
+            degree,
+            monotonic_s() - started_s,
+            f"X_MARKS_THE_SPOT found after {passes} pass(es)",
             tuple(evidence),
         )
     except ServiceCancelled as stop:
