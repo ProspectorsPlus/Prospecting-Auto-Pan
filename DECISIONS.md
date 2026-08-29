@@ -2520,3 +2520,164 @@ is the only shape "not converging" actually has.
 scenario presents a *fixed* heading error that the controller closes and then
 holds; a real route never does that. The scenario matrix now includes one that
 bends the whole way.
+
+## D-084 — 2026-08-29 — "Roblox is not acting on the key" was blaming a tree
+
+**Decision:** when the character does not walk, the acceptance probe nudges the
+camera and measures the picture again. If the camera moves, the outcome is
+`ACCEPTED_BLOCKED` and it is a **pass**: the input path demonstrably works and
+the character is against something, which is a situation the obstacle recovery
+already exists to handle. Only when nothing moves at all is it `NO_MOTION`.
+
+**Why, with the numbers.** The owner reported the stage failing "90% of the
+time". Across 33 recorded attempts in `logs/safe-stop-epoch*.jsonl`, 5 passed —
+15%. Every failure had the OS confirming ``W`` was down for ~340 ms, and the
+world moving essentially not at all (median ±0.000 to ±0.006 against a 0.020
+threshold, idle noise 0.0009).
+
+Three hypotheses were tested rather than argued:
+
+1. *The chat log's static text captures the RANSAC fit.* **Wrong.** A synthetic
+   pair built from a real captured frame, with the world translated and the HUD
+   pasted back unshifted, recovered the motion exactly; only 2% of tracked
+   features sat on the chat.
+2. *The Ctrl from Ctrl+N is still held when the probe fires W 530 ms later, so
+   Roblox sees Ctrl+W.* **Wrong.** An A/B against the live client - W alone
+   against W with Ctrl synthetically held, alternating, twice - moved the scene
+   in all four trials.
+3. *The character is obstructed.* **Right.** The same A/B measured the
+   character travelling 3.3, 6.2, 7.8 and 11.2 px per 600 ms hold, where a free
+   character measured 65.8 px in the same conditions minutes earlier. Converted
+   to the probe's units those are 0.014, 0.027, 0.033 and 0.048 against a
+   threshold of 0.020 - straddling it, which *is* the 15% pass rate.
+
+So the stage was measuring "can this character walk" and reporting it as "does
+Roblox take our input", and the two are only the same thing on open ground. The
+camera is the question a wedged character can still answer, which is exactly
+what the standalone probe's scroll trial is for (D-074); the Live prologue never
+had it.
+
+The nudge is undone in `release_camera`. It is a diagnostic, and leaving the
+player's view rotated by it would be an edit to their session made for our
+benefit.
+
+**Two classifier bugs found in the same traces.**
+
+*Readings with no magnitude were voting on the direction.* `sign_agreement`
+counted `speed > 0` over every post-edge sample including the ones captured
+before the character had accelerated, whose sign is noise. It rejected a
+measured median of **-0.955** - enormous, unmistakable movement - at "50%
+agreement", and rejected +0.067 and +0.027 the same way: 4 of the 28 failures
+were real motion thrown away. Only samples that clear the threshold vote now.
+
+*The magnitude was averaged over the acceleration ramp.* A character does not
+reach walking speed inside the first frames after the edge, and including them
+drags an honest walk under the threshold. The strength is now the median of the
+samples that actually moved.
+
+## D-085 — 2026-08-29 — The arrival banner, and why not the arrow
+
+**Decision:** arrival is the game's own "X Marks the spot! Dig down!" banner,
+found by shape - bright glyph bodies with a dark outline against them, forming
+one wide centred line - in a band across the lower middle of the client.
+
+**Why not the arrow.** The obvious signal is the map arrow swinging down to
+point at the ground, and it cannot be used. Running the production detector
+over six real frames taken at a destination: **five produced no usable arrow at
+all** (`ambiguous-candidates`, `rejected:topology`), and the sixth reported an
+axis 180 degrees out because at the spot the arrow is transparent, bobbing, and
+seen down its own axis. It fails exactly where arrival needs it. This is also
+why automatic setup fails at "Check direction" when the character is standing
+on the destination - which is correct, and worth knowing.
+
+**Why not the old detector.** It measured Canny edge density inside
+`(340, 90, 600, 120)` - the top centre of the client, a patch of sky. The
+banner is at y 557..572. A detector looking in the wrong place cannot fire, and
+edge density in a band of terrain is a number that goes up when there is grass
+in it.
+
+**Measured** (canonical 1280x720, 2026-08-29): the banner occupies x 537..742,
+y 557..572 - one line 205 px wide and 15 px tall, centred to within a pixel,
+314 glyph pixels at a fill ratio of 0.095 inside its own box. Seventeen
+negatives - five at the destination without it showing, twelve captured live
+while navigating - scored **exactly zero** on every statistic.
+
+Width, single-line height, aspect and centring are all checked, because a
+player nametag is also bright outlined text and is none of those things.
+
+**Still one positive frame**, so the geometry is measured and the margins are
+chosen; `ArrivalConfig` stays `PENDING` and E-ARRIVE is still owed. The real
+frames are deliberately not committed: they are screenshots of the owner's own
+session carrying their username, level and balance. What is committed is the
+signature they produced.
+
+## D-086 — 2026-08-29 — A refused reversal locked the navigator out of the rear half
+
+**Decision:** a weakly-evidenced reversal **abstains**. It is never inverted.
+It is adopted once it has persisted for `reversal_latch_frames`, or at once if
+the polarity margin clears `reversal_margin`.
+
+**Why.** The owner reported that after walking past a target the navigator
+could never read an arrow pointing behind it - "roughly 140-220 degrees". A
+360-degree sweep shows the estimator has no geometric blind spot: every one of
+24 headings is read to within 1.3 degrees. The failure is temporal, and it is
+in the reversal guard.
+
+```python
+if reversing and margin < config.reversal_margin:
+    heading = wrap_deg(heading + 180.0)   # <- returned as valid
+    reversal_refused = True
+...
+if margin < config.min_sign_margin and not reversal_refused:
+    return _direction_abstain("polarity")  # <- skipped, because it was refused
+```
+
+Three defects in six lines:
+
+1. It returned **the opposite of what every cue had just said**, marked valid.
+   A confidently wrong bearing is the one output that actively drives the
+   character away from the target; abstaining would have let the controller
+   coast on what it already knew.
+2. The `and not reversal_refused` clause meant the weakest evidence in the
+   system bypassed `min_sign_margin` *because* it had just failed a stricter
+   test.
+3. It is self-sustaining. `PerceptionPipeline` remembers the heading it was
+   handed, so the next frame compared against the inverted value, found a
+   180-degree disagreement, and refused again. **Permanently** - the guard
+   could never be satisfied, because its own output was what it was checking
+   against.
+
+Walking past the target reverses the arrow for real. The guard fired exactly
+when it was wrong, and then could not be talked out of it.
+
+The one-frame protection it existed for is kept - a nicked outline still cannot
+spin the character round - by counting instead of inverting.
+
+## D-087 — 2026-08-29 — Arrival also by geometry, because the banner is transient
+
+**Decision:** `WaypointPass` watches the bearing for the signature of having
+walked over the target - a sustained approach inside `approach_within_deg`,
+then a sustained swing beyond `passed_beyond_deg`, with little commanded
+rotation of our own. Either it or the banner ends the route.
+
+**Why.** The banner (D-085) is the better signal and it is *transient*: of six
+frames taken at a destination it was showing in one. The case that actually
+goes wrong is the one where it has already been missed - the route overshoots,
+the arrow swings behind, and nothing ever says "you are here". Walking over a
+fixed point is the one thing that swings its bearing through a half turn, and
+after D-086 that half of the compass is readable.
+
+Three false positives are ruled out by construction: a route that merely passes
+near something never approached it; a swing that comes back to the front is a
+course correction; and a hard pivot swings the bearing too, so commanded
+rotation is charged against the evidence.
+
+**Two bugs in the first version of this, both found by its own tests.**
+`reset()` cleared the detail string it had just written, so a successful pass
+reported an empty reason. And the commanded-yaw accumulator kept counting after
+the swing began - but the controller *pivots in response* to the target going
+behind, so the pass charged itself with the rotation it had caused and could
+never fire. Rotation is now counted only while still approaching.
+
+Provisional throughout: geometry, not a fitted measurement. E-ARRIVE is still
+owed and this does not stand in for it.

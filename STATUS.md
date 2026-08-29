@@ -4,13 +4,73 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-29 (eleventh pass, continuous pursuit and recovery).
+Last updated: 2026-08-29 (twelfth pass, input acceptance and arrival).
 Development machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
 Live was never started and no Roblox session was operated during
 implementation. The tenth pass **did** send bounded input to the Roblox client
 under `--native-control-probe`, with explicit owner authorization: one key edge
 per trial with a `finally` release, and scroll-wheel events. Nothing was
 clicked, joined, bought or changed; measurements are in D-074.
+
+---
+
+## INPUT ACCEPTANCE AND ARRIVAL: THE TWELFTH PASS (2026-08-29)
+
+Both driven by the owner running the navigator against a real session and
+reporting what happened. Bounded input **was** sent to the Roblox client during
+this pass, with the owner's explicit authorization in the session: one key edge
+per trial with a `finally` release, plus scroll and camera events. Nothing was
+clicked, joined, bought or changed.
+
+### "Test input" failed 85% of the time, and was blaming the wrong thing
+
+Across 33 recorded attempts, 5 passed. Every failure had macOS confirming `W`
+was down for ~340 ms and the world moving essentially not at all. Three
+hypotheses were tested rather than argued; the first two were wrong (see D-084)
+and the third was right: **the character was obstructed**, travelling 3-11 px
+per 600 ms hold where a free character measured 65.8 px. In the probe's units
+that is 0.014-0.048 against a 0.020 threshold - straddling it, which is the
+15% pass rate exactly.
+
+The stage was measuring *can this character walk* and reporting it as *does
+Roblox take our input*. It now asks the camera when the character will not
+move, because a camera answers in any state.
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Events reach Roblox at all | **macOS pass** | scroll moved the page 267.6 px; W moved the scene 65.8 px on a free character |
+| A held Ctrl blocks W | **ruled out** | A/B, W alone vs W with Ctrl held, alternating: all four trials moved |
+| Static HUD captures the motion fit | **ruled out** | synthetic world-shift with the HUD frozen recovered the motion exactly; 2% of features on the chat |
+| The estimator can see a walk | **macOS pass** | recovers a 1 px shift; a real walk reads 0.283 against a 0.020 threshold |
+| Obstructed character is not reported as a dead input path | **local pass** | `tests/test_acceptance.py`, real recorded numbers |
+| The camera nudge leaves the view where it found it | **local pass** | undone in `release_camera` |
+
+### Arrival now reads the game's own banner
+
+The map arrow cannot be the arrival signal: on six real frames taken at a
+destination the production detector found **no usable arrow on five of them**,
+because at the spot it is transparent, bobbing and seen down its own axis. The
+old detector measured edge density in the top centre of the client - a patch of
+sky - while the banner is at y 557..572.
+
+| Gate | Status | Evidence |
+|---|---|---|
+| The banner is recognised where the game draws it | **measured** | x 537..742, y 557..572; 205x15 px, centred to a pixel, 314 glyph pixels |
+| Terrain and navigation frames are not banners | **measured** | 17 negatives scored exactly zero |
+| Nametags and chat are rejected by shape | **local pass** | width, single-line height, aspect and centring all checked |
+| **E-ARRIVE** | **PENDING** | one positive frame. The geometry is measured; the margins are chosen. |
+
+### What the owner still owes
+
+1. A route that actually **arrives** while the banner is showing, to confirm the
+   latch fires in Live rather than only on a still frame. The banner is
+   transient - it showed in one of six frames taken 30 s apart - and how long
+   it stays up has not been measured.
+2. The armed native route from the eleventh pass, still owed: duty cycle,
+   alignment, occlusion intervals and recovery outcomes on the real game.
+3. Note that automatic setup fails at **Check direction** when the character is
+   standing on the destination, because the arrow there is unreadable. That is
+   correct behaviour and not a defect; start a run from somewhere else.
 
 ---
 
