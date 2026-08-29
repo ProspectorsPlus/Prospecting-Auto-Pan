@@ -4,11 +4,70 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28 (sixth pass, recovery). Development machine: macOS 25.4, arm64,
-CPython 3.13.15, Tk 9.0. **No Roblox session was operated and navigation was
-never armed during implementation; no input was sent.** The fifth pass did
-resize the Roblox window, which is the fit stage doing its job, and restored
-it every time — measured below.
+Last updated: 2026-08-28 (seventh pass, native movement recovery). Development
+machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0. **No Roblox session was
+operated and navigation was never armed during implementation; no input was
+sent.** The fifth pass did resize the Roblox window, which is the fit stage
+doing its job, and restored it every time — measured below.
+
+---
+
+## What changed on 2026-08-28 (seventh pass) — the listener, the pulse, the tracker
+
+Three defects, each measured here before it was touched, each fixed, and one
+of them not what it was reported to be.
+
+### Root causes, confirmed
+
+| Reported | What the measurement says | Fix |
+|---|---|---|
+| The macOS hotkey listener is broken by a pynput callback-arity `TypeError` | **Half right, and the diagnosis was wrong.** pynput 1.8.2's `Listener._wrap` inspects the signature and adapts a one-argument callback, so no `TypeError` occurs — verified by calling `listener.on_press(key, False)` against a one-argument bound method. The real mechanism is the `False` return: `AbstractListener` raises `StopException` on it, and the adapter returned `False` for every unrecognized key, **including a lone Ctrl**. The listener died on the first keypress of the session. | direct Quartz event tap; callbacks that cannot signal "stop" at all (D-050) |
+| Live enters a prologue and never reaches W | Confirmed exactly. `logs/stop-epoch7-1886181997.jsonl` has its last frame at `1886148.84` and was written at `1886181.997` — **33.15 s** later, the `characterize_turn` deadline plus poll slack. No `turn-response.json` has ever been written. | `VERIFY_INPUT`: one bounded forward pulse, confirmed causally, before any camera stage (D-052) |
+| `OS_EDGE_POSTED` exists as an enum and is never emitted | Confirmed: one definition, one docstring reference, one test, no emission | the authority writes it where `_emit_down` returns (D-054) |
+| Motion is evaluated on the same pre-command frame, and `abs(speed) > 0` counts noise | Confirmed, both, in one line | `ForwardMotionWitness`: post-edge frames only, threshold measured from this session's idle noise (D-053) |
+| The GUI says movement is being sent for every LIVE state | Confirmed: `Navigating. Press Stop at any time.` for the whole input-free prologue | each armed stage has its own sentence, with a test that every one has one (D-055) |
+| Stop JSONL omits the hotkey, arm, worker, prologue, OS-edge, lease and motion lifecycle | Confirmed: every stop trace in `logs/` contains exactly `frame`, `preview`, `governor` | sixteen named stages, appended with the raw event stream (D-054) |
+| The tracker blacks out after fast movement | Confirmed and reproduced to the millisecond at 60 fps: 100 px → 67 ms, 180 px → 233 ms, 250 px → 367 ms, 400 px → 567 ms + a new identity; scale 70→160 → 567 ms + a new identity | `_resume_outside_gate` (D-058) |
+
+### What was measured, before and after
+
+Tracker recovery at 60 fps on rendered frames (**training stress, never a
+gate** — plan §7.2). Reproduce with `treasure.py --tracking-report`:
+
+| family | before | after |
+|---|---|---|
+| jump 100 px | 67 ms | 0 ms |
+| jump 180 px | 233 ms | 0 ms |
+| jump 250 px | 367 ms | 0 ms |
+| jump 400 px | 567 ms, new identity | 0 ms, same identity |
+| scale 70→110 | 200 ms | 0 ms |
+| scale 70→130 | 367 ms | 0 ms |
+| scale 70→160 | 567 ms, new identity | 0 ms, same identity |
+| scale 70→200 | 567 ms, new identity | 0 ms, same identity |
+| sweep 25°/frame | 200 ms, **179.9° heading error** | 0 ms, 0.3° |
+
+Real-frame corpus, `tune` and `eval`, before and after: **every sequence
+identical** — recall, false locks and identity switches unchanged on all
+fourteen. That is the expected result: the corpus is sampled at about 5 fps and
+resuming is bounded to 60 ms, so it cannot reach the regime this fixes. The
+tuning decision was taken on `tune` alone; `eval` was read to report.
+
+Corpus totals, unchanged: recall 80.2%, absent-precision 90.0%, false-lock
+2.6%, median heading error 10.4°, p95 104.6°, direction sign 90.9%.
+
+### What is *not* done, stated plainly
+
+* **No optical-flow bridge, no ROI tracker, no covariance state, no
+  `FLOW_BRIDGED` / `PREDICTED_ONLY` provenance.** The measured blackout was an
+  association-rule problem and is entirely gone without a second tracker.
+* **The tracker acceptance gates cannot be run.** They need dense green-arrow
+  sessions at 60 fps; `green_arrow_v1` has seven owner crops and the committed
+  real corpus is yellow-only at 1–5 fps. This is a missing-recording blocker,
+  not a missing-code one.
+* **A detector weakness this pass did not fix:** a same-coloured blob landing
+  near the arrow's last position is accepted by the ordinary positional gate.
+  Two of nine rendered clutter layouts show it, with resuming off as well as
+  on, and it is what `sand-near-a`'s 26.7% false-lock rate is.
 
 ---
 
@@ -247,9 +306,26 @@ measurements said.
 | 1 Observation foundation and GUI | **done** — automatic setup, stable-geometry dashboard, one timer per loop, bounded per-frame trace, honest governor | **partial** — native headless observation measured at 57 of 57 unique fps (third pass); an owner-observed session with a map equipped is **pending** | **pending** |
 | 2 Offline perception | **partial** — detector v2 measured on the real corpus (below); no separately held-out session exists | **blocked** on a second recording | **blocked** |
 | 3 Navigation and controller | **done locally** — one follower, measured turn actuator, wired motion, bounded recovery; 94 simulated routes at 30/60/90/120 fps | **pending** — setup now runs natively as far as `SELECT_PROFILE`, which refuses correctly with no map equipped; the stages past it need a map on screen, and the armed ones need a physical arm | **pending** |
-| 4 One-map live lifecycle | **partial** — the armed prologue (control mode, turn characterization) and the follow/recover loop exist and are tested against fakes and a simulated world | **pending** | **pending** |
+| 4 One-map live lifecycle | **partial** — the armed prologue is now three stages (input acceptance, control mode, turn characterization), all tested against fakes and a simulated world, and input acceptance is tested end to end through the real control port, the real probe and real optical flow on rendered frames | **pending** — the whole chain past a physical Arm + Ctrl+N is unobserved | **pending** |
 | 5 Multi-map lifecycle | **blocked** | **pending** | **pending** |
 | 6 Packaging and release | **partial** | **pending** | **pending** |
+
+---
+
+## Native evidence taken this pass
+
+Two things were measured on this machine, without arming anything and without
+sending any input.
+
+| What | Command | Result |
+|---|---|---|
+| The macOS hotkey listener hears the keyboard | `treasure.py --hotkey-test 3` | Tap reached **READY**; **42 real key edges** arrived in three seconds and normalized correctly (named keys recognized, the Shift modifier read off `CGEventGetFlags`); **0** tap re-enables, **0** exceptions; ordinary keys and lone modifiers did not stop it. |
+| The read-only OS key-state probe | `port.key_state(InputKey.W)` | Reports `False` for every key at rest and flips to `True` while a key is physically held. This is the `OS_EDGE_LOOPBACK_OBSERVED` source. |
+
+**Neither is the movement gate.** Both are the halves that can be checked
+without a person. The half that cannot is a physical **Arm Live** click
+followed by a physical **Ctrl+N** with Roblox focused, and it has not happened.
+`GAME_MOTION_CONFIRMED` has never been observed.
 
 ---
 
@@ -262,7 +338,7 @@ not validated".
 |---|---|---|
 | E-VIEW | **partial** | Fit ran against the live client through the production setup path on **four consecutive runs** (fifth pass): 1280×720 pt / 2560×1440 px every time, origin preserved, exactly one capture restart per run, re-stabilized in five fresh matching frames, window restored exactly. One display, one DPI, one OS. Needs the DPI/display matrix and Windows. |
 | E-ANCHOR | pending | Reviewer-labelled avatar control pivot across sessions. The runtime *reference check* (heading stability with the screen anchor, measured jitter recorded) is a different and weaker claim and never presented as this gate. |
-| E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded labelling. |
+| E-FORWARD | pending | **Physically armed** bounded `W` pulses with blinded labelling. The machinery for it now exists and runs automatically as the `VERIFY_INPUT` stage — one ~160 ms pulse, judged only against frames captured after its own down edge, against an idle noise floor measured seconds earlier. What is missing is a human pressing Arm and Ctrl+N; nothing here can supply that. |
 | E-DIR-IDEAL | pending | Manual masks plus aligned-zero outcome trials. |
 | E-PROF | **pending, with regression evidence** | A real corpus exists and the eval split is a regression gate (`tests/test_corpus.py`). It is one session, one map, one machine, with the previous overlay drawn on most arrows. Needs a second, separately held-out recording of a live session with Shadow running (Start Diagnostic Recording). |
 | E-DIR-E2E | **pending, with regression evidence** | Same corpus; headings are reviewer-read to about ±12°, which cannot certify a 10° p95. |
@@ -499,19 +575,34 @@ screen. Nothing before step 4 sends input.
    or three minutes — turning, grass, water, sand, standing under the arrow.
    This is the held-out session E-PROF needs. Press **Stop & Release All
    Input**; a trace lands beside the logs and the recording under recordings/.
-4. **Only with a hand on F2**, and only in a private server on open ground:
-   press **Arm Live**, focus Roblox, press **F1**. The first seconds are
-   stationary while it confirms the camera mode and measures the turn
-   actuator; the LIVE READOUT's *Turning by* row should change from
-   `not measured` to `arrow keys` or `mouse yaw`. Then let it align and walk
-   for no more than thirty seconds and press **F2**.
+4. **Only with a hand on Ctrl+X**, and only in a private server on open
+   ground: press **Arm Live**, focus Roblox, press **Ctrl+N**. Watch the
+   guidance line, which now names each armed stage:
+
+   * *Testing whether Roblox accepts a key* — one ~160 ms forward pulse. The
+     character may twitch. If it says the game is not acting on the key, stop
+     here and send the trace: nothing after this can work.
+   * *Checking the camera control mode*, then *Measuring how the camera turns*
+     — stationary. The LIVE READOUT's *Turning by* row should change from
+     `not measured` to `arrow keys` or `mouse yaw`.
+   * *Navigating — your character is moving* — and only now is it moving.
+
+   Let it walk for no more than thirty seconds and press **Ctrl+X**.
 
 Send back: the trace file, the recording directory, one line about the size
-the window ended up, the *Turning by* value, and anything the character did
-that you did not expect.
+the window ended up, the *Turning by* value, the title bar (it carries the
+commit and process id), and anything the character did that you did not
+expect.
 
-**If step 4 goes wrong in any way, F2 is always live** and releases every key,
-both turn keys, and the mouse buttons, without consulting focus.
+**If step 4 goes wrong in any way, Ctrl+X is always live** and releases every
+key, both turn keys, and the mouse buttons, without consulting focus.
+
+**Before step 4, one minute that needs no arming.** Run
+`.venv/bin/python treasure.py --hotkey-test 30` and press **Ctrl+N** while it
+runs. It prints every key edge it normalizes and every chord that completes.
+This mode cannot arm anything and cannot press anything — it submits to a list,
+not to the coordinator. If Ctrl+N does not appear there, nothing in step 4 can
+work and the trace from step 4 will not say why.
 
 ### Windows — everything, from scratch
 
