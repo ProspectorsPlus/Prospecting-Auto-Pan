@@ -81,6 +81,7 @@ from prospector_engine.motion import (
     RuntimeBaselineEstimator,
     estimate_lk_affine,
 )
+from prospector_engine.movement import DesiredMovement, MovementOutcome
 from prospector_engine.steering import ArrowFollowerController, SteeringInputs
 from prospector_engine.trace import FrameTrace, PerceptionTiming
 from prospector_engine.turning import TurnBackend, TurnPlan, TurnResponse
@@ -1623,7 +1624,12 @@ def make_live_worker(
 
         if prologue is not None:
             outcome = prologue(context, pipeline)
-            session.release_navigation("prologue-complete")
+            # ``stop_moving``, not ``release_navigation``. This line runs on
+            # the *success* path of every healthy Live start, and while it used
+            # the full release floor it closed admission for the rest of the
+            # mode session - so the navigation loop three lines below could
+            # never press anything, on any machine, ever (D-067).
+            session.stop_moving("prologue-complete")
             if not outcome.ok:
                 return ModeResult(
                     ModeResultKind.FAILED,
@@ -1678,39 +1684,39 @@ def make_live_worker(
                 # different facts and the dashboard must not merge them.
                 context.on_movement(displacement_norm=float(sample.forward_speed_norm or 0.0))
             if decision.release or decision.command is None:
-                session.release_navigation(decision.reason)
+                # An ordinary stop. It lifts the keys and leaves the session
+                # able to press again on the very next frame.
+                session.stop_moving(decision.reason)
                 navigator.note_released(now_s=now)
                 witness.note_command(forward_held=False, at_s=now)
                 context.on_movement(blocked_reason=decision.reason)
                 return CommandVisualization.released(detail=decision.reason, live=True)
-            outcome = session.apply_navigation_command(
-                decision.command, envelope.evidence_token
-            )
-            navigator.note_applied(outcome, now_s=now)
-            # Built from the authority's own answer - its status and the leases
-            # it reports holding - never from the command that was requested.
+
+            # One call, level-triggered: the actuator works out the edges.
+            moved = session.apply_command(decision.command)
+            held_forward = InputKey.W in moved.held
+            # Built from what the actuator reports it is *physically holding*,
+            # never from the command that was requested.
             #
-            # motion_confirmed answers a different question from "did the
-            # authority apply it", and the two are only the same when nothing
-            # is wrong. An estimator that abstains reports None, which is not
-            # the same claim as "nothing moved": holding W against a wall and
-            # having no motion estimate are different facts.
-            view = CommandVisualization.for_live(
-                decision.command, outcome, motion_confirmed=confirmed
+            # motion_confirmed answers a different question from "is the key
+            # down", and the two are only the same when nothing is wrong. An
+            # estimator that abstains reports None, which is not the claim
+            # "nothing moved": holding W against a wall and having no motion
+            # estimate are different facts.
+            view = CommandVisualization.for_movement(
+                decision.command, moved, motion_confirmed=confirmed
             )
-            witness.note_command(
-                forward_held=outcome.applied and "w" in outcome.leases_held, at_s=now
-            )
-            if not outcome.applied:
-                session.release_navigation(f"apply-rejected:{outcome.detail}")
-                context.on_movement(blocked_reason=f"{outcome.status.name}: {outcome.detail}")
+            witness.note_command(forward_held=held_forward, at_s=now)
+            if moved.block.blocking:
+                navigator.note_released(now_s=now)
+                context.on_movement(blocked_reason=moved.block.value)
                 return view
             context.on_movement(blocked_reason="")
             # The baseline is learned from frames where forward was genuinely
-            # applied - the authority's answer, never the request.
+            # down - the actuator's answer, never the request.
             observed = baseline.observe(
                 result.inputs.motion,
-                forward_applied="w" in outcome.leases_held,
+                forward_applied=held_forward,
                 held_ms=navigator.progress.ledger.held_continuously_for(now) * 1000.0,
                 config=contact_config,
             )
@@ -1896,58 +1902,40 @@ class _LiveControlPort:
         self._sequence = frame.sequence
         self._latest_frame = frame
         self._envelope = envelope
-        if self._forward_held and monotonic_s() < self._forward_until_s:
-            renewal = self._issue(
-                forward_axis=1,
-                turn_axis=0,
-                yaw_delta_px=0,
-                reason="input acceptance: holding forward",
-            )
-            # A refused renewal means the key is coming up; stop claiming it is
-            # down rather than letting the probe measure a hold that ended.
-            self._forward_held = renewal is not None and renewal.applied
+        if self._forward_held:
+            # Nothing to renew: the actuator is holding the key, and will go on
+            # holding it until this object says otherwise or its watchdog lifts
+            # it. What used to live here was a renewal chain that existed only
+            # because no single command could outlive one frame's evidence.
+            session = self._context.navigation
+            self._forward_held = session is not None and InputKey.W in session.movement.held
         result = self._pipeline.analyze(frame, map_id="acceptance", approach_valid=False)
         self._latest = result
         return MotionSample(frame.sequence, frame.captured_at_s, result.inputs.motion)
 
     def _issue(
         self, *, forward_axis: int, turn_axis: int, yaw_delta_px: int, reason: str
-    ) -> NavigationApplyResult | None:
-        """One command against the newest frame, inside its own evidence budget.
+    ) -> MovementOutcome | None:
+        """Set the keyboard to one desired state. ``None`` if there is no session.
 
-        ``None`` when there is nothing to build a command from yet.
-
-        The lease is clamped to the frame's own budget rather than to what the
-        caller asked for. A command that outlives its evidence is refused
-        outright - ``REJECTED_EVIDENCE, "command lease exceeds evidence age"``
-        - so asking for a 160 ms hold from a single command does not produce a
-        short press, it produces no press at all.
+        This used to build a whole :class:`NavigationCommand` against the newest
+        frame, clamp its lease to that frame's remaining evidence budget, and
+        hand it to the evidence machinery - which meant a probe could not
+        express a hold longer than about 80 ms, and after the first release in
+        a session could not express one at all. It is now a level: say what
+        should be down, and the actuator holds it until told otherwise.
         """
         session = self._context.navigation
-        envelope = self._envelope
-        frame = self._latest_frame
-        if session is None or envelope is None or frame is None:
+        if session is None:
             return None
-        now = monotonic_s()
-        budget_s = session.evidence_budget_s
-        valid_until = min(now + budget_s, frame.captured_at_s + budget_s)
-        if valid_until <= now:
-            return None  # the frame is already older than its own budget
-        command = NavigationCommand(
-            generation=self._context.generation,
-            source_frame_sequence=frame.sequence,
-            source_captured_at_s=frame.captured_at_s,
-            forward_axis=forward_axis,  # type: ignore[arg-type]
-            lateral_axis=0,
-            jump=False,
-            yaw_delta_px=yaw_delta_px,
-            turn_axis=turn_axis,  # type: ignore[arg-type]
-            issued_at_s=now,
-            valid_until_s=valid_until,
-            reason=reason,
-            kind=CommandKind.FOLLOW if forward_axis else CommandKind.ALIGN,
+        return session.move(
+            DesiredMovement(
+                forward=forward_axis,
+                turn=turn_axis,
+                yaw_px=yaw_delta_px,
+                reason=reason,
+            )
         )
-        return session.apply_navigation_command(command, envelope.evidence_token)
 
     def request_forward(self, hold_ms: int) -> ForwardRequest:
         """Press ``W`` and keep it down. The only place this object presses it.
@@ -1967,17 +1955,17 @@ class _LiveControlPort:
             reason="input acceptance: bounded forward hold",
         )
         if outcome is None:
-            return ForwardRequest(False, (), "no live session or no frame yet", now)
-        self._forward_held = outcome.applied and "w" in outcome.leases_held
+            return ForwardRequest(False, (), "no live session", now)
+        self._forward_held = InputKey.W in outcome.held
         self._forward_until_s = (
             now + min(self.MAX_FORWARD_PULSE_MS, max(1, hold_ms)) / 1000.0
             if self._forward_held
             else 0.0
         )
         return ForwardRequest(
-            applied=outcome.applied,
-            leases_held=outcome.leases_held,
-            detail=outcome.detail or outcome.status.name,
+            applied=self._forward_held,
+            leases_held=tuple(sorted(key.value for key in outcome.held)),
+            detail=outcome.block.value or outcome.detail or "forward is down",
             edge_at_s=now,
         )
 
@@ -2072,7 +2060,7 @@ class _LiveControlPort:
                 yaw_delta_px=delta,
                 reason=f"setup probe: {backend.label} {units:+d}",
             )
-            if outcome is None or not outcome.applied:
+            if outcome is None or outcome.block.blocking:
                 detail = "no frame yet" if outcome is None else outcome.detail
                 journal.note(LifecycleStage.TURN_UNAVAILABLE, detail, backend=backend_value)
                 self._context.on_status(f"probe refused: {detail}")
@@ -2091,7 +2079,7 @@ class _LiveControlPort:
         hold_ms = min(self.MAX_PROBE_HOLD_MS, max(1, abs(units)))
         reason = f"setup probe: {backend.label} {units:+d}"
         outcome = self._issue(forward_axis=0, turn_axis=axis, yaw_delta_px=0, reason=reason)
-        if outcome is None or not outcome.applied:
+        if outcome is None or outcome.block.blocking:
             detail = "no frame yet" if outcome is None else outcome.detail
             journal.note(LifecycleStage.TURN_UNAVAILABLE, detail, backend=backend_value)
             self._context.on_status(f"probe refused: {detail}")
@@ -2113,7 +2101,7 @@ class _LiveControlPort:
             if self._refresh_frame(timeout_s=0.05) is None:
                 continue
             renewal = self._issue(forward_axis=0, turn_axis=axis, yaw_delta_px=0, reason=reason)
-            if renewal is None or not renewal.applied:
+            if renewal is None or renewal.block.blocking:
                 break
         self.release_turn()
         return True

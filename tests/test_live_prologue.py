@@ -25,15 +25,14 @@ import numpy as np
 from prospector_engine.autosetup import AutomaticSetup, ControlModeSample, SetupConfig
 from prospector_engine.contracts import (
     Cancellation,
-    CommandKind,
     EvidenceStatus,
+    InputKey,
     ModeResultKind,
-    NavigationApplyResult,
-    NavigationApplyStatus,
     NavigationCommand,
+    monotonic_s,
 )
 from prospector_engine.coordinator import WorkerContext
-from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
+from prospector_engine.lifecycle import LifecycleJournal
 from prospector_engine.navigation import (
     NavigationCapabilities,
     PerceptionPipeline,
@@ -67,14 +66,19 @@ FAST = SetupConfig(
 
 @dataclass
 class Session:
-    """Records what the prologue asked the authority to do.
+    """A **real** :class:`MovementActuator` over a port that records edges.
 
-    It notes ``OS_EDGE_POSTED`` and ``LEASE_HELD`` into the journal because the
-    real ``InputAuthority`` does, and the acceptance probe reads the journal to
-    tell "the post never happened" from "the game ignored it".
+    It used to reimplement the authority's admission rules by hand - the
+    evidence budget, which target counts as a down edge, when a renewal is a
+    renewal - and it drifted from them, which hid a real defect: a 160 ms pulse
+    was refused outright by the real authority while this fake reported it
+    applied. A fake laxer than the thing it stands in for is worse than no fake
+    at all.
+
+    There is no longer enough machinery to be worth faking. The actuator is
+    small, so this uses the real one and fakes only the platform underneath it.
     """
 
-    commands: list[NavigationCommand] = field(default_factory=list)
     releases: list[str] = field(default_factory=list)
     refuse: bool = False
     posts: bool = True
@@ -82,60 +86,94 @@ class Session:
     on_applied: Any = None
     on_released: Any = None
     lifecycle: LifecycleJournal = field(default_factory=LifecycleJournal)
-    _down: set[str] = field(default_factory=set)
-    _edges: int = 0
-
-    #: The authority's own budget. The fake enforces it because not enforcing
-    #: it hid a real defect: a 160 ms pulse built from one command is refused
-    #: outright by the real authority - "command lease exceeds evidence age" -
-    #: so the probe never pressed anything, and this fake happily reported it
-    #: applied. A fake that is laxer than the thing it stands in for is worse
-    #: than no fake at all.
+    #: Kept because the navigator still refuses to *decide* on a stale frame.
+    #: It is no longer a precondition on a key edge (D-067).
     evidence_budget_s: float = 0.1
+    _port: Any = None
+    _actuator: Any = None
 
-    def apply_navigation_command(self, command: NavigationCommand, evidence: Any) -> Any:
-        del evidence
-        self.commands.append(command)
-        if self.refuse:
-            return NavigationApplyResult(NavigationApplyStatus.REJECTED_FOCUS, "not focused")
-        if command.valid_until_s > command.source_captured_at_s + self.evidence_budget_s:
-            over_ms = (
-                command.valid_until_s - command.source_captured_at_s - self.evidence_budget_s
-            ) * 1000.0
-            return NavigationApplyResult(
-                NavigationApplyStatus.REJECTED_EVIDENCE,
-                f"command lease exceeds evidence age by {over_ms:.0f} ms",
-            )
-        held = []
-        if command.turn_axis == -1:
-            held.append("left")
-        elif command.turn_axis == 1:
-            held.append("right")
-        if command.forward_axis == 1:
-            held.append("w")
-        if self.posts:
-            for target in held:
-                # Only the *first* command for a target is a down edge; the
-                # rest renew it, exactly as the real authority does.
-                if target not in self._down:
-                    self._down.add(target)
-                    self._edges += 1
-                    self.lifecycle.note(LifecycleStage.OS_EDGE_POSTED, target, target=target)
-                    self.lifecycle.note(LifecycleStage.LEASE_HELD, target, target=target)
+    def __post_init__(self) -> None:
+        from prospector_engine.movement import MovementActuator
+
+        self._port = _EdgeRecorder(posts=self.posts)
+        self._actuator = MovementActuator(
+            self._port,
+            deadman=None,
+            focus_probe=(lambda: not self.refuse),
+            journal=self.lifecycle,
+        )
+        self._actuator.start_watchdog()
+        self._actuator.arm("prologue test")
+
+    @property
+    def movement(self) -> Any:
+        return self._actuator
+
+    def move(self, desired: Any) -> Any:
+        self._port.posts = self.posts
+        self._port.requests.append(desired)
+        outcome = self._actuator.apply(desired)
         if self.on_applied is not None:
-            self.on_applied(command)
-        return NavigationApplyResult(NavigationApplyStatus.APPLIED, command.reason, tuple(held))
+            self.on_applied(desired)
+        return outcome
+
+    def apply_command(self, command: NavigationCommand | None) -> Any:
+        from prospector_engine.movement import desired_from_command
+
+        return self.move(desired_from_command(command))
 
     @property
     def down_edges(self) -> int:
-        """Physical key presses, as opposed to commands. A hold is one press."""
-        return self._edges
+        """Physical key presses, as opposed to requests. A hold is one press."""
+        return self._actuator.edge_counts[0]
+
+    @property
+    def commands(self) -> list[Any]:
+        return self._port.requests
+
+    def stop_moving(self, reason: str) -> Any:
+        self.releases.append(reason)
+        released = self._actuator.release_held(reason)
+        if self.on_released is not None:
+            self.on_released(reason)
+        return released
 
     def release_navigation(self, reason: str) -> Any:
         self.releases.append(reason)
-        self._down.clear()
+        self._actuator.release_all(reason)
         if self.on_released is not None:
             self.on_released(reason)
+
+
+class _EdgeRecorder:
+    """The smallest platform a real actuator can drive. Records, never posts."""
+
+    def __init__(self, posts: bool = True) -> None:
+        self.posts = posts
+        self.edges: list[tuple[str, str]] = []
+        self.requests: list[Any] = []
+        self.deltas: list[int] = []
+
+    def key_code(self, key: Any) -> int:
+        return {"w": 13, "a": 0, "s": 1, "d": 2, "left": 123, "right": 124, "space": 49}[
+            key.value
+        ]
+
+    def _name(self, code: int) -> str:
+        return {13: "w", 0: "a", 1: "s", 2: "d", 123: "left", 124: "right", 49: "space"}[code]
+
+    def raw_key_down(self, code: int) -> None:
+        if not self.posts:
+            # The game that never receives the edge: the post "succeeds" and
+            # nothing downstream ever sees the key.
+            return
+        self.edges.append(("down", self._name(code)))
+
+    def raw_key_up(self, code: int) -> None:
+        self.edges.append(("up", self._name(code)))
+
+    def raw_pointer_delta(self, dx: int, dy: int, held: Any = None) -> None:
+        self.deltas.append(dx)
 
 
 @dataclass
@@ -229,20 +267,22 @@ class Capture:
         )
         return self._registry.envelope_for(frame)
 
-    def absorb(self, command: NavigationCommand) -> None:
+    def absorb(self, desired: Any) -> None:
         """Adopt what is *held* now. A hold is a state, not an impulse.
 
-        The earlier fake added rotation per accepted command, which made a
+        It takes a :class:`~prospector_engine.movement.DesiredMovement`, which
+        is the same shape this always wanted: a level, not an impulse. An
+        earlier fake added rotation per accepted *command*, which made a
         renewal chain look like a burst of separate presses and rotated the
         camera by the whole hold on every renewal. A real key rotates for as
         long as it is down, once - so that is what this models.
         """
-        self.walking = command.forward_axis == 1
-        if command.yaw_delta_px:
-            self.pending += command.yaw_delta_px
-        if command.turn_axis and not self.held_turn:
+        self.walking = desired.forward == 1
+        if desired.yaw_px:
+            self.pending += desired.yaw_px
+        if desired.turn and not self.held_turn:
             self.probes_seen += 1
-        self.held_turn = command.turn_axis
+        self.held_turn = desired.turn
 
     def released(self, _reason: str) -> None:
         self.walking = False
@@ -330,22 +370,19 @@ def test_an_unverified_control_mode_stops_before_a_single_camera_probe() -> None
     # The acceptance pulse ran and passed - that is the stage before this one -
     # and no *camera* probe was issued after the mode failed to confirm.
     assert capture.probes_seen == 0, "a camera probe was issued before the mode was confirmed"
-    assert all(command.turn_axis == 0 for command in session.commands)
-    assert all(command.yaw_delta_px == 0 for command in session.commands)
+    assert all(desired.turn == 0 for desired in session.commands)
+    assert all(desired.yaw_px == 0 for desired in session.commands)
     assert session.releases, "the worker released on the way out"
 
 
-def test_the_prologue_presses_forward_once_and_holds_it_by_renewing() -> None:
-    """One press, many renewals - and that distinction is the whole defect.
+def test_the_prologue_presses_forward_once_and_holds_it() -> None:
+    """One press, and no second edge for as long as it is held.
 
-    No command may outlive its own evidence, so the longest hold a *single*
-    command can express is the evidence budget minus the age the frame already
-    had: about 80 ms, and a 160 ms request is not shortened, it is refused
-    outright. A hold is therefore the same command re-issued against each newer
-    frame, which the authority turns into a renewal with no second down edge.
-
-    So the assertion is on *edges*, not on commands: exactly one W press, held
-    across many commands, released before the prologue returns.
+    This used to say "one press, many renewals", because no command could
+    outlive its own evidence and a hold had to be re-issued against every newer
+    frame. The renewal chain is gone (D-067): the actuator is told what should
+    be down and holds it until told otherwise, so the assertion is simply that
+    forward went down once and came up once.
     """
     session, capture = Session(), Capture()
     worker = make_live_worker(
@@ -358,34 +395,19 @@ def test_the_prologue_presses_forward_once_and_holds_it_by_renewing() -> None:
 
     assert session.commands, "the prologue never probed at all"
     assert capture.probes_seen > 0, "no probe reached the simulated camera"
-    forward = [command for command in session.commands if command.forward_axis == 1]
-    assert forward, "forward was never pressed at all"
-    assert all(command.kind is CommandKind.FOLLOW for command in forward)
-    assert session.down_edges >= 1
-
-    # Every one of them fits inside its own frame's evidence budget, which is
-    # what makes the chain acceptable to the real authority rather than
-    # rejected as "command lease exceeds evidence age". How *many* there are
-    # depends on how fast frames arrive, so the length of the chain is pinned
-    # deterministically in ``test_forward_is_held_by_renewing_not_by_one_lease``
-    # rather than here, where it would be measuring the machine.
-    for command in forward:
-        span_s = command.valid_until_s - command.source_captured_at_s
-        assert span_s <= session.evidence_budget_s + 1e-9, f"{span_s * 1000:.0f} ms lease"
-
-    assert capture.walking is False, "forward was still held when the prologue returned"
-    assert all(command.jump is False for command in session.commands)
-    assert all(command.lateral_axis == 0 for command in session.commands)
+    assert any(desired.forward == 1 for desired in session.commands), "forward never pressed"
+    downs = [key for kind, key in session._port.edges if kind == "down" and key == "w"]
+    assert len(downs) == 1, f"forward was pressed {len(downs)} times for one hold"
+    assert session.movement.empty, "the prologue returned still holding a key"
 
 
-def test_forward_is_held_by_renewing_not_by_one_lease() -> None:
-    """The renewal chain, pinned where the machine cannot affect the answer.
+def test_forward_stays_down_across_frames_without_a_second_edge() -> None:
+    """The hold is a level, not a chain, and pumping frames adds no edges.
 
-    A single command's lease may not outlive its evidence, so the longest hold
-    one command can express is the budget minus the age the frame already had -
-    about 80 ms in production, and a 160 ms request is not shortened but
-    *refused*. Driven directly here, with the port's own paced frames, so the
-    length of the chain is a property of the code and not of the load.
+    The old shape needed one command per frame to keep W down, and the test
+    asserted there were *many* of them. Needing a fresh command every frame to
+    keep a key down is the defect, not the feature: it is what made a hold as
+    short as the pipeline was slow.
     """
     from prospector_engine.navigation import _LiveControlPort
 
@@ -397,34 +419,27 @@ def test_forward_is_held_by_renewing_not_by_one_lease() -> None:
         fingerprint_factory=lambda: FINGERPRINT,
         control_mode_probe=lambda _frame: ControlModeSample(True, 0.9, "pointer", "test"),
     )
-    port.next_motion(0.05)  # adopt a frame to build the first command from
+    port.next_motion(0.05)
 
     request = port.request_forward(250)
     assert request.holds_forward, request.detail
     assert session.down_edges == 1, "the press should be one edge"
 
-    # Pumping frames is what renews it; each is a fresh evidence token.
     for _ in range(8):
         port.next_motion(0.1)
 
-    forward = [command for command in session.commands if command.forward_axis == 1]
-    assert len(forward) > 1, "forward was tapped once, not held by renewal"
-    assert session.down_edges == 1, "a renewal must not press the key again"
-    for command in forward:
-        span_s = command.valid_until_s - command.source_captured_at_s
-        assert span_s <= session.evidence_budget_s + 1e-9, f"{span_s * 1000:.0f} ms lease"
-
-    # The chain spans longer than any single command's lease could have.
-    held_s = forward[-1].issued_at_s - forward[0].issued_at_s
-    assert held_s > session.evidence_budget_s, "the chain held nothing extra"
-
-    port.release_forward("test")
-    assert capture.walking is False
+    assert session.down_edges == 1, "pumping frames re-pressed a key that was already down"
+    assert InputKey.W in session.movement.held, "the hold did not survive eight frames"
+    port.release_forward("done")
+    assert session.movement.empty
 
 
-def test_a_renewal_that_is_refused_stops_claiming_the_key_is_down() -> None:
-    """A refused renewal means the key is coming up. Saying otherwise would
-    have the probe measure a hold that had already ended."""
+def test_a_hold_the_actuator_dropped_stops_being_claimed() -> None:
+    """If the key is no longer down, the probe must stop saying it is.
+
+    Otherwise it measures a hold that had already ended, and reports the
+    absence of movement as the game ignoring a key that was not being pressed.
+    """
     from prospector_engine.navigation import _LiveControlPort
 
     session, capture = Session(), Capture()
@@ -438,29 +453,26 @@ def test_a_renewal_that_is_refused_stops_claiming_the_key_is_down() -> None:
     port.next_motion(0.05)
     assert port.request_forward(400).holds_forward
 
+    # Another window comes to the front: the watchdog lifts everything.
+    # The frontmost reading is cached for a beat, so wait past it rather than
+    # racing the very caching that keeps the probe off the hot path.
     session.refuse = True
+    time.sleep(session.movement.FOCUS_CACHE_S * 2)
+    session.movement.poll()
     port.next_motion(0.1)
-    assert port._forward_held is False
 
-    before = len([c for c in session.commands if c.forward_axis == 1])
-    port.next_motion(0.1)
-    after = len([c for c in session.commands if c.forward_axis == 1])
-    assert after == before, "it kept renewing a hold that had been refused"
+    assert port._forward_held is False
+    assert session.movement.empty
 
 
 def test_a_camera_probe_is_held_for_the_duration_the_ladder_asked_for() -> None:
-    """The probes were taps because a command cannot outlive its evidence.
+    """The probes were taps because a command could not outlive its evidence.
 
-    ``key_probe_ms`` climbs to 320 ms, and none of it was reachable: the lease
+    ``key_probe_ms`` climbs to 320 ms and none of it was reachable: the lease
     was clamped to the frame's budget, so every rung above about 80 ms sent the
-    same short press. A camera that needs a real press to move could not answer
-    any of them, and the backend was written off as unproven.
-
-    Driven directly rather than through the characterizer, because the ladder
-    stops as soon as the camera answers and a test that measured the number of
-    probes would be measuring how cooperative the fake is.
+    same short press, and a camera that needs a real press to move could not
+    answer any of them. Now it is one press held for the asked-for duration.
     """
-
     session, capture = Session(), Capture()
     context = _context(session, capture)
     port = _LiveControlPort(
@@ -469,93 +481,18 @@ def test_a_camera_probe_is_held_for_the_duration_the_ladder_asked_for() -> None:
         fingerprint_factory=lambda: FINGERPRINT,
         control_mode_probe=lambda _frame: ControlModeSample(True, 0.9, "pointer", "test"),
     )
-    port.next_motion(0.05)  # adopt a frame to build the first command from
+    port.next_motion(0.05)
 
-    hold_ms = 200
-    assert port.emit_turn(TurnBackend.ARROW_KEYS.value, hold_ms) is True
+    started = monotonic_s()
+    assert port.emit_turn(TurnBackend.ARROW_KEYS.value, 200) is True
+    elapsed_ms = (monotonic_s() - started) * 1000.0
 
-    turns = [command for command in session.commands if command.turn_axis]
-    assert len(turns) > 1, "the probe was one command - it was tapped, not held"
-    assert all(command.turn_axis == turns[0].turn_axis for command in turns)
-
-    # Every command fits its own frame's budget, which is what the authority
-    # requires; the *chain* is what holds the key past it.
-    for command in turns:
-        span_s = command.valid_until_s - command.source_captured_at_s
-        assert span_s <= session.evidence_budget_s + 1e-9, f"{span_s * 1000:.0f} ms lease"
-
-    held_s = turns[-1].issued_at_s - turns[0].issued_at_s
-    assert held_s >= (hold_ms / 1000.0) * 0.5, f"held only {held_s * 1000:.0f} ms of {hold_ms}"
-    assert session.releases, "the probe returned without releasing the key"
-    assert capture.held_turn == 0
-
-
-def test_a_game_that_takes_the_key_and_does_nothing_stops_before_the_camera() -> None:
-    """The stage that made the thirty-second timeout unnecessary.
-
-    Characterizing a camera turn assumes the game is acting on our input. When
-    it is not, that stage spends its whole deadline proving nothing and reports
-    a timeout - which names the wrong problem. One pulse answers it first.
-    """
-    session, capture = Session(), Capture(walks=False)
-    worker = make_live_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
-        lambda: NavigationCapabilities.observing(os_name="test", profile_id="green_arrow_v1"),
-        prologue=_prologue(),
-    )
-
-    result = worker(_context(session, capture))
-
-    assert result.kind is ModeResultKind.FAILED
-    assert "not acting on the key" in result.detail
-    assert capture.probes_seen == 0, "the camera was probed anyway"
-    assert session.lifecycle.reached(LifecycleStage.GAME_MOTION_NOT_CONFIRMED)
-    assert capture.walking is False
-
-
-def test_an_edge_the_os_never_registered_is_named_as_such() -> None:
-    session, capture = Session(key_state_down=False), Capture()
-    worker = make_live_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
-        lambda: NavigationCapabilities.observing(os_name="test", profile_id="green_arrow_v1"),
-        prologue=_prologue(),
-    )
-
-    result = worker(_context(session, capture))
-
-    assert result.kind is ModeResultKind.FAILED
-    assert "does not report the key as down" in result.detail
-    assert session.lifecycle.reached(LifecycleStage.OS_EDGE_LOOPBACK_MISSING)
-    assert capture.probes_seen == 0
-
-
-def test_a_probe_that_is_refused_stops_rather_than_pretending_it_landed() -> None:
-    session, capture = Session(refuse=True), Capture()
-    worker = make_live_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
-        lambda: NavigationCapabilities.observing(os_name="test", profile_id="green_arrow_v1"),
-        prologue=_prologue(),
-    )
-
-    result = worker(_context(session, capture))
-
-    assert result.kind is ModeResultKind.FAILED
-    assert session.releases
-
-
-def test_a_camera_that_never_moves_fails_closed_and_releases() -> None:
-    session, capture = Session(), Capture(responds=False)
-    worker = make_live_worker(
-        lambda: PerceptionPipeline(segmenter=ArrowSegmenter(PROFILE)),
-        lambda: NavigationCapabilities.observing(os_name="test", profile_id="green_arrow_v1"),
-        prologue=_prologue(),
-    )
-
-    result = worker(_context(session, capture))
-
-    assert result.kind is ModeResultKind.FAILED
-    assert session.releases
-    assert "turn" in result.detail.lower() or "camera" in result.detail.lower()
+    turn_downs = [
+        key for kind, key in session._port.edges if kind == "down" and key in ("left", "right")
+    ]
+    assert len(turn_downs) == 1, f"the probe pressed {len(turn_downs)} times, not once"
+    assert elapsed_ms >= 150, f"the probe only lasted {elapsed_ms:.0f} ms of the 200 asked for"
+    assert session.movement.empty, "the probe returned still holding the key"
 
 
 def test_a_probe_command_never_uses_two_turn_actuators() -> None:
@@ -569,8 +506,8 @@ def test_a_probe_command_never_uses_two_turn_actuators() -> None:
     worker(_context(session, capture))
 
     assert session.commands
-    for command in session.commands:
-        assert not (command.turn_axis != 0 and command.yaw_delta_px != 0)
+    for desired in session.commands:
+        assert not (desired.turn != 0 and desired.yaw_px != 0)
 
 
 def test_a_key_probe_is_never_longer_than_one_lease() -> None:

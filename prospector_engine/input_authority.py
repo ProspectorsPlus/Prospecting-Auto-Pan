@@ -36,8 +36,6 @@ from prospector_engine.contracts import (
     InputKey,
     LeaseHandle,
     MouseButton,
-    NavigationApplyResult,
-    NavigationApplyStatus,
     NavigationCommand,
     Provenance,
     ReleaseReport,
@@ -47,6 +45,13 @@ from prospector_engine.contracts import (
 )
 from prospector_engine.geometry import ViewportGeometry
 from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
+from prospector_engine.movement import (
+    DesiredMovement,
+    MovementActuator,
+    MovementLimits,
+    MovementOutcome,
+    desired_from_command,
+)
 from prospector_engine.ports import PlatformPort
 
 __all__ = [
@@ -427,18 +432,27 @@ class ServiceInputSession:
 class NavigationInputSession:
     """The *only* navigation input path (plan 4.3).
 
-    ``apply_navigation_command`` atomically validates an authority-issued
-    ``EvidenceToken`` before translating the accepted axes/jump/yaw into
-    bounded leases. There is no generic hold/tap/pointer method here.
+    :meth:`move` is the whole interface: the caller says what it wants held and
+    the :class:`~prospector_engine.movement.MovementActuator` makes the keyboard
+    match. There is no generic hold/tap/pointer method here.
 
-    **A key is held by renewing, never by asking for a long lease.** No single
-    command may outlive its own evidence, so the longest hold one command can
-    express is ``evidence_budget_s`` minus the age the frame already had when
-    the decision was taken - about 80 ms in practice. That is a tap. A hold is
-    the same command re-issued against each newer frame: the authority renews
-    the existing lease and emits no second down-edge, so the key stays
-    physically down for as long as fresh frames keep arriving, and the deadman
-    still lifts it within one rolling horizon of the last renewal.
+    **What replaced ``apply_navigation_command``, and why (D-067).** That method
+    validated an authority-issued ``EvidenceToken`` by object identity and then
+    ten further properties of it - run id, generation, frame sequence, capture
+    timestamp, capture *duration*, strict ordering, two age budgets, viewport
+    identity - before a key could go down, and re-ran a nine-condition
+    ``_validate_for_press`` twice around a synchronous round-trip to a separate
+    process. All of it per frame, per key.
+
+    It never once succeeded on the owner's machine. Not "succeeded and the
+    character did not move": ``OS_EDGE_POSTED`` - recorded the instant
+    ``CGEventPost`` returns - never appeared in a single runtime trace. The
+    Quartz call underneath was measured to work perfectly with an inert
+    keycode, so the whole of the failure was in the admission test above it.
+
+    The safety that mattered is kept, and it is kept where it belongs: as
+    conditions that *release*, checked by an independent watchdog thread, rather
+    than as conditions that refuse a press. See :mod:`prospector_engine.movement`.
     """
 
     def __init__(self, authority: InputAuthority, generation: int) -> None:
@@ -451,19 +465,39 @@ class NavigationInputSession:
 
     @property
     def evidence_budget_s(self) -> float:
-        """The longest a command's lease may outlive the frame that justified it.
+        """How stale a frame may be and still justify a *decision*.
 
-        Exposed so a caller can build a command the authority will actually
-        accept instead of discovering the bound as a rejection.
+        Still meaningful, and still enforced - by the navigator, which refuses
+        to steer on a stale frame. It is no longer a precondition on the
+        existence of a key edge, because a key that is already down does not
+        become dangerous when the next screenshot is slow.
         """
         return self._authority.config.max_evidence_age_ms / 1000.0
 
-    def apply_navigation_command(
-        self, command: NavigationCommand, evidence: EvidenceToken
-    ) -> NavigationApplyResult:
-        return self._authority.apply_navigation_command(self._generation, command, evidence)
+    @property
+    def movement(self) -> MovementActuator:
+        return self._authority.movement
+
+    def move(self, desired: DesiredMovement) -> MovementOutcome:
+        """Make the keyboard match ``desired``. Level-triggered; see D-067."""
+        return self._authority.movement.apply(desired)
+
+    def apply_command(self, command: NavigationCommand | None) -> MovementOutcome:
+        """``move`` for callers that already hold a :class:`NavigationCommand`."""
+        return self.move(desired_from_command(command))
+
+    def stop_moving(self, reason: str) -> tuple[InputKey, ...]:
+        """Let go of the movement keys. Does **not** disarm the session.
+
+        The ordinary "stop walking" verb: an arrival candidate, a deadband
+        hold, one occluded frame. It lifts what is held and nothing else, so
+        the next frame can press again - which is the whole difference between
+        this and the release path it replaces (D-067).
+        """
+        return self._authority.movement.release_held(reason)
 
     def release_navigation(self, reason: str) -> ReleaseReport:
+        """The full floor. For worker exit and safety, not for ordinary stops."""
         return self._authority.release_navigation(self._generation, reason)
 
 
@@ -485,6 +519,8 @@ class InputAuthority:
         run_id: str | None = None,
         on_safety_fault: Callable[[SafetyFault], None] | None = None,
         lifecycle: LifecycleJournal | None = None,
+        movement_limits: MovementLimits | None = None,
+        narrate: Callable[[str, str], None] | None = None,
     ) -> None:
         self._port = port
         self._deadman = deadman
@@ -535,7 +571,26 @@ class InputAuthority:
         self._watchdog: threading.Thread | None = None
         self._watchdog_stop = threading.Event()
 
+        #: The navigation actuator. It shares this object's port, helper,
+        #: focus probe and journal, so there is still exactly one thing that
+        #: can press a key and exactly one release floor - but the *movement*
+        #: path through it is Lite's proven one rather than the evidence
+        #: machinery that never posted an edge (D-067).
+        self._movement = MovementActuator(
+            port,
+            deadman=deadman,
+            focus_probe=lambda: self._safe_call(self._health.focus, None),
+            journal=self._lifecycle,
+            narrate=narrate,
+            limits=movement_limits,
+        )
+
     # -- properties -------------------------------------------------------
+    @property
+    def movement(self) -> MovementActuator:
+        """The navigation actuator. Services do not go through it."""
+        return self._movement
+
     @property
     def run_id(self) -> str:
         return self._run_id
@@ -566,12 +621,16 @@ class InputAuthority:
             return self._release_uncertain_reason
 
     def ledger_empty(self) -> bool:
+        """Nothing held, by *either* path. Services lease; navigation actuates."""
         with self._lock:
-            return not self._leases
+            leases_empty = not self._leases
+        return leases_empty and self._movement.empty
 
     def held_targets(self) -> tuple[str, ...]:
+        """Everything down right now, from both the lease ledger and the actuator."""
         with self._lock:
-            return tuple(sorted(entry.target for entry in self._leases.values()))
+            leased = {entry.target for entry in self._leases.values()}
+        return tuple(sorted(leased | set(self._movement.held_targets)))
 
     # -- generation lifecycle --------------------------------------------
     def activate_generation(
@@ -599,14 +658,23 @@ class InputAuthority:
             self._issued_tokens.clear()
             self._consumed_sequences.clear()
             self._last_applied_sequence = -1
+        # The actuator arms with the generation and disarms with it. Shadow
+        # activates with ``emits_input=False`` and therefore cannot press,
+        # which is the same guarantee the ``NoInputSession`` gives - now
+        # enforced in the one object that owns the keys as well.
+        if emits_input:
+            self._movement.arm(f"generation {generation}")
+        else:
+            self._movement.disarm(f"observing at generation {generation}")
 
     def invalidate(self, reason: str) -> None:
-        """Close admission and bump the epoch without emitting edges."""
+        """Close admission and bump the epoch. Disarms the actuator with it."""
         with self._edge_barrier, self._lock:
             self._epoch += 1
             self._admission_open = False
             self._cancellation = None
             self._issued_tokens.clear()
+        self._movement.disarm(reason)
 
     # -- evidence ---------------------------------------------------------
     def register_evidence(self, token: EvidenceToken) -> None:
@@ -626,6 +694,7 @@ class InputAuthority:
 
     # -- watchdog ---------------------------------------------------------
     def start_watchdog(self) -> None:
+        self._movement.start_watchdog()
         if self._watchdog is not None:
             return
         self._watchdog_stop.clear()
@@ -635,13 +704,14 @@ class InputAuthority:
         self._watchdog.start()
 
     def stop_watchdog(self, timeout_s: float = 1.0) -> bool:
+        movement_stopped = self._movement.stop_watchdog(timeout_s)
         self._watchdog_stop.set()
         thread = self._watchdog
         self._watchdog = None
         if thread is None:
-            return True
+            return movement_stopped
         thread.join(timeout_s)
-        return not thread.is_alive()
+        return movement_stopped and not thread.is_alive()
 
     @property
     def watchdog_running(self) -> bool:
@@ -978,15 +1048,29 @@ class InputAuthority:
 
     # -- what is physically happening -------------------------------------
     def edge_counts(self) -> tuple[int, int]:
-        """Down and up edges posted this run. The rattle check reads these."""
-        return (self._down_edges, self._up_edges)
+        """Down and up edges posted this run, across both paths."""
+        moved_down, moved_up = self._movement.edge_counts
+        return (self._down_edges + moved_down, self._up_edges + moved_up)
 
     def last_yaw(self) -> tuple[int, float]:
-        """The last relative yaw actually posted, and when."""
+        """The last relative yaw actually posted, and when.
+
+        Whichever path posted it more recently: services steer the pointer
+        directly, navigation goes through the actuator.
+        """
+        moved_px, moved_at = self._movement.last_yaw
+        if moved_at >= self._last_yaw_at_s:
+            return (moved_px, moved_at)
         return (self._last_yaw_px, self._last_yaw_at_s)
 
     def held_since_s(self, target: str, now_s: float) -> float:
         """How long ``target`` has been *continuously* down. Zero if it is not."""
+        for key in InputKey:
+            if key.value == target:
+                held = self._movement.held_since_s(key, now_s)
+                if held > 0.0:
+                    return held
+                break
         began = self._held_since_s.get(target)
         return 0.0 if began is None else max(0.0, now_s - began)
 
@@ -1054,12 +1138,44 @@ class InputAuthority:
             self._deadman.forget(lease.lease_id)
 
     def release_all(self, reason: str = "stop") -> ReleaseReport:
-        """The complete, idempotent, failure-isolated release floor (plan 4.4)."""
+        """The complete, idempotent, failure-isolated release floor (plan 4.4).
+
+        The movement actuator is lifted **first** and by name, so a Stop that
+        arrives while the navigator is holding W releases it through the object
+        that knows it is held, before the blind vocabulary sweep below runs.
+        Both happen; the sweep is the floor under the floor.
+        """
         attempted: list[str] = []
         failures: list[str] = []
+        movement_held = self._movement.held_targets
+        # Disarm, not merely release: the actuator has its own armed flag and
+        # never consults ``_admission_open``, so a Stop that only lifted its
+        # keys would leave the very next frame free to press again. ``disarm``
+        # uses ``release_held`` rather than the actuator's own vocabulary
+        # sweep, because the sweep below already covers every movement key and
+        # doing it twice doubles the edge count the stop-latency bound is
+        # measured in.
+        self._movement.disarm(reason)
+        attempted.extend(movement_held)
+        if self._movement.release_uncertain:
+            failures.append(f"movement:{self._movement.release_uncertain_reason}")
         with self._edge_barrier:
             with self._lock:
                 self._epoch += 1
+                # This *is* a disarm, and it must stay one: a Stop racing a
+                # press has to stop the press, and closing admission plus
+                # bumping the epoch is what makes the in-flight acquire roll
+                # back instead of landing.
+                #
+                # The bug (D-067) was never that ``release_all`` disarms. It
+                # was that ``release_navigation`` - which the navigator calls
+                # on every ordinary "stop walking": an arrival candidate, a
+                # deadband hold, one occluded frame - was wired to it. Since
+                # ``_admission_open`` is set True in exactly one place,
+                # ``activate_generation``, and only on a mode transition, the
+                # first benign stop muted the session for good. Ordinary stops
+                # now go to ``NavigationInputSession.stop_moving``, which lifts
+                # the keys and leaves the session able to press again.
                 self._admission_open = False
                 entries = list(self._leases.values())
                 self._leases.clear()
@@ -1260,168 +1376,6 @@ class InputAuthority:
         return True
 
     # -- navigation -------------------------------------------------------
-    def apply_navigation_command(
-        self, generation: int, command: NavigationCommand, evidence: EvidenceToken
-    ) -> NavigationApplyResult:
-        """The sole navigation input path.
-
-        Validates the token *by identity* against what the capture registry
-        registered, checks provenance and freshness independently of the
-        worker, then translates the accepted axes into bounded leases.
-        """
-        now = monotonic_s()
-        with self._lock:
-            if generation != self._generation or command.generation != self._generation:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_GENERATION, "stale generation"
-                )
-            token = self._issued_tokens.get(id(evidence))
-            if token is not evidence:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE,
-                    "token not issued by this authority",
-                )
-            if token.run_id != self._run_id or token.generation != self._generation:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "token provenance mismatch"
-                )
-            if token.frame_sequence != command.source_frame_sequence:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "token/command frame mismatch"
-                )
-            if token.captured_at_s != command.source_captured_at_s:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "token/command timestamp mismatch"
-                )
-            if token.duration_ms > self._config.max_capture_duration_ms:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "capture over duration budget"
-                )
-            if token.frame_sequence <= self._last_applied_sequence:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "frame sequence not strictly newer"
-                )
-            max_age_s = self._config.max_evidence_age_ms / 1000.0
-            if now - token.captured_at_s > max_age_s:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "evidence older than budget"
-                )
-            if command.valid_until_s > token.captured_at_s + max_age_s:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE,
-                    "command lease exceeds evidence age",
-                )
-            if now > command.valid_until_s:
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_EVIDENCE, "command already expired"
-                )
-            pinned = self._pinned_rect
-            if pinned is not None and token.viewport_identity != pinned.identity():
-                return NavigationApplyResult(
-                    NavigationApplyStatus.REJECTED_VIEWPORT, "token viewport identity mismatch"
-                )
-            reason = self._validate_for_press(generation)
-            if reason is not None:
-                status = {
-                    "cancelled": NavigationApplyStatus.REJECTED_CANCELLED,
-                    "viewport-invalid": NavigationApplyStatus.REJECTED_VIEWPORT,
-                    "viewport-moved": NavigationApplyStatus.REJECTED_VIEWPORT,
-                }.get(reason)
-                if status is None:
-                    status = (
-                        NavigationApplyStatus.REJECTED_FOCUS
-                        if reason.startswith("focus=")
-                        else NavigationApplyStatus.REJECTED_HEALTH
-                    )
-                return NavigationApplyResult(status, reason)
-            self._last_applied_sequence = token.frame_sequence
-            self._consumed_sequences.add(token.frame_sequence)
-
-        return self._translate_navigation(generation, command)
-
-    def _translate_navigation(
-        self, generation: int, command: NavigationCommand
-    ) -> NavigationApplyResult:
-        """Axes -> leases. Anything not commanded this tick is released.
-
-        A command is **APPLIED only if every required edge succeeded**. If a
-        forward lease could not be taken, the yaw that would have accompanied
-        it is not emitted either: turning while believing the character is
-        walking is a worse state than doing nothing, and reporting success for
-        a half-applied command is how the two get confused.
-        """
-        # The lease horizon is the *safety* bound and nothing else. Deriving
-        # it from ``command.valid_until_s`` - what was left of this frame's
-        # evidence budget - made every hold as short as the frame was old, so a
-        # command built from a 70 ms-old frame asked for a 30 ms lease and the
-        # key was lifted before the next frame could renew it (D-063). The
-        # evidence rule is enforced in ``apply_navigation_command``, which has
-        # already run and already refused anything stale; by this point the
-        # only question left is how long the watchdog may leave a key down.
-        horizon_ms = self._config.max_rolling_lease_horizon_ms
-        wanted: dict[str, InputKey] = {}
-        if command.forward_axis == 1:
-            wanted["w"] = InputKey.W
-        elif command.forward_axis == -1:
-            wanted["s"] = InputKey.S
-        if command.lateral_axis == -1:
-            wanted["a"] = InputKey.A
-        elif command.lateral_axis == 1:
-            wanted["d"] = InputKey.D
-        # Turning is a separate actuator from strafing, so it gets its own
-        # leases. Because both directions are ordinary vocabulary keys, the
-        # "release anything not commanded this tick" loop below is what
-        # guarantees the opposite turn key is lifted before this one presses -
-        # there is no path that can hold Left and Right at once.
-        if command.turn_axis == -1:
-            wanted["left"] = InputKey.LEFT
-        elif command.turn_axis == 1:
-            wanted["right"] = InputKey.RIGHT
-        if command.jump:
-            wanted["space"] = InputKey.SPACE
-
-        with self._lock:
-            current = {entry.target: entry.handle for entry in self._leases.values()}
-
-        for target, handle in current.items():
-            if target not in wanted:
-                self.release_lease(generation, handle)
-
-        held: list[str] = []
-        failed: list[str] = []
-        for target, key in wanted.items():
-            existing = current.get(target)
-            if existing is not None:
-                if self.renew(generation, existing, horizon_ms):
-                    held.append(target)
-                    continue
-                self.release_lease(generation, existing)
-            lease = self.acquire_key(generation, key, horizon_ms)
-            if lease is None:
-                failed.append(target)
-            else:
-                held.append(target)
-
-        if failed:
-            # Release what did land, so the character is not left holding half
-            # a command, and say so rather than reporting a success.
-            self.release_all(f"navigation:lease-failed:{','.join(sorted(failed))}")
-            return NavigationApplyResult(
-                NavigationApplyStatus.REJECTED_HEALTH,
-                f"could not acquire {', '.join(sorted(failed))}; released and stopped",
-            )
-
-        if command.yaw_delta_px and not self.pointer_delta(generation, command.yaw_delta_px, 0):
-            self.release_all("navigation:yaw-edge-failed")
-            return NavigationApplyResult(
-                NavigationApplyStatus.REJECTED_HEALTH,
-                "the yaw edge was refused; released and stopped",
-            )
-
-        return NavigationApplyResult(
-            NavigationApplyStatus.APPLIED, command.reason, leases_held=tuple(sorted(held))
-        )
-
     def release_navigation(self, generation: int, reason: str) -> ReleaseReport:
         del generation
         return self.release_all(f"navigation:{reason}")

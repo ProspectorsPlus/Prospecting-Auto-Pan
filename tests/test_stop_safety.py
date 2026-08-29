@@ -328,58 +328,36 @@ def test_release_all_attempts_every_turn_key_even_when_one_fails(
 
 def test_the_two_turn_keys_can_never_be_held_at_once(rig: Any) -> None:
     """The opposite key is released before this one presses, by ordering."""
-    from prospector_engine.contracts import CommandKind, NavigationCommand, monotonic_s
+    from prospector_engine.movement import DesiredMovement
 
     rig.activate(generation=1, mode=RunMode.LIVE)
-    registry = _registry(rig)
-    for turn in (1, -1, 1, -1):
-        envelope = registry.envelope_for(_fresh_frame(rig, turn))
-        command = NavigationCommand(
-            generation=1,
-            source_frame_sequence=envelope.frame.sequence,
-            source_captured_at_s=envelope.frame.captured_at_s,
-            forward_axis=0,
-            lateral_axis=0,
-            jump=False,
-            yaw_delta_px=0,
-            turn_axis=turn,  # type: ignore[arg-type]
-            issued_at_s=monotonic_s(),
-            valid_until_s=monotonic_s() + 0.05,
-            reason="turn",
-            kind=CommandKind.ALIGN,
-        )
-        outcome = rig.authority.apply_navigation_command(1, command, envelope.evidence_token)
-        assert outcome.applied, outcome.detail
-        held = _held_keys(rig)
-        assert held <= {"left", "right"}
-        assert not {"left", "right"} <= held, f"both turn keys held: {held}"
+    rig.authority.start_watchdog()
+    session = rig.authority.navigation_session(1)
+    try:
+        for turn in (1, -1, 1, -1):
+            session.move(DesiredMovement(turn=turn, reason="turn"))
+            held = set(session.movement.held_targets)
+            assert held <= {"left", "right"}
+            assert not {"left", "right"} <= held, f"both turn keys held: {held}"
+    finally:
+        rig.authority.release_all("test")
+        rig.authority.stop_watchdog()
 
 
-def test_a_turn_command_never_acquires_a_forward_lease(rig: Any) -> None:
-    from prospector_engine.contracts import CommandKind, NavigationCommand, monotonic_s
+def test_a_turn_never_presses_forward(rig: Any) -> None:
+    """Turning is a separate actuator from walking, and stays one."""
+    from prospector_engine.movement import DesiredMovement
 
     rig.activate(generation=1, mode=RunMode.LIVE)
-    registry = _registry(rig)
-    envelope = registry.envelope_for(_fresh_frame(rig, 1))
-    command = NavigationCommand(
-        generation=1,
-        source_frame_sequence=envelope.frame.sequence,
-        source_captured_at_s=envelope.frame.captured_at_s,
-        forward_axis=0,
-        lateral_axis=0,
-        jump=False,
-        yaw_delta_px=0,
-        turn_axis=1,  # type: ignore[arg-type]
-        issued_at_s=monotonic_s(),
-        valid_until_s=monotonic_s() + 0.05,
-        reason="turn",
-        kind=CommandKind.ALIGN,
-    )
-    outcome = rig.authority.apply_navigation_command(1, command, envelope.evidence_token)
+    rig.authority.start_watchdog()
+    session = rig.authority.navigation_session(1)
+    try:
+        session.move(DesiredMovement(turn=1, reason="turn on the spot"))
 
-    assert outcome.applied
-    assert outcome.leases_held == ("right",)
-    assert "w" not in outcome.leases_held
+        assert set(session.movement.held_targets) == {"right"}
+    finally:
+        rig.authority.release_all("test")
+        rig.authority.stop_watchdog()
 
 
 def _registry(rig: Any) -> Any:

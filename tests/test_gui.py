@@ -1088,7 +1088,14 @@ def _item_visible(canvas: Any, name: str) -> bool:
     return canvas.canvas.itemcget(item, "state") != "hidden"
 
 
-def test_shadow_draws_a_dashed_would_command_and_emits_nothing(root: Any) -> None:
+def test_shadow_draws_a_solid_would_command_and_emits_nothing(root: Any) -> None:
+    """Solid and bold in Shadow too, at the weight of the gold direction arm.
+
+    They used to be dashed to mark a proposal, which made the one layer you
+    watch while observing the faintest thing on screen. Provenance is carried
+    by the WOULD badge and the mode word instead, neither of which costs any
+    legibility.
+    """
     from prospector_engine.contracts import CommandVisualization
 
     canvas = _canvas(root)
@@ -1101,8 +1108,10 @@ def test_shadow_draws_a_dashed_would_command_and_emits_nothing(root: Any) -> Non
     # W and the right turn, both drawn, from the proposal.
     assert _item_visible(canvas, "action_stroke_W")
     assert _item_visible(canvas, "action_stroke_RT")
-    # Dashed, because nothing was pressed.
-    assert canvas.canvas.itemcget(canvas._items["action_stroke_W"], "dash")
+    # Solid, and thicker than the gold arm it sits beside.
+    assert not canvas.canvas.itemcget(canvas._items["action_stroke_W"], "dash")
+    width = float(canvas.canvas.itemcget(canvas._items["action_stroke_W"], "width"))
+    assert width >= 8.0, f"the action ray is only {width} px wide"
 
 
 def test_live_draws_active_only_from_the_leases_the_authority_reports(root: Any) -> None:

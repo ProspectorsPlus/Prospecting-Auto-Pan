@@ -30,11 +30,9 @@ from prospector_engine.capture import (
     ViewportGuard,
 )
 from prospector_engine.contracts import (
-    EVIDENCE_MINT_KEY,
     EvidenceToken,
     InputKey,
     MouseButton,
-    NavigationApplyStatus,
     NavigationCommand,
     PerformanceTier,
     SafetyFaultKind,
@@ -335,152 +333,31 @@ def _command(
     )
 
 
+def test_navigation_no_longer_gates_a_key_edge_on_an_evidence_token() -> None:
+    """The five tests that used to live here checked a path that is gone.
+
+    They pinned ``InputAuthority.apply_navigation_command``: a token matched by
+    object identity, then its run id, generation, frame sequence, capture
+    timestamp, capture *duration*, strict ordering, two age budgets and a
+    viewport identity - all before a key could go down, on every frame.
+
+    It was removed because it never once let an edge through on real hardware
+    (D-067). Evidence is still minted and still identifies a frame; what it no
+    longer does is decide whether a key may be pressed. The freshness rule that
+    matters is kept where it belongs, in the navigator, which refuses to
+    *decide* on a stale frame - see ``tests/test_navigation.py``.
+    """
+    from prospector_engine.input_authority import NavigationInputSession
+
+    assert not hasattr(NavigationInputSession, "apply_navigation_command")
+    assert not hasattr(InputAuthority, "apply_navigation_command")
+    assert hasattr(NavigationInputSession, "move")
+    assert hasattr(NavigationInputSession, "stop_moving")
+
+
 def test_a_forged_token_cannot_be_constructed() -> None:
     with pytest.raises(PermissionError):
         EvidenceToken("run", 1, 1, 0.0, 1.0, (0, 0, 0, 0, "d"), object())  # type: ignore[arg-type]
-
-
-def test_a_token_the_authority_never_issued_is_rejected(rig: Any) -> None:
-    rig.activate(generation=1)
-    rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
-    )
-    unregistered = EvidenceToken(
-        run_id=rig.authority.run_id,
-        generation=1,
-        frame_sequence=7,
-        captured_at_s=rig.clock.now(),
-        duration_ms=5.0,
-        viewport_identity=make_geometry().identity(),
-        _mint_key=EVIDENCE_MINT_KEY,
-    )
-    command = _command(1, 7, rig.clock.now(), rig.clock.now())
-
-    result = rig.authority.navigation_session(1).apply_navigation_command(command, unregistered)
-
-    assert result.status is NavigationApplyStatus.REJECTED_EVIDENCE
-    assert rig.port.ops() == []
-
-
-def test_replaying_the_same_frame_cannot_extend_a_command_lease(rig: Any) -> None:
-    rig.activate(generation=1)
-    rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
-    )
-    registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
-    registry.set_generation(1)
-    frame = make_frame(7, captured_at_s=rig.clock.now())
-    envelope = registry.envelope_for(frame)
-    session = rig.authority.navigation_session(1)
-    command = _command(1, 7, frame.captured_at_s, rig.clock.now())
-
-    first = session.apply_navigation_command(command, envelope.evidence_token)
-    second = session.apply_navigation_command(command, envelope.evidence_token)
-
-    assert first.applied
-    assert second.status is NavigationApplyStatus.REJECTED_EVIDENCE
-    assert "strictly newer" in second.detail
-
-
-def test_an_over_age_frame_cannot_authorize_a_command(rig: Any) -> None:
-    rig.activate(generation=1)
-    rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
-    )
-    registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
-    registry.set_generation(1)
-    frame = make_frame(1, captured_at_s=rig.clock.now())
-    envelope = registry.envelope_for(frame)
-    rig.clock.advance(0.5)  # far beyond max_evidence_age_ms
-    # A worker could still build a well-formed command; the authority must
-    # reject it on the frame's age, independently of what the worker claims.
-    command = NavigationCommand(
-        generation=1,
-        source_frame_sequence=1,
-        source_captured_at_s=frame.captured_at_s,
-        forward_axis=1,
-        lateral_axis=0,
-        jump=False,
-        yaw_delta_px=0,
-        issued_at_s=rig.clock.now(),
-        valid_until_s=rig.clock.now() + 0.01,
-        reason="stale-source",
-    )
-
-    result = rig.authority.navigation_session(1).apply_navigation_command(
-        command, envelope.evidence_token
-    )
-
-    assert result.status is NavigationApplyStatus.REJECTED_EVIDENCE
-    assert rig.port.ops() == []
-
-
-def test_an_over_budget_capture_duration_cannot_authorize_a_command(rig: Any) -> None:
-    rig.activate(generation=1)
-    rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
-    )
-    registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
-    registry.set_generation(1)
-    frame = make_frame(1, captured_at_s=rig.clock.now(), duration_ms=500.0)
-    envelope = registry.envelope_for(frame)
-    command = _command(1, 1, frame.captured_at_s, rig.clock.now())
-
-    result = rig.authority.navigation_session(1).apply_navigation_command(
-        command, envelope.evidence_token
-    )
-
-    assert result.status is NavigationApplyStatus.REJECTED_EVIDENCE
-    assert "duration" in result.detail
-
-
-def test_navigation_translates_axes_into_leases_and_releases_the_rest(rig: Any) -> None:
-    rig.activate(generation=1)
-    rig.authority.activate_generation(
-        1, emits_input=True, requires_capture=True, pinned_rect=rig.port.window_geometry()
-    )
-    registry = EvidenceRegistry(rig.authority.run_id, on_token=rig.authority.register_evidence)
-    registry.set_generation(1)
-    session = rig.authority.navigation_session(1)
-
-    first_frame = make_frame(1, captured_at_s=rig.clock.now())
-    first = registry.envelope_for(first_frame)
-    forward_left = NavigationCommand(
-        1,
-        1,
-        first_frame.captured_at_s,
-        1,
-        -1,
-        False,
-        0,
-        rig.clock.now(),
-        first_frame.captured_at_s + 0.09,
-        "align",
-    )
-    assert session.apply_navigation_command(forward_left, first.evidence_token).applied
-    assert set(rig.authority.held_targets()) == {"w", "a"}
-
-    second_frame = make_frame(2, captured_at_s=rig.clock.now())
-    second = registry.envelope_for(second_frame)
-    forward_only = NavigationCommand(
-        1,
-        2,
-        second_frame.captured_at_s,
-        1,
-        0,
-        False,
-        0,
-        rig.clock.now(),
-        second_frame.captured_at_s + 0.09,
-        "follow",
-    )
-    assert session.apply_navigation_command(forward_only, second.evidence_token).applied
-    assert rig.authority.held_targets() == ("w",)
-
-
-# ---------------------------------------------------------------------------
-# Frames are genuinely immutable
-# ---------------------------------------------------------------------------
 
 
 def test_captured_frames_are_read_only() -> None:
@@ -782,13 +659,34 @@ def test_the_real_helper_releases_a_lease_that_expires(helper: DeadmanProcess) -
 
 
 @pytest.mark.slow
-def test_the_real_helper_refuses_a_stale_generation(helper: DeadmanProcess) -> None:
+def test_the_real_helper_refuses_a_generation_older_than_one_it_has_seen(
+    helper: DeadmanProcess,
+) -> None:
+    """A stale generation is still refused - it is just no longer manufactured.
+
+    ``release_all`` used to bump the helper's generation, so the first release
+    of a session left it one ahead of the parent forever and every later
+    registration came back ``stale-generation``. Since the parent will not emit
+    a down edge without a positive registration, one ordinary "stop walking"
+    silently disarmed input for the rest of the run (D-067). The counter now
+    moves only when a parent registers a newer generation, which is the thing
+    it was always meant to track.
+    """
     helper.request({"op": "hello"})
-    helper.request({"op": "release_all"})  # advances the helper's generation
-    reply = helper.request(
-        {"op": "register", "gen": 0, "lease_id": 9, "target": "w", "expires_in_ms": 5000}
+    helper.request(
+        {"op": "register", "gen": 4, "lease_id": 1, "target": "w", "expires_in_ms": 5000}
     )
-    assert reply["ok"] is False and reply["error"] == "stale-generation"
+    stale = helper.request(
+        {"op": "register", "gen": 3, "lease_id": 2, "target": "w", "expires_in_ms": 5000}
+    )
+    assert stale["ok"] is False and stale["error"] == "stale-generation"
+
+    # ...and a release does not advance it, so the same generation still works.
+    helper.request({"op": "release_all"})
+    again = helper.request(
+        {"op": "register", "gen": 4, "lease_id": 3, "target": "w", "expires_in_ms": 5000}
+    )
+    assert again["ok"] is True, again
 
 
 @pytest.mark.slow

@@ -31,12 +31,10 @@ from prospector_engine.capture import (
     ViewportGuard,
 )
 from prospector_engine.contracts import (
-    CommandKind,
     InputKey,
     IntentType,
     ModeResult,
     ModeResultKind,
-    NavigationCommand,
     PerformanceTier,
     RunMode,
     monotonic_s,
@@ -44,6 +42,7 @@ from prospector_engine.contracts import (
 from prospector_engine.coordinator import CoordinatorConfig, RuntimeCoordinator, WorkerContext
 from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
 from prospector_engine.lifecycle import LIVE_ENTRY_PATH, LifecycleStage
+from prospector_engine.movement import DesiredMovement
 from tests.arrow_fixtures import render_scene
 from tests.fakes import (
     FakeCaptureSource,
@@ -132,41 +131,25 @@ class Rig:
                 envelope = context.frames.wait_for_new(sequence, 0.25)
                 if envelope is None:
                     continue
-                frame = envelope.frame
-                sequence = frame.sequence
+                sequence = envelope.frame.sequence
                 issued += 1
                 turning = self.WALK_FRAMES < issued <= self.WALK_FRAMES + self.TURN_FRAMES
-                now = monotonic_s()
-                budget_s = session.evidence_budget_s
-                valid_until = min(now + budget_s, frame.captured_at_s + budget_s)
-                if valid_until <= now:
-                    continue
-                outcome = session.apply_navigation_command(
-                    NavigationCommand(
-                        generation=context.generation,
-                        source_frame_sequence=frame.sequence,
-                        source_captured_at_s=frame.captured_at_s,
-                        forward_axis=1,
-                        lateral_axis=0,
-                        jump=False,
+                outcome = session.move(
+                    DesiredMovement(
+                        forward=1,
                         # Sign alternates so both directions are exercised.
-                        yaw_delta_px=(8 if issued % 2 else -8) if turning else 0,
-                        turn_axis=0,
-                        issued_at_s=now,
-                        valid_until_s=valid_until,
+                        yaw_px=(8 if issued % 2 else -8) if turning else 0,
                         reason="turning while walking" if turning else "walking",
-                        kind=CommandKind.FOLLOW,
-                    ),
-                    envelope.evidence_token,
+                    )
                 )
-                if outcome.applied:
-                    self.applied += 1
-                    if issued >= self.WALK_FRAMES:
-                        self.walked.set()
-                    if turning:
-                        self.turned.set()
-                else:
-                    self.rejections.append(f"{outcome.status.name}:{outcome.detail}")
+                if outcome.block.blocking:
+                    self.rejections.append(outcome.block.name)
+                    continue
+                self.applied += 1
+                if issued >= self.WALK_FRAMES:
+                    self.walked.set()
+                if turning:
+                    self.turned.set()
         finally:
             session.release_navigation("worker-exit")
         return ModeResult(ModeResultKind.CANCELLED, f"{issued} frames")

@@ -163,10 +163,23 @@ class DeadmanHelper:
 
     # -- operations -------------------------------------------------------
     def release_all(self, reason: str) -> tuple[str, ...]:
-        """Lift every vocabulary target, unconditionally and idempotently."""
+        """Lift every vocabulary target, unconditionally and idempotently.
+
+        It does **not** bump the generation, and that is a fix rather than an
+        omission (D-067). It used to, and ``_register`` refuses any generation
+        below its own - so the first release of a session left the helper one
+        ahead of the parent forever, and every subsequent registration came
+        back ``stale-generation``. Since the parent will not emit a down edge
+        without a positive registration, one ordinary "stop walking" silently
+        and permanently disarmed input for the rest of the run.
+
+        A generation is a statement about *which parent session* is speaking.
+        Releasing is a statement about *right now*. Conflating them made a
+        routine event into a latch, so the counter moves only when the parent
+        actually says so, in ``_register``.
+        """
         with self._lock:
             self._leases.clear()
-            self._generation += 1
             self._released_all_at_s = time.monotonic()
         released: list[str] = []
         for target in self._sink.targets():

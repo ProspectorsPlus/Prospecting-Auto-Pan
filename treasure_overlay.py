@@ -34,7 +34,6 @@ from typing import Any, ClassVar
 import numpy as np
 
 from prospector_engine.contracts import (
-    CommandOutcome,
     DiagnosticObservation,
     PacketKind,
     RunMode,
@@ -149,8 +148,10 @@ class DiagnosticCanvas:
     ACTION_UNDERLAY_WIDTH = 15
     ACTION_STROKE_WIDTH = 9
     #: Fixed in *view* pixels, not canonical ones, so the glyphs stay the same
-    #: readable size whatever the preview is scaled to.
-    ACTION_RAY_PX = 92.0
+    #: readable size whatever the preview is scaled to. Deliberately close to
+    #: ``ARM_LENGTH_PX`` so a purple action ray and the gold direction arm read
+    #: as the same family of statement at a glance.
+    ACTION_RAY_PX = 150.0
     ACTION_LABEL_FONT = ("Helvetica", 17, "bold")
 
     #: Glyph -> screen bearing in degrees (0 up, positive clockwise). Turning
@@ -675,9 +676,14 @@ class DiagnosticCanvas:
             return
 
         origin = transform.apply_point(anchor)
-        # Dashed for a proposal, solid for a command that is really held. The
-        # colour is identical on purpose: the same action, two provenances.
-        dash = (10, 6) if view.outcome is CommandOutcome.WOULD else ()
+        # Solid in both modes, and the same weight as the gold direction arm,
+        # because these are the same *kind* of statement: an arrow saying where
+        # the character is being sent. Shadow used to draw them dashed to mark a
+        # proposal, and the effect was that the one layer you watch while
+        # observing was the faintest thing on screen. Provenance is carried by
+        # the badge underneath - WOULD APPLY against APPLIED - and by the mode
+        # word in the header, neither of which costs any legibility.
+        dash: tuple[int, ...] = ()
         drawn: list[int] = []
 
         for glyph in view.glyphs:

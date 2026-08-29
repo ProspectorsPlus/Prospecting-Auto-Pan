@@ -21,7 +21,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import Enum, auto
-from typing import Literal, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -934,6 +934,37 @@ class CommandVisualization:
             status=result.status,
             leases_held=result.leases_held if applied else (),
             detail=result.detail,
+            live=True,
+            motion_confirmed=motion_confirmed,
+        )
+
+    @classmethod
+    def for_movement(
+        cls,
+        command: NavigationCommand,
+        outcome: Any,
+        *,
+        key: RuntimeKey | None = None,
+        motion_confirmed: bool | None = None,
+    ) -> CommandVisualization:
+        """An applied - or blocked - movement, described by the actuator.
+
+        The same contract as :meth:`for_live`: what is drawn comes from what
+        the actuator reports it is *physically holding*, never from the command
+        that was requested. ``leases_held`` keeps its name and its meaning -
+        the targets that are down - so every consumer downstream is unchanged.
+        """
+        held = tuple(sorted(key_.value for key_ in outcome.held))
+        blocked = bool(outcome.block.blocking)
+        return cls(
+            CommandOutcome.REJECTED if blocked else CommandOutcome.APPLIED,
+            key=key,
+            requested=command,
+            status=NavigationApplyStatus.REJECTED_HEALTH
+            if blocked
+            else NavigationApplyStatus.APPLIED,
+            leases_held=() if blocked else held,
+            detail=outcome.block.value if blocked else outcome.detail,
             live=True,
             motion_confirmed=motion_confirmed,
         )
