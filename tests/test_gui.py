@@ -203,12 +203,21 @@ def test_the_window_has_a_minimum_size_that_matches_the_layout(dashboard: Any) -
     assert minimum == (dashboard.MIN_WIDTH, dashboard.MIN_HEIGHT)
 
 
-def test_exactly_one_row_expands_and_it_is_the_body(dashboard: Any) -> None:
+def test_only_the_body_and_the_plain_log_expand(dashboard: Any) -> None:
+    """Two growers, three to one, and every control row still bounded.
+
+    The point of the rule was never "exactly one row" - it was that no control
+    row may grow, because a layout that reflows when a fault appears reflows at
+    the worst possible moment. The plain log is the second grower and takes a
+    quarter of the extra height.
+    """
     root = dashboard.root
-    weights = [int(root.grid_rowconfigure(row)["weight"]) for row in range(7)]
-    assert weights.count(1) == 1, f"row weights {weights} - bounded rows, one grower"
-    assert weights[5] == 1, "the preview row takes the extra height"
-    assert weights[0] == 0, "the header must not grow"
+    weights = [int(root.grid_rowconfigure(row)["weight"]) for row in range(8)]
+    assert weights[5] == 3, "the preview takes most of the extra height"
+    assert weights[6] == 1, "the plain log takes the rest"
+    assert [w for i, w in enumerate(weights) if i not in (5, 6)] == [0, 0, 0, 0, 0, 0], (
+        f"a control row grows: {weights}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,7 @@ from prospector_engine.contracts import (
     monotonic_s,
 )
 from prospector_engine.geometry import ViewportGeometry
+from prospector_engine.plainlog import Topic
 from prospector_engine.telemetry import (
     EvidenceRecorder,
     resolve_build_identity,
@@ -300,10 +301,14 @@ class Dashboard:
         root.minsize(self.MIN_WIDTH, self.MIN_HEIGHT)
         root.geometry(f"{self._layout.width}x{self._layout.height}")
         root.columnconfigure(0, weight=1)
-        # Row 5 is the only row that grows. Everything above it keeps its
-        # natural height, which is what stops a resize from clipping a control.
-        for row in range(7):
-            root.rowconfigure(row, weight=1 if row == 5 else 0)
+        # Rows 5 and 6 grow, three to one. Everything else keeps its natural
+        # height, which is what stops a resize from clipping a control. The
+        # plain log is row 6 and is deliberately *outside* the Advanced
+        # disclosure: the drawer is the engineering half, and it only renders
+        # while it is expanded, so a log that lived in it would be a log
+        # nobody reads at the moment they need it.
+        for row in range(8):
+            root.rowconfigure(row, weight={5: 3, 6: 1}.get(row, 0))
 
         self._style()
         self._build_header()
@@ -312,6 +317,7 @@ class Dashboard:
         self._build_summaries()
         self._build_message()
         self._build_body()
+        self._build_plain_log()
         self._build_advanced()
         self._build_drawer()
 
@@ -652,9 +658,77 @@ class Dashboard:
             self.readout_labels[key] = value
 
     # -- advanced ---------------------------------------------------------
+    #: Lines the plain log shows at once. Older ones stay in the ring and are
+    #: exported with the stop trace.
+    PLAIN_LOG_LINES = 200
+
+    def _build_plain_log(self) -> None:
+        """The running commentary, in sentences, newest at the bottom."""
+        frame = ttk.Frame(self.root, style="Card.TFrame", padding=(12, 8))
+        frame.grid(row=6, column=0, sticky="nsew", padx=12, pady=(4, 2))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+        ttk.Label(frame, text="WHAT IT IS DOING - newest last", style="Muted.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 4)
+        )
+        body = ttk.Frame(frame, style="Card.TFrame")
+        body.grid(row=1, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.plain_text = tk.Text(
+            body,
+            height=7,
+            wrap="word",
+            background=BG,
+            foreground=BONE,
+            insertbackground=BONE,
+            relief="flat",
+            highlightthickness=0,
+            font=mono_font(),
+            state="disabled",
+            padx=8,
+            pady=6,
+        )
+        self.plain_text.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(body, orient="vertical", command=self.plain_text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.plain_text.configure(yscrollcommand=scroll.set)
+        # One colour per verdict. Nothing else in this widget is coloured, so
+        # a red line is unambiguous.
+        self.plain_text.tag_configure("pass", foreground=OK)
+        self.plain_text.tag_configure("fail", foreground=BAD)
+        self.plain_text.tag_configure("info", foreground=MUTED)
+        self._plain_sequence = -1
+
+    def _render_plain_log(self) -> None:
+        """Redraw only when the log actually moved, and never steal the scroll.
+
+        A reader who has scrolled up to read a failure is not yanked back to
+        the bottom by the next line; auto-scroll happens only while the view is
+        already pinned there.
+        """
+        log = self.app.plain
+        sequence = log.sequence
+        if sequence == self._plain_sequence:
+            return
+        self._plain_sequence = sequence
+        try:
+            last = self.plain_text.yview()[1]
+        except Exception:
+            last = 1.0
+        pinned = last >= 0.999
+        started = log.started_at_s
+        self.plain_text.configure(state="normal")
+        self.plain_text.delete("1.0", "end")
+        for line in log.lines(self.PLAIN_LOG_LINES):
+            self.plain_text.insert("end", line.render(started) + "\n", line.verdict.value)
+        self.plain_text.configure(state="disabled")
+        if pinned:
+            self.plain_text.see("end")
+
     def _build_advanced(self) -> None:
         container = ttk.Frame(self.root, style="T.TFrame", padding=(12, 4))
-        container.grid(row=6, column=0, sticky="ew")
+        container.grid(row=7, column=0, sticky="ew")
         container.columnconfigure(0, weight=1)
         self.advanced = Disclosure(container, "Advanced and diagnostics")
         self.advanced.grid(row=0, column=0, sticky="ew")
@@ -813,6 +887,10 @@ class Dashboard:
         coordinator.submit(coordinator.next_intent(intent_type, "gui"))
 
     def _start(self) -> None:
+        # The only thing that clears the log: reading back why the *last* run
+        # ended is most of what it is for, so a Stop must not wipe it.
+        self.app.plain.restart()
+        self.app.plain.note(Topic.NOTE, "Starting up. Looking for the Roblox window...")
         self._submit(IntentType.START_NAVIGATOR)
 
     def _retry(self) -> None:
@@ -1022,6 +1100,7 @@ class Dashboard:
             self._render_badges(snapshot)
         self.analysis.render(self._last_observation)
         self._render_readout(snapshot)
+        self._render_plain_log()
         self._drain_reports()
         self._render_recording_label()
 

@@ -62,6 +62,7 @@ from prospector_engine.input_authority import (
     ServiceInputSession,
 )
 from prospector_engine.lifecycle import LifecycleJournal, LifecycleStage
+from prospector_engine.plainlog import PlainLog, Topic
 from prospector_engine.telemetry import (
     AppPaths,
     EventLog,
@@ -341,6 +342,7 @@ class RuntimeCoordinator:
         config: CoordinatorConfig | None = None,
         hub: TelemetryHub | None = None,
         events: EventLog | None = None,
+        plain: PlainLog | None = None,
         paths: AppPaths | None = None,
         pipeline_provider: Callable[[], Any] | None = None,
         profiles: Any = None,
@@ -356,6 +358,9 @@ class RuntimeCoordinator:
         self._config = config or CoordinatorConfig()
         self._hub = hub or TelemetryHub()
         self._events = events or EventLog()
+        #: The plain running commentary. The engineering rings stay exactly as
+        #: they were; this is the half a person can read.
+        self._plain = plain or PlainLog()
         self._paths = paths
         self._pipeline_provider = pipeline_provider
         self._profiles = profiles
@@ -558,6 +563,11 @@ class RuntimeCoordinator:
     @property
     def stale_completions(self) -> int:
         return self._stale_completions
+
+    @property
+    def plain(self) -> PlainLog:
+        """The readable running commentary."""
+        return self._plain
 
     @property
     def live_authorization(self) -> str:
@@ -792,6 +802,7 @@ class RuntimeCoordinator:
 
     def _on_stop(self, intent: RuntimeIntent) -> None:
         self._events.add("intent.stop", intent.source)
+        self._plain.passed(Topic.STOP, "Stopped. Everything is released and nothing is held.")
         # Setup is cancelled before the safe stop, so a stage that is mid-poll
         # unwinds instead of finishing into a runtime that has already stopped.
         self._setup_cancel.set()
@@ -817,6 +828,7 @@ class RuntimeCoordinator:
         # Milestones first and separately: they are the rows a failed session is
         # read out of, and they are exported from a ring that per-frame status
         # text cannot evict. The raw stream follows for context.
+        rows += list(self._plain.as_rows())
         rows += [
             {"kind": "milestone", "at_s": round(at_s, 6), "name": name, "detail": detail}
             for at_s, name, detail in self._events.milestones(limit=2000)
@@ -852,6 +864,15 @@ class RuntimeCoordinator:
         """Adopt a stage transition and let the dashboard see it immediately."""
         self._setup_progress = progress
         self.publish_transition(f"Setup: {progress.detail}")
+        failure = progress.failure
+        if failure is not None:
+            self._plain.failed(Topic.NOTE, f"{failure.summary}. {failure.remedy}")
+        elif progress.ok:
+            self._plain.passed(
+                Topic.NOTE, f"Setup finished. Click into Roblox and press {_START_CHORD}."
+            )
+        elif progress.running:
+            self._plain.working(Topic.NOTE, f"{progress.detail}...")
 
     def _on_start_navigator(self, intent: RuntimeIntent) -> None:
         """Run automatic setup off the event loop, then start observing.
@@ -1047,6 +1068,7 @@ class RuntimeCoordinator:
         """
         self._live_authorization = f"refused: {reason}"
         self._live_refusal_detail = detail
+        self._plain.failed(Topic.GATE, detail)
         self._events.add("live.refused", reason)
         self._authority.lifecycle.note(
             LifecycleStage.LIVE_REFUSED,
@@ -1083,6 +1105,7 @@ class RuntimeCoordinator:
         """
         lifecycle = self._authority.lifecycle
         chord = intent.proof.chord if intent.proof is not None else ""
+        self._plain.note(Topic.CHORD, f"You pressed {chord or _START_CHORD}.")
         lifecycle.note(
             LifecycleStage.HOTKEY_CHORD_RECEIVED,
             chord or _START_CHORD,
@@ -1172,6 +1195,7 @@ class RuntimeCoordinator:
             return
         self._live_authorization = f"granted {proof.token_id}"
         self._live_refusal_detail = ""
+        self._plain.passed(Topic.GATE, "Every check passed. Movement is allowed now.")
         lifecycle.note(
             LifecycleStage.LIVE_ENTERED,
             f"generation {self._generation}",

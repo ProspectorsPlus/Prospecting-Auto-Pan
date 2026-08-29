@@ -78,6 +78,7 @@ from prospector_engine.navigation import (
     make_live_worker,
     make_shadow_worker,
 )
+from prospector_engine.plainlog import PlainLog, Topic, Verdict
 from prospector_engine.ports import PlatformPort, create_platform_port, current_platform_name
 from prospector_engine.preflight import InputPreflight, gather
 from prospector_engine.steering import SteeringLimits
@@ -396,6 +397,10 @@ class Application:
     #: prologue write into the same cell, so the dashboard and the workers
     #: cannot disagree about what has been measured.
     capabilities_provider: Callable[[], NavigationCapabilities]
+    #: The readable running commentary, shared with the coordinator and the
+    #: movement actuator. The engineering rings are unchanged; this is the
+    #: half a person can read.
+    plain: PlainLog
     #: The two factories the live prologue needs, exposed so a CLI mode can
     #: build the bounded native movement check without a second copy of this
     #: wiring. There is one composition root and this is it.
@@ -513,6 +518,20 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
             f"{fault.kind.name} gen={fault.generation} {' '.join(fault.evidence)}",
         )
 
+    #: The readable running commentary. Created here, before anything that
+
+    #: might want to write to it, and handed to the two places that know
+
+    #: things a person needs: the actuator (what is being pressed) and the
+
+    #: coordinator (setup, the chord, and every refusal).
+
+    plain = PlainLog()
+
+    def narrate(verdict: str, text: str) -> None:
+
+        plain.say(Topic.FORWARD, Verdict(verdict), text)
+
     authority = InputAuthority(
         port,
         deadman=deadman,
@@ -523,6 +542,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         ),
         config=AuthorityConfig(),
         on_safety_fault=on_safety_fault,
+        narrate=narrate,
     )
     registry = EvidenceRegistry(authority.run_id, on_token=authority.register_evidence)
     capture = CaptureService(
@@ -654,6 +674,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         workers=workers,
         config=CoordinatorConfig(),
         events=events,
+        plain=plain,
         paths=paths,
         pipeline_provider=lambda: pipeline,
         profiles=profiles,
@@ -677,6 +698,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         pipeline=pipeline,
         profiles=profiles,
         turn_cache=turn_cache,
+        plain=plain,
         capabilities_provider=capabilities_factory,
         control_fingerprint=control_fingerprint,
         control_mode_probe=probe,

@@ -147,10 +147,22 @@ class PlainLog:
                 self._last_append_s = now
                 return
             # Under the rate cap a per-frame topic updates its own line instead
-            # of appending. The sentence still changes; the log just does not
-            # grow three times a frame.
+            # of appending - but only when the new sentence is a *variation* of
+            # the one already there, judged on its first word.
+            #
+            # That qualifier matters. "Facing 40 degrees off" becoming "Facing
+            # 45 degrees off" is one fact with a new number and should not cost
+            # a line. "Holding W" becoming "Released W" is two different events
+            # and collapsing them loses the half the reader came for. Without
+            # this, a press and the release that followed it inside a third of
+            # a second showed up as the release alone.
             capped = (now - self._last_append_s) < 1.0 / self.MAX_LINES_PER_S
-            if topic.per_frame and capped and latest is not None:
+            variation = (
+                latest is not None
+                and latest.verdict is verdict
+                and latest.text.split(" ", 1)[0] == text.split(" ", 1)[0]
+            )
+            if topic.per_frame and capped and variation and latest is not None:
                 self._replace(
                     latest, PlainLine(topic, verdict, text, now, count=latest.count + 1)
                 )
