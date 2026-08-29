@@ -460,11 +460,17 @@ def _latency_line(label: str, summary: Any) -> str:
 
 
 def _safety_text(snapshot: TelemetrySnapshot | None, extra: dict[str, str]) -> str:
+    # The extras come first and are shown whether or not telemetry has started.
+    # "No telemetry yet" was the whole tab before the coordinator published,
+    # which is exactly when somebody is trying to find out which build they are
+    # looking at and whether the hotkey listener came up.
+    lines = [f"{key:12s} {value}" for key, value in sorted(extra.items())]
     if snapshot is None:
-        return "No telemetry yet."
-    lines = [f"{key:12s} {value}" for key, value in sorted(snapshot.readiness.items())]
+        lines.append("")
+        lines.append("No telemetry yet.")
+        return "\n".join(lines)
     lines.append("")
-    lines.extend(f"{key:12s} {value}" for key, value in sorted(extra.items()))
+    lines.extend(f"{key:12s} {value}" for key, value in sorted(snapshot.readiness.items()))
     if snapshot.live_blockers:
         lines.append("")
         lines.append("Live blockers:")

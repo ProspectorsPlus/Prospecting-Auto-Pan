@@ -62,8 +62,12 @@ def _run_self_test() -> int:
         InputKey,
         InputVocabulary,
     )
-    from prospector_engine.telemetry import resolve_app_paths
+    from prospector_engine.telemetry import resolve_app_paths, resolve_build_identity
     from prospector_engine.vision import load_profiles
+
+    # First line of every diagnostic, so a report pasted into a message
+    # says which build produced it without anybody having to remember.
+    print(f"build      {resolve_build_identity().describe()}")
 
     checks: list[tuple[str, bool, str]] = []
 

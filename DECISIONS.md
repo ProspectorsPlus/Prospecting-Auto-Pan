@@ -1667,3 +1667,35 @@ recordings remain PENDING for want of the recordings, not for want of the code.
 **Deviation:** the mission asked for a hybrid classical tracker with optical
 flow bridging. What was built is the association half of it. Recorded here
 rather than reported as complete.
+
+---
+
+## D-059 — 2026-08-28 — A window cannot be trusted to be the build you just made
+
+**Plan text:** §13.
+
+**Decision:** `resolve_build_identity()` reads the version, branch, short
+commit, dirty flag, process id and launch time once at startup. The short form
+is in the window title; the full form is in the diagnostics drawer and is the
+first line `--self-test` prints.
+
+**Why:** a dashboard left open from an earlier run is pixel-identical to a
+freshly launched one. That is how a fix gets tested against the build that did
+not have it and reported as not working, and it costs a whole debugging session
+every time. All four facts are shown because any one alone can mislead: a
+commit matches a window that has been open since before it was written, and a
+process id matches a build nobody rebuilt.
+
+The dirty marker is not decoration. A commit id alone is a claim about code
+that a modified working tree does not support.
+
+Git is consulted only from a source checkout — a packaged build has no `.git`
+beside it and reports its version rather than shelling out to a tool it does
+not ship. The call is bounded and cannot raise.
+
+The listener's health is shown beside it, for the same reason: "Hotkeys:
+running" was true of a listener that had died on the first keypress of the
+session, so the edge and chord counts are there too. A count that never moves
+is a listener hearing nothing, whatever its state says.
+
+**Deviation:** none.

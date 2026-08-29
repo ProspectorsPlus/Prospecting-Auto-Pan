@@ -49,7 +49,6 @@ from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Any
 
-from prospector_engine import __version__
 from prospector_engine.application import Application, build_application
 from prospector_engine.bindings import BINDINGS, chord_label
 from prospector_engine.contracts import (
@@ -66,6 +65,7 @@ from prospector_engine.contracts import (
 from prospector_engine.geometry import ViewportGeometry
 from prospector_engine.telemetry import (
     EvidenceRecorder,
+    resolve_build_identity,
 )
 from prospector_engine.trace import PreviewTrace
 from treasure_overlay import (
@@ -256,7 +256,12 @@ class Dashboard:
         self._layout = WindowLayout.load(self._layout_path)
         self._closing = False
 
-        root.title(f"Treasure Navigator {__version__}")
+        # Branch, short commit, and this process id, in the title bar. A
+        # dashboard left open from an earlier run is indistinguishable from a
+        # freshly launched one, and a fix tested against the build that did
+        # not have it gets reported as not working.
+        self.build = resolve_build_identity()
+        root.title(f"Treasure Navigator {self.build.short()}")
         root.configure(bg=BG)
         root.minsize(self.MIN_WIDTH, self.MIN_HEIGHT)
         root.geometry(f"{self._layout.width}x{self._layout.height}")
@@ -733,6 +738,22 @@ class Dashboard:
         self._render_summaries(None, self._last_metrics)
         self._render_drawer()
 
+    def _hotkey_health(self) -> str:
+        """What the listener is actually doing, in the drawer beside everything else.
+
+        "Hotkeys: running" was true of a listener that had died on the first
+        ordinary keypress of the session, so the counts are here too: an edge
+        count that never moves is a listener hearing nothing, whatever its
+        state says.
+        """
+        listener = self.app.hotkeys
+        if listener is None:
+            return "no listener"
+        try:
+            return listener.health().describe()
+        except Exception as exc:  # a diagnostic must never break the drawer
+            return f"unreadable: {exc!r}"
+
     # -- intents ----------------------------------------------------------
     def _submit(self, intent_type: IntentType) -> None:
         coordinator = self.app.coordinator
@@ -1070,6 +1091,8 @@ class Dashboard:
                 "profile": f"{self.app.profiles.active_id} rev {self.app.profiles.revision}",
                 "geometry": f"revision {self.app.guard.revision}",
                 "capabilities": self.app.capabilities.describe(),
+                "build": self.build.describe(),
+                "hotkeys": self._hotkey_health(),
             },
         )
 

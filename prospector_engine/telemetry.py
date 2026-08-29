@@ -24,6 +24,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from prospector_engine import ENGINE_VERSION
 from prospector_engine.contracts import (
     CapturedFrame,
     EvidenceStatus,
@@ -34,6 +35,7 @@ from prospector_engine.contracts import (
 
 __all__ = [
     "AppPaths",
+    "BuildIdentity",
     "EventLog",
     "EvidenceRecorder",
     "LatestSlot",
@@ -48,8 +50,82 @@ __all__ = [
     "read_recovery_record",
     "read_session",
     "resolve_app_paths",
+    "resolve_build_identity",
     "write_recovery_record",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Which build is this, actually
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BuildIdentity:
+    """Enough to prove the window on screen is the code you just changed.
+
+    The failure this exists to stop is not subtle and has happened: a dashboard
+    left open from an earlier run looks exactly like a freshly launched one, so
+    a fix gets tested against the build that did not have it and reported as
+    not working. The branch, the short commit, the process id and the launch
+    time are shown together because any one of them alone can be stale - a
+    process id matches a build nobody rebuilt, and a commit matches a window
+    that has been open since before it was written.
+    """
+
+    version: str
+    branch: str
+    commit: str
+    process_id: int
+    started_at: str
+    #: ``True`` when the working tree had uncommitted changes at launch. A
+    #: commit id alone is a lie about a dirty tree.
+    dirty: bool = False
+
+    def describe(self) -> str:
+        commit = f"{self.commit}{'+' if self.dirty else ''}" if self.commit else "packaged"
+        branch = f" {self.branch}" if self.branch else ""
+        return f"{self.version}{branch} {commit} pid {self.process_id} {self.started_at}"
+
+    def short(self) -> str:
+        """The one line for a window title."""
+        commit = f"{self.commit}{'+' if self.dirty else ''}" if self.commit else "packaged"
+        return f"{self.version} {commit} pid {self.process_id}"
+
+
+def _git(root: Path, *args: str) -> str:
+    """Read-only git, bounded, and never a crash. Empty string on any failure."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def resolve_build_identity() -> BuildIdentity:
+    """Read the build's identity once, at launch. Never raises.
+
+    Git is consulted only when this is running from a source checkout; a
+    packaged build has no ``.git`` beside it and reports its version alone
+    rather than shelling out to a tool it does not ship.
+    """
+    started = time.strftime("%Y-%m-%d %H:%M:%S")
+    version = ENGINE_VERSION
+    root = Path(__file__).resolve().parent.parent
+    if not (root / ".git").exists():
+        return BuildIdentity(version, "", "", os.getpid(), started)
+    branch = _git(root, "rev-parse", "--abbrev-ref", "HEAD")
+    commit = _git(root, "rev-parse", "--short", "HEAD")
+    dirty = bool(_git(root, "status", "--porcelain"))
+    return BuildIdentity(version, branch, commit, os.getpid(), started, dirty)
 
 
 # ---------------------------------------------------------------------------

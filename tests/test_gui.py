@@ -25,6 +25,7 @@ and no background threads are involved.
 from __future__ import annotations
 
 import contextlib
+import gc
 import tkinter as tk
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,16 @@ def dashboard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     dash = Dashboard(root, application)
     root.update_idletasks()
     yield dash
+    # Collect the dashboard's Tk variables while the interpreter still exists.
+    # Left to chance they are finalized during some later test, on a thread
+    # with no Tk main loop, and every one of them raises into the warning
+    # summary - a hundred lines of noise that a real warning would hide in.
+    for ticker in dash.tickers.values():
+        ticker.stop()
+    del dash
+    gc.collect()
     root.destroy()
+    gc.collect()
     application.deadman.close()
 
 
@@ -1299,3 +1309,45 @@ def test_every_armed_stage_has_words_of_its_own() -> None:
 
     emitting = {stage for stage in SetupStage if stage.emits_input}
     assert emitting == set(_LIVE_STAGE_WORDS)
+
+
+# ---------------------------------------------------------------------------
+# Which build is this, actually
+# ---------------------------------------------------------------------------
+
+
+def test_the_title_bar_says_which_build_is_running(dashboard: Any) -> None:
+    """A window left open from an earlier run looks exactly like a new one.
+
+    That is how a fix gets tested against the build that did not have it and
+    reported as not working, so the branch's short commit and this process id
+    are in the title where they cannot be missed.
+    """
+    title = dashboard.root.title()
+    assert dashboard.build.version in title
+    assert str(dashboard.build.process_id) in title
+    if dashboard.build.commit:
+        assert dashboard.build.commit in title
+
+
+def test_the_drawer_carries_the_build_and_the_listener_health(dashboard: Any) -> None:
+    if not dashboard.advanced.expanded:
+        dashboard.advanced.toggle()
+    dashboard._last_drawer_key = None
+    dashboard._render_drawer()
+    dashboard.root.update_idletasks()
+    safety = dashboard.drawer.texts["Safety"].get("1.0", "end")
+    assert "build" in safety
+    assert dashboard.build.version in safety
+    # "Hotkeys: running" was true of a listener that had already died, so the
+    # edge and chord counts are shown beside the state.
+    assert "hotkeys" in safety
+
+
+def test_a_listener_that_cannot_be_read_does_not_break_the_drawer(dashboard: Any) -> None:
+    class Broken:
+        def health(self) -> None:
+            raise RuntimeError("listener exploded")
+
+    dashboard.app.hotkeys = Broken()
+    assert "exploded" in dashboard._hotkey_health()
