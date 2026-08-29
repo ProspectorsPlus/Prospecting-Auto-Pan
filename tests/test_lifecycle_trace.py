@@ -129,7 +129,7 @@ def test_the_stop_trace_carries_the_lifecycle_and_the_raw_events(
     harness.authority.lifecycle.note(
         LifecycleStage.GAME_MOTION_NOT_CONFIRMED, "median +0.001 vs threshold 0.020"
     )
-    harness.coordinator.events.add("live.armed", "token-abc")
+    harness.coordinator.events.add("live.authorized", "token-abc")
 
     harness.submit(IntentType.STOP)
     assert harness.wait_for(lambda: list((tmp_path / "logs").glob("stop-*.jsonl")))
@@ -144,7 +144,7 @@ def test_the_stop_trace_carries_the_lifecycle_and_the_raw_events(
     assert LifecycleStage.LIVE_WORKER_ENTERED.value in stages
     assert LifecycleStage.GAME_MOTION_NOT_CONFIRMED.value in stages
     names = {row["name"] for row in rows if row["kind"] == "event"}
-    assert "live.armed" in names
+    assert "live.authorized" in names
     assert "intent.stop" in names
 
 

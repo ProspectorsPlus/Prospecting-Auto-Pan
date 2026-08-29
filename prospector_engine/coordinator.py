@@ -189,9 +189,6 @@ class ChordAuthority:
             proof=PhysicalChordProof(nonce=self._nonce, chord=chord, minted_at_s=monotonic_s()),
         )
 
-    def submit(self, intent_type: IntentType, chord: str = "") -> bool:
-        return self._coordinator.submit(self.intent(intent_type, chord))
-
 
 @dataclass(frozen=True)
 class Readiness:

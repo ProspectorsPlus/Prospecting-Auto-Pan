@@ -249,7 +249,14 @@ def test_no_shipping_module_persists_an_arm_token() -> None:
     assert offenders == []
 
 
-def test_the_arm_token_is_bound_to_the_process_run() -> None:
+def test_the_live_authorization_is_bound_to_the_process_run() -> None:
+    """Still one-use and run-bound, now minted by the chord itself (D-062).
+
+    Merging the two gestures did not merge away the binding: the token still
+    carries the run id, the generation and an expiry, and it is still created
+    and consumed inside one coordinator transaction rather than held between
+    intents.
+    """
     from prospector_engine.coordinator import LiveArmToken
 
     fields = {field.name for field in dataclasses.fields(LiveArmToken)}
