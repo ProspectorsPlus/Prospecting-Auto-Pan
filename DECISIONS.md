@@ -1768,3 +1768,164 @@ rattling now says so.
 **Deviation:** the mission specified a 120-200 ms acceptance pulse. It is 320
 ms, on the owner's report above and because the renewal chain is what makes a
 press that long expressible at all.
+
+---
+
+## D-061 — 2026-08-28 — A journal entry may not take down the run it describes
+
+**Decision:** `LifecycleJournal.note(stage, detail, /, **fields)` takes its
+first two arguments positionally only.
+
+**Why:** `note(stage, "focus:False", detail="Roblox is not frontmost")` raised
+`TypeError: got multiple values for argument 'detail'`. It raised on the
+*coordinator thread*, inside the handler for the very event it was recording,
+so the coordinator's exception boundary safe-stopped the session — and the
+session it stopped was the one trying to explain why a chord had been refused.
+Journalling is diagnostics; diagnostics must not be able to end a run. It
+happened twice in one afternoon, which is the definition of a shape rather than
+a slip. Positional-only makes the collision land in `**fields` instead, and a
+test asserts the field is kept rather than dropped.
+
+**No deviation.** The plan does not specify the signature.
+
+---
+
+## D-062 — 2026-08-28 — One physical gesture, and it is the one the window names
+
+**Plan text:** §3.4 specifies a one-use `LiveArmToken` created by a physical
+**Arm Live** Tk callback and spent by a later hotkey, with a 30-second TTL.
+§11.2 lists **Arm Live…** among the dashboard's buttons.
+
+**Decision:** deviate. The separate arming click is removed — from the UI, from
+`IntentType`, and from the preflight. `START_LIVE` from a genuine physical
+chord now mints *and* consumes a `LiveArmToken` inside one coordinator
+transaction.
+
+**Why.** Four traces from a real session say the same thing four times:
+
+```
+chord_recognized      Ctrl+N
+intent_queued         START_LIVE from hotkey
+live.refused          no arm token
+```
+
+and nothing after it. No authorization, no LIVE transition, no `W` request, no
+keyboard edge, no camera delta. The visible "nothing moves" never reached the
+input backend at all, which rules out Quartz, focus, Roblox, camera calibration
+and hold timing in one reading.
+
+The cause was a gesture the window never mentioned. The message line read
+*"Ready. Focus Roblox and press Ctrl+N to let the navigator move your
+character"* while the coordinator required a click on a button the sentence did
+not name. Both halves were individually defensible; together they were a
+protocol only the source code stated.
+
+Two gestures could have been kept and documented instead. That was rejected
+because the second one buys nothing the first does not already have. Its stated
+purpose was to make arming *deliberate and physical*, and the chord is both: it
+is a modified key combination, pressed while Roblox is frontmost, that no
+automatic setup path can produce. A second gesture whose only distinct property
+is that the user might not know about it is not a safety feature.
+
+**What replaced the token's guarantees, one for one:**
+
+| The click gave | The chord gives |
+|---|---|
+| a gesture software cannot make | `PhysicalChordProof`, minted only by `ChordAuthority`, which is constructed by the coordinator and handed to exactly one hotkey listener. `source="hotkey"` is a label any caller can write; the nonce is not. |
+| a one-use token | created and consumed between two statements, never stored. There is no window in which one exists to be replayed, which is *stronger* than a 30-second TTL. |
+| run and generation binding | unchanged: the token still carries both, and the transition still bumps the generation. |
+| readiness checked before conversion | unchanged: one `readiness()` snapshot, read once, before anything is minted. |
+| a refusal that spent the token | a refusal that records `LIVE_REFUSED` with the reason, sets the coordinator's `live_refusal_detail`, and publishes a transition. The chord can simply be pressed again — which is what a user does anyway. |
+
+**And the failure it was really made of, closed separately.** The window now
+derives one `RunState` — SETTING UP, READY, STARTING LIVE, NAVIGATING, STOPPED,
+BLOCKED — and both the header badge and the message line render it. READY is
+read from `coordinator.blockers()` and `coordinator.live_authorization`, so
+"the window says Ready and the coordinator refuses the chord" is a
+contradiction rather than a combination nobody thought to look for.
+
+**Also removed:** the preflight's `ARM_TOKEN` precondition, which asked whether
+a button had been clicked. The id is kept and repointed at the question that
+now matters — whether a chord will be heard at all — because a dead listener
+makes every chord vanish with no symptom anywhere.
+
+---
+
+## D-063 — 2026-08-28 — A lease horizon is a safety bound, not a leftover
+
+**Plan text:** §3.3 gives `max_rolling_lease_horizon_ms = 250` as the ceiling
+on a rolling lease, and §4.5 requires renewal to be non-additive.
+
+**Decision:** `_translate_navigation` grants exactly
+`max_rolling_lease_horizon_ms`. It no longer derives the horizon from what
+remains of the frame's evidence budget. A second bound,
+`max_capture_stall_ms`, is added for the watchdog and for `_validate_for_press`.
+
+**Why:** the horizon was
+`min(250, (command.valid_until_s - now) * 1000)`, and `valid_until_s` is capped
+at `captured_at_s + max_evidence_age_ms`. A command built from a 70 ms-old
+frame therefore asked for a **30 ms** lease. The next frame arrived 33 ms
+later, the lease had already expired, the watchdog lifted the key, and the
+command built from *that* frame pressed it again. A hold meant to be continuous
+came out as a rattle — and every individual step of it was correct, which is
+why it survived so long. The plan's own 250 ms ceiling was never once reached.
+
+D-060 found the same conflation in the probes and fixed it by chaining
+renewals. This is the other half: renewing more often does not help if each
+renewal is granted a window shorter than the gap to the next frame.
+
+The two questions are genuinely different and now have different numbers:
+
+* **evidence** — "may *this frame* authorize a new decision?" Still 100 ms,
+  still enforced in `apply_navigation_command`, unchanged.
+* **hold** — "must a key already down come up now?" 250 ms, equal to the
+  plan's own horizon, applied to the lease and to the watchdog's capture
+  staleness check.
+
+`_validate_for_press` guards the *existence* of an edge — a new down, or a
+renewal of one already down — so it uses the hold budget. Using the evidence
+budget there meant one late frame both expired the lease and refused the
+renewal that would have saved it.
+
+**No safety bound was loosened.** A renewal still requires a strictly newer
+accepted frame, still revalidates focus, viewport, cancellation, deadman health
+and capture freshness, and is still capped. Nothing may hold a key without a
+newer frame; what changed is only how long a hold survives *between* frames.
+`max_capture_stall_ms` is a chosen bound with provenance, equal to a number the
+plan already contains, not a measurement.
+
+**Deviation:** none from the plan's values; the plan's ceiling is now the value
+actually used.
+
+---
+
+## D-064 — 2026-08-28 — The one command that presses a key
+
+**Decision:** `treasure.py --forward-probe [MS]` runs a bounded native movement
+check. `IntentType.FORWARD_PROBE` runs as a SERVICE and is granted a navigation
+session by name; `build_application` registers no worker for it, and only
+`Application.enable_forward_probe` — called by that CLI mode and by nothing
+else — wires one.
+
+**Why:** every report of "it does not move" so far has been unfalsifiable. One
+sentence covered a chord that never reached the coordinator, a coordinator that
+never authorized Live, an edge the OS never registered, and a character walking
+into a wall. Those are four different repairs, and no evidence in the
+repository could tell them apart without a person watching the screen. The
+probe walks the whole `NATIVE_MOTION_PATH` and prints the first stage that did
+not happen, with the measured down-to-up duration beside the motion verdict.
+
+**Why a SERVICE and not Live:** Live requires the physical chord, correctly,
+and a CLI cannot press one. SERVICE already requires positive focus, fresh
+capture, a running watchdog, a healthy deadman and an empty ledger — the same
+readiness Live needs — and carries its own deadline. The only thing added is
+the navigation session, granted for this one intent by name.
+
+**Why the worker is not in the composition root:** so the gate is structural
+rather than procedural. In the dashboard, and in every other process, the
+intent resolves to "no worker" and cannot emit an edge, whatever submits it.
+`tests/test_cli_lifecycle.py` asserts both halves: that `build_application`
+registers nothing for it, and that only the CLI mode enables it.
+
+**Deviation:** the plan has no CLI mode that emits input. This one does, and it
+says so in its own first line of output.

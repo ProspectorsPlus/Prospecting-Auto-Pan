@@ -72,6 +72,13 @@ not silently degrade.
 .venv/bin/python treasure.py --tracking-report  # rendered recovery latency, no input
 ```
 
+One mode is deliberately **not** in that list, because it is not safe to run
+unattended:
+
+```sh
+.venv/bin/python treasure.py --forward-probe 600   # PRESSES W AGAINST ROBLOX
+```
+
 `--detector-report` (rendered) and `--soak` use the fixtures in `tests/`, and
 `--detector-report --corpus` reads the committed real-frame corpus, so all
 three need a source checkout. None touches a window or emits input.
@@ -81,11 +88,12 @@ needs Screen Recording. `--setup-probe` runs the production setup machine
 through the real `build_application`, so it *does* resize the Roblox client —
 that is the stage under test — and restores the original client size on the
 way out. It stops at the observation half and prints the held-lease ledger;
-the armed stages that move the camera need a physical arm and are unreachable
-from a command line. Every offline mode is mutually exclusive and bounded
+the stages that move the camera run inside Live and are unreachable from a
+command line. Every mode is mutually exclusive and bounded
 (`tests/test_cli_lifecycle.py`).
 
-Everything above is safe to run unattended. `native` tests are excluded by the
+Everything in the first block is safe to run unattended; `--forward-probe` is
+not, and an agent must never run it. `native` tests are excluded by the
 default `addopts` in `pyproject.toml`, so a plain `pytest` cannot emit OS
 input; opt in with `-m native` only while physically at the machine.
 
@@ -94,16 +102,28 @@ no input, but they do need Screen Recording permission.
 
 `--hotkey-test` starts the real global listener and prints every key edge it
 normalizes, so a person can see whether a chord is heard. It submits to a list
-rather than to the coordinator, so nothing it recognizes can start a mode,
-spend an arm token, or reach an input session; it needs Input Monitoring.
+rather than to the coordinator, and it is built without the physical-chord
+capability, so nothing it recognizes can start a mode or reach an input
+session; it needs Input Monitoring.
+
+`--forward-probe` is the **one mode that emits input**. It presses `W` once
+against the real client for a bounded pulse and reports whether the world
+moved. It refuses unless Roblox is frontmost, and an agent must never run it
+(rule 1 below).
 
 ## 4. Hard rules for any agent working here
 
-1. **Never arm Live and never operate Roblox.** Live mode requires a
-   physical human click on **Arm Live** in the Tk UI followed by a physical
-   hotkey press while Roblox is focused. An agent may not simulate, bypass,
-   pre-authorize, or persist that arming, and may not add a code path that
-   would let it.
+1. **Never start Live and never operate Roblox.** Live requires one physical
+   human press of **Ctrl+N** while Roblox is focused. Since D-062 that is the
+   whole gesture: the separate **Arm Live** click is gone, and the chord both
+   authorizes and starts in a single coordinator transaction. The gate did not
+   get weaker — the intent must carry a `PhysicalChordProof` minted by
+   `ChordAuthority`, which is handed to exactly one hotkey listener — but it
+   did get shorter, so read this rule as covering *the whole* of arming.
+   An agent may not simulate, bypass, pre-authorize, or persist that press,
+   may not hand `ChordAuthority` to anything but the listener, and may not add
+   a code path that would let it. An agent must also never run
+   `--forward-probe`, which is the one command that presses a key.
 2. **Never press a game hotkey to test it.** The Ctrl chords (Ctrl+N, O, X,
    R, P, D, I — identical on both platforms, no F-key aliases) drive real
    input into Roblox. Their handlers are covered by tests that use fakes and

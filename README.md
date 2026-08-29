@@ -22,12 +22,13 @@ repository state and is not architecture truth.
    what it actually got, rebinds capture, identifies which map you have
    equipped from consecutive frames, checks that the direction to the arrow
    holds still, qualifies the whole read-only pipeline, and starts observing.
-4. To let it move your character: press **Arm Live** (enabled once setup is
-   READY and nothing is blocking), focus Roblox, and press **Ctrl+N**
-   (**Ctrl+N** on Windows).
-   The first two seconds under the arm are stationary - it confirms the camera
-   control mode and measures how far your camera turns per unit of input - and
-   then it aligns, holds `W`, and follows the arrow.
+4. To let it move your character: focus Roblox and press **Ctrl+N**. That one
+   press is the whole gesture — it both authorizes and starts Live. There is
+   no button to click first.
+   The first seconds after it are stationary: the navigator confirms the camera
+   control mode and measures how far your camera turns per unit of input, with
+   the dashboard reading **STARTING LIVE** and naming the stage. Then it
+   aligns, holds `W`, and follows the arrow.
 5. **Stop & Release All Input** (or **Ctrl+X** / **Ctrl+X**) is
    available at every moment, focused or not.
 
@@ -178,6 +179,8 @@ on Windows.
 .venv/bin/python treasure.py --detector-report --corpus tests/corpus/real  # real-frame report
 .venv/bin/python treasure.py --shadow-bench 15 --json bench.json  # native capture + perception
 .venv/bin/python treasure.py --soak 10        # bounded synthetic soak
+.venv/bin/python treasure.py --forward-probe 600 --json probe.json
+                                              # SENDS ONE KEY PRESS - see below
 ```
 
 Every offline mode is mutually exclusive and bounded: no dashboard, no input
@@ -191,9 +194,23 @@ setup — the same `build_application`, the same coordinator, the same bounded
 stages the Start Navigator button drives — so the fit stage genuinely sizes the
 Roblox client to 1280x720. It reads the client size first and restores it on
 the way out (`--keep` opts out), it stops at the observation half, and it
-cannot emit an input edge: the armed stages that turn the camera need a
-physical arm and are never reached. It prints the held-lease ledger at the end
-so that claim is checkable rather than asserted.
+cannot emit an input edge: the stages that turn the camera run inside Live and
+are never reached. It prints the held-lease ledger at the end so that claim is
+checkable rather than asserted.
+
+`--forward-probe` is the exception that **presses a key**. It exists because
+every earlier report of "it does not move" was unfalsifiable: one sentence
+covered a chord that never reached the coordinator, a coordinator that never
+authorized Live, an edge the OS never registered, and a character walking into
+a wall. Those are four different repairs. It runs automatic setup, presses `W`
+once, holds it by renewal for the requested pulse (600 ms by default, capped at
+700), watches the frames captured after the down edge, and prints the causal
+chain with the first missing transition named. It refuses unless Roblox is
+already frontmost; it runs as a bounded service under the same fresh capture,
+live watchdog, healthy deadman and empty ledger Live needs; and `W` is released
+in the worker's `finally`, again by the coordinator's transition release, and
+again on the way out. `build_application` registers no worker for it, so in the
+dashboard the intent resolves to "no worker" and can emit nothing.
 
 `--replay` runs a recorded session back through the real perception pipeline
 and navigator. There is no input authority and no platform port anywhere in
@@ -203,23 +220,49 @@ replay does not make every frame look stale.
 ### Moving your character requires a physical human action
 
 There is no way to start navigation from software. Automatic setup can reach
-READY on its own; it can never arm. The sequence is:
+READY on its own; it can never start Live. The sequence is:
 
-1. Physically click **Arm Live** in the dashboard. This creates a one-use,
-   30-second, process-run-bound token that is never persisted. Automatic setup
-   cannot press it, and there is no code path that arms without it.
-2. Physically focus Roblox.
-3. Press **Ctrl+N** (**Ctrl+N** on Windows).
+1. Physically focus Roblox.
+2. Press **Ctrl+N**.
 
-The first thing the armed worker does is stand still: it confirms the camera
+That is the whole gesture, and it is deliberately one thing rather than two.
+It used to be two — a click on an *Arm Live* button to mint a token, then the
+chord to spend it within thirty seconds — and only one of the two was ever
+mentioned on screen. The window said *"Ready. Focus Roblox and press Ctrl+N"*
+while the coordinator answered `live.refused: no arm token`, which is the whole
+of a reported "it says it is ready and nothing moves".
+
+Merging them did not weaken the gate:
+
+* the intent must carry a proof minted by the coordinator's own chord
+  capability, which is handed to exactly one hotkey listener and to nothing
+  else. `source="hotkey"` is a label anything can write; the proof is not;
+* the listener only produces a chord from a real, non-injected key edge with
+  Roblox positively frontmost;
+* every readiness check that guarded the old conversion still runs first, on
+  one snapshot, before anything is minted;
+* the authorization is still one-use and run-bound. It is created and consumed
+  between two statements and never stored, so there is no window in which one
+  exists to be replayed.
+
+If the chord is refused, the dashboard says **BLOCKED** with the exact reason
+and whether pressing again is worth it. It never sits on **READY** while the
+coordinator would refuse.
+
+The first thing the live worker does is stand still: it confirms the camera
 control mode and measures the turn actuator with bounded probes, releasing
 after every one. If neither the arrow keys nor relative mouse yaw can be shown
 to rotate the camera, it stops and says so rather than steering blind.
 
 Clicking Tk removes focus from Roblox, so there is no actionable *Start Live*,
 *Reset*, or *Pan Test* button — those are guidance labels, and the hotkeys
-carry the intent while Roblox is positively focused. A failed readiness check
-spends the token: you re-arm.
+carry the intent while Roblox is positively focused.
+
+The one command-line mode that emits input is `--forward-probe`. It presses
+`W` once against the real client, holds it for a bounded pulse, watches the
+frames captured after the down edge, and prints the causal chain with the
+first stage that did not happen. It refuses unless Roblox is already frontmost,
+runs under the same readiness Live needs, and releases on every exit path.
 
 Hotkeys are **Ctrl** chords, identical on macOS and Windows:
 

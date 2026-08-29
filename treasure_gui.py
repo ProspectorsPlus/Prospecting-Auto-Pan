@@ -1268,13 +1268,17 @@ class Dashboard:
         )
         preflight = self._preflight()
         if snapshot is not None and snapshot.mode is RunMode.LIVE:
-            live_head, live_detail = "Navigating", "movement is being sent"
+            # The ledger, not the mode. "Live" and "a key is down" are
+            # different claims, and this card is where a person looks to tell
+            # them apart.
+            live_head = "Navigating"
+            live_detail = snapshot.actuator.describe()
         elif not preflight.ok:
             # A denied permission or a dead listener outranks every other
             # explanation: nothing downstream can work, and the fix is a
             # specific settings pane rather than anything in this window. Only
-            # *faults* reach here - "not armed" and "Roblox is not focused" are
-            # normal preconditions and are reported below in their own words.
+            # *faults* reach here - "Roblox is not focused" is a normal
+            # precondition and is reported below in its own words.
             first = preflight.faults[0]
             live_head = f"Blocked - {len(preflight.faults)}"
             live_detail = f"{first.label}: {first.detail}"
@@ -1285,8 +1289,9 @@ class Dashboard:
             if real:
                 live_head = f"Blocked - {len(real)}"
                 live_detail = f"{real[0].code}: {real[0].summary}"
-            elif snapshot.arm_state not in ("none", "-"):
-                live_head, live_detail = "Armed", f"focus Roblox, press {_CHORD_START}"
+            elif snapshot.live_authorization.startswith("refused"):
+                live_head = "Refused"
+                live_detail = snapshot.live_authorization.split(": ", 1)[-1]
             else:
                 live_head, live_detail = "Ready", f"press {_CHORD_START} in Roblox to navigate"
         self._set_summary("live", live_head, live_detail)

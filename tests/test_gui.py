@@ -1517,3 +1517,30 @@ def test_the_reason_nothing_is_moving_is_shown_verbatim(dashboard: Any) -> None:
         dashboard.readout_vars["blocked"].get()
         == "the camera control mode has not been confirmed"
     )
+
+
+def test_the_input_safety_card_renders_every_live_state(dashboard: Any) -> None:
+    """Every branch, because one of them used to raise on a field that had gone.
+
+    ``snapshot.arm_state`` survived the removal of the Arm Live button in this
+    one card. Nothing reached the branch in a test - the fixture always had a
+    standing blocker - so an ``AttributeError`` sat on the path that runs
+    several times a second the moment a real session became unblocked.
+    """
+    from prospector_engine.contracts import ActuatorState, RunMode
+
+    metrics = dashboard.app.capture.metrics()
+    for snapshot in (
+        None,
+        _snapshot(mode=RunMode.IDLE, blockers=()),
+        _snapshot(mode=RunMode.IDLE, blockers=(), live_authorization="refused: focus:False"),
+        _snapshot(
+            mode=RunMode.LIVE,
+            blockers=(),
+            actuator=ActuatorState(held=("w",), forward_held_ms=1500.0),
+        ),
+    ):
+        dashboard._render_summaries(snapshot, metrics)
+        dashboard.root.update_idletasks()
+
+    assert "held" in dashboard.summary_details["live"].get()

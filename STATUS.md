@@ -4,12 +4,108 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-28 (seventh pass, native movement recovery). Development
+Last updated: 2026-08-28 (eighth pass, native control recovery). Development
 machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
-**No Roblox session was operated and navigation was never armed during
+**No Roblox session was operated and Live was never started during
 implementation; no input was sent.** The fifth pass did resize the Roblox
 window, which is the fit stage doing its job, and restored it every time —
 measured below.
+
+---
+
+## What changed on 2026-08-28 (eighth pass) — the gesture nobody was told about
+
+### The root cause, read out of four traces
+
+`logs/stop-epoch3-1900021861.jsonl`, `stop-epoch3-1900181519.jsonl`,
+`stop-epoch3-1900184259.jsonl` and `stop-epoch4-1900065407.jsonl` all contain
+the same three rows and nothing after them:
+
+```
+chord_recognized      Ctrl+N
+intent_queued         START_LIVE from hotkey
+live.refused          no arm token
+```
+
+No `arm.created`, no `ARM_TOKEN_CONSUMED`, no LIVE transition, no `W_REQUESTED`,
+no `OS_EDGE_POSTED`, no lease, no camera delta. **The failure happened before
+the input backend was reached**, which rules out Quartz, focus, Roblox, camera
+calibration and hold timing in one reading.
+
+Live required a click on an **Arm Live** button *and then* the chord. The
+window's own message line said only *"Ready. Focus Roblox and press Ctrl+N"*.
+The two-gesture protocol existed nowhere a user could read it.
+
+| Reported | What the measurement says | Fix |
+|---|---|---|
+| Ctrl+N does nothing | Confirmed and located: the chord is heard, the intent is queued, and the coordinator refuses it for a token no gesture in the UI's own instructions creates | one gesture; the chord mints and consumes its own authorization in one transaction, and must carry a `PhysicalChordProof` only the listener can produce (D-062) |
+| The GUI says Ready while the coordinator refuses | Confirmed: the message line is derived from `progress.ok`, the refusal from `arm_token()`; nothing compared them | one derived `RunState`, read from `coordinator.blockers()` and `live_authorization`, rendered by both the badge and the message line (D-062) |
+| The keys are held, not tapped — and still nothing moves | The hold *mechanism* was right after D-060; the hold *horizon* was not. A lease was granted `min(250 ms, what is left of this frame's 100 ms budget)`, so a command from a 70 ms-old frame asked for 30 ms, the next frame arrived after 33 ms, the watchdog lifted the key and the next command pressed it again | the horizon is the plan's own `max_rolling_lease_horizon_ms`, and a separate `max_capture_stall_ms` bounds a hold between frames (D-063) |
+| A brief occlusion stops the route dead | Confirmed: the grace was **two frames** — 33 ms at 60 fps — and a rejected *heading* had no grace at all | a 2 s duration grace covering both losses, coasting on the last stable heading with yaw released; past it, a bounded reacquisition episode rather than standing still |
+| 796 of 800 event rows are one repeated status line | Confirmed: 791 `worker.status` rows in `stop-epoch3-1900184259.jsonl` | per-frame chatter rate-limited on the way in; milestones kept in a second ring chatter cannot evict |
+| The dashboard cannot say why nothing is moving | Confirmed: it showed the mode and the leases and nothing else | eight measured rows read from the ledger — listener health, authorization, keys held, forward hold duration with edge counts, last posted yaw, backend, last confirmed displacement, and the blocking reason |
+
+### Found while fixing, not reported
+
+* `treasure_gui.py` still read `snapshot.arm_state` in the INPUT SAFETY card
+  after the field was removed. Nothing reached that branch in a test — the
+  fixture always had a standing blocker — so an `AttributeError` was sitting
+  on a path that runs several times a second the moment a session becomes
+  unblocked. Fixed, and every branch of the card is now covered.
+* `LifecycleJournal.note` raised `TypeError` on a `detail=` keyword collision,
+  on the coordinator thread, inside the handler for the event being recorded —
+  so a mistyped diagnostic safe-stopped the run it was describing (D-061).
+
+### Edge-count evidence (fakes, deterministic)
+
+`tests/test_hold_continuity.py` drives frames through the real navigation
+session and counts edges at the platform port:
+
+| scenario | down edges | up edges |
+|---|---|---|
+| 30 frames of "keep walking" | 1 | 0 |
+| 6 gaps of 120 ms (over the evidence budget, under the hold budget) | 1 | 0 |
+| the same 6 gaps, against the pre-D-063 horizon | 1 | **2** |
+| a deliberate release, then walking again | 2 | 1 |
+| a stall past `max_capture_stall_ms` | 1 | ≥1, ledger empty |
+
+Measured continuous hold in the end-to-end test
+(`tests/test_live_start_to_stop.py`): **> 100 ms** across thirty-odd applied
+commands with corrective yaw in both signed directions posted while forward
+stayed down, one down edge, no up edge until Stop.
+
+**None of this is native evidence.** It is a fake platform port recording what
+it was asked to post. See the movement gate below.
+
+### One native measurement that does bear on it
+
+`treasure.py --shadow-bench 12` against the live client, 2026-08-28. Read-only:
+no window moved, no input sent.
+
+| | consumed fps | unique fps | capture-to-observation p50 / p95 / p99 / max | cpu | rss |
+|---|---|---|---|---|---|
+| capture only | 56.8 | 56.8 | 5.1 / 6.9 / 9.0 / **131.2** ms | 54% | 109 MB |
+| capture + headless perception | 55.9 | 56.2 | 11.5 / 19.7 / 25.7 / **206.6** ms | 106% | 189 MB |
+
+Client was `adopted_noncanonical: 1800x1053 pt` (the owner's current window;
+automatic setup would fit it), backend `screencapturekit`, profile
+`yellow_map_v1`.
+
+**Why this is evidence for D-063 rather than a throughput note.** The *old*
+lease horizon was `max_evidence_age_ms` minus the frame's age — with a p50
+observation latency of 11.5 ms that is about 88 ms, and at the p99 about 74 ms.
+The measured worst-case gap between observations on this machine is **206.6
+ms**. So the old horizon was smaller than the real tail by a factor of two to
+three, on the owner's own hardware, with nothing else running. The rattle was
+not a possibility; it was the expected behaviour of those two numbers.
+
+206.6 ms is also inside `max_capture_stall_ms` (250 ms) with little room, which
+is worth watching: a machine with a longer tail than this one will release the
+key rather than rattle it, which is the correct failure but still a failure.
+Sustained cadence is comfortable — 55.9 processed fps against a
+`min_processed_fps` of 30.
+
+E-PERF stays **PENDING**: this is one machine, one window size, one session.
 
 ---
 
@@ -154,23 +250,30 @@ would be guessing.
 ### What the owner still owes — and it is short
 
 Everything below needs a physical human at the machine. **No agent may
-simulate the arm or the start chord** (CLAUDE.md rule 1).
+simulate the start chord** (CLAUDE.md rule 1).
 
 1. Equip a treasure map so its arrow is on screen.
 2. `treasure.py --setup-probe` → expect **READY**. This is the first time
    `ESTABLISH_REFERENCE` and `SHADOW_QUALIFY` will have run on real frames.
-3. Open the dashboard. Confirm the INPUT SAFETY card reads *Ready to arm*, and
-   that its tooltip shows the hotkey listener **running**.
-4. Click **Enable Live Control**, focus Roblox, press **Ctrl+Option+N**.
-5. Watch the prologue characterize the turn actuator, then the route.
-6. Press **Ctrl+Option+X** to stop, from an unfocused window as well.
+3. `treasure.py --forward-probe 600` with Roblox frontmost. **This presses a
+   key.** It prints the causal chain and names the first missing transition;
+   run it before anything else, because nothing downstream can work if
+   `GAME_MOTION_CONFIRMED` is missing here.
+4. Open the dashboard. Confirm the header reads
+   **READY - CTRL+N STARTS MOVEMENT** and that the LIVE READOUT's
+   *Ctrl+N listener* row says it is hearing keys.
+5. Focus Roblox and press **Ctrl+N**. That is the whole gesture (D-062);
+   there is no button to click first.
+6. Watch the prologue characterize the turn actuator, then the route.
+7. Press **Ctrl+X** to stop, from an unfocused window as well.
 
-Record, for each: the chord being received, the token consumed, the Live worker
-entered, cadence eligible, the turn characterization outcome, the requested
-command, the OS edge result, the `NavigationApplyResult`, the leases actually
-held, **whether the character moved**, and the release after Stop. An internal
-`APPLIED` with no observed movement is **not** a pass — the overlay now says
-`NO MOTION` for exactly that case.
+Record, for each: the chord being received, the authorization created and
+consumed, the Live worker entered, cadence eligible, the turn characterization
+outcome, the requested command, the OS edge result, the
+`NavigationApplyResult`, the leases actually held, **whether the character
+moved**, and the release after Stop. An internal `APPLIED` with no observed
+movement is **not** a pass — the overlay says `NO MOTION` for exactly that
+case.
 
 Windows has still never executed a line of `platform_win.py`. The chord poller
 is contract-tested from macOS in a subprocess only.
@@ -333,9 +436,9 @@ sending any input.
 | The read-only OS key-state probe | `port.key_state(InputKey.W)` | Reports `False` for every key at rest and flips to `True` while a key is physically held. This is the `OS_EDGE_LOOPBACK_OBSERVED` source. |
 
 **Neither is the movement gate.** Both are the halves that can be checked
-without a person. The half that cannot is a physical **Arm Live** click
-followed by a physical **Ctrl+N** with Roblox focused, and it has not happened.
-`GAME_MOTION_CONFIRMED` has never been observed.
+without a person. The half that cannot is a physical **Ctrl+N** with Roblox
+focused — one gesture since D-062, not two — or the `--forward-probe` command,
+and neither has been run. `GAME_MOTION_CONFIRMED` has never been observed.
 
 ---
 
@@ -586,8 +689,8 @@ screen. Nothing before step 4 sends input.
    This is the held-out session E-PROF needs. Press **Stop & Release All
    Input**; a trace lands beside the logs and the recording under recordings/.
 4. **Only with a hand on Ctrl+X**, and only in a private server on open
-   ground: press **Arm Live**, focus Roblox, press **Ctrl+N**. Watch the
-   guidance line, which now names each armed stage:
+   ground: focus Roblox and press **Ctrl+N** — one gesture, no button first
+   (D-062). Watch the guidance line, which names each stage:
 
    * *Testing whether Roblox accepts a key* — one ~160 ms forward pulse. The
      character may twitch. If it says the game is not acting on the key, stop
