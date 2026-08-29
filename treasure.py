@@ -1205,6 +1205,91 @@ def _run_hotkey_test(seconds: float = 30.0) -> int:
     return 0
 
 
+def _run_tracking_report(json_path: str | None = None) -> int:
+    """Recovery latency after a jump, a scale step and a camera sweep.
+
+    Rendered stress, never a gate (plan 7.2). It measures the one property the
+    real corpus cannot: the corpus is sampled at about 5 fps, and this is about
+    consecutive frames 17 ms apart. Reads no window and sends no input.
+
+    Both halves are printed, because either alone is misleading: how fast the
+    detector recovers, and whether it recovers onto the arrow or onto a
+    same-coloured blob.
+    """
+    import json as _json
+
+    from prospector_engine.arrow import DetectorConfig
+    from tests.tracking_families import (
+        cluttered_jump_report,
+        distractor_report,
+        report,
+    )
+
+    # The old behaviour is reachable exactly: resuming is bounded by how
+    # recently the track was seen, so a zero age disables it and nothing else.
+    without = DetectorConfig(resume_max_age_s=0.0)
+
+    print("Tracker recovery at 60 fps, rendered stress (no gate is passed on this).\n")
+    print(f"{'family':>22}  {'before':>10}  {'after':>10}  identity")
+    rows = []
+    for old, new in zip(report(without), report(), strict=True):
+        before = "never" if old.blind_ms is None else f"{old.blind_ms:.0f} ms"
+        after = "never" if new.blind_ms is None else f"{new.blind_ms:.0f} ms"
+        identity = "same track" if new.kept_identity else "NEW TRACK"
+        print(f"{new.label:>22}  {before:>10}  {after:>10}  {identity}")
+        rows.append(
+            {
+                "family": new.label,
+                "before_blind_ms": old.blind_ms,
+                "after_blind_ms": new.blind_ms,
+                "kept_identity": new.kept_identity,
+                "error_deg": new.error_deg,
+            }
+        )
+
+    print("\nWith the arrow deleted and same-coloured clutter left in place:")
+    print(f"{'layout':>22}  {'before':>10}  {'after':>10}")
+    clutter = []
+    for old_d, new_d in zip(distractor_report(without), distractor_report(), strict=True):
+        print(
+            f"{new_d.label:>22}  {old_d.false_valid_frames:>4}/{old_d.frames} false  "
+            f"{new_d.false_valid_frames:>4}/{new_d.frames} false"
+        )
+        clutter.append(
+            {
+                "layout": new_d.label,
+                "before_false_valid": old_d.false_valid_frames,
+                "after_false_valid": new_d.false_valid_frames,
+                "frames": new_d.frames,
+                "switched": new_d.switched,
+            }
+        )
+
+    print("\nA jump with clutter present - it must recover onto the arrow, not a blob:")
+    jumps = []
+    for row in cluttered_jump_report():
+        print(f"  {row.describe()}")
+        jumps.append(
+            {
+                "layout": row.label,
+                "blind_frames": row.blind_frames,
+                "kept_identity": row.kept_identity,
+                "position_error_px": row.position_error_px,
+            }
+        )
+
+    print(
+        "\nRendered frames are training stress, never held-out validation "
+        "(plan 7.2). The real-frame corpus is unchanged by this: it is sampled "
+        "at about 5 fps and resuming is bounded to 60 ms."
+    )
+    if json_path:
+        payload = {"recovery": rows, "clutter": clutter, "cluttered_jumps": jumps}
+        Path(json_path).write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        print(f"JSON written to {json_path}")
+    return 0
+
+
 _MODES = (
     "--deadman",
     "--self-test",
@@ -1217,6 +1302,7 @@ _MODES = (
     "--shadow-bench",
     "--calibrate",
     "--hotkey-test",
+    "--tracking-report",
 )
 
 
@@ -1305,6 +1391,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if mode == "--calibrate":
             return _run_calibrate()
+        if mode == "--tracking-report":
+            return _run_tracking_report(_option(arguments, "--json"))
         if mode == "--hotkey-test":
             seconds = _positional_after(arguments, "--hotkey-test")
             return _run_hotkey_test(float(seconds) if seconds is not None else 30.0)

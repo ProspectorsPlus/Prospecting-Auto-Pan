@@ -1591,3 +1591,79 @@ failure distinguishes: no fresh frames at all (capture), a majority unreadable
 with no measurable rotation (genuinely the camera).
 
 **Deviation:** none.
+
+---
+
+## D-058 — 2026-08-28 — The gate made the detector blind on purpose
+
+**Plan text:** §7.2, §8.
+
+**Decision:** `ArrowDetector._resume_outside_gate`. When the positional gate
+finds nothing, a candidate may resume the held identity from anywhere in the
+frame if the three *non-positional* identity cues agree — orientation,
+appearance signature, and scale within a deliberately wide band — and it is the
+unambiguous global best. Bounded by `resume_max_age_s`.
+
+**Why:** measured, and the mechanism is arithmetic. The gates only widen with
+elapsed time (`gate_base_px + gate_rate_px_s * dt`, `scale_gate +
+scale_rate_s * dt`), and elapsed time only accumulates while the track is
+*missing*. So a perfectly visible arrow that moved was refused until the gate
+had crawled out far enough to reach it. Reproduced at 60 fps on rendered
+frames, with the arrow unambiguous in every single frame:
+
+| step | before | after |
+|---|---|---|
+| jump 100 px | 67 ms | 0 ms |
+| jump 180 px | 233 ms | 0 ms |
+| jump 250 px | 367 ms | 0 ms |
+| jump 400 px | 567 ms, new identity | 0 ms, same identity |
+| scale 70→110 | 200 ms | 0 ms |
+| scale 70→130 | 367 ms | 0 ms |
+| scale 70→160 | 567 ms, new identity | 0 ms, same identity |
+| scale 70→200 | 567 ms, new identity | 0 ms, same identity |
+| sweep 25°/frame | 200 ms, **179.9° heading error** | 0 ms, 0.3° |
+
+The sweep row is the one that mattered most. Recovering after a blackout meant
+reacquiring, and the polarity guard kept the direction the arrow had *before*
+it swung, so the detector came back pointing almost exactly backwards. A
+steering controller handed that walks the character away from the treasure.
+
+The rule is the inverse of the old one. Position is the identity cue a fast
+camera turn destroys and the one foliage cannot fake, so it is neither
+sufficient nor necessary alone; the other three are unaffected by motion. Two
+close candidates resume nothing, because two similar candidates is exactly the
+same-coloured-foliage case this must never fire on.
+
+**`resume_max_age_s = 0.06` is what makes it sound rather than convenient.** A
+resume is the claim *"the arrow moved between two consecutive frames"*, and
+that claim is only supported while the frames are close together in time. The
+first version had no such bound and took the tune split's `sand-a` from zero
+false locks to one — a same-coloured sand blob resumed the identity across a
+200 ms corpus gap, which is a gap the arrow could have crossed the screen in.
+With the bound, resuming is inert below about 17 fps.
+
+**Measured on the real corpus, tune and eval, before and after: every sequence
+is identical.** Recall, false locks and identity switches are unchanged on all
+fourteen sequences. That is the expected result and not a disappointing one:
+the corpus is sampled at about 5 fps, so it cannot reach the regime this fixes.
+The tuning decision was taken on `tune` alone (CLAUDE.md §9); `eval` was read to
+report.
+
+**A weakness this does *not* fix, recorded rather than hidden:** in two of the
+nine rendered clutter layouts, deleting the arrow still leaves the detector
+reporting a blob — with resuming switched off as well as on. A same-coloured
+blob that lands near the arrow's last position is accepted by the *ordinary*
+positional gate. That is what `sand-near-a`'s 26.7% false-lock rate is, it is
+untouched here, and it is the strongest argument for the learned-keypoint
+phase-two option.
+
+**Not done, and not pretended:** no Lucas-Kanade bridge, no per-frame ROI
+tracker, no covariance state, no `FLOW_BRIDGED` / `PREDICTED_ONLY` provenance.
+The measured blackout was entirely an association-rule problem and is entirely
+gone without a second tracker; adding one now would be adding a mechanism to a
+symptom that no longer exists. The acceptance gates that need dense green
+recordings remain PENDING for want of the recordings, not for want of the code.
+
+**Deviation:** the mission asked for a hybrid classical tracker with optical
+flow bridging. What was built is the association half of it. Recorded here
+rather than reported as complete.

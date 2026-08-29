@@ -715,7 +715,7 @@ def test_a_configuration_that_could_never_pass_is_refused_where_it_is_written() 
 
 
 def test_a_camera_timeout_names_the_measurement_not_the_clock() -> None:
-    """"It took too long" is true of every timeout and tells nobody what to fix.
+    """\"It took too long\" is true of every timeout and tells nobody what to fix.
 
     An arrow that cannot be read is the commonest way to reach this deadline,
     and it used to be reported as "measuring the camera turn took longer than

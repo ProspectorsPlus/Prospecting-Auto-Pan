@@ -69,6 +69,7 @@ not silently degrade.
                                               # native capture + headless perception
 .venv/bin/python treasure.py --setup-probe    # real automatic setup, no input sent
 .venv/bin/python treasure.py --hotkey-test 30 # watch the listener hear keys, no input
+.venv/bin/python treasure.py --tracking-report  # rendered recovery latency, no input
 ```
 
 `--detector-report` (rendered) and `--soak` use the fixtures in `tests/`, and

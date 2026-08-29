@@ -286,6 +286,39 @@ class DetectorConfig:
     #: searches run at most this often. Acquisition costs at most one extra
     #: frame; a view with nothing to find stops costing a full pass per frame.
     idle_search_interval_s: float = 0.03
+    #: Resume-outside-the-gate: how the same arrow is recognised somewhere
+    #: else. Position is the identity cue a fast camera turn destroys and the
+    #: one foliage cannot fake, so it is neither sufficient nor necessary on
+    #: its own. When the positional gate finds nothing, a candidate may resume
+    #: the held identity from anywhere in the frame if the three *other* cues
+    #: agree and it is the unambiguous global best.
+    #:
+    #: Without this the gates only widen with elapsed time, and elapsed time
+    #: only accumulates while the track is missing - so a perfectly visible
+    #: arrow that jumped was refused until the gate crawled out to reach it.
+    #: Measured on the rendered families: 100 px cost 67 ms of blindness,
+    #: 250 px cost 367 ms, 400 px cost 567 ms and a new identity.
+    #:
+    #: The scale band is the widest of the three because scale is the identity
+    #: cue that legitimately changes fastest - on approach, and whenever the
+    #: arrow is clipped or partly occluded so the measured extent jumps.
+    resume_scale_gate: float = 3.0
+    #: A resume candidate must score at least this fraction of the track's own
+    #: smoothed score. A faint blob is not the arrow we were following.
+    resume_min_score_fraction: float = 0.75
+    #: ...and must beat the runner-up by this much. Two similar candidates is
+    #: exactly the same-coloured-foliage case this must never fire on.
+    resume_margin: float = 0.2
+    #: ...and the track must have been *seen* this recently. This is the bound
+    #: that makes the whole rule sound rather than merely convenient: a resume
+    #: is the claim "the arrow moved between two consecutive frames", and that
+    #: claim is only supported while the frames are close together in time. At
+    #: 60 Hz this is about three frames. On a corpus sampled at 5 fps it
+    #: disables resume outright, which is correct: two frames 200 ms apart say
+    #: nothing about whether a blob elsewhere is the same object, and letting
+    #: a resume fire there took the same-coloured sand sequence from zero false
+    #: locks to one.
+    resume_max_age_s: float = 0.06
     #: Appearance gate: the contrast ratio may drift this much from the
     #: track's slowly adapted signature.
     appearance_gate: float = 0.45
@@ -816,6 +849,7 @@ class ArrowDetector:
         self._last_decision = "none"
         self.switches = 0
         self.reacquisitions = 0
+        self.resumes = 0
 
     @property
     def profile(self) -> Any:
@@ -1535,6 +1569,11 @@ class ArrowDetector:
         viable = [h for h in fused if h.accepted]
         in_gate = [h for h in viable if id(h) not in gated and h.reason is None]
         if not in_gate:
+            # Nothing near where the arrow was. Before holding, ask whether it
+            # is unmistakably somewhere else - see ``_resume_outside_gate``.
+            resumed = self._resume_outside_gate(track, viable)
+            if resumed is not None:
+                return self._resume(track, resumed, fused, viable, frame)
             # No evidence for the held identity this frame. It is held - not
             # replaced by whatever else is viable - until ``max_track_age_s``
             # expires; a candidate elsewhere then has to earn a new identity
@@ -1642,7 +1681,14 @@ class ArrowDetector:
                 self._label(fused, best, None),
                 "resume",
             )
-        # Elsewhere: a new identity has to be earned, exactly like acquisition.
+        # Elsewhere, but unmistakable: resume at once rather than spending
+        # ``acquire_min_frames`` re-earning an identity we already hold.
+        resumed = self._resume_outside_gate(track, viable)
+        if resumed is not None:
+            self.reacquisitions += 1
+            return self._resume(track, resumed, fused, viable, frame)
+        # Elsewhere and not unmistakable: a new identity has to be earned,
+        # exactly like acquisition.
         acquire_gate = self._gate_px(self._acquire.started_s if self._acquire else None)
         best, ambiguous = self._pick(viable, None, acquire_gate)
         if ambiguous:
@@ -1702,6 +1748,78 @@ class ArrowDetector:
         scale = _scale_of(candidate)
         ratio = max(scale, streak.scale) / max(1e-6, min(scale, streak.scale))
         return ratio <= self._scale_ratio_allowed(streak.last_s)
+
+    def _resume_outside_gate(
+        self, track: _Track, viable: list[ArrowHypothesis]
+    ) -> ArrowHypothesis | None:
+        """The same arrow, somewhere else: identity without proximity.
+
+        The positional gate exists to stop a same-coloured distractor stealing
+        the track, and it does that job. What it cannot do is tell "the arrow
+        moved 250 px because the camera swung" from "that is a different
+        object", because both look identical to a distance test - so the old
+        answer was to wait until the gate had grown far enough to cover the
+        distance, which is 367 ms of deliberate blindness with the arrow in
+        plain sight the whole time.
+
+        This asks the question the other way round. Three identity cues do not
+        depend on position at all: orientation continuity, the appearance
+        signature, and scale. When all three agree *and* the candidate is the
+        unambiguous global best, it is the arrow - wherever it is. When two
+        candidates are close, nothing resumes, because two similar candidates
+        is precisely the same-coloured-foliage case this must never fire on.
+
+        Returns the candidate to resume on, or ``None`` to hold as before.
+        """
+        config = self._config
+        if not viable:
+            return None
+        if self._now_s - track.last_hit_s > config.resume_max_age_s:
+            return None
+        ordered = sorted(viable, key=lambda h: h.score, reverse=True)
+        best = ordered[0]
+        if len(ordered) > 1 and best.score - ordered[1].score < config.resume_margin:
+            return None
+        if best.score < track.score * config.resume_min_score_fraction:
+            return None
+        if not self._orientation_ok(track, best):
+            return None
+        if not self._appearance_ok(track, best):
+            return None
+        if track.scale > 0.0:
+            scale = _scale_of(best)
+            ratio = max(scale, track.scale) / max(1e-6, min(scale, track.scale))
+            if ratio > config.resume_scale_gate:
+                return None
+        return best
+
+    def _resume(
+        self,
+        track: _Track,
+        chosen: ArrowHypothesis,
+        fused: tuple[ArrowHypothesis, ...],
+        viable: list[ArrowHypothesis],
+        frame: CapturedFrame,
+    ) -> DetectionOutcome:
+        """Adopt a resumed candidate. The identity is kept; the motion model is not.
+
+        Velocity is zeroed rather than recomputed. A resume means the position
+        model just failed, and carrying its failed extrapolation forward would
+        throw the next prediction as far past the arrow as it fell short of it.
+        """
+        self._state = TrackState.TRACK
+        self._challenger = None
+        self._acquire = None
+        track.lost_since_s = None
+        track.velocity = (0.0, 0.0)
+        self.resumes += 1
+        self._update_track(chosen)
+        return self._outcome(
+            self._observe(chosen, viable, frame),
+            chosen,
+            self._label(fused, chosen, None),
+            "resume",
+        )
 
     def _gate_reason(
         self,

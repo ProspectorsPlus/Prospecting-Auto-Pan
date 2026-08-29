@@ -136,3 +136,13 @@ def test_the_hotkey_self_test_is_an_exclusive_bounded_mode() -> None:
     assert elapsed < 30.0
     assert "Nothing here arms or presses anything" in output
     assert "intents submitted" in output
+
+
+def test_the_tracking_report_is_an_exclusive_bounded_mode() -> None:
+    """Rendered stress, printed as a before/after table. No window, no input."""
+    import treasure
+
+    assert "--tracking-report" in treasure._MODES
+    code, output, _elapsed = _run(["--tracking-report", "--soak"], timeout_s=60.0)
+    assert code == 2
+    assert "Choose one mode" in output
