@@ -1539,3 +1539,55 @@ into a lambda that discarded them, so even a correct renderer had nothing to
 render.
 
 **Deviation:** none.
+
+---
+
+## D-056 — 2026-08-28 — Qualification must predict what the next stage needs
+
+**Plan text:** §4, §7.4.
+
+**Decision:** `SHADOW_QUALIFY` measures seven things instead of one average:
+hit rate, longest unbroken run, worst miss streak, heading jitter, mean
+confidence, identity switches, and worst frame age. The hit-rate floor moves
+from 0.6 to 0.85, and each shortfall names both numbers.
+
+**Why:** the old gate was "60% of frames carried an arrow", and it does not
+predict the thing it gates. A turn probe needs some still frames, a pulse, and
+some frames after it, *consecutively*. Sixty percent spread evenly is a
+detector that works; sixty percent arriving as one long run and one long gap is
+a detector that will lose the arrow in the middle of every probe — and both
+pass an average. `tests/test_autosetup.py` holds two windows with identical hit
+rates where one qualifies and the other cannot fit a probe.
+
+Identity switches are in the list because a probe measured across one measured
+two different arrows, and the rotation attributed to the probe is whatever the
+difference between them happened to be.
+
+`SetupConfig.__post_init__` refuses a configuration whose `qualify_min_run`
+exceeds `qualify_frames`, or whose `qualify_max_miss_streak` no window could
+reach. An unsatisfiable configuration should be an error where it is written,
+not a stage that mysteriously never passes.
+
+**Deviation:** none.
+
+---
+
+## D-057 — 2026-08-28 — Name the measurement, not the clock
+
+**Plan text:** §4.
+
+**Decision:** the characterization failure paths report which measurement ran
+out. The unreadable-arrow case is reported as itself from *both* the deadline
+and the actuator-unproven branch.
+
+**Why:** "measuring the camera turn took longer than allowed" is true of every
+timeout and tells nobody which thing to fix. The commonest way to reach that
+deadline is an arrow the detector could not read, and the old message sent a
+person to check their camera settings — which were fine.
+
+The loop now counts fresh frames and frames with no readable heading, and the
+failure distinguishes: no fresh frames at all (capture), a majority unreadable
+(the arrow), no probe ever started (the character was moving), and probes sent
+with no measurable rotation (genuinely the camera).
+
+**Deviation:** none.

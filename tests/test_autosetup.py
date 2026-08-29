@@ -25,6 +25,7 @@ from prospector_engine.autosetup import (
     ProfileClassifier,
     ProfileVote,
     SetupConfig,
+    measure_qualification,
 )
 from prospector_engine.contracts import (
     EvidenceStatus,
@@ -35,7 +36,12 @@ from prospector_engine.contracts import (
 )
 from prospector_engine.geometry import ViewportGeometry
 from prospector_engine.lifecycle import LifecycleStage
-from prospector_engine.turning import ControlFingerprint, TurnBackend, TurnObservation
+from prospector_engine.turning import (
+    ControlFingerprint,
+    TurnBackend,
+    TurnLimits,
+    TurnObservation,
+)
 from tests.fakes import make_geometry
 
 FAST = SetupConfig(
@@ -50,6 +56,8 @@ FAST = SetupConfig(
     reference_stable_frames=3,
     qualify_deadline_s=1.0,
     qualify_frames=5,
+    qualify_min_run=4,
+    qualify_max_miss_streak=1,
     control_mode_deadline_s=1.0,
     characterize_deadline_s=5.0,
 )
@@ -608,3 +616,139 @@ def test_a_viewport_that_does_not_heal_still_fails_closed() -> None:
     assert progress.stage is SetupStage.FAILED
     assert progress.failure is not None
     assert progress.failure.kind is SetupFailureKind.CAPTURE_STALE
+
+
+# ---------------------------------------------------------------------------
+# Qualification predicts what the *next* stage needs
+# ---------------------------------------------------------------------------
+
+
+def _samples(pattern: str, **overrides: Any) -> list[PerceptionSample]:
+    """``pattern`` is a string of ``.`` (usable) and ``x`` (missed) frames."""
+    out = []
+    for index, mark in enumerate(pattern):
+        usable = mark == "."
+        out.append(
+            PerceptionSample(
+                frame_sequence=index,
+                arrow_valid=usable,
+                direction_valid=usable,
+                error_deg=overrides.get("heading", 10.0) if usable else None,
+                confidence=overrides.get("confidence", 0.9),
+                track_id=overrides.get("track_id", 1),
+                frame_age_ms=overrides.get("frame_age_ms", 20.0),
+            )
+        )
+    return out
+
+
+QUALIFY = SetupConfig(qualify_frames=20, qualify_min_run=6, qualify_max_miss_streak=3)
+STEADY = "." * 17 + "xxx"
+FLICKERING = "....x....x....x....."
+PERFECT = "." * 20
+
+
+def test_an_average_that_passes_can_still_be_a_shape_that_cannot_probe() -> None:
+    """The measurement the old 60% floor could not make.
+
+    Both windows below carry the arrow in the same fraction of frames. Only one
+    of them ever holds it long enough to fit a probe - some still frames, a
+    pulse, and some frames after it - and that is the difference between a
+    camera that gets measured and thirty seconds of timeout.
+    """
+    steady = measure_qualification(_samples(STEADY))
+    flickering = measure_qualification(_samples(FLICKERING))
+    assert steady.hit_rate == flickering.hit_rate
+
+    assert steady.shortfalls(QUALIFY) == ()
+    shortfalls = flickering.shortfalls(QUALIFY)
+    assert shortfalls and "unbroken run" in shortfalls[0]
+
+
+def test_a_long_gap_fails_even_when_the_average_is_high() -> None:
+    report = measure_qualification(_samples("." * 12 + "xxxx" + "...."))
+    assert report.hit_rate > 0.6
+    assert report.max_miss_streak == 4
+    assert any("in a row" in message for message in report.shortfalls(QUALIFY))
+
+
+def test_a_detector_that_keeps_swapping_arrows_does_not_qualify() -> None:
+    """A probe measured across an identity switch measured two things."""
+    samples = _samples(PERFECT)
+    for index, sample in enumerate(samples):
+        samples[index] = replace(sample, track_id=index // 2)
+    report = measure_qualification(samples)
+    assert report.identity_switches > 1
+    assert any("changed its mind" in message for message in report.shortfalls(QUALIFY))
+
+
+def test_a_heading_that_will_not_hold_still_does_not_qualify() -> None:
+    samples = _samples(PERFECT)
+    for index, sample in enumerate(samples):
+        samples[index] = replace(sample, error_deg=10.0 + (40.0 if index % 2 else 0.0))
+    report = measure_qualification(samples)
+    assert report.jitter_deg > 30.0
+    assert any("degrees while standing still" in m for m in report.shortfalls(QUALIFY))
+
+
+def test_stale_frames_do_not_qualify() -> None:
+    report = measure_qualification(_samples(PERFECT, frame_age_ms=400.0))
+    assert any("ms old" in message for message in report.shortfalls(QUALIFY))
+
+
+def test_low_confidence_does_not_qualify() -> None:
+    report = measure_qualification(_samples(PERFECT, confidence=0.1))
+    assert any("confidence" in message for message in report.shortfalls(QUALIFY))
+
+
+def test_a_good_window_passes_everything() -> None:
+    report = measure_qualification(_samples(PERFECT))
+    assert report.shortfalls(QUALIFY) == ()
+    assert "20/20 usable" in report.describe()
+
+
+def test_a_configuration_that_could_never_pass_is_refused_where_it_is_written() -> None:
+    with pytest.raises(ValueError, match="could never be observed"):
+        SetupConfig(qualify_frames=6, qualify_min_run=8, qualify_max_miss_streak=2)
+    with pytest.raises(ValueError, match="no window could fail it"):
+        SetupConfig(qualify_frames=6, qualify_min_run=4, qualify_max_miss_streak=6)
+
+
+def test_a_camera_timeout_names_the_measurement_not_the_clock() -> None:
+    """"It took too long" is true of every timeout and tells nobody what to fix.
+
+    An arrow that cannot be read is the commonest way to reach this deadline,
+    and it used to be reported as "measuring the camera turn took longer than
+    allowed" - which sends a person to look at the camera.
+    """
+
+    @dataclass
+    class Unreadable(FakeControl):
+        """Frames arrive; none of them carries a heading."""
+
+        def turn_observation(self) -> TurnObservation:
+            self.sequence += 1
+            return TurnObservation(
+                frame_sequence=self.sequence,
+                now_s=self.sequence / 60.0,
+                error_deg=None,
+                confidence=0.0,
+                stationary=True,
+            )
+
+    control = Unreadable()
+    machine = AutomaticSetup(
+        FakePort(),
+        config=replace(FAST, characterize_deadline_s=0.2),
+        sleep=lambda _s: None,
+    )
+    progress, response = machine.run_control(
+        control, limits=TurnLimits(settle_frames=1, observe_frames=1, max_probes=200)
+    )
+    assert response is None
+    failure = progress.failure
+    assert failure is not None
+    assert "took longer than allowed" not in failure.summary
+    assert "unreadable" in failure.summary
+    assert "no readable heading" in failure.detail
+    assert control.releases > 0, "the machine returned without releasing"

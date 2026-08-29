@@ -31,6 +31,7 @@ character stationary and every probe released.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol, runtime_checkable
@@ -63,10 +64,12 @@ __all__ = [
     "ProfileClassifier",
     "ProfileDecision",
     "ProfileVote",
+    "Qualification",
     "ReferenceCheck",
     "SetupConfig",
     "SetupPort",
     "WindowProbe",
+    "measure_qualification",
 ]
 
 
@@ -134,6 +137,118 @@ class PerceptionSample:
     track_id: int | None = None
     processed_fps: float = 0.0
     frame_age_ms: float = 0.0
+
+
+@dataclass(frozen=True)
+class Qualification:
+    """Whether the read-only pipeline is good enough to *drive* from.
+
+    Seven measurements rather than one average, because they fail
+    independently and the next stage depends on all of them. The one that
+    matters most is ``longest_run``: a turn probe needs some still frames, a
+    pulse, and some frames after it, and an arrow that is visible 85% of the
+    time in a pattern that never holds for eight frames together cannot supply
+    them however good the average looks.
+    """
+
+    frames: int
+    hits: int
+    longest_run: int
+    max_miss_streak: int
+    jitter_deg: float
+    mean_confidence: float
+    identity_switches: int
+    max_frame_age_ms: float
+    processed_fps: float
+
+    @property
+    def hit_rate(self) -> float:
+        return self.hits / self.frames if self.frames else 0.0
+
+    def shortfalls(self, config: SetupConfig) -> tuple[str, ...]:
+        """Every threshold this misses, named with both numbers. Empty is a pass."""
+        checks: tuple[tuple[bool, str], ...] = (
+            (
+                self.frames < config.qualify_frames,
+                f"only {self.frames} frames of the {config.qualify_frames} required",
+            ),
+            (
+                self.hit_rate < config.qualify_min_hit_rate,
+                f"the arrow was usable in {self.hit_rate * 100:.0f}% of frames, "
+                f"need {config.qualify_min_hit_rate * 100:.0f}%",
+            ),
+            (
+                self.longest_run < config.qualify_min_run,
+                f"the longest unbroken run was {self.longest_run} frames, "
+                f"need {config.qualify_min_run} to fit one probe",
+            ),
+            (
+                self.max_miss_streak > config.qualify_max_miss_streak,
+                f"the arrow vanished for {self.max_miss_streak} frames in a row, "
+                f"allowed {config.qualify_max_miss_streak}",
+            ),
+            (
+                self.jitter_deg > config.qualify_max_jitter_deg,
+                f"the heading moved {self.jitter_deg:.1f} degrees while standing still, "
+                f"allowed {config.qualify_max_jitter_deg:.0f}",
+            ),
+            (
+                self.mean_confidence < config.qualify_min_confidence,
+                f"mean direction confidence {self.mean_confidence:.2f}, "
+                f"need {config.qualify_min_confidence:.2f}",
+            ),
+            (
+                self.identity_switches > config.qualify_max_identity_switches,
+                f"the detector changed its mind about which arrow it was following "
+                f"{self.identity_switches} times, allowed "
+                f"{config.qualify_max_identity_switches}",
+            ),
+            (
+                self.max_frame_age_ms > config.qualify_max_frame_age_ms,
+                f"frames arrived up to {self.max_frame_age_ms:.0f} ms old, "
+                f"allowed {config.qualify_max_frame_age_ms:.0f}",
+            ),
+        )
+        return tuple(message for failed, message in checks if failed)
+
+    def describe(self) -> str:
+        return (
+            f"{self.hits}/{self.frames} usable, longest run {self.longest_run}, "
+            f"worst gap {self.max_miss_streak}, jitter {self.jitter_deg:.1f} deg, "
+            f"confidence {self.mean_confidence:.2f}, {self.identity_switches} identity "
+            f"switches, up to {self.max_frame_age_ms:.0f} ms old"
+        )
+
+
+def measure_qualification(
+    samples: Sequence[PerceptionSample], *, processed_fps: float = 0.0
+) -> Qualification:
+    """Turn a window of samples into the seven numbers. Pure, so it is testable."""
+    usable = [s for s in samples if s.arrow_valid and s.direction_valid]
+    run = best_run = miss = worst_miss = 0
+    for sample in samples:
+        if sample.arrow_valid and sample.direction_valid:
+            run += 1
+            best_run = max(best_run, run)
+            miss = 0
+        else:
+            miss += 1
+            worst_miss = max(worst_miss, miss)
+            run = 0
+    headings = [s.error_deg for s in usable if s.error_deg is not None]
+    identities = [s.track_id for s in usable if s.track_id is not None]
+    switches = sum(1 for a, b in itertools.pairwise(identities) if a != b)
+    return Qualification(
+        frames=len(samples),
+        hits=len(usable),
+        longest_run=best_run,
+        max_miss_streak=worst_miss,
+        jitter_deg=_jitter_deg(headings),
+        mean_confidence=(sum(s.confidence for s in usable) / len(usable)) if usable else 0.0,
+        identity_switches=switches,
+        max_frame_age_ms=max((s.frame_age_ms for s in samples), default=0.0),
+        processed_fps=processed_fps,
+    )
 
 
 @dataclass(frozen=True)
@@ -247,10 +362,34 @@ class SetupConfig:
     #: a stable reference. Wider than the alignment cone on purpose: this is a
     #: check that the reference *works*, not a precision measurement.
     reference_max_jitter_deg: float = 12.0
-    qualify_deadline_s: float = 6.0
-    qualify_frames: int = 20
-    #: Fraction of qualifying frames that must carry a usable arrow.
-    qualify_min_hit_rate: float = 0.6
+    qualify_deadline_s: float = 8.0
+    qualify_frames: int = 24
+    #: Fraction of qualifying frames that must carry a usable arrow. An average
+    #: does not predict what the next stage needs: 60% of frames spread evenly
+    #: is a detector that works, and 60% arriving as one long run followed by
+    #: one long gap is a detector that will lose the arrow in the middle of a
+    #: probe. The average is kept as a floor and the shape is checked beside it.
+    qualify_min_hit_rate: float = 0.85
+    #: Consecutive usable frames the qualifier must have seen at least once.
+    #: A turn probe needs ``settle_frames`` still frames, a pulse, and
+    #: ``observe_frames`` after it; below that the probe cannot complete
+    #: whatever the average says.
+    qualify_min_run: int = 8
+    #: Longest run of consecutive misses allowed anywhere in the window.
+    qualify_max_miss_streak: int = 3
+    #: Peak-to-peak heading spread over the usable frames. Wider than the
+    #: alignment cone: this asks whether the reading is *steady enough to
+    #: measure a rotation against*, not whether it is precise.
+    qualify_max_jitter_deg: float = 15.0
+    #: Mean direction confidence over the usable frames.
+    qualify_min_confidence: float = 0.4
+    #: Track identity changes allowed. Every switch is the detector deciding it
+    #: had been following a different arrow, and a probe measured across one is
+    #: measuring two things.
+    qualify_max_identity_switches: int = 1
+    #: Frame freshness ceiling. A probe read against a stale frame attributes
+    #: the rotation to the wrong command.
+    qualify_max_frame_age_ms: float = 150.0
     qualify_min_fps: float = 20.0
 
     control_mode_deadline_s: float = 8.0
@@ -263,6 +402,20 @@ class SetupConfig:
             note="stage budgets are chosen bounds, not measurements",
         )
     )
+
+    def __post_init__(self) -> None:
+        # An unsatisfiable configuration should be an error where it is written,
+        # not a stage that mysteriously never passes at three in the morning.
+        if self.qualify_min_run > self.qualify_frames:
+            raise ValueError(
+                f"qualify_min_run={self.qualify_min_run} exceeds "
+                f"qualify_frames={self.qualify_frames}: the run could never be observed"
+            )
+        if self.qualify_max_miss_streak >= self.qualify_frames:
+            raise ValueError(
+                f"qualify_max_miss_streak={self.qualify_max_miss_streak} is not below "
+                f"qualify_frames={self.qualify_frames}: no window could fail it"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +596,7 @@ class AutomaticSetup:
         self._reference: ReferenceCheck | None = None
         self._profile_decision: ProfileDecision | None = None
         self._acceptance: AcceptanceResult | None = None
+        self._qualification: Qualification | None = None
 
     @staticmethod
     def _default_sleep(seconds: float) -> None:
@@ -462,6 +616,11 @@ class AutomaticSetup:
     @property
     def profile_decision(self) -> ProfileDecision | None:
         return self._profile_decision
+
+    @property
+    def qualification(self) -> Qualification | None:
+        """What the read-only pipeline actually managed, or ``None`` if unrun."""
+        return self._qualification
 
     @property
     def acceptance(self) -> AcceptanceResult | None:
@@ -771,8 +930,7 @@ class AutomaticSetup:
         """Prove the whole read-only pipeline before offering to drive it."""
         stage = SetupStage.SHADOW_QUALIFY
         needed = self._config.qualify_frames
-        hits = 0
-        frames = 0
+        collected: list[PerceptionSample] = []
         last_sequence = -1
         fps = 0.0
         for attempt, _elapsed in self._poll(self._config.qualify_deadline_s):
@@ -780,24 +938,27 @@ class AutomaticSetup:
             if sample is None or sample.frame_sequence == last_sequence:
                 continue
             last_sequence = sample.frame_sequence
-            frames += 1
+            collected.append(sample)
             fps = sample.processed_fps
-            if sample.arrow_valid and sample.direction_valid:
-                hits += 1
+            hits = sum(1 for s in collected if s.arrow_valid and s.direction_valid)
             self._note(
-                stage, attempt, f"checked {frames}/{needed} frames, {hits} with an arrow"
+                stage,
+                attempt,
+                f"checked {len(collected)}/{needed} frames, {hits} with an arrow",
             )
-            if frames >= needed:
+            if len(collected) >= needed:
                 break
-        rate = hits / frames if frames else 0.0
-        if frames < needed or rate < self._config.qualify_min_hit_rate:
+        report = measure_qualification(collected, processed_fps=fps)
+        self._qualification = report
+        shortfalls = report.shortfalls(self._config)
+        if shortfalls:
             return SetupFailure(
                 SetupFailureKind.REFERENCE_UNSTABLE,
                 stage,
-                "the arrow was not visible often enough to navigate by",
-                "Make sure the treasure map arrow stays on screen, then press Retry Setup.",
-                f"{hits} of {frames} frames carried a usable arrow "
-                f"({rate * 100:.0f}%, need {self._config.qualify_min_hit_rate * 100:.0f}%)",
+                shortfalls[0],
+                "Stand still with the treasure map arrow clearly on screen and nothing "
+                "green moving behind it, then press Retry Setup.",
+                report.describe(),
             )
         if fps and fps < self._config.qualify_min_fps:
             return SetupFailure(
@@ -871,11 +1032,19 @@ class AutomaticSetup:
             control.control_fingerprint(), limits=limits, prior=prior
         )
         last_sequence = -1
+        # Counted, because in the commonest failure these *are* the answer: a
+        # loop that spins on frames with no readable heading is not "the camera
+        # would not turn", it is "the arrow was not visible while we asked".
+        fresh = 0
+        unreadable = 0
         for attempt, _elapsed in self._poll(self._config.characterize_deadline_s):
             observation = control.turn_observation()
             if observation is None or observation.frame_sequence == last_sequence:
                 continue
             last_sequence = observation.frame_sequence
+            fresh += 1
+            if observation.error_deg is None:
+                unreadable += 1
             probe = characterizer.step(observation)
             self._note(stage, attempt, probe.reason)
             if probe.done and probe.response is not None:
@@ -883,6 +1052,12 @@ class AutomaticSetup:
                 return (probe.response, None)
             if probe.failed:
                 control.release_turn()
+                # An arrow nobody could read is not a camera that would not
+                # turn, and sending someone to look at their camera settings
+                # when the detector lost the arrow wastes the one thing they
+                # have: another attempt.
+                if unreadable > fresh / 2:
+                    return (None, self._unreadable_arrow_failure(stage, fresh, unreadable))
                 return (
                     None,
                     SetupFailure(
@@ -891,7 +1066,8 @@ class AutomaticSetup:
                         "no way of turning the camera could be proven",
                         "Check that Roblox is focused and that the arrow keys or the "
                         "mouse rotate the camera, then press Start Navigator again.",
-                        probe.reason,
+                        f"{probe.reason}; {fresh} fresh frames, "
+                        f"{unreadable} with no readable heading",
                     ),
                 )
             if probe.kind.value == "pulse" and probe.backend is not None:
@@ -910,15 +1086,53 @@ class AutomaticSetup:
             else:
                 control.release_turn()
         control.release_turn()
+        # Name the measurement that ran out, not the clock. "It took too long"
+        # is true of every timeout and tells nobody which thing to fix.
+        if fresh == 0:
+            summary = "no fresh frame arrived while measuring the camera"
+            remedy = "Check that the preview is updating, then press Start Navigator again."
+        elif unreadable > fresh / 2:
+            return (None, self._unreadable_arrow_failure(stage, fresh, unreadable))
+        elif characterizer.probes_issued == 0:
+            summary = "the character never stood still long enough to start a camera probe"
+            remedy = "Let go of the keyboard and mouse, then press Start Navigator again."
+        else:
+            backend = characterizer.backend
+            summary = (
+                f"{characterizer.probes_issued} camera probes were sent"
+                f"{f' via {backend.label}' if backend else ''} and none produced a "
+                "measurable rotation"
+            )
+            remedy = (
+                "Check that the arrow keys or the mouse rotate the camera in Roblox, "
+                "then press Start Navigator again."
+            )
         return (
             None,
             SetupFailure(
                 SetupFailureKind.TIMEOUT,
                 stage,
-                "measuring the camera turn took longer than allowed",
-                "Stand still with the map arrow visible and press Start Navigator again.",
-                f"{characterizer.probes_issued} probes issued",
+                summary,
+                remedy,
+                f"{characterizer.probes_issued} probes, {fresh} fresh frames, "
+                f"{unreadable} with no readable heading, "
+                f"last: {characterizer.failure or 'still measuring'}",
             ),
+        )
+
+    @staticmethod
+    def _unreadable_arrow_failure(
+        stage: SetupStage, fresh: int, unreadable: int
+    ) -> SetupFailure:
+        """The commonest way to reach the camera deadline, named as itself."""
+        return SetupFailure(
+            SetupFailureKind.REFERENCE_UNSTABLE,
+            stage,
+            f"the arrow was unreadable in {unreadable} of {fresh} frames while "
+            "measuring the camera",
+            "Stand still with the treasure map arrow clearly on screen, then press "
+            "Start Navigator again.",
+            f"{fresh} fresh frames, {unreadable} with no readable heading",
         )
 
     # -- plumbing ---------------------------------------------------------
