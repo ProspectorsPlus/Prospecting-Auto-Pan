@@ -408,7 +408,8 @@ def make_listener():
     SHIFT = {keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r}
     binds = [("start", _eng.HOTKEY_START), ("stop", _eng.HOTKEY_STOP),
              ("pixel_info", _eng.HOTKEY_PIXEL_INFO),
-             ("reset_character", _eng.HOTKEY_RESET_CHARACTER)]
+             ("reset_character", _eng.HOTKEY_RESET_CHARACTER),
+             ("wiggle_test", _eng.HOTKEY_WIGGLE_TEST)]
 
     def on_press(key):
         if key in CTRL:
@@ -442,6 +443,8 @@ def make_listener():
                 _eng.request_pixel_info()
             elif name == "reset_character":
                 _eng.request_reset_character()
+            elif name == "wiggle_test":
+                _eng.request_wiggle_test()
             return
 
     def on_release(key):

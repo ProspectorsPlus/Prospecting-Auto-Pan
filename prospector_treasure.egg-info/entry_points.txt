@@ -1,0 +1,2 @@
+[console_scripts]
+treasure = treasure:main

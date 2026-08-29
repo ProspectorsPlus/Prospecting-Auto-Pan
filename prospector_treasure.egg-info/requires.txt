@@ -1,0 +1,20 @@
+numpy>=1.26
+mss>=9.0
+opencv-python-headless>=4.9
+Pillow>=10.0
+
+[:sys_platform == "darwin"]
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-ApplicationServices>=10.0
+pyobjc-framework-ScreenCaptureKit>=10.0
+pyobjc-framework-CoreMedia>=10.0
+pynput>=1.7
+
+[dev]
+pytest>=8.0
+pytest-timeout>=2.2
+hypothesis>=6.90
+ruff>=0.5
+mypy>=1.10
+pip-tools>=7.4
+pyinstaller>=6.6

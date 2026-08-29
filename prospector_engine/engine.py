@@ -39,11 +39,20 @@ Hotkeys:
     F4  -> reset-character test sequence (see request_reset_character)
     F5  -> pan-swap test sequence (see request_pan_swap_test) -- runs the
            swap once on its own, without needing capacity to actually be full
+    Ctrl+K -> wiggle-move test (see request_wiggle_test) -- runs wiggleMove()
+              once, using WIGGLE_TEST_DEGREE/TIME_FORWARD/TIME_BACKWARDS.
+              Deliberately NOT a bare F-key: on this hardware several F-keys
+              (F5=Dictation, F6=Do Not Disturb, etc.) are bound to macOS media
+              functions, and pynput's listener is a passive tap -- it can't
+              swallow the keypress, so the OS handles it too (e.g. popping the
+              "Enable Dictation?" prompt and stealing focus from Roblox).
+              Ctrl+K isn't claimed by macOS or Roblox.
 
     NOTE: F5, like F1-F4, needs to be registered in platform_mac.py /
     platform_win.py's make_listener() -- that wiring lives outside this file
     and isn't included here, so add HOTKEY_PAN_SWAP_TEST -> request_pan_swap_test
-    there the same way the existing hotkeys are wired.
+    there the same way the existing hotkeys are wired. (Ctrl+K ->
+    request_wiggle_test is already wired in platform_mac.py's make_listener().)
 
 There is deliberately no quit hotkey: the F4 sequence taps Escape as its
 first step, and Escape going through the same OS-level input pipe the
@@ -71,6 +80,8 @@ import threading
 import pyautogui
 import Quartz
 import time
+import math
+from dataclasses import dataclass
 
 if sys.platform == "win32":
     from prospector_engine import platform_win as _plat
@@ -182,6 +193,7 @@ HOTKEY_STOP       = {"ctrl": False, "alt": False, "shift": False, "code": "F2"}
 HOTKEY_PIXEL_INFO = {"ctrl": False, "alt": False, "shift": False, "code": "F3"}
 HOTKEY_RESET_CHARACTER = {"ctrl": False, "alt": False, "shift": False, "code": "F4"}
 HOTKEY_PAN_SWAP_TEST = {"ctrl": False, "alt": False, "shift": False, "code": "F5"}
+HOTKEY_WIGGLE_TEST = {"ctrl": True, "alt": False, "shift": False, "code": "KeyK"}
 
 LOOP_POLL_S = 0.01   # how often the run loop re-checks the screen when idle
 
@@ -190,6 +202,13 @@ RESET_POST_ENTER_MS = 8000    # wait after the click sequence, before the right-
 RESET_DRAG_MS       = 1000    # total duration of the straight-down drag
 RESET_DRAG_STEP_MS  = 16      # ~60Hz step rate while dragging
 RESET_DRAG_STEP_PX  = 12      # px per step -- "decent speed" (~750px/s)
+
+# --- Wiggle-move test (Ctrl+K) -- edit these to try a different angle/duration
+# wiggleMove() itself takes no defaults beyond degree=0/timeForward=5/
+# timeBackwards=0.5; the parameters actually exercised by Ctrl+K live here.
+WIGGLE_TEST_DEGREE         = 225
+WIGGLE_TEST_TIME_FORWARD   = 5
+WIGGLE_TEST_TIME_BACKWARDS = 1
 
 
 # ============================================================================
@@ -425,6 +444,7 @@ class State:
     alive = True
     resetting = False
     pan_swapping = False
+    wiggling = False
     window_origin = None      # live (x, y) screen-absolute physical-pixel
                                # top-left of the Roblox window, set by
                                # request_start() and kept fresh by run()'s
@@ -760,6 +780,270 @@ def request_pan_swap_test(origin="hotkey"):
 
 
 # ============================================================================
+# Movement: wiggleMove
+#
+# Directional "wiggle" movement via WASD + space, generalized to any degree
+# from 0-360.
+#
+# THEORY:
+#   1. Everything is planned in a LOCAL frame first:
+#        forward_local = (0, 1)   -> what "w" means at degree 0
+#        side_local    = (1, 0)   -> what "d" means at degree 0 ("a" is -1)
+#   2. The wiggle pattern (hold forward, alternate side left/right for
+#      varying durations) is generated ONCE in this local frame, as a list
+#      of time segments, each carrying a forward-sign and a side-sign. It
+#      never mentions w/a/s/d.
+#   3. At runtime, the whole local vector for "right now" is rotated by
+#      `degree` (clockwise: 0=forward/w, 90=right/d, 45=up-right/w+d) into a
+#      world-space (x, y) vector.
+#   4. That continuous vector is decomposed into per-key weights in [0, 1]
+#      (d=+x, a=-x, w=+y, s=-y), normalized so the dominant axis is always
+#      fully held.
+#   5. Weights that aren't exactly 0 or 1 (i.e. "diagonal-ish" angles like 30
+#      or 137 degrees) are realized as a duty cycle: an accumulator per key
+#      decides, tick by tick, when that key is actually pressed, so the
+#      *average* fraction of time it's held matches its weight. This is what
+#      makes any angle from 1-360 work with only 4 discrete keys.
+#
+# Cardinal angles (0/90/180/270) => weights are exactly 0 or 1 => one key
+# held solid, no pulsing. Diagonals (45/135/...) => two keys both weight 1 =>
+# both held solidly together. Everything else => one key solid + one key
+# pulsing proportionally.
+# ============================================================================
+TICK = 0.02  # scheduler resolution in seconds (20ms)
+
+
+@dataclass
+class _KeyState:
+    held: bool = False
+    acc: float = 0.0
+
+
+class KeyManager:
+    """Tracks which keys are physically down and realizes fractional
+    duty-cycle weights as actual press/release events, only firing on
+    state transitions (never spams keyDown every tick).
+
+    Presses go through the engine's own key_down/key_up (Quartz
+    CGEventCreateKeyboardEvent posted with a fixed virtual keycode from
+    v3_keycode) -- deliberately NOT pynput's Controller.press(char). On
+    macOS, pynput maps a character to a keycode via Carbon's TIS/HIToolbox
+    APIs, and that lookup asserts it's running on the main thread; called
+    from wiggleMove's background thread (see request_wiggle_test) it
+    crashed the whole process (dispatch_assert_queue_fail in
+    islGetInputSourceListWithAdditions). key_down/key_up sidestep this
+    entirely by posting a raw keycode with no layout lookup -- the same
+    primitives request_reset_character/request_pan_swap_test already use
+    from background threads without issue."""
+
+    def __init__(self, keys, dry_run=False):
+        self.dry_run = dry_run
+        self.state = {k: _KeyState() for k in keys}
+
+    def _set(self, key, down):
+        st = self.state[key]
+        if down == st.held:
+            return
+        st.held = down
+        if self.dry_run:
+            print(f"{'DOWN' if down else 'UP  '} {key}")
+        else:
+            (key_down if down else key_up)(v3_keycode(key))
+
+    def apply_weights(self, weights):
+        """weights: dict of key -> desired duty fraction this tick, 0..1"""
+        for key, w in weights.items():
+            st = self.state[key]
+            if w >= 0.999:
+                self._set(key, True)
+            elif w <= 0.001:
+                self._set(key, False)
+                st.acc = 0.0
+            else:
+                st.acc += w
+                if st.acc >= 1.0:
+                    st.acc -= 1.0
+                    self._set(key, True)
+                else:
+                    self._set(key, False)
+
+    def release_all(self):
+        for k in list(self.state.keys()):
+            self._set(k, False)
+
+    def press_special(self, key):
+        if self.dry_run:
+            print(f"DOWN {key}")
+        else:
+            key_down(v3_keycode(key))
+
+    def release_special(self, key):
+        if self.dry_run:
+            print(f"UP   {key}")
+        else:
+            key_up(v3_keycode(key))
+
+
+def _rotate(x, y, degree):
+    """Clockwise rotation (screen/compass convention):
+    0 deg = (x, y) unchanged, 90 deg = (0,1) -> (1,0) i.e. forward becomes
+    'right'."""
+    theta = math.radians(degree)
+    return (
+        x * math.cos(theta) + y * math.sin(theta),
+        -x * math.sin(theta) + y * math.cos(theta),
+    )
+
+
+def _vector_to_weights(x, y):
+    return {
+        'd': max(x, 0.0),
+        'a': max(-x, 0.0),
+        'w': max(y, 0.0),
+        's': max(-y, 0.0),
+    }
+
+
+def _normalize(weights):
+    peak = max(weights.values())
+    if peak <= 1e-9:
+        return weights
+    return {k: v / peak for k, v in weights.items()}
+
+
+def _build_wiggle_phases(total_ms, target_half_ms):
+    """
+    Returns [(side_sign, duration_ms), ...] describing the side-to-side
+    wiggle: half, full, full, ..., full, half -- symmetric, starting and
+    ending on side_sign = -1 ('a'-equivalent), exactly like:
+        a(250), d(500), a(500), d(500), ... , a(250)
+
+    `target_half_ms` is the desired length of the two bookend half-phases;
+    the actual number of full alternating swings (forced odd, so the
+    pattern starts/ends on the same sign) is chosen to fit `total_ms`
+    exactly, and durations are scaled slightly to land on the total exactly.
+    """
+    if total_ms <= 0:
+        return []
+
+    n = round((total_ms / target_half_ms - 2) / 2)
+    n = max(1, n)
+    if n % 2 == 0:
+        n += 1  # keep odd so it starts and ends on the same side
+
+    half_ms = total_ms / (2 + 2 * n)
+    full_ms = 2 * half_ms
+
+    phases = [(-1, half_ms)]
+    sign = 1
+    for _ in range(n):
+        phases.append((sign, full_ms))
+        sign *= -1
+    phases.append((-1, half_ms))
+    return phases
+
+
+def _generate_segments(total_time_s, forward_sign, target_half_ms):
+    """Local-frame timeline: list of (t_start, t_end, forward_sign, side_sign)."""
+    total_ms = total_time_s * 1000.0
+    phases = _build_wiggle_phases(total_ms, target_half_ms)
+    t = 0.0
+    segments = []
+    for side_sign, dur_ms in phases:
+        dur_s = dur_ms / 1000.0
+        segments.append((t, t + dur_s, forward_sign, side_sign))
+        t += dur_s
+    return segments
+
+
+def _run_timeline(km, degree, segments, dt=TICK):
+    if not segments:
+        return
+    end_time = segments[-1][1]
+    t = 0.0
+    seg_idx = 0
+    while t < end_time:
+        while seg_idx < len(segments) - 1 and t >= segments[seg_idx][1]:
+            seg_idx += 1
+        _, _, fwd_sign, side_sign = segments[seg_idx]
+
+        fx, fy = _rotate(0.0, fwd_sign, degree)
+        sx, sy = _rotate(side_sign, 0.0, degree)
+        x, y = fx + sx, fy + sy
+
+        weights = _normalize(_vector_to_weights(x, y))
+        km.apply_weights(weights)
+
+        time.sleep(dt)
+        t += dt
+
+
+def wiggleMove(degree=0, timeForward=5, timeBackwards=0.5, dry_run=False):
+    """
+    Perform a wiggling strafe-run in the given compass direction, then a
+    scaled-down inverse wiggle back.
+
+    degree:        0-360, direction of travel. 0 = forward ('w'), increases
+                   clockwise (90 = right/'d', 45 = up-right/'w'+'d').
+    timeForward:   seconds. Duration of the main wiggle-forward movement.
+    timeBackwards: seconds. Duration of the mirrored wiggle-backward
+                   movement that follows (smaller wiggle sub-phases,
+                   opposite forward direction).
+    dry_run:       if True (or if pynput isn't installed), prints key
+                   events instead of actually sending them. Good for
+                   testing the timing/logic without pynput or a game
+                   window focused.
+
+    Space bar is held down for the entire duration of both phases.
+    """
+    degree = degree % 360
+    km = KeyManager(['w', 'a', 's', 'd'], dry_run=dry_run)
+
+    km.press_special('space')
+    try:
+        fwd_segments = _generate_segments(
+            timeForward, forward_sign=+1, target_half_ms=250
+        )
+        _run_timeline(km, degree, fwd_segments)
+
+        back_segments = _generate_segments(
+            timeBackwards, forward_sign=-1, target_half_ms=125
+        )
+        _run_timeline(km, degree, back_segments)
+    finally:
+        km.release_all()
+        km.release_special('space')
+
+
+def request_wiggle_test(origin="hotkey"):
+    """Standalone test entry point -- runs wiggleMove() once, using the
+    WIGGLE_TEST_DEGREE/TIME_FORWARD/TIME_BACKWARDS constants above (edit
+    those to try a different angle/duration; wiggleMove() itself is only
+    ever called with explicit arguments here, never relying on its own
+    defaults). Runs on a background thread so the hotkey listener stays
+    responsive while it plays out, same reasoning as request_pan_swap_test.
+    Bound to Ctrl+K."""
+    if State.wiggling:
+        print(f"[{origin}] wiggle move: already running, ignored")
+        return
+    State.wiggling = True
+
+    def _run():
+        try:
+            wiggleMove(
+                WIGGLE_TEST_DEGREE,
+                WIGGLE_TEST_TIME_FORWARD,
+                WIGGLE_TEST_TIME_BACKWARDS,
+                dry_run=False,
+            )
+            print(f"[{origin}] wiggle move: done")
+        finally:
+            State.wiggling = False
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+# ============================================================================
 # The loop
 # ============================================================================
 def dig_tap():
@@ -878,7 +1162,8 @@ def _cli_main():
     listener = make_listener()
     listener.start()
     print(f"F1 to find/pin window + start, F2 to stop, F3 pixel info, "
-          f"F4 reset character, F5 pan swap test. Ctrl+C to quit.")
+          f"F4 reset character, F5 pan swap test, Ctrl+K wiggle move test. "
+          f"Ctrl+C to quit.")
     try:
         run(on_status=print)
     except KeyboardInterrupt:
