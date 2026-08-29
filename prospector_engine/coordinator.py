@@ -1106,6 +1106,22 @@ class RuntimeCoordinator:
             )
             return
 
+        # Cadence is a Live precondition and is *not* part of ``Readiness``,
+        # which also gates the bounded services - a dig loop does not need
+        # steering cadence. Checking it here rather than there is what makes
+        # the window and this method agree: the dashboard has been showing a
+        # CADENCE blocker while this method would happily have started Live,
+        # which is the D-062 disagreement running in the opposite direction.
+        metrics = self._capture.metrics()
+        if not metrics.live_eligible:
+            self._refuse_live(
+                f"cadence:{metrics.governor.reason}",
+                f"{metrics.governor.reason}. Let the navigator observe for a few "
+                f"seconds while the cadence settles, then press {_START_CHORD} again.",
+                intent,
+            )
+            return
+
         # One snapshot, read once, for every decision below.
         readiness = self.readiness()
         if not readiness.input_ok:

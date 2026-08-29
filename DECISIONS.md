@@ -1929,3 +1929,73 @@ registers nothing for it, and that only the CLI mode enables it.
 
 **Deviation:** the plan has no CLI mode that emits input. This one does, and it
 says so in its own first line of output.
+
+---
+
+## D-065 — 2026-08-28 — A faster pipeline was refused what a slower one was allowed
+
+**Plan text:** §3.3 requires Live to be refused on an ineligible cadence.
+
+**Decision:** `CadenceGovernor._live_age_ceiling_ms()` returns
+`live_max_age_ms` outright. It was
+`min(2000 / tier.fps, live_max_age_ms)`.
+
+**Why.** Owner screenshot, dashboard reading **BLOCKED**, INPUT SAFETY
+**Blocked - 1**, *"Capture cadence is not Live-eligible"* — with the same panel
+reporting **56 unique fps**, **53 processed**, **p95 39 ms**. A healthy
+pipeline, refused.
+
+The arithmetic:
+
+| tier | two intervals | effective ceiling | verdict on a 39 ms p95 |
+|---|---|---|---|
+| 30 Hz | 66.7 ms | 66.7 ms | **eligible** |
+| 60 Hz | 33.3 ms | 33.3 ms | refused |
+| 90 Hz | 22.2 ms | 22.2 ms | refused |
+| 120 Hz | 16.7 ms | 16.7 ms | refused |
+
+The gate got *tighter the faster the pipeline ran*. The owner's machine was
+refused at 60 Hz for a frame age that the identical machine, throttled to 30
+Hz, would have passed with 27 ms to spare. `live_max_age_ms` was also
+unreachable above 26 Hz — `min()` never chose it — so a configured bound had
+never once applied.
+
+Two questions were conflated. *"Is this pipeline keeping up with its own
+cadence?"* is a cadence question, and it is already answered twice:
+`live_min_processed_ratio` in the same predicate, and the
+p95-against-`max_frame_age_ms` check in `update` that downshifts the tier
+outright. *"Is this evidence fresh enough to steer on?"* is a freshness
+question, and its answer cannot depend on how many frames per second the
+camera was asked for. A 39 ms-old frame is exactly as stale either way.
+
+**No bound was loosened where it matters.** 75 ms remains below the input
+authority's `max_evidence_age_ms` of 100, so Live is still the stricter of the
+two gates — which is the relationship that was intended and, above 26 Hz, was
+the one thing the old form did guarantee.
+
+---
+
+## D-066 — 2026-08-28 — The same disagreement, running the other way
+
+**Decision:** `_on_start_live` refuses when `metrics.live_eligible` is false,
+with the governor's own reason.
+
+**Why:** the dashboard showed **BLOCKED — CADENCE** while `_on_start_live`
+checked only `Readiness`, which has no cadence term. So the window said one
+thing and the coordinator would have done another — D-062 exactly, with the
+polarity reversed: this time the window was the stricter of the two, and a
+chord pressed against its advice would have started Live on a pipeline the
+window had just called not ready.
+
+It is checked in `_on_start_live` rather than added to `Readiness` because
+`Readiness` also gates the bounded services, and a dig loop does not need
+steering cadence.
+
+**Found while fixing it, and worth more than the fix:** every coordinator test
+rig was starting Live past this gate, because a fake capture source never
+produces the measurement window the governor needs. The gate was real in
+production and absent under test — "a fake laxer than the thing it stands in
+for", the same shape D-060 recorded. `settle_cadence_for_live` now drives the
+**production** `CadenceGovernor.update` with healthy polls until it reports
+eligible, so the rigs satisfy the gate by measurement rather than skipping it.
+A test that wants the gate to fail simply does not call it.

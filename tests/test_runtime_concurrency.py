@@ -45,6 +45,7 @@ from tests.fakes import (
     FakePlatformPort,
     VirtualClock,
     make_geometry,
+    settle_cadence_for_live,
 )
 
 
@@ -116,13 +117,23 @@ class Harness:
         self.coordinator.submit(intent)
         return intent
 
+    def settle_cadence(self) -> None:
+        """Satisfy the Live cadence gate through the production governor."""
+        settle_cadence_for_live(self.capture)
+
     def chord(self, intent_type: IntentType) -> RuntimeIntent:
         """Submit through the physical-chord capability, as a listener does.
+
+        Cadence is settled first, because a real machine has to satisfy that
+        gate before a chord is accepted and a rig that skipped it would be
+        testing a path production does not have.
 
         This is the *only* way a test may start Live, and it stands in for one
         real key edge. Nothing here pre-authorizes anything: the coordinator
         still runs every readiness check before it mints an authorization.
         """
+        if intent_type is IntentType.START_LIVE:
+            self.settle_cadence()
         intent = self.coordinator.chord_authority().intent(intent_type, "Ctrl+N")
         self.coordinator.submit(intent)
         return intent
@@ -838,3 +849,53 @@ def _events(harness: Harness) -> list[tuple[str, str]]:
 
 def _event_details(harness: Harness) -> list[str]:
     return [detail for _name, detail in _events(harness)]
+
+
+def test_a_chord_is_refused_while_the_cadence_is_not_live_eligible(
+    harness: Harness,
+) -> None:
+    """The window and this method must not disagree about the same blocker.
+
+    The dashboard showed **BLOCKED - CADENCE** while ``_on_start_live`` checked
+    only ``Readiness``, which has no cadence term - so the chord would have
+    started Live against a pipeline the window had just said was not ready.
+    That is the D-062 disagreement running the other way.
+    """
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+
+    # Deliberately *not* settled: this is the state a real machine is in for
+    # the first seconds after Start Navigator.
+    assert not harness.capture.metrics().live_eligible
+    intent = harness.coordinator.chord_authority().intent(IntentType.START_LIVE, "Ctrl+N")
+    harness.coordinator.submit(intent)
+    assert harness.wait_for(
+        lambda: harness.coordinator.live_authorization.startswith("refused")
+    )
+
+    assert harness.started == []
+    assert "cadence" in harness.coordinator.live_authorization
+    assert "observe" in harness.coordinator.live_refusal_detail
+
+    # ...and once the cadence settles, the same chord works.
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+
+
+def test_the_window_and_the_coordinator_agree_about_cadence(harness: Harness) -> None:
+    """Whatever the dashboard calls blocking, the chord must refuse - and vice versa."""
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+
+    def cadence_blocking() -> bool:
+        return any(
+            b.code == "CADENCE" and b.status == "blocking"
+            for b in harness.coordinator.blockers()
+        )
+
+    assert cadence_blocking(), "the window would show BLOCKED here"
+    harness.settle_cadence()
+    assert not cadence_blocking(), "the window would still show BLOCKED here"
+
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)

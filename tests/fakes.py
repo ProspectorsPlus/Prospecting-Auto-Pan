@@ -586,3 +586,35 @@ class FakeDeadmanClient(DeadmanClient):
 
     def ops(self) -> Iterator[str]:
         return (name for name, _ in self.calls)
+
+
+def settle_cadence_for_live(capture: Any, *, polls: int = 24) -> None:
+    """Drive a capture service's real governor until Live cadence is eligible.
+
+    A test rig's fake source never produces the measurement window the cadence
+    governor needs, so before this existed every coordinator test started Live
+    past a gate that a real machine has to satisfy — which is exactly the shape
+    of "a fake laxer than the thing it stands in for".
+
+    This does not bypass the gate: it feeds the **production**
+    ``CadenceGovernor.update`` healthy polls at the tier it is actually on,
+    with a frame age inside ``live_max_age_ms``, until it reports STABLE and
+    eligible. Everything the gate checks — state, tier floor, sample count,
+    processed ratio, observation loss, p95 age — is satisfied by measurement
+    rather than by assignment. A test that wants the gate to *fail* simply does
+    not call this.
+    """
+    governor = capture.governor
+    now = monotonic_s()
+    for step in range(polls):
+        fps = float(governor.tier.fps)
+        governor.update(
+            unique_fps=fps,
+            processed_fps=fps,
+            frame_age_ms=5.0,
+            p95_age_ms=8.0,
+            now_s=now + step * 0.5,
+        )
+        if governor.report().live_eligible:
+            return
+    raise AssertionError(f"the governor did not reach Live eligibility: {governor.report()}")

@@ -274,3 +274,69 @@ def test_raising_the_ceiling_forgets_a_previously_discovered_cap() -> None:
 
     assert governor.tier is PerformanceTier.MAXIMUM
     assert governor._ceiling_hint is None
+
+
+# ---------------------------------------------------------------------------
+# Live eligibility must not tighten as the pipeline gets faster
+# ---------------------------------------------------------------------------
+
+
+def _drive_healthy(
+    governor: CadenceGovernor, *, fps: float, p95_age_ms: float, polls: int = 16
+) -> None:
+    for step in range(polls):
+        governor.update(
+            unique_fps=fps,
+            processed_fps=fps,
+            frame_age_ms=5.0,
+            p95_age_ms=p95_age_ms,
+            now_s=step * 0.5,
+        )
+
+
+def test_a_faster_tier_does_not_make_live_harder_to_reach() -> None:
+    """The regression, with the owner's own numbers.
+
+    A machine delivering 56 unique and 53 processed fps with a p95 frame age of
+    39 ms was refused Live, because the ceiling was two frame intervals of the
+    tier the governor had settled on: 33.3 ms at 60 Hz. The identical pipeline
+    throttled to 30 Hz would have been allowed, at 66.7 ms. Nothing about a
+    39 ms-old frame changes when you ask the camera for more frames per second.
+    """
+    verdicts: dict[int, bool] = {}
+    for tier in (PerformanceTier.MINIMUM, PerformanceTier.STANDARD):
+        governor = CadenceGovernor(CaptureConfig(start_tier=tier, max_tier=tier))
+        _drive_healthy(governor, fps=float(tier.fps), p95_age_ms=39.0)
+        verdicts[tier.fps] = governor.report().live_eligible
+
+    assert verdicts[30] is True
+    assert verdicts[60] is True, "60 Hz was refused what 30 Hz was allowed"
+
+
+def test_stale_evidence_is_still_refused_at_every_tier() -> None:
+    """Absolute does not mean absent: past the ceiling it is still a refusal."""
+    ceiling = CaptureConfig().live_max_age_ms
+    for tier in (PerformanceTier.MINIMUM, PerformanceTier.STANDARD):
+        governor = CadenceGovernor(CaptureConfig(start_tier=tier, max_tier=tier))
+        _drive_healthy(governor, fps=float(tier.fps), p95_age_ms=ceiling + 10.0)
+        assert not governor.report().live_eligible, f"{tier.fps} Hz accepted stale evidence"
+
+
+def test_the_live_ceiling_is_stricter_than_the_authority_would_accept() -> None:
+    """Live must be the tighter of the two gates, not the looser one."""
+    from prospector_engine.input_authority import AuthorityConfig
+
+    assert CaptureConfig().live_max_age_ms < AuthorityConfig().max_evidence_age_ms
+
+
+def test_the_configured_live_ceiling_is_actually_reachable() -> None:
+    """It used to be dead configuration above 26 Hz, because min() never chose it."""
+    from prospector_engine.capture import CadenceGovernor, CaptureConfig
+    from prospector_engine.contracts import PerformanceTier
+
+    config = CaptureConfig(
+        start_tier=PerformanceTier.STANDARD, max_tier=PerformanceTier.STANDARD
+    )
+    governor = CadenceGovernor(config)
+
+    assert governor._live_age_ceiling_ms() == float(config.live_max_age_ms)

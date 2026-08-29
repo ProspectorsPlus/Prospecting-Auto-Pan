@@ -157,7 +157,11 @@ class CaptureConfig:
     live_max_observation_loss: float = 0.25
     #: Stale frames tolerated inside one supervisor window.
     max_stale_per_window: int = 0
-    #: Absolute p95 frame-age ceiling for Live, whatever the tier interval says.
+    #: The p95 frame-age ceiling for Live. Deliberately absolute: it is a
+    #: statement about how stale evidence may be before steering on it is
+    #: unsafe, and staleness does not become more acceptable because the
+    #: camera was asked for fewer frames. Held below the authority's
+    #: ``max_evidence_age_ms`` (100) so Live is always the stricter gate.
     live_max_age_ms: int = 75
     #: How far back the governor and Live eligibility look at latency. Short
     #: on purpose: readiness is a statement about now.
@@ -779,9 +783,30 @@ class CadenceGovernor:
         )
 
     def _live_age_ceiling_ms(self) -> float:
-        """Two frame intervals, but never above the absolute Live ceiling."""
-        two_intervals = 2000.0 / float(self._tier.fps)
-        return min(two_intervals, float(self._config.live_max_age_ms))
+        """How fresh evidence must be to steer on. Not a function of the tier.
+
+        It used to be ``min(2000 / tier.fps, live_max_age_ms)`` - two frame
+        intervals of whatever cadence the governor had settled on - and that
+        made the gate *tighter the faster the pipeline ran*. The observed
+        failure: a machine delivering 56 unique and 53 processed fps with a p95
+        frame age of 39 ms was refused, because two intervals at 60 Hz is 33.3
+        ms. The identical pipeline throttled to 30 Hz would have been allowed,
+        at 66.7 ms. Nothing about a 39 ms-old frame changes when you ask the
+        camera for more frames per second, so nothing about the freshness
+        verdict may either. ``live_max_age_ms`` was also unreachable above
+        26 Hz, which is how a configured bound went years without applying.
+
+        The question the tier-relative form was really asking - "is this
+        pipeline keeping up with its own cadence?" - is a *cadence* question,
+        and it is already answered, twice: ``live_min_processed_ratio`` here,
+        and the p95-against-``max_frame_age_ms`` check in ``update`` that
+        downshifts the tier outright.
+
+        This stays stricter than the input authority's ``max_evidence_age_ms``
+        (75 against 100), which is the right relationship: Live demands fresher
+        evidence than the bare minimum a single command may be built from.
+        """
+        return float(self._config.live_max_age_ms)
 
     def _index(self) -> int:
         return self.LADDER.index(self._tier)

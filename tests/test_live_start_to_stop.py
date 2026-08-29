@@ -51,6 +51,7 @@ from tests.fakes import (
     FakePlatformPort,
     VirtualClock,
     make_geometry,
+    settle_cadence_for_live,
 )
 
 
@@ -172,6 +173,10 @@ class Rig:
 
     # -- helpers -----------------------------------------------------------
     def chord(self, intent: IntentType) -> None:
+        if intent is IntentType.START_LIVE:
+            # The production cadence gate, satisfied through the production
+            # governor rather than skipped.
+            settle_cadence_for_live(self.capture)
         self.coordinator.submit(self.coordinator.chord_authority().intent(intent, "Ctrl+N"))
 
     def yaw_deltas(self) -> list[int]:
