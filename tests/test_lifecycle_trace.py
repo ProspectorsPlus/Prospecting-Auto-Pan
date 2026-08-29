@@ -252,3 +252,75 @@ def test_a_deliberate_stop_and_start_is_not_counted_as_a_lapse(harness: Any) -> 
     assert again is not None
     assert authority.hold_lapses == {}
     session.release_all("test")
+
+
+# ---------------------------------------------------------------------------
+# ...on every ending, not only on the one where somebody pressed Stop
+# ---------------------------------------------------------------------------
+
+
+def test_a_run_that_ends_without_a_stop_still_leaves_a_trace(
+    harness: Any, tmp_path: Path
+) -> None:
+    """The most informative session this project has had left nothing on disk.
+
+    Traces were written from exactly one place - the Stop intent handler - so a
+    run that ended because the worker failed, because a safety fault fired, or
+    because it simply finished, wrote nothing at all. The first run in which the
+    character actually moved was one of those, and there is no file for it.
+    Every ending writes one now.
+    """
+    from prospector_engine.contracts import ModeResult, ModeResultKind
+
+    harness.coordinator._paths = AppPaths(tmp_path).ensure()
+    harness.start()
+    harness.register(
+        IntentType.START_SHADOW,
+        "failing",
+        lambda context: ModeResult(ModeResultKind.FAILED, "the pipeline gave up"),
+    )
+
+    harness.submit(IntentType.START_SHADOW)
+
+    assert harness.wait_for(lambda: list((tmp_path / "logs").glob("*.jsonl"))), (
+        "a failed run wrote no trace at all"
+    )
+    written = sorted((tmp_path / "logs").glob("*.jsonl"))[-1]
+    rows = [json.loads(line) for line in written.read_text().splitlines() if line.strip()]
+    names = {row.get("name") for row in rows if row.get("kind") == "event"}
+    assert "worker.completed" in names
+
+
+def test_a_run_writes_one_trace_and_stop_always_writes_one(
+    harness: Any, tmp_path: Path
+) -> None:
+    """Two rules that pull in opposite directions, and both are wanted.
+
+    A *run* writes exactly one trace, on whichever ending came first, so a
+    failure followed by a stop does not leave two copies of the same session.
+    But pressing Stop always writes one regardless, because "I stopped it and
+    there is no file" is not an answer a person can work with.
+    """
+    from prospector_engine.contracts import ModeResult, ModeResultKind
+
+    harness.coordinator._paths = AppPaths(tmp_path).ensure()
+    harness.start()
+    harness.register(
+        IntentType.START_SHADOW,
+        "failing",
+        lambda context: ModeResult(ModeResultKind.FAILED, "the pipeline gave up"),
+    )
+    harness.submit(IntentType.START_SHADOW)
+    assert harness.wait_for(lambda: list((tmp_path / "logs").glob("*.jsonl")))
+    after_failure = len(list((tmp_path / "logs").glob("*.jsonl")))
+
+    harness.submit(IntentType.STOP)
+    assert harness.wait_for(
+        lambda: len(list((tmp_path / "logs").glob("*.jsonl"))) > after_failure
+    ), "pressing Stop must always leave a file, even with nothing running"
+
+    # ...and a *second* stop, with no run in between, adds nothing.
+    settled = len(list((tmp_path / "logs").glob("*.jsonl")))
+    harness.submit(IntentType.STOP)
+    harness.wait_for(lambda: False, timeout_s=0.3)
+    assert len(list((tmp_path / "logs").glob("*.jsonl"))) == settled + 1

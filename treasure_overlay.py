@@ -640,7 +640,25 @@ class DiagnosticCanvas:
         "action_yaw_text",
         "action_jump_box",
         "action_jump_text",
+        "action_state_box",
+        "action_state_text",
     )
+
+    #: The pursuit state's own colour, so "it is going round something" is
+    #: visible from across a desk without reading a word. Recovery is the only
+    #: state that gets a warm colour, because it is the only one that means
+    #: something went wrong and is being dealt with.
+    STATE_COLOURS: ClassVar[dict[str, str]] = {
+        "follow": "#7bd88f",
+        "correct": "#7bd88f",
+        "coast": "#f2c14e",
+        "search": "#f2c14e",
+        "blocked": "#ff8a5c",
+        "align": "#9ad4ff",
+        "acquire": "#9ad4ff",
+        "reacquire": "#9ad4ff",
+        "safe_stop": "#ff6b6b",
+    }
 
     #: Glyph -> the suffix used in item names. "<" and ">" cannot appear in a
     #: name that is also read back in tests, so they get words.
@@ -780,13 +798,52 @@ class DiagnosticCanvas:
                 (origin[0], origin[1] + self.ACTION_RAY_PX + 30),
             )
         )
+        drawn.extend(self._draw_state_pill(observation, origin))
         # Raised last, and after the caption, so nothing the detector drew and
         # nothing the caption backdrop covers can sit on top of it.
         for item in drawn:
             self.canvas.tag_raise(item)
 
+    def _draw_state_pill(
+        self, observation: DiagnosticObservation, origin: tuple[float, float]
+    ) -> list[int]:
+        """What the controller is *doing*, above the composite movement.
+
+        The glyphs below already say which keys are down. They do not say
+        whether those keys are a straight walk, a correction, a coast through
+        an occlusion, a bounded search, or the third rung of an obstacle
+        recovery - and those are the five things a person watching a run
+        actually wants to tell apart. One pill, one colour, and the rung
+        spelled out when there is one.
+        """
+        pursuit = observation.pursuit
+        if pursuit is None:
+            self._hide("action_state_box")
+            self._hide("action_state_text")
+            return []
+        label = pursuit.state.value.upper()
+        if pursuit.recovery_rung:
+            side = {-1: "LEFT", 1: "RIGHT"}.get(pursuit.recovery_side, "")
+            label = f"RECOVERY {pursuit.recovery_rung} {side}".strip()
+        elif pursuit.state.value in ("coast", "search") and pursuit.arrow_age_ms:
+            label = f"{label} {pursuit.arrow_age_ms / 1000.0:.1f}s"
+        colour = self.STATE_COLOURS.get(pursuit.state.value, self.ACTION_COLOUR)
+        return self._action_label(
+            "action_state_box",
+            "action_state_text",
+            label,
+            (origin[0], origin[1] - self.ACTION_RAY_PX - 70),
+            outline=colour,
+        )
+
     def _action_label(
-        self, box_name: str, text_name: str, text: str, centre: tuple[float, float]
+        self,
+        box_name: str,
+        text_name: str,
+        text: str,
+        centre: tuple[float, float],
+        *,
+        outline: str | None = None,
     ) -> list[int]:
         """A boxed key label: dark plate, purple border, bold glyph."""
         label = self._text(
@@ -805,6 +862,7 @@ class DiagnosticCanvas:
                 0, 0, 0, 0, fill=self.ACTION_UNDERLAY, outline=self.ACTION_COLOUR, width=2
             )
             self._items[box_name] = box
+        self.canvas.itemconfigure(box, outline=outline or self.ACTION_COLOUR)
         if bounds is not None:
             self.canvas.coords(box, bounds[0] - 7, bounds[1] - 5, bounds[2] + 7, bounds[3] + 5)
         self.canvas.itemconfigure(box, state="normal")
@@ -995,4 +1053,26 @@ class DiagnosticCanvas:
         )
         if observation.phase is not None:
             lines.append(f"phase {observation.phase.name}")
+        pursuit = observation.pursuit
+        if pursuit is not None:
+            # The raw values belong here, in the expandable diagnostics, and
+            # not scattered across the picture: the action layer above already
+            # says the state and the rung in one glance, which is what a person
+            # reads while a character is moving.
+            lines.append(f"held {pursuit.movement_line()}")
+            if pursuit.progress_ratio is not None:
+                lines.append(
+                    f"speed {pursuit.progress_ratio:.0%} of baseline"
+                    f"  stall {pursuit.stall_ms:.0f} ms"
+                )
+            if pursuit.recovery_rung:
+                lines.append(
+                    f"recovery {pursuit.recovery_rung}"
+                    f"  side {pursuit.recovery_side:+d}"
+                    f"  jumps {pursuit.recovery_jumps}"
+                    f"  {pursuit.recovery_elapsed_ms:.0f} ms"
+                    f"  input {pursuit.recovery_input_ms:.0f} ms"
+                )
+            if pursuit.escalation:
+                lines.append(pursuit.escalation)
         return "\n".join(lines)

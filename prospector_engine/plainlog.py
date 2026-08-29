@@ -113,6 +113,14 @@ class Topic(Enum):
     BACKEND = "backend"
     #: The adaptive cadence tier. Reported, never obeyed.
     CADENCE = "cadence"
+    #: What the pursuit controller is doing - FOLLOW, CORRECT, COAST, SEARCH -
+    #: and what is actually held while it does it. Deliberately **not** a
+    #: per-frame topic even though it is computed every frame: the navigator
+    #: only writes a line when the state, the held keys or the recovery rung
+    #: change, and those are rare and are the lines a run is read out of.
+    PURSUIT = "pursuit"
+    #: One obstacle-recovery episode: which rung, which side, and how it ended.
+    RECOVERY = "recovery"
 
     @property
     def per_frame(self) -> bool:

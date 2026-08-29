@@ -1562,3 +1562,92 @@ def test_the_input_safety_card_renders_every_live_state(dashboard: Any) -> None:
         dashboard.root.update_idletasks()
 
     assert "held" in dashboard.summary_details["live"].get()
+
+
+# ---------------------------------------------------------------------------
+# The pursuit state pill
+# ---------------------------------------------------------------------------
+
+
+def _pursuit(**overrides: Any) -> Any:
+    from prospector_engine.contracts import ControlState, NavigationPhase, PursuitTelemetry
+
+    defaults: dict[str, Any] = {
+        "state": ControlState.FOLLOW,
+        "phase": NavigationPhase.FOLLOW,
+        "held_keys": ("W",),
+        "wanted_keys": ("W",),
+        "reason": "on course",
+    }
+    defaults.update(overrides)
+    return PursuitTelemetry(**defaults)
+
+
+def test_the_overlay_says_which_pursuit_state_the_keys_belong_to(root: Any) -> None:
+    """The glyphs say which keys are down. They do not say whether those keys
+    are a straight walk, a correction, a coast through an occlusion or the
+    third rung of an obstacle recovery - and that is what a person watching a
+    run actually needs to tell apart."""
+    from prospector_engine.contracts import CommandVisualization
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_shadow(_command())
+    canvas.render(_observation(command_view=view, pursuit=_pursuit()))
+    root.update_idletasks()
+
+    assert "FOLLOW" in _visible_texts(canvas)
+    assert _item_visible(canvas, "action_state_box")
+
+
+def test_the_overlay_spells_out_the_recovery_rung_and_side(root: Any) -> None:
+    from prospector_engine.contracts import CommandVisualization, ControlState, NavigationPhase
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_shadow(_command())
+    canvas.render(
+        _observation(
+            command_view=view,
+            pursuit=_pursuit(
+                state=ControlState.BLOCKED,
+                phase=NavigationPhase.RECOVERY,
+                held_keys=("W", "D", "JUMP"),
+                recovery_rung="R2",
+                recovery_side=-1,
+            ),
+        )
+    )
+    root.update_idletasks()
+
+    texts = _visible_texts(canvas)
+    assert "RECOVERY R2 LEFT" in texts, texts
+
+
+def test_a_coast_says_how_old_the_arrow_reading_is(root: Any) -> None:
+    from prospector_engine.contracts import CommandVisualization, ControlState, NavigationPhase
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_shadow(_command())
+    canvas.render(
+        _observation(
+            command_view=view,
+            pursuit=_pursuit(
+                state=ControlState.COAST,
+                phase=NavigationPhase.COAST,
+                arrow_age_ms=1400.0,
+            ),
+        )
+    )
+    root.update_idletasks()
+
+    assert "COAST 1.4s" in _visible_texts(canvas)
+
+
+def test_an_observation_with_no_pursuit_state_draws_no_pill(root: Any) -> None:
+    from prospector_engine.contracts import CommandVisualization
+
+    canvas = _canvas(root)
+    view = CommandVisualization.for_shadow(_command())
+    canvas.render(_observation(command_view=view, pursuit=None))
+    root.update_idletasks()
+
+    assert not _item_visible(canvas, "action_state_box")

@@ -44,6 +44,7 @@ from prospector_engine.contracts import (
     PacketKind,
     PhysicalChordProof,
     Provenance,
+    PursuitTelemetry,
     RunMode,
     RuntimeIntent,
     RuntimeKey,
@@ -285,6 +286,12 @@ class WorkerContext:
     #: cannot read a value that has already been superseded.
     health: Callable[[], WorkerHealth] = lambda: WorkerHealth()
     on_status: Callable[[str], None] = lambda _message: None
+    #: One typed record of what the navigator is doing, every frame. The sink
+    #: decides what is worth writing down; the worker never formats a sentence
+    #: for it. Passing text here is what made the navigation state unreadable -
+    #: it landed in the engineering ring as free-form status strings that no
+    #: consumer could filter, rank or render.
+    on_navigation: Callable[[PursuitTelemetry], None] = lambda _telemetry: None
     #: Facts about movement the ledger cannot know: which turn actuator this
     #: run chose, the last displacement actually confirmed, and the sentence
     #: for why nothing is being sent. Everything *else* the dashboard shows
@@ -419,6 +426,10 @@ class RuntimeCoordinator:
         self._last_result: ModeResult | None = None
         self._last_stop_reason = ""
         self._stale_completions = 0
+        #: Set when a mode that produces a route begins, cleared by whichever
+        #: ending writes the trace. One file per run, and never zero.
+        self._trace_dirty = False
+        self._last_pursuit: PursuitTelemetry | None = None
 
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -807,9 +818,11 @@ class RuntimeCoordinator:
         # unwinds instead of finishing into a runtime that has already stopped.
         self._setup_cancel.set()
         self._safe_stop(f"stop:{intent.source}")
-        self._export_trace("stop")
+        # Forced: pressing Stop always leaves a file behind, even if nothing
+        # ran, because "I stopped it and there is no trace" is not an answer.
+        self._export_trace("stop", force=True)
 
-    def _export_trace(self, label: str) -> None:
+    def _export_trace(self, label: str, *, force: bool = False) -> None:
         """Write the frame trace *and* the lifecycle beside the logs.
 
         Both into one file, because they are one story. The stop traces this
@@ -821,6 +834,15 @@ class RuntimeCoordinator:
         """
         if self._paths is None:
             return
+        # One trace per run, written on whichever end came first. A run used to
+        # be traced only when a person pressed Stop, so the single most
+        # informative session this project has had - the first one where the
+        # character actually moved - left nothing on disk at all. Every ending
+        # writes one now: an explicit stop, a safety release, a fault, a worker
+        # failure, an arrival, and shutdown.
+        if not (force or self._trace_dirty):
+            return
+        self._trace_dirty = False
         written = self._capture.export_trace(self._paths.logs, label=label)
         if written is None:
             return
@@ -1343,6 +1365,7 @@ class RuntimeCoordinator:
             blockers=self.live_blockers(),
             health=self._worker_health,
             on_status=lambda message: self._events.add("worker.status", message),
+            on_navigation=self._note_navigation,
             on_movement=self.note_movement,
             on_phase=self._set_phase,
             on_observation=self._publish_observation,
@@ -1383,6 +1406,27 @@ class RuntimeCoordinator:
     #: as a number rather than an import so the coordinator does not depend on
     #: the steering module.
     CURSOR_SAFE_FRACTION = 0.72
+
+    def _note_navigation(self, telemetry: PursuitTelemetry) -> None:
+        """Write one readable line per navigation *change*, never per frame.
+
+        The dashboard needs to answer "what is it doing, and why" while a
+        character is walking, and a per-frame stream of that is unreadable. So
+        state, what is actually held, the recovery rung and any escalation are
+        what make a new line; every number is carried *on* the line and never
+        causes one. A run of two hundred FOLLOW frames is one line.
+        """
+        if not telemetry.changed_from(self._last_pursuit):
+            return
+        self._last_pursuit = telemetry
+        if telemetry.phase in (NavigationPhase.ABANDONED, NavigationPhase.FAILED):
+            verdict = Verdict.FAIL
+        elif telemetry.recovery_rung:
+            verdict = Verdict.WARN
+        else:
+            verdict = Verdict.STATE
+        topic = Topic.RECOVERY if telemetry.recovery_rung else Topic.PURSUIT
+        self._plain.say(topic, verdict, telemetry.describe())
 
     def _worker_health(self) -> WorkerHealth:
         """One coherent read of focus, geometry, profile and pointer safety."""
@@ -1472,6 +1516,7 @@ class RuntimeCoordinator:
         self._authority.invalidate(f"worker-complete:{completion.result.kind.name}")
         self._authority.release_all(f"worker-complete:{completion.result.kind.name}")
         self._enter(RunMode.IDLE)
+        self._export_trace(f"complete-{completion.result.kind.name.lower()}")
 
     def _handle_fault(self, fault: SafetyFault) -> None:
         if fault.generation is not None and fault.generation != self._generation:
@@ -1514,6 +1559,7 @@ class RuntimeCoordinator:
         # command on screen during a stop is exactly the wrong thing to show.
         self._last_session_note = _describe_stop(reason)
         self.publish_transition(f"Stopped - {self._last_session_note}", terminal=True)
+        self._export_trace("safe-stop")
 
     def _enter(self, mode: RunMode) -> None:
         if mode is not self._mode:
@@ -1530,6 +1576,9 @@ class RuntimeCoordinator:
             # Every mode edge is a new world. Bumping the session id here is
             # what lets a terminal packet outrank the frames it terminates.
             self._mode_session += 1
+            if mode.emits_input or mode is RunMode.SHADOW:
+                # A run worth tracing has begun. Whatever ends it will write it.
+                self._trace_dirty = True
         self._mode = mode
 
     def _set_phase(self, phase: NavigationPhase | None) -> None:
