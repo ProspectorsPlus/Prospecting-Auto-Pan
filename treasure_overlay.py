@@ -140,14 +140,18 @@ class DiagnosticCanvas:
     #: The underlay is a near-black casing drawn under every purple stroke:
     #: vivid purple over bright sand or open water is otherwise unreadable, and
     #: this panel exists to be read at a glance while a character is moving.
-    ACTION_COLOUR = "#c65cff"
+    #: Brightened, thickened and enlarged after watching it over a real game
+    #: frame: this is the one layer a person reads while a character is
+    #: moving, at a glance, from across a desk. Everything else on the overlay
+    #: can afford to be subtle; this cannot.
+    ACTION_COLOUR = "#d98bff"
     ACTION_UNDERLAY = "#0a0410"
-    ACTION_UNDERLAY_WIDTH = 11
-    ACTION_STROKE_WIDTH = 7
+    ACTION_UNDERLAY_WIDTH = 15
+    ACTION_STROKE_WIDTH = 9
     #: Fixed in *view* pixels, not canonical ones, so the glyphs stay the same
     #: readable size whatever the preview is scaled to.
-    ACTION_RAY_PX = 84.0
-    ACTION_LABEL_FONT = ("Helvetica", 13, "bold")
+    ACTION_RAY_PX = 92.0
+    ACTION_LABEL_FONT = ("Helvetica", 17, "bold")
 
     #: Glyph -> screen bearing in degrees (0 up, positive clockwise). Turning
     #: sits diagonally above the walk axes because it is steering *while*
@@ -428,16 +432,24 @@ class DiagnosticCanvas:
             )
             self.canvas.itemconfigure(forward_item, fill=forward_colour)
             self._set_arm(forward_item, anchor, observation.forward_deg, transform)
-            forward_label = self._text(
-                "forward_label", fill=self.FORWARD_COLOUR, font=("Helvetica", 10, "bold")
-            )
-            self.canvas.itemconfigure(forward_label, fill=forward_colour)
-            label_point = (anchor[0], anchor[1] - self.ARM_LENGTH_PX - 16)
-            label_view = transform.apply_point(label_point)
-            self.canvas.coords(forward_label, label_view[0], label_view[1])
-            self.canvas.itemconfigure(
-                forward_label, text="forward (screen anchor)", state="normal"
-            )
+            # The arm's *caption* is a diagnostic, not a direction. Minimal
+            # keeps the dashed reference arm - it is what the gold desired arm
+            # is an angle against - and drops the words, because a label
+            # parked over the avatar is one of the things that made this panel
+            # unreadable while a character was moving.
+            if self.mode.draws_diagnostics:
+                forward_label = self._text(
+                    "forward_label", fill=self.FORWARD_COLOUR, font=("Helvetica", 10, "bold")
+                )
+                self.canvas.itemconfigure(forward_label, fill=forward_colour)
+                label_point = (anchor[0], anchor[1] - self.ARM_LENGTH_PX - 16)
+                label_view = transform.apply_point(label_point)
+                self.canvas.coords(forward_label, label_view[0], label_view[1])
+                self.canvas.itemconfigure(
+                    forward_label, text="forward (screen anchor)", state="normal"
+                )
+            else:
+                self._hide("forward_label")
 
             self._draw_cue_arms(observation, anchor, transform)
 
@@ -445,16 +457,22 @@ class DiagnosticCanvas:
                 self._hide("desired_arm")
                 self._hide("arc")
                 self._hide("angle_text")
-                marker = self._text(
-                    "no_desired", fill=BAD, font=("Helvetica", 11, "bold"), anchor="w"
-                )
-                marker_view = transform.apply_point((anchor[0] + 16, anchor[1] + 26))
-                self.canvas.coords(marker, marker_view[0], marker_view[1])
-                self.canvas.itemconfigure(
-                    marker,
-                    state="normal",
-                    text=f"no desired direction: {observation.direction.abstain_reason}",
-                )
+                # The abstain reason is already in the caption at the top of
+                # the panel. Repeating it beside the avatar put two copies of
+                # the same sentence over the picture.
+                if self.mode.draws_diagnostics:
+                    marker = self._text(
+                        "no_desired", fill=BAD, font=("Helvetica", 11, "bold"), anchor="w"
+                    )
+                    marker_view = transform.apply_point((anchor[0] + 16, anchor[1] + 26))
+                    self.canvas.coords(marker, marker_view[0], marker_view[1])
+                    self.canvas.itemconfigure(
+                        marker,
+                        state="normal",
+                        text=f"no desired direction: {observation.direction.abstain_reason}",
+                    )
+                else:
+                    self._hide("no_desired")
             else:
                 self._hide("no_desired")
                 desired_item = self._line(
@@ -920,6 +938,13 @@ class DiagnosticCanvas:
             )
         if self.mode is OverlayMode.MINIMAL:
             summary = observation.plain_summary or "no reading"
+            # When there is no heading, *why* is the whole message. It is said
+            # once, here, rather than a second time beside the avatar: this
+            # panel is read while a character is moving, and one sentence in a
+            # fixed place beats the same sentence following the character
+            # around.
+            if not direction.valid and direction.abstain_reason:
+                summary = f"{summary}\nno direction: {direction.abstain_reason}"
             return f"{summary}\nframe #{observation.frame_sequence}  {self.mode.value}"
         lines = [
             f"frame #{observation.frame_sequence}  age {observation.age_s * 1000:5.1f} ms"

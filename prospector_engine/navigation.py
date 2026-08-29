@@ -1632,6 +1632,9 @@ def make_live_worker(
                 )
             capabilities = outcome.capabilities or capabilities
             navigator.adopt_capabilities(capabilities)
+            measured = capabilities.turn_response
+            if measured is not None:
+                context.on_movement(turn_backend=measured.backend.label)
             # The prologue measured the idle noise floor moments ago with the
             # character stationary; the witness starts from that rather than
             # from nothing, so the first held frames are judged against a real
@@ -1642,6 +1645,7 @@ def make_live_worker(
         if not capabilities.steering_enabled:
             session.release_navigation("not-ready")
             reasons = "; ".join(capabilities.explain())
+            context.on_movement(blocked_reason=reasons)
             return ModeResult(
                 ModeResultKind.FAILED,
                 f"Live navigation is not ready on {capabilities.os_name}/"
@@ -1666,10 +1670,18 @@ def make_live_worker(
                     result.inputs.motion,
                 )
             )
+            sample = result.inputs.motion
+            if confirmed is not None and sample is not None:
+                # The *confirmed* displacement, not the requested one. An
+                # estimator that abstains reports nothing rather than zero:
+                # "holding W against a wall" and "no motion estimate" are
+                # different facts and the dashboard must not merge them.
+                context.on_movement(displacement_norm=float(sample.forward_speed_norm or 0.0))
             if decision.release or decision.command is None:
                 session.release_navigation(decision.reason)
                 navigator.note_released(now_s=now)
                 witness.note_command(forward_held=False, at_s=now)
+                context.on_movement(blocked_reason=decision.reason)
                 return CommandVisualization.released(detail=decision.reason, live=True)
             outcome = session.apply_navigation_command(
                 decision.command, envelope.evidence_token
@@ -1691,7 +1703,9 @@ def make_live_worker(
             )
             if not outcome.applied:
                 session.release_navigation(f"apply-rejected:{outcome.detail}")
+                context.on_movement(blocked_reason=f"{outcome.status.name}: {outcome.detail}")
                 return view
+            context.on_movement(blocked_reason="")
             # The baseline is learned from frames where forward was genuinely
             # applied - the authority's answer, never the request.
             observed = baseline.observe(

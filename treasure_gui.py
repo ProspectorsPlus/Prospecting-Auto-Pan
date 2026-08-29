@@ -53,6 +53,7 @@ from typing import Any
 from prospector_engine.application import Application, build_application
 from prospector_engine.bindings import BINDINGS, chord_label
 from prospector_engine.contracts import (
+    ActuatorState,
     CadenceMode,
     CaptureMetrics,
     DiagnosticObservation,
@@ -618,14 +619,26 @@ class Dashboard:
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 6)
         )
         self.readout_vars: dict[str, tk.StringVar] = {}
+        self.readout_labels: dict[str, ttk.Label] = {}
+        # The order is deliberate: everything above the rule describes what
+        # is *physically happening*, read from the input authority's ledger.
+        # Everything below describes what the navigator thinks. They used to be
+        # interleaved, and a person reading the panel could not tell which
+        # rows were claims and which were measurements.
         rows = [
+            ("chord", f"{_CHORD_START} listener"),
+            ("authorization", "Live authorization"),
+            ("leases", "Keys held now"),
+            ("forward", "Forward held for"),
+            ("yaw", "Last camera delta"),
+            ("turning", "Turning by"),
+            ("moved", "Last confirmed move"),
+            ("blocked", "Not sending because"),
             ("viewport", "Viewport"),
             ("profile", "Map profile"),
             ("state", "Navigation"),
             ("error", "Alignment error"),
-            ("turning", "Turning by"),
             ("rates", "Capture / control"),
-            ("leases", "Held inputs"),
             ("recovery", "Last action"),
         ]
         for index, (key, label) in enumerate(rows, start=1):
@@ -634,9 +647,9 @@ class Dashboard:
             )
             variable = tk.StringVar(value="-")
             self.readout_vars[key] = variable
-            fixed_label(frame, variable, width=self.READOUT_VALUE_CHARS).grid(
-                row=index, column=1, sticky="w"
-            )
+            value = fixed_label(frame, variable, width=self.READOUT_VALUE_CHARS)
+            value.grid(row=index, column=1, sticky="w")
+            self.readout_labels[key] = value
 
     # -- advanced ---------------------------------------------------------
     def _build_advanced(self) -> None:
@@ -1089,10 +1102,55 @@ class Dashboard:
             if metrics is not None
             else "-"
         )
-        held = self.app.authority.held_targets()
-        self.readout_vars["leases"].set(", ".join(held) if held else "none")
+        self._render_actuator(snapshot)
         recovery = observation.plain_summary if observation else ""
         self.readout_vars["recovery"].set(recovery[: self.READOUT_VALUE_CHARS] or "-")
+
+    def _render_actuator(self, snapshot: TelemetrySnapshot | None) -> None:
+        """The physical half of the readout, read from the ledger.
+
+        Every value here is what the input authority *did*, never what a
+        planner asked for. That distinction is the whole reason this block
+        exists: an overlay that drew a bright forward arrow for a command the
+        authority had refused made "the planner wants W" and "W is down" look
+        identical, and the two need completely different repairs.
+        """
+        actuator = snapshot.actuator if snapshot is not None else ActuatorState()
+        ready = snapshot.hotkey_ready if snapshot is not None else False
+        detail = snapshot.hotkey_detail if snapshot is not None else "no listener"
+        self.readout_vars["chord"].set(
+            f"hearing keys ({detail})" if ready else f"NOT HEARING KEYS - {detail}"
+        )
+        self.readout_vars["authorization"].set(
+            snapshot.live_authorization if snapshot is not None else "none"
+        )
+        self.readout_vars["leases"].set(
+            " ".join(sorted(actuator.held)) if actuator.held else "none"
+        )
+        self.readout_vars["forward"].set(
+            f"{actuator.forward_held_ms / 1000.0:.1f} s "
+            f"({actuator.down_edges} down / {actuator.up_edges} up"
+            + (f", {actuator.hold_lapses} lapsed" if actuator.hold_lapses else "")
+            + ")"
+            if actuator.forward_held
+            else f"not held ({actuator.down_edges} down / {actuator.up_edges} up)"
+        )
+        self.readout_vars["yaw"].set(
+            f"{actuator.last_yaw_delta_px:+d} px" if actuator.last_yaw_at_s else "none posted"
+        )
+        moved = actuator.last_displacement_norm
+        self.readout_vars["moved"].set(
+            "no estimate" if moved is None else f"{moved:+.3f} normalized"
+        )
+        blocked = actuator.blocked_reason
+        self.readout_vars["blocked"].set(blocked or "-")
+        colour = (
+            BAD if blocked and snapshot is not None and snapshot.mode.emits_input else MUTED
+        )
+        with contextlib.suppress(Exception):
+            self.readout_labels["blocked"].configure(foreground=colour)
+        with contextlib.suppress(Exception):
+            self.readout_labels["chord"].configure(foreground=OK if ready else BAD)
 
     def _viewport_text(self, geometry: ViewportGeometry, snapshot: Any) -> str:
         """Requested and achieved, because a clamp is an answer worth reading.

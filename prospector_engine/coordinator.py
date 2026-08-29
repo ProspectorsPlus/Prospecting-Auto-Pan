@@ -287,6 +287,12 @@ class WorkerContext:
     #: cannot read a value that has already been superseded.
     health: Callable[[], WorkerHealth] = lambda: WorkerHealth()
     on_status: Callable[[str], None] = lambda _message: None
+    #: Facts about movement the ledger cannot know: which turn actuator this
+    #: run chose, the last displacement actually confirmed, and the sentence
+    #: for why nothing is being sent. Everything *else* the dashboard shows
+    #: about the actuator is read straight from the ledger, so a worker can
+    #: never make the window claim a key is down.
+    on_movement: Callable[..., None] = lambda **_fields: None
     on_phase: Callable[[NavigationPhase | None], None] = lambda _phase: None
     on_observation: Callable[[DiagnosticObservation], None] = lambda _observation: None
     #: The named-stage record. Shared with the authority, so what the worker
@@ -1224,6 +1230,9 @@ class RuntimeCoordinator:
             self._enter(RunMode.SAFE_STOP)
             return False
 
+        self._turn_backend = ""
+        self._last_displacement_norm = None
+        self._worker_block_reason = ""
         self._generation += 1
         cancellation = Cancellation()
         self._registry.set_generation(self._generation)
@@ -1265,6 +1274,7 @@ class RuntimeCoordinator:
             blockers=self.live_blockers(),
             health=self._worker_health,
             on_status=lambda message: self._events.add("worker.status", message),
+            on_movement=self.note_movement,
             on_phase=self._set_phase,
             on_observation=self._publish_observation,
             lifecycle=self._authority.lifecycle,

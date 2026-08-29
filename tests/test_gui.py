@@ -472,7 +472,15 @@ def test_full_diagnostics_adds_the_geometry_the_estimate_came_from(dashboard: An
 
 
 def test_an_abstaining_direction_hides_the_desired_arm_and_says_why(dashboard: Any) -> None:
+    """Full Diagnostics says why beside the avatar; Minimal says it once, above.
+
+    The reason belongs on screen either way. What Minimal must not do is print
+    it a second time over the character - the caption at the top of the panel
+    already carries it, and two copies of one sentence over a moving picture is
+    the crowding this mode exists to avoid.
+    """
     from prospector_engine.contracts import DirectionObservation
+    from treasure_overlay import OverlayMode
 
     dashboard.root.update_idletasks()
     abstained = DirectionObservation(
@@ -483,12 +491,22 @@ def test_an_abstaining_direction_hides_the_desired_arm_and_says_why(dashboard: A
         valid=False,
         abstain_reason="cues disagree",
     )
-    dashboard._diagnostics.render(_observation(direction=abstained, desired_deg=None))
+    packet = _observation(direction=abstained, desired_deg=None)
 
+    dashboard._diagnostics.set_mode(OverlayMode.FULL)
+    dashboard._diagnostics.render(packet)
     assert not _visible(dashboard, "desired_arm")
     assert _visible(dashboard, "no_desired")
     text = dashboard.canvas.itemcget(_canvas_items(dashboard)["no_desired"], "text")
     assert "cues disagree" in text
+
+    dashboard._diagnostics.set_mode(OverlayMode.MINIMAL)
+    dashboard._diagnostics.render(packet)
+    assert not _visible(dashboard, "no_desired")
+    assert not _visible(dashboard, "forward_label")
+    assert "cues disagree" in dashboard.canvas.itemcget(
+        _canvas_items(dashboard)["caption"], "text"
+    )
 
 
 def test_a_frozen_packet_is_drawn_but_labelled_frozen(dashboard: Any) -> None:
@@ -1378,3 +1396,124 @@ def test_a_listener_that_cannot_be_read_does_not_break_the_drawer(dashboard: Any
 
     dashboard.app.hotkeys = Broken()
     assert "exploded" in dashboard._hotkey_health()
+
+
+def _snapshot(**overrides: Any) -> Any:
+    """A minimal live snapshot. The readout reads it and nothing else."""
+    from prospector_engine.contracts import (
+        NavigationPhase,
+        RunMode,
+        TelemetrySnapshot,
+    )
+
+    base = TelemetrySnapshot(
+        sequence=1,
+        mode=RunMode.LIVE,
+        phase=NavigationPhase.FOLLOW,
+        viewport=None,
+        arrow=None,
+        direction=None,
+        motion=None,
+        arrival=None,
+        command=None,
+        ledger_empty=False,
+        focus=True,
+        frame_age_ms=12.0,
+    )
+    from dataclasses import replace as _replace
+
+    return _replace(base, **overrides)
+
+
+# ---------------------------------------------------------------------------
+# The readout reports the actuator, not the plan
+# ---------------------------------------------------------------------------
+
+
+def test_the_readout_names_every_fact_a_stuck_user_needs(dashboard: Any) -> None:
+    """Nine rows, and each answers one question the reported failure raised.
+
+    "Nothing moves" was unanswerable from this window: it showed the mode and
+    the held leases and nothing about whether the chord was even heard, whether
+    Live had been authorized, how long forward had been down, or what the
+    coordinator's reason for sending nothing was.
+    """
+    from treasure_gui import _CHORD_START
+
+    for key in (
+        "chord",
+        "authorization",
+        "leases",
+        "forward",
+        "yaw",
+        "turning",
+        "moved",
+        "blocked",
+    ):
+        assert key in dashboard.readout_vars, f"{key} is not on the dashboard"
+    labels = " ".join(
+        str(label.cget("text")) for label in _widgets(dashboard.root, ("TLabel", "Label"))
+    )
+    assert f"{_CHORD_START} listener" in labels
+
+
+def test_the_readout_draws_the_ledger_rather_than_the_command(dashboard: Any) -> None:
+
+    from prospector_engine.contracts import ActuatorState
+
+    held = _snapshot(
+        live_authorization="granted abc123",
+        hotkey_ready=True,
+        hotkey_detail="quartz-tap: hearing the keyboard",
+        actuator=ActuatorState(
+            held=("w",),
+            forward_held_ms=2400.0,
+            down_edges=1,
+            up_edges=0,
+            last_yaw_delta_px=-12,
+            last_yaw_at_s=1.0,
+            turn_backend="mouse yaw",
+            last_displacement_norm=0.031,
+        ),
+    )
+    dashboard._render_actuator(held)
+
+    assert dashboard.readout_vars["leases"].get() == "w"
+    assert "2.4 s" in dashboard.readout_vars["forward"].get()
+    assert "1 down / 0 up" in dashboard.readout_vars["forward"].get()
+    assert dashboard.readout_vars["yaw"].get() == "-12 px"
+    assert "0.031" in dashboard.readout_vars["moved"].get()
+    assert dashboard.readout_vars["authorization"].get() == "granted abc123"
+    assert "hearing keys" in dashboard.readout_vars["chord"].get()
+
+
+def test_a_dead_listener_is_shouted_about_rather_than_shown_as_a_dash(
+    dashboard: Any,
+) -> None:
+    """A listener that is not hearing keys makes every chord vanish silently."""
+
+    dashboard._render_actuator(
+        _snapshot(hotkey_ready=False, hotkey_detail="quartz-tap: failed")
+    )
+
+    text = dashboard.readout_vars["chord"].get()
+    assert "NOT HEARING KEYS" in text
+    assert "failed" in text
+
+
+def test_the_reason_nothing_is_moving_is_shown_verbatim(dashboard: Any) -> None:
+
+    from prospector_engine.contracts import ActuatorState
+
+    dashboard._render_actuator(
+        _snapshot(
+            actuator=ActuatorState(
+                blocked_reason="the camera control mode has not been confirmed"
+            )
+        )
+    )
+
+    assert (
+        dashboard.readout_vars["blocked"].get()
+        == "the camera control mode has not been confirmed"
+    )
