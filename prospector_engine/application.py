@@ -417,7 +417,7 @@ class Application:
 
         Assembled here because this is the only object that can see all of it
         at once: the platform port's permissions, the listener's health, the
-        coordinator's arm token, the capture cadence and the authority's
+        coordinator's readiness, the capture cadence and the authority's
         release state.
         """
         port = self.port
@@ -430,7 +430,6 @@ class Application:
             capture_probe=self._capture_permitted,
             hotkey_running=bool(listener is not None and listener.is_running()),
             roblox_focused=port.focus_state(),
-            arm_token_present=self.coordinator.armed,
             processed_fps=self.capture.processed_fps,
             min_processed_fps=float(SteeringLimits().min_processed_fps),
             release_uncertain=self.authority.release_uncertain,

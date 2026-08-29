@@ -1315,8 +1315,9 @@ class MacPlatformPort:
         submit: Callable[[RuntimeIntent], None],
         *,
         on_edge: Callable[[ChordEvent], None] | None = None,
+        mint: Callable[[IntentType, str], RuntimeIntent] | None = None,
     ) -> MacHotkeySource:
-        return MacHotkeySource(submit, focus_probe=self.focus_state, on_edge=on_edge)
+        return MacHotkeySource(submit, focus_probe=self.focus_state, on_edge=on_edge, mint=mint)
 
 
 class MacHotkeySource:
@@ -1369,9 +1370,14 @@ class MacHotkeySource:
         *,
         focus_probe: Callable[[], FocusState],
         on_edge: Callable[[ChordEvent], None] | None = None,
+        mint: Callable[[IntentType, str], RuntimeIntent] | None = None,
     ) -> None:
         self._submit = submit
         self._focus_probe = focus_probe
+        #: The coordinator's physical-chord capability, or ``None``. Without
+        #: it this listener can still submit every intent it recognizes, and
+        #: none of them will be accepted as an authorization to start Live.
+        self._mint = mint
         # A plain callback, not an engine binding: the port stays instance-based
         # and knows nothing about what is on the other end (plan 4.2).
         self._on_edge = on_edge or (lambda _event: None)
@@ -1439,7 +1445,7 @@ class MacHotkeySource:
             self._journal.chord(label, "refused: Roblox is not focused")
             return False
         self._journal.chord(label, "submitted")
-        return self.fire(binding.intent)
+        return self.fire(binding.intent, label)
 
     # -- lifecycle --------------------------------------------------------
     def clear_held_keys(self, reason: str = "focus-change") -> None:
@@ -1594,8 +1600,18 @@ class MacHotkeySource:
             self._tap = None
             self._ticked.set()
 
-    def fire(self, intent_type: IntentType) -> bool:
-        """Submit one hotkey intent. Policy has already been applied."""
+    def fire(self, intent_type: IntentType, chord: str = "") -> bool:
+        """Submit one hotkey intent. Policy has already been applied.
+
+        When a physical-chord capability was supplied it mints the intent, so
+        the coordinator can tell a real key edge from a call that merely wrote
+        ``source="hotkey"`` on one. Without it the intent still goes out - and
+        Live still refuses it, by design.
+        """
+        mint = self._mint
+        if mint is not None:
+            self._submit(mint(intent_type, chord))
+            return True
         with self._lock:
             self._sequence += 1
             sequence = self._sequence

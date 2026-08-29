@@ -1415,7 +1415,9 @@ class IntentType(Enum):
     #: Leave Live but keep observing: releases movement, keeps perception.
     RETURN_TO_SHADOW = auto()
     START_SHADOW = auto()
-    ARM_LIVE_FROM_UI = auto()
+    #: The single deliberate physical authorization. It both authorizes and
+    #: begins Live in one coordinator transaction; there is no separate
+    #: ``ARM_LIVE_FROM_UI`` gesture any more (DECISIONS.md D-062).
     START_LIVE = auto()
     STOP = auto()
     RESET_CHARACTER = auto()
@@ -1444,11 +1446,34 @@ class IntentType(Enum):
 
 
 @dataclass(frozen=True)
+class PhysicalChordProof:
+    """Evidence that a real key edge from the registered listener minted this.
+
+    ``source="hotkey"`` is a *label*: any code in the process can write it, and
+    for as long as it was the only check, "did a human press the chord" and
+    "did something say it did" were the same question. This is the answer to
+    the first one.
+
+    The nonce is created inside :class:`~prospector_engine.coordinator.RuntimeCoordinator`
+    at construction, handed to exactly one hotkey listener as a capability
+    object, and never published - not to the GUI, not to a worker, not to the
+    CLI. An intent without it is refused for Live no matter what its ``source``
+    field says.
+    """
+
+    nonce: str
+    chord: str
+    minted_at_s: float
+
+
+@dataclass(frozen=True)
 class RuntimeIntent:
     sequence: int
     intent_type: IntentType
     source: Literal["gui", "hotkey", "system"]
     created_at_s: float
+    #: Present only on an intent minted by the physical chord capability.
+    proof: PhysicalChordProof | None = None
 
     def coalescing_key(self) -> tuple[IntentType, str] | None:
         """Ordinary duplicates coalesce; safety intents never do."""
@@ -1864,6 +1889,51 @@ class DiagnosticObservation:
 
 
 @dataclass(frozen=True)
+class ActuatorState:
+    """What the machine is *physically doing*, as distinct from what was asked.
+
+    Every field here is read from the input authority's own ledger or from the
+    answer it gave, never from the command a planner wanted. The dashboard bug
+    this exists to end: the overlay drew a bright forward arrow for a command
+    the authority had refused, so "the planner asked for W" and "W is down"
+    looked identical on screen.
+    """
+
+    #: Targets the ledger says are held right now, e.g. ``("w", "mouse:left")``.
+    held: tuple[str, ...] = ()
+    #: How long forward has been *continuously* down. Zero when it is not.
+    forward_held_ms: float = 0.0
+    #: Down/up edges posted this run, for the rattle check.
+    down_edges: int = 0
+    up_edges: int = 0
+    #: Holds that came up and were re-pressed inside the lapse window.
+    hold_lapses: int = 0
+    #: The last relative yaw actually posted, and when.
+    last_yaw_delta_px: int = 0
+    last_yaw_at_s: float = 0.0
+    #: The turn actuator this run measured and chose, or "" before it has.
+    turn_backend: str = ""
+    #: The most recent confirmed player displacement, normalized. ``None``
+    #: means the estimator abstained, which is not the same as "did not move".
+    last_displacement_norm: float | None = None
+    #: Why nothing is being sent, in the words the authority or the navigator
+    #: used. Empty while input is flowing.
+    blocked_reason: str = ""
+
+    @property
+    def forward_held(self) -> bool:
+        return InputKey.W.value in self.held
+
+    def describe(self) -> str:
+        if not self.held:
+            return self.blocked_reason or "nothing held"
+        held = " ".join(sorted(target.split(":")[-1].upper() for target in self.held))
+        if self.forward_held:
+            return f"{held} held {self.forward_held_ms / 1000.0:.1f}s"
+        return f"{held} held"
+
+
+@dataclass(frozen=True)
 class TelemetrySnapshot:
     """One emit-on-change view of the whole runtime (bug B13)."""
 
@@ -1896,7 +1966,17 @@ class TelemetrySnapshot:
     #: not a fault, and red is reserved for a fault that is happening now.
     last_session_note: str = ""
     control_state: ControlState | None = None
-    arm_state: str = "none"
+    #: The outcome of the last Live authorization attempt, in one phrase:
+    #: ``"none"``, ``"granted <id>"`` or ``"refused: <reason>"``. It replaced
+    #: ``arm_state``, which counted down a token from a button that no longer
+    #: exists (D-062).
+    live_authorization: str = "none"
+    #: Whether the global chord listener is currently hearing the keyboard,
+    #: and its own one-line account of itself.
+    hotkey_ready: bool = False
+    hotkey_detail: str = ""
+    #: The physical actuator, read from the ledger rather than the plan.
+    actuator: ActuatorState = field(default_factory=lambda: ActuatorState())
     recording: str = "off"
     #: Where automatic setup has got to. The production UI renders this rather
     #: than a list of gates, because it is the thing that is actually happening.

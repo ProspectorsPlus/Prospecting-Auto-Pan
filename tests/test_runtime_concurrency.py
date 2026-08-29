@@ -38,6 +38,7 @@ from prospector_engine.coordinator import (
     WorkerContext,
 )
 from prospector_engine.input_authority import AuthorityConfig, HealthSources, InputAuthority
+from prospector_engine.lifecycle import LifecycleStage
 from tests.fakes import (
     FakeCaptureSource,
     FakeDeadmanClient,
@@ -112,6 +113,17 @@ class Harness:
 
     def submit(self, intent_type: IntentType, source: str = "gui") -> RuntimeIntent:
         intent = self.coordinator.next_intent(intent_type, source)
+        self.coordinator.submit(intent)
+        return intent
+
+    def chord(self, intent_type: IntentType) -> RuntimeIntent:
+        """Submit through the physical-chord capability, as a listener does.
+
+        This is the *only* way a test may start Live, and it stands in for one
+        real key edge. Nothing here pre-authorizes anything: the coordinator
+        still runs every readiness check before it mints an authorization.
+        """
+        intent = self.coordinator.chord_authority().intent(intent_type, "Ctrl+N")
         self.coordinator.submit(intent)
         return intent
 
@@ -328,91 +340,141 @@ def test_shadow_survives_focus_loss_but_a_viewport_fault_stops_it(harness: Harne
 
 
 # ---------------------------------------------------------------------------
-# Live arming
+# Starting Live: one gesture, and it is the physical chord
 # ---------------------------------------------------------------------------
 
 
-def test_live_needs_a_token_and_the_token_is_one_use(harness: Harness) -> None:
-    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
-    harness.start()
+def test_a_genuine_chord_enters_live_with_no_separate_arm_click(harness: Harness) -> None:
+    """The regression. One physical Ctrl+N, and the character may move.
 
-    # No token: refused, and no worker ever starts.
-    harness.submit(IntentType.START_LIVE, source="hotkey")
-    time.sleep(0.1)
-    assert harness.started == []
-
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-    harness.submit(IntentType.START_LIVE, source="hotkey")
-    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
-    assert harness.coordinator.arm_token() is None
-
-    # A second start with no fresh arm must be refused.
-    started_count = len(harness.started)
-    harness.submit(IntentType.START_LIVE, source="hotkey")
-    time.sleep(0.1)
-    assert len(harness.started) == started_count
-
-
-def test_an_arm_token_expires(harness: Harness) -> None:
-    harness.start()
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-
-    time.sleep(0.5)  # arm_ttl_s is 0.4 in this harness
-
-    assert harness.coordinator.arm_token() is None
-
-
-def test_arming_is_refused_from_a_hotkey(harness: Harness) -> None:
-    """Arming must be a physical UI click; a hotkey cannot stand in for it."""
-    harness.start()
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="hotkey")
-    time.sleep(0.1)
-    assert harness.coordinator.arm_token() is None
-
-
-def test_start_live_is_refused_from_the_gui(harness: Harness) -> None:
-    """Clicking Tk removes Roblox focus, so a GUI Start Live is meaningless."""
-    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
-    harness.start()
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-
-    harness.submit(IntentType.START_LIVE, source="gui")
-    time.sleep(0.1)
-
-    assert harness.started == []
-    assert harness.coordinator.arm_token() is None  # the attempt still spends it
-
-
-def test_a_transient_readiness_failure_keeps_the_arm(harness: Harness) -> None:
-    """Pressing the chord a moment before Roblox comes frontmost is normal.
-
-    Spending the arm on it forces another trip to the button for something the
-    user is about to fix by clicking into the game, which is the single most
-    likely way to use this feature.
+    Reproduces the reported failure exactly: a ready runtime, a genuine chord,
+    and - before D-062 - ``live.refused: no arm token`` because a second
+    gesture nobody had been told about was never made.
     """
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-    harness.port.set_focus(False)
+
+    harness.chord(IntentType.START_LIVE)
+
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+    assert harness.started == ["live"]
+    assert harness.coordinator.live_authorization.startswith("granted")
+    assert "no arm token" not in " ".join(_event_details(harness))
+
+
+def test_a_ready_chord_never_ends_in_no_arm_token(harness: Harness) -> None:
+    """Whatever else can refuse a chord, the absent second gesture cannot."""
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+
+    refusals = [d for n, d in _events(harness) if n == "live.refused"]
+    assert refusals == []
+
+
+def test_the_authorization_is_created_and_consumed_in_one_transaction(
+    harness: Harness,
+) -> None:
+    from prospector_engine.lifecycle import LIVE_ENTRY_PATH
+
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+
+    stages = [row["stage"] for row in harness.authority.lifecycle.rows()]
+    # CHORD_RECOGNIZED is the listener's own note and LIVE_WORKER_ENTERED is
+    # the real live worker's; this harness has neither. Everything between
+    # them belongs to the coordinator, and all of it must have happened.
+    outside = {LifecycleStage.CHORD_RECOGNIZED, LifecycleStage.LIVE_WORKER_ENTERED}
+    for stage in LIVE_ENTRY_PATH:
+        if stage in outside:
+            continue
+        assert stage.value in stages, f"{stage.value} never happened"
+    created = stages.index(LifecycleStage.LIVE_AUTHORIZATION_CREATED.value)
+    consumed = stages.index(LifecycleStage.LIVE_AUTHORIZATION_CONSUMED.value)
+    entered = stages.index(LifecycleStage.LIVE_ENTERED.value)
+    assert created < consumed < entered
+    # And nothing survives the transaction that made it.
+    assert harness.coordinator.live_authorization.startswith("granted")
+
+
+def test_a_fabricated_hotkey_intent_cannot_start_live(harness: Harness) -> None:
+    """``source="hotkey"`` is a label anything can write. The proof is not."""
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
 
     harness.submit(IntentType.START_LIVE, source="hotkey")
     time.sleep(0.15)
+
     assert harness.started == []
     assert harness.coordinator.mode is not RunMode.LIVE
-    assert harness.coordinator.arm_token() is not None, "a transient miss burned the arm"
+    assert "not the physical chord" in harness.coordinator.live_authorization
 
-    # ...and the same arm works once the transient condition clears.
+
+def test_a_gui_start_live_is_refused(harness: Harness) -> None:
+    """Clicking Tk removes Roblox focus, so a GUI Start Live is meaningless."""
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+
+    harness.submit(IntentType.START_LIVE, source="gui")
+    time.sleep(0.15)
+
+    assert harness.started == []
+    assert harness.coordinator.mode is not RunMode.LIVE
+
+
+def test_a_proof_from_another_run_is_refused(harness: Harness) -> None:
+    """A nonce is per run. One carried across cannot authorize this one."""
+    from dataclasses import replace as _replace
+
+    from prospector_engine.contracts import PhysicalChordProof
+
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+
+    forged = _replace(
+        harness.coordinator.next_intent(IntentType.START_LIVE, "hotkey"),
+        proof=PhysicalChordProof(nonce="not-this-run", chord="Ctrl+N", minted_at_s=0.0),
+    )
+    harness.coordinator.submit(forged)
+    time.sleep(0.15)
+
+    assert harness.started == []
+    assert harness.coordinator.mode is not RunMode.LIVE
+
+
+def test_a_refused_chord_says_exactly_why_and_never_silently_does_nothing(
+    harness: Harness,
+) -> None:
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+    harness.port.set_focus(False)
+
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(
+        lambda: harness.coordinator.live_authorization.startswith("refused")
+    )
+
+    assert harness.started == []
+    detail = harness.coordinator.live_refusal_detail
+    assert "frontmost" in detail, detail
+    assert "again" in detail, "a transient refusal must say it is worth retrying"
+    stages = [row["stage"] for row in harness.authority.lifecycle.rows()]
+    assert LifecycleStage.LIVE_REFUSED.value in stages
+    assert LifecycleStage.LIVE_ENTERED.value not in stages
+
+    # ...and the same chord works once the transient condition clears.
     harness.port.set_focus(True)
-    harness.submit(IntentType.START_LIVE, source="hotkey")
+    harness.chord(IntentType.START_LIVE)
     assert harness.wait_for(lambda: "live" in harness.started)
-    assert harness.coordinator.arm_token() is None, "the arm outlived its use"
 
 
-def test_a_real_readiness_fault_spends_the_token(harness: Harness) -> None:
+def test_a_real_readiness_fault_refuses_and_does_not_invite_a_retry(
+    harness: Harness,
+) -> None:
     """An unconfirmed release is not something a second press should retry into."""
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
@@ -421,27 +483,14 @@ def test_a_real_readiness_fault_spends_the_token(harness: Harness) -> None:
     harness.port.fail_ops.clear()
     assert harness.authority.release_uncertain
 
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-    harness.submit(IntentType.START_LIVE, source="hotkey")
-    time.sleep(0.15)
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(
+        lambda: harness.coordinator.live_authorization.startswith("refused")
+    )
 
     assert harness.started == []
-    assert harness.coordinator.arm_token() is None
     assert harness.coordinator.mode is not RunMode.LIVE
-
-
-def test_a_non_hotkey_source_always_spends_the_token(harness: Harness) -> None:
-    """Something submitting on the arm's behalf is what the token exists to stop."""
-    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
-    harness.start()
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-
-    harness.submit(IntentType.START_LIVE, source="gui")
-    time.sleep(0.15)
-    assert harness.started == []
-    assert harness.coordinator.arm_token() is None
+    assert "again" not in harness.coordinator.live_refusal_detail
 
 
 def test_an_unsafe_release_latch_blocks_live_but_not_shadow(harness: Harness) -> None:
@@ -453,14 +502,41 @@ def test_an_unsafe_release_latch_blocks_live_but_not_shadow(harness: Harness) ->
     harness.port.fail_ops.clear()
     assert harness.authority.release_uncertain
 
-    harness.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-    assert harness.wait_for(lambda: harness.coordinator.arm_token() is not None)
-    harness.submit(IntentType.START_LIVE, source="hotkey")
+    harness.chord(IntentType.START_LIVE)
     time.sleep(0.15)
     assert "live" not in harness.started
 
     harness.submit(IntentType.START_SHADOW)
     assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.SHADOW)
+
+
+def test_a_second_chord_while_live_is_refused_rather_than_restarting(
+    harness: Harness,
+) -> None:
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+
+    harness.chord(IntentType.START_LIVE)
+    time.sleep(0.15)
+
+    assert harness.started == ["live"], "the chord restarted a running session"
+
+
+def test_stop_always_releases_and_is_never_gated_on_the_start_path(
+    harness: Harness,
+) -> None:
+    harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
+    harness.start()
+    harness.chord(IntentType.START_LIVE)
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.LIVE)
+
+    harness.chord(IntentType.STOP)
+
+    assert harness.wait_for(lambda: harness.coordinator.mode is RunMode.IDLE)
+    assert harness.authority.ledger_empty()
+    assert harness.coordinator.stopped_by_user
 
 
 # ---------------------------------------------------------------------------
@@ -550,9 +626,7 @@ def test_a_recovery_record_from_a_previous_run_blocks_live_at_startup(
     try:
         assert rig.authority.release_uncertain
 
-        rig.submit(IntentType.ARM_LIVE_FROM_UI, source="gui")
-        assert rig.wait_for(lambda: rig.coordinator.arm_token() is not None)
-        rig.submit(IntentType.START_LIVE, source="hotkey")
+        rig.chord(IntentType.START_LIVE)
         time.sleep(0.15)
         assert rig.started == []
 
@@ -724,3 +798,11 @@ def test_a_probe_that_raises_is_unsafe_rather_than_fatal(
     )
 
     assert coordinator._cursor_safe() is False
+
+
+def _events(harness: Harness) -> list[tuple[str, str]]:
+    return [(name, detail) for _at, name, detail in harness.coordinator.events.verbatim(500)]
+
+
+def _event_details(harness: Harness) -> list[str]:
+    return [detail for _name, detail in _events(harness)]

@@ -31,7 +31,6 @@ def _inputs(**overrides: Any) -> PreflightInputs:
         "screen_capture": True,
         "hotkey_listener_running": True,
         "roblox_focused": True,
-        "arm_token_present": True,
         "processed_fps": 60.0,
         "min_processed_fps": 30.0,
         "release_uncertain": False,
@@ -46,10 +45,12 @@ def _inputs(**overrides: Any) -> PreflightInputs:
 # ---------------------------------------------------------------------------
 
 
-def test_everything_granted_is_ready_to_arm() -> None:
+def test_everything_granted_is_ready_to_start() -> None:
+    from prospector_engine.preflight import _START_CHORD
+
     report = run_preflight(_inputs())
     assert report.ok and report.can_start_live
-    assert report.summary == "Ready to arm."
+    assert report.summary == f"Ready. Press {_START_CHORD} with Roblox focused."
 
 
 @pytest.mark.parametrize(
@@ -105,13 +106,23 @@ def test_permissions_granted_means_the_failure_is_not_a_permission() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_not_being_armed_is_a_precondition_not_a_fault() -> None:
-    report = run_preflight(_inputs(arm_token_present=False, roblox_focused=False))
+def test_not_being_focused_is_a_precondition_not_a_fault() -> None:
+    report = run_preflight(_inputs(roblox_focused=False))
     assert report.ok, "an unmet precondition was reported as something broken"
     assert not report.can_start_live
-    for identifier in (CapabilityId.ARM_TOKEN, CapabilityId.ROBLOX_FOCUS):
-        entry = report.get(identifier)
-        assert entry is not None and entry.kind is CapabilityKind.PRECONDITION
+    entry = report.get(CapabilityId.ROBLOX_FOCUS)
+    assert entry is not None and entry.kind is CapabilityKind.PRECONDITION
+
+
+def test_the_start_chord_is_the_only_authorization_the_preflight_names() -> None:
+    """There is no separate arming precondition to report any more (D-062)."""
+    report = run_preflight(_inputs())
+    entry = report.get(CapabilityId.ARM_TOKEN)
+
+    assert entry is not None
+    assert entry.state is CapabilityState.OK
+    assert "authorizes and starts" in entry.detail
+    assert not any("Arm Live" in c.remedy for c in report.capabilities)
 
 
 def test_a_dead_listener_is_a_fault_and_says_which_kind() -> None:
@@ -146,7 +157,7 @@ def test_stuck_input_is_a_fault_and_names_the_control_that_clears_it() -> None:
 
 
 def test_the_summary_reports_a_fault_ahead_of_a_precondition() -> None:
-    report = run_preflight(_inputs(event_post=False, arm_token_present=False))
+    report = run_preflight(_inputs(event_post=False, roblox_focused=False))
     assert "Send keys and mouse to Roblox" in report.summary
 
 

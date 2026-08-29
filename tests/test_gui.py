@@ -852,40 +852,67 @@ def test_a_corrupt_window_file_falls_back_to_the_default(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# Arming is still a physical, deliberate, separate gesture
+# Starting is one physical, deliberate gesture - and the window says so
 # ---------------------------------------------------------------------------
 
 
-def test_arming_is_its_own_button_and_says_what_it_authorizes(dashboard: Any) -> None:
-    assert "Arm Live" in set(_button_texts(dashboard.root))
-    assert dashboard.arm_button.winfo_manager() == "grid"
+def test_there_is_no_arm_live_button(dashboard: Any) -> None:
+    """The second gesture is gone, and so is every button that implied one.
+
+    Its absence was the whole of the reported failure: the window said *Ready.
+    Focus Roblox and press Ctrl+N* while the coordinator refused that chord for
+    want of a click the window never mentioned (D-062).
+    """
+    texts = set(_button_texts(dashboard.root))
+    assert "Arm Live" not in texts
+    assert not any("Arm" in text for text in texts)
+    assert not hasattr(dashboard, "arm_button")
 
 
-def test_start_navigator_never_arms(dashboard: Any) -> None:
-    """Automatic setup may reach READY on its own. It may never arm."""
+def test_the_window_names_the_one_gesture_that_starts_movement(dashboard: Any) -> None:
+    from treasure_gui import _CHORD_START
+
+    assert _CHORD_START in dashboard.start_hint.cget("text")
+
+
+def test_start_navigator_never_starts_live(dashboard: Any) -> None:
+    """Automatic setup may reach READY on its own. It may never start Live."""
     import inspect
 
     source = inspect.getsource(type(dashboard)._start)
-    assert "ARM_LIVE" not in source
+    assert "START_LIVE" not in source
     from prospector_engine.autosetup import AutomaticSetup
 
     assert "ARM" not in inspect.getsource(AutomaticSetup)
 
 
-def test_arming_while_blocked_is_refused_with_the_reason(dashboard: Any) -> None:
-    # Nothing has been set up, so the SETUP blocker is standing.
-    dashboard._arm()
+def test_a_blocked_runtime_says_blocked_and_never_ready(dashboard: Any) -> None:
+    """Nothing has been set up, so the window must not offer the chord."""
+    from treasure_gui import RunState
 
-    assert dashboard.message.text
-    assert "Start Navigator" in dashboard.message.text
-    assert dashboard.app.coordinator.arm_token() is None
+    progress = dashboard.app.coordinator.setup_progress
+    state, sentence = dashboard.run_state(progress)
+
+    assert state is not RunState.READY
+    assert "Start Navigator" in sentence
 
 
-def test_the_arm_button_is_disabled_until_nothing_is_blocking(dashboard: Any) -> None:
+def test_a_ready_message_and_the_coordinator_contract_agree(dashboard: Any) -> None:
+    """READY may only be shown when a chord would actually be accepted.
+
+    The reported failure is exactly this pair disagreeing: the window said
+    *Ready. Focus Roblox and press Ctrl+N* while the coordinator answered
+    ``live.refused: no arm token``. Nothing has been set up here, so the answer
+    must not be READY.
+    """
     from prospector_engine.contracts import SetupProgress
+    from treasure_gui import RunState
 
-    dashboard._render_guidance(SetupProgress.idle())
-    assert str(dashboard.arm_button.cget("state")) == "disabled"
+    state, _ = dashboard.run_state(SetupProgress.idle())
+    blocking = [b for b in dashboard.app.coordinator.blockers() if b.status != "expected"]
+
+    assert blocking, "the fixture is supposed to have a standing blocker"
+    assert state is not RunState.READY
 
 
 # ---------------------------------------------------------------------------

@@ -77,9 +77,27 @@ class AuthorityConfig:
     """
 
     safety_poll_interval_ms: int = 25
+    #: The watchdog bound on one held edge, and - since D-063 - the horizon a
+    #: navigation lease is actually granted. It used to be a ceiling that
+    #: nothing reached: the horizon was derived from how much of the *evidence*
+    #: budget a frame had left, so a command built from a 70 ms-old frame asked
+    #: for a 30 ms lease, the next frame arrived after 33 ms, the lease had
+    #: already expired, the watchdog lifted the key and the following command
+    #: pressed it again. A continuous hold came out as a rattle, and the
+    #: rattle was in the timing, not in the Quartz call.
     max_rolling_lease_horizon_ms: int = 250
     max_hold_ms: int = 2000
+    #: How stale a frame may be and still *authorize a new decision*. This is
+    #: an evidence rule and it has not changed: a command is still built from
+    #: one frame no older than this, and still may not outlive it.
     max_evidence_age_ms: int = 100
+    #: How long a *physical hold already in progress* may survive with no
+    #: fresh frame at all before everything is released. Deliberately larger
+    #: than the evidence budget and equal to the lease horizon, because these
+    #: are different questions: "may this frame decide something" is not "must
+    #: the key come up now". One late, dropped or slowly-rendered frame is not
+    #: a safety event; a quarter second of blindness is.
+    max_capture_stall_ms: int = 250
     max_capture_duration_ms: int = 40
     deadman_request_timeout_ms: int = 500
     deadman_start_timeout_ms: int = 4000
@@ -90,7 +108,11 @@ class AuthorityConfig:
                 "prospector_engine.contracts", fromlist=["EvidenceStatus"]
             ).EvidenceStatus.PROVISIONAL,
             source="TREASURE_NAVIGATION_PLAN.md sections 3.3, 4.5, 7.4 E-PERF",
-            note="engineering budget; E-PERF and per-OS release gates are PENDING",
+            note=(
+                "engineering budget; E-PERF and per-OS release gates are PENDING. "
+                "max_capture_stall_ms is a chosen bound equal to the plan's own "
+                "max_rolling_lease_horizon_ms, not a measurement (D-063)."
+            ),
         )
     )
 
@@ -491,6 +513,16 @@ class InputAuthority:
         #: walking and shuffling, and it is invisible unless counted.
         self._released_at_s: dict[str, float] = {}
         self._hold_lapses: dict[str, int] = {}
+        #: target -> when its *current, unbroken* hold began. A renewal never
+        #: touches it, so this is the physical hold duration and not the age
+        #: of the last lease object.
+        self._held_since_s: dict[str, float] = {}
+        #: Every OS edge this run posted, so "one down, one up" is a count and
+        #: not an impression.
+        self._down_edges = 0
+        self._up_edges = 0
+        self._last_yaw_px = 0
+        self._last_yaw_at_s = 0.0
 
         self._release_uncertain = False
         self._release_uncertain_reason: str | None = None
@@ -685,8 +717,13 @@ class InputAuthority:
             )
 
         if requires_capture:
+            # The *stall* budget, not the evidence budget. The watchdog is
+            # asking "must everything come up now", which is a different
+            # question from "may this frame authorize a new command" - and
+            # answering both with 100 ms is what turned one late frame into a
+            # released key and a safe stop (D-063).
             age_s = self._safe_call(self._health.capture_age_s, None)
-            max_age_s = self._config.max_evidence_age_ms / 1000.0
+            max_age_s = self._config.max_capture_stall_ms / 1000.0
             if age_s is None or age_s > max_age_s:
                 return self._fault_release(
                     SafetyFault(
@@ -760,8 +797,12 @@ class InputAuthority:
         if pinned is not None and rect.identity() != pinned.identity():
             return "viewport-moved"
         if self._requires_capture:
+            # Guards the *existence* of an edge - a new down, or a renewal of
+            # one already down - so it uses the stall budget. The evidence rule
+            # for a new decision is enforced separately and unchanged, in
+            # ``apply_navigation_command``.
             age_s = self._safe_call(self._health.capture_age_s, None)
-            if age_s is None or age_s > self._config.max_evidence_age_ms / 1000.0:
+            if age_s is None or age_s > self._config.max_capture_stall_ms / 1000.0:
                 return f"capture-stale:{age_s}"
         if not self._deadman.healthy:
             return "deadman-unhealthy"
@@ -871,6 +912,10 @@ class InputAuthority:
         self._lifecycle.note(
             LifecycleStage.LEASE_HELD, target, target=target, lease_id=lease_id
         )
+        # The physical hold starts here and is *not* touched by renewal, so
+        # ``held_since_s`` measures the key being down rather than the age of
+        # whichever lease object currently covers it.
+        self._held_since_s[target] = monotonic_s()
         self._note_press(target, now)
         return handle
 
@@ -918,16 +963,36 @@ class InputAuthority:
         return f"re-pressed after lapsing: {worst}"
 
     def _emit_down(self, key: InputKey | None, button: MouseButton | None) -> None:
+        self._down_edges += 1
         if key is not None:
             self._port.raw_key_down(self._port.key_code(key))
         elif button is not None:
             self._port.raw_button_down(button)
 
     def _emit_up(self, key: InputKey | None, button: MouseButton | None) -> None:
+        self._up_edges += 1
         if key is not None:
             self._port.raw_key_up(self._port.key_code(key))
         elif button is not None:
             self._port.raw_button_up(button)
+
+    # -- what is physically happening -------------------------------------
+    def edge_counts(self) -> tuple[int, int]:
+        """Down and up edges posted this run. The rattle check reads these."""
+        return (self._down_edges, self._up_edges)
+
+    def last_yaw(self) -> tuple[int, float]:
+        """The last relative yaw actually posted, and when."""
+        return (self._last_yaw_px, self._last_yaw_at_s)
+
+    def held_since_s(self, target: str, now_s: float) -> float:
+        """How long ``target`` has been *continuously* down. Zero if it is not."""
+        began = self._held_since_s.get(target)
+        return 0.0 if began is None else max(0.0, now_s - began)
+
+    def forward_held_s(self, now_s: float) -> float:
+        """How long forward has been continuously down, in seconds."""
+        return self.held_since_s(InputKey.W.value, now_s)
 
     # -- renewal ----------------------------------------------------------
     def renew(self, generation: int, lease: LeaseHandle, horizon_ms: int) -> bool:
@@ -966,11 +1031,23 @@ class InputAuthority:
             with self._lock:
                 entry = self._leases.pop(lease.lease_id, None)
             if entry is not None:
+                held_ms = self.held_since_s(entry.target, monotonic_s()) * 1000.0
+                self._held_since_s.pop(entry.target, None)
                 try:
                     self._emit_up(entry.handle.key, entry.handle.button)
                     self._released_at_s[entry.target] = monotonic_s()
+                    if entry.handle.key is InputKey.W:
+                        self._lifecycle.note(
+                            LifecycleStage.W_HOLD_CONFIRMED,
+                            f"forward was down for {held_ms:.0f} ms",
+                            target=entry.target,
+                            held_ms=round(held_ms, 1),
+                        )
                     self._lifecycle.note(
-                        LifecycleStage.W_RELEASE_POSTED, entry.target, target=entry.target
+                        LifecycleStage.W_RELEASE_POSTED,
+                        entry.target,
+                        target=entry.target,
+                        held_ms=round(held_ms, 1),
                     )
                 except Exception:
                     self._latch_uncertain(f"release-failed:{entry.target}")
@@ -991,9 +1068,18 @@ class InputAuthority:
             # (2) active leases first, each failure recorded separately.
             for entry in entries:
                 attempted.append(entry.target)
+                held_ms = self.held_since_s(entry.target, monotonic_s()) * 1000.0
+                self._held_since_s.pop(entry.target, None)
                 try:
                     self._emit_up(entry.handle.key, entry.handle.button)
                     self._released_at_s[entry.target] = monotonic_s()
+                    if entry.handle.key is InputKey.W:
+                        self._lifecycle.note(
+                            LifecycleStage.W_HOLD_CONFIRMED,
+                            f"forward was down for {held_ms:.0f} ms",
+                            target=entry.target,
+                            held_ms=round(held_ms, 1),
+                        )
                 except Exception as exc:
                     failures.append(f"{entry.target}:{exc!r}")
 
@@ -1134,10 +1220,24 @@ class InputAuthority:
                 ),
                 None,
             )
-        return self._guarded_edge(
+        posted = self._guarded_edge(
             generation,
             lambda: self._port.raw_pointer_delta(bounded_dx, bounded_dy, held_button),
         )
+        if posted:
+            # What was *posted*, not what was asked for. The dashboard reads
+            # this, so a refused yaw must not show up there as a delta.
+            self._last_yaw_px = bounded_dx
+            self._last_yaw_at_s = monotonic_s()
+            self._lifecycle.note(
+                LifecycleStage.OS_EDGE_POSTED,
+                f"yaw {bounded_dx:+d} px",
+                target="pointer",
+                posted=True,
+                dx=bounded_dx,
+                dy=bounded_dy,
+            )
+        return posted
 
     def scroll_lines(self, generation: int, lines: int) -> bool:
         bounded = max(-32, min(32, int(lines)))
@@ -1250,10 +1350,15 @@ class InputAuthority:
         walking is a worse state than doing nothing, and reporting success for
         a half-applied command is how the two get confused.
         """
-        horizon_ms = min(
-            self._config.max_rolling_lease_horizon_ms,
-            max(1, int((command.valid_until_s - monotonic_s()) * 1000)),
-        )
+        # The lease horizon is the *safety* bound and nothing else. Deriving
+        # it from ``command.valid_until_s`` - what was left of this frame's
+        # evidence budget - made every hold as short as the frame was old, so a
+        # command built from a 70 ms-old frame asked for a 30 ms lease and the
+        # key was lifted before the next frame could renew it (D-063). The
+        # evidence rule is enforced in ``apply_navigation_command``, which has
+        # already run and already refused anything stale; by this point the
+        # only question left is how long the watchdog may leave a key down.
+        horizon_ms = self._config.max_rolling_lease_horizon_ms
         wanted: dict[str, InputKey] = {}
         if command.forward_axis == 1:
             wanted["w"] = InputKey.W

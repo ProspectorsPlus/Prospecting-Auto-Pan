@@ -303,12 +303,38 @@ _VERBOSE = bool(os.environ.get("TREASURE_VERBOSE"))
 
 
 class EventLog:
-    """A bounded ring of stable-named events, with identical runs coalesced."""
+    """A bounded ring of stable-named events, with identical runs coalesced.
+
+    It keeps **two** rings, and the reason is a real trace. A stop export held
+    800 raw rows, 791 of them the same ``worker.status`` sentence repeated
+    every frame; the arm, refusal and mode-transition rows - the only ones that
+    said why the session never started - were pushed out from underneath by
+    per-frame chatter. A ring big enough to survive that is not the fix,
+    because the chatter scales with the frame rate and the evidence does not.
+
+    So chatter is rate-limited on its way in, and every event whose name is not
+    chatter *also* lands in a second, separate ring that chatter cannot reach.
+    The export writes both. Frequent status text can now be as verbose as it
+    likes without erasing the lifecycle.
+    """
+
+    #: Names emitted once per frame. They are rate-limited in the raw ring and
+    #: never enter the milestone ring. Everything else is a milestone.
+    CHATTER = frozenset({"worker.status"})
+    #: The shortest gap between two raw rows for the same chatter name with the
+    #: same text. A *changed* status is never suppressed, however fast it
+    #: changes: the point is to drop repetition, not information.
+    CHATTER_INTERVAL_S = 1.0
 
     def __init__(self, capacity: int = 200) -> None:
         self._events: deque[LoggedEvent] = deque(maxlen=capacity)
         self._lock = threading.Lock()
         self._verbatim: deque[tuple[float, str, str]] = deque(maxlen=capacity * 4)
+        #: Non-chatter events only, and never evicted by chatter. This is the
+        #: ring the stop trace is read out of when something went wrong.
+        self._milestones: deque[tuple[float, str, str]] = deque(maxlen=capacity * 2)
+        self._chatter_at_s: dict[tuple[str, str], float] = {}
+        self._suppressed = 0
         self._sequence = 0
 
     @property
@@ -329,15 +355,40 @@ class EventLog:
             print(line, file=sys.stderr, flush=True)
         with self._lock:
             self._sequence += 1
-            # The raw stream is kept verbatim for the Raw Log tab; only the
-            # readable view coalesces.
-            self._verbatim.append((now, name, detail))
+            if name in self.CHATTER:
+                key = (name, detail)
+                last_at_s = self._chatter_at_s.get(key)
+                if last_at_s is not None and now - last_at_s < self.CHATTER_INTERVAL_S:
+                    # Identical, and too soon. The coalescing view below still
+                    # counts it, so the repeat is visible as a number.
+                    self._suppressed += 1
+                    if self._events and self._events[-1].name == name:
+                        last = self._events[-1]
+                        if last.detail == detail:
+                            self._events[-1] = replace(
+                                last, count=last.count + 1, last_at_s=now
+                            )
+                            return
+                else:
+                    self._chatter_at_s[key] = now
+                    self._verbatim.append((now, name, detail))
+            else:
+                # The raw stream is kept verbatim for the Raw Log tab; only the
+                # readable view coalesces.
+                self._verbatim.append((now, name, detail))
+                self._milestones.append((now, name, detail))
             if self._events:
                 last = self._events[-1]
                 if last.name == name and last.detail == detail:
                     self._events[-1] = replace(last, count=last.count + 1, last_at_s=now)
                     return
             self._events.append(LoggedEvent(name, detail, 1, now, now))
+
+    @property
+    def suppressed(self) -> int:
+        """Raw rows dropped as repeated chatter. Reported, never hidden."""
+        with self._lock:
+            return self._suppressed
 
     def recent(self, limit: int = 20) -> tuple[tuple[float, str, str], ...]:
         with self._lock:
@@ -354,6 +405,11 @@ class EventLog:
         """The uncoalesced stream, for the Raw Log tab."""
         with self._lock:
             return tuple(list(self._verbatim)[-limit:])
+
+    def milestones(self, limit: int = 400) -> tuple[tuple[float, str, str], ...]:
+        """Every non-chatter event, in order. Chatter can never evict these."""
+        with self._lock:
+            return tuple(list(self._milestones)[-limit:])
 
     def as_lines(self, limit: int = 20) -> tuple[str, ...]:
         return tuple(event.describe() for event in self.events(limit))

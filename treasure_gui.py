@@ -44,6 +44,7 @@ import queue
 import sys
 import tkinter as tk
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from tkinter import font as tkfont
 from tkinter import ttk
@@ -95,6 +96,38 @@ from treasure_panels import (
     mono_font,
     summary_colour,
 )
+
+
+class RunState(Enum):
+    """The six states the window is allowed to be in, and nothing between.
+
+    The failure this exists to stop: the badge and the message line were
+    computed separately from overlapping conditions, and the combination the
+    user actually hit - setup finished, so *Ready*, while the coordinator would
+    refuse the chord - was reachable because nothing ever compared the two. A
+    single derived state is compared against the coordinator's own contract in
+    ``tests/test_gui.py``.
+    """
+
+    SETTING_UP = "SETTING UP"
+    READY = f"READY - {chord_label(IntentType.START_LIVE, sys.platform)} STARTS MOVEMENT"
+    STARTING_LIVE = "STARTING LIVE"
+    NAVIGATING = "NAVIGATING"
+    STOPPED = "STOPPED / RELEASED"
+    BLOCKED = "BLOCKED"
+
+
+#: Colour per run state. ``BLOCKED`` is the only red one: red is reserved for
+#: something wrong *now*, and an ordinary stop is not that.
+_RUN_STATE_COLOURS: dict[RunState, str] = {
+    RunState.SETTING_UP: GOLD,
+    RunState.READY: OK,
+    RunState.STARTING_LIVE: GOLD,
+    RunState.NAVIGATING: GOLD,
+    RunState.STOPPED: MUTED,
+    RunState.BLOCKED: BAD,
+}
+
 
 #: The header badge, in the vocabulary the mission specifies. Each says what is
 #: happening to the game, not what the code is doing.
@@ -442,7 +475,8 @@ class Dashboard:
         Tooltip(
             self.start_button,
             "Finds Roblox, sizes its window to 1280x720, rebinds capture, identifies the "
-            "equipped map and starts following the arrow. Sends no input until you arm it.",
+            f"equipped map and starts observing. It sends no input: {_CHORD_START} "
+            "with Roblox focused is what starts movement.",
         )
         self.observe_button = ttk.Button(
             row, text="Observe Only", style="T.TButton", command=self._observe
@@ -453,23 +487,29 @@ class Dashboard:
             "Runs detection and navigation decisions and shows what it would do, "
             "without ever sending input to the game.",
         )
-        # The one physical arming gesture. It is deliberately a separate,
-        # deliberate click rather than something Start Navigator does for you:
-        # automatic setup may reach READY on its own, and it may never arm.
-        self.arm_button = ttk.Button(
-            row, text="Arm Live", style="T.TButton", command=self._arm, state="disabled"
+        # There is no *Arm Live* button. It was a second physical gesture that
+        # the window never mentioned, and its absence was the whole of the
+        # reported "nothing moves": the chord was heard and refused for want of
+        # a click nobody had been asked to make (D-062). The one deliberate
+        # gesture is the chord itself, which is what this label names.
+        self.start_hint = ttk.Label(
+            row,
+            text=f"{_CHORD_START} starts movement",
+            style="Muted.TLabel",
         )
-        self.arm_button.grid(row=0, column=2, sticky="w", padx=(10, 0))
+        self.start_hint.grid(row=0, column=2, sticky="w", padx=(10, 0))
         Tooltip(
-            self.arm_button,
-            "Authorizes keyboard and camera output for thirty seconds. It does not "
-            f"begin movement: after arming, focus Roblox and press {_CHORD_START}. "
-            "Stop & Release "
-            "cancels it at any time.",
+            self.start_hint,
+            f"With Roblox focused, {_CHORD_START} both authorizes and begins Live in "
+            f"one press. {_CHORD_STOP} stops and releases everything at any time, "
+            "from any mode.",
         )
         self.guide = MessageBox(row, self.fonts, height_px=40, width_px=440)
         self.guide.frame.grid(row=0, column=3, sticky="e", padx=(14, 0))
         self.guide.set("Open Roblox windowed with a map equipped, then press Start Navigator.")
+        #: The one derived run state, recomputed by ``_render_guidance`` and
+        #: rendered by ``_render_badges``. They are never computed apart.
+        self._run_state = RunState.SETTING_UP
 
     # -- setup ------------------------------------------------------------
     def _build_setup(self) -> None:
@@ -777,19 +817,6 @@ class Dashboard:
     def _recover(self) -> None:
         self._submit(IntentType.RECOVER_RELEASE)
 
-    def _arm(self) -> None:
-        """The one physical arming gesture. Never simulated, never persisted.
-
-        Refused, with the reason, while anything is still blocking - arming
-        into a blocked runtime would spend the token on a readiness check that
-        was always going to fail, and the user would have to arm twice.
-        """
-        blocking = [b for b in self.app.coordinator.blockers() if b.status != "expected"]
-        if blocking:
-            self.message.set(f"{blocking[0].summary}. {blocking[0].remedy}", WARN)
-            return
-        self._submit(IntentType.ARM_LIVE_FROM_UI)
-
     def _on_cadence_selected(self, _event: Any = None) -> None:
         for mode in CadenceMode:
             if mode.value == self.cadence_var.get():
@@ -896,47 +923,78 @@ class Dashboard:
         self.setup_panel.render(progress)
         self._render_guidance(progress)
 
-    def _render_guidance(self, progress: SetupProgress) -> None:
-        """One sentence: what to do next, or what went wrong.
+    def run_state(self, progress: SetupProgress) -> tuple[RunState, str]:
+        """The one derived state, and the one sentence that explains it.
 
-        Failures win over everything else, because a failure is the only state
-        in which the user has something to do that is not "wait".
+        Everything the header, the guide and the message line say is computed
+        here, so *Ready* can only be shown when the coordinator would actually
+        accept the chord. The condition that produced the reported failure -
+        setup finished, message says Ready, coordinator answers "no arm token" -
+        is now a contradiction rather than a combination nobody looked for.
         """
-        snapshot = self.app.coordinator.snapshot()
+        coordinator = self.app.coordinator
+        snapshot = coordinator.snapshot()
         failure = progress.failure
         if failure is not None and progress.stage is SetupStage.FAILED:
-            self.message.set(f"{failure.summary}. {failure.remedy}", BAD)
-        elif self.app.authority.release_uncertain:
-            self.message.set(
+            return (RunState.BLOCKED, f"{failure.summary}. {failure.remedy}")
+        if self.app.authority.release_uncertain:
+            return (
+                RunState.BLOCKED,
                 "A previous release could not be confirmed safe. Press Recover Release "
                 "under Advanced before navigating again.",
-                BAD,
             )
-        elif progress.running and progress.stage.emits_input:
-            # Armed, and *not* navigating. Saying "movement is being sent" here
-            # would be the single most misleading thing this window could do:
-            # these stages press one bounded probe at a time with the character
-            # standing still, and the last one has not run yet.
-            self.message.set(
-                f"{_LIVE_STAGE_WORDS[progress.stage]}. Press {_CHORD_STOP} to stop.", GOLD
+        if progress.running and progress.stage.emits_input:
+            # Live has been entered and the character is *standing still* while
+            # bounded probes run. Saying "movement is being sent" here would be
+            # the single most misleading thing this window could do.
+            return (
+                RunState.STARTING_LIVE,
+                f"{_LIVE_STAGE_WORDS[progress.stage]}. Press {_CHORD_STOP} to stop.",
             )
-        elif progress.running:
-            self.message.set(f"Setting up: {progress.detail}", GOLD)
-        elif snapshot is not None and snapshot.mode is RunMode.LIVE:
-            self.message.set(
-                f"Navigating - your character is moving. Press {_CHORD_STOP} to stop.", OK
+        if progress.running:
+            return (RunState.SETTING_UP, f"Setting up: {progress.detail}")
+        if snapshot is not None and snapshot.mode is RunMode.LIVE:
+            return (
+                RunState.NAVIGATING,
+                f"Navigating - your character is moving. Press {_CHORD_STOP} to stop.",
             )
-        elif progress.ok:
-            self.message.set(
-                f"Ready. Focus Roblox and press {_CHORD_START} to let the navigator move "
-                f"your character; press {_CHORD_STOP} to stop.",
-                OK,
-            )
-        else:
-            self.message.set(
+        if not progress.ok:
+            return (
+                RunState.SETTING_UP,
                 "Open Roblox in windowed mode with a treasure map equipped, then press "
-                "Start Navigator."
+                "Start Navigator.",
             )
+        # Setup is done. Whether the window may say READY is not this module's
+        # opinion: it is the coordinator's own readiness, read live.
+        blocking = [b for b in coordinator.blockers() if b.status != "expected"]
+        if blocking:
+            return (RunState.BLOCKED, f"{blocking[0].summary}. {blocking[0].remedy}")
+        refusal = coordinator.live_authorization
+        if refusal.startswith("refused"):
+            return (
+                RunState.BLOCKED,
+                f"{_CHORD_START} was refused: {coordinator.live_refusal_detail or refusal}",
+            )
+        idle = snapshot is not None and snapshot.mode is RunMode.IDLE
+        if coordinator.stopped_by_user and idle:
+            return (
+                RunState.STOPPED,
+                f"Stopped, every input released. Focus Roblox and press {_CHORD_START} "
+                "to start again.",
+            )
+        return (
+            RunState.READY,
+            f"Ready. Focus Roblox and press {_CHORD_START} - that one press both "
+            f"authorizes and starts movement. {_CHORD_STOP} stops and releases "
+            "everything at any time.",
+        )
+
+    def _render_guidance(self, progress: SetupProgress) -> None:
+        """One sentence: what to do next, or what went wrong."""
+        state, sentence = self.run_state(progress)
+        self._run_state = state
+        colour = _RUN_STATE_COLOURS[state]
+        self.message.set(sentence, colour)
 
         running = progress.running or bool(self.app.coordinator.setup_active)
         self.start_button.configure(
@@ -944,8 +1002,6 @@ class Dashboard:
             text="Setting up..." if running else "Start Navigator",
         )
         self.retry_button.configure(state="disabled" if running else "normal")
-        blocking = [b for b in self.app.coordinator.blockers() if b.status != "expected"]
-        self.arm_button.configure(state="disabled" if blocking else "normal")
 
     def _render_status(self) -> None:
         snapshot = self.app.coordinator.snapshot()
@@ -957,10 +1013,16 @@ class Dashboard:
         self._render_recording_label()
 
     def _render_badges(self, snapshot: TelemetrySnapshot) -> None:
-        text, colour = MODE_BADGES[snapshot.mode]
-        armed = snapshot.arm_state not in ("none", "-")
-        if snapshot.mode is RunMode.IDLE and armed:
-            text, colour = f"ARMED - press {_CHORD_START}", GOLD
+        # The header says the same thing the message line says: one derived
+        # state, rendered twice, never computed twice.
+        state = self._run_state
+        text, colour = state.value, _RUN_STATE_COLOURS[state]
+        if state is RunState.NAVIGATING and snapshot.mode is not RunMode.LIVE:
+            text, colour = MODE_BADGES[snapshot.mode]
+        if snapshot.mode is RunMode.SHADOW and state is RunState.READY:
+            text, colour = MODE_BADGES[RunMode.SHADOW]
+        if snapshot.mode is RunMode.SERVICE:
+            text, colour = MODE_BADGES[RunMode.SERVICE]
         if self.app.authority.release_uncertain:
             text, colour = "FAULT - input released", BAD
         self.mode_var.set(text)
@@ -978,16 +1040,25 @@ class Dashboard:
         self.return_button.configure(
             state="normal" if snapshot.mode is RunMode.LIVE else "disabled"
         )
-        setup = self.app.coordinator.setup_progress
-        if snapshot.mode is RunMode.LIVE and setup.running and setup.stage.emits_input:
-            guide = f"{_LIVE_STAGE_WORDS[setup.stage]} - Stop is always available."
-        elif snapshot.mode is RunMode.LIVE:
-            guide = "Navigating - Stop is always available."
-        elif armed:
-            guide = f"Armed. Focus Roblox and press {_CHORD_START}."
+        # The guide is the actuator's own line: what is *physically* held, not
+        # what the planner asked for. When nothing is held it says why.
+        actuator = snapshot.actuator
+        if snapshot.mode is RunMode.LIVE:
+            guide = f"{actuator.describe()} - Stop is always available."
+        elif self._run_state is RunState.READY:
+            guide = f"Focus Roblox and press {_CHORD_START} to start moving."
+        elif self._run_state is RunState.BLOCKED:
+            guide = actuator.blocked_reason or "Blocked - see the message below."
         else:
             guide = "Open Roblox windowed with a map equipped, then press Start Navigator."
-        self.guide.set(guide, GOLD if armed or snapshot.mode is RunMode.LIVE else MUTED)
+        self.guide.set(
+            guide,
+            GOLD
+            if snapshot.mode is RunMode.LIVE
+            else BAD
+            if self._run_state is RunState.BLOCKED
+            else MUTED,
+        )
 
     def _render_readout(self, snapshot: TelemetrySnapshot | None) -> None:
         geometry = self.app.guard.geometry
@@ -1231,14 +1302,26 @@ def main() -> int:
     def submit_from_hotkey(intent: Any) -> None:
         app.coordinator.submit(intent)
 
+    # The physical-chord capability goes to exactly one place: the listener.
+    # Nothing else in this process is handed it, which is what lets the
+    # coordinator tell a real key edge from a call that merely says it is one.
+    chord = app.coordinator.chord_authority()
     hotkeys = app.port.create_hotkey_source(
-        submit_from_hotkey, on_edge=app.coordinator.note_hotkey_edge
+        submit_from_hotkey,
+        on_edge=app.coordinator.note_hotkey_edge,
+        mint=chord.intent,
     )
     # Held on the application so the dashboard can show whether it is running.
     # A listener that silently is not - the usual cause being Input Monitoring
     # not granted to whichever app launched this - is indistinguishable from a
     # chord that does nothing, and that is the whole confusion.
     app.hotkeys = hotkeys
+
+    def hotkey_health() -> tuple[bool, str]:
+        health = hotkeys.health()
+        return (health.ready, health.describe())
+
+    app.coordinator.set_hotkey_health(hotkey_health)
     try:
         hotkeys.start()
     except Exception as exc:

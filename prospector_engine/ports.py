@@ -21,6 +21,7 @@ from prospector_engine.contracts import (
     FocusState,
     InputKey,
     InputVocabulary,
+    IntentType,
     MouseButton,
     PinResult,
     RawFrame,
@@ -260,10 +261,16 @@ class PlatformPort(Protocol):
         submit: Callable[[RuntimeIntent], None],
         *,
         on_edge: Callable[[ChordEvent], None] | None = None,
+        mint: Callable[[IntentType, str], RuntimeIntent] | None = None,
     ) -> HotkeySource:
         """Build the listener. ``on_edge`` sees every normalized edge, whatever
         policy later does with it - which is the only way "the chord never
-        arrived" and "the chord arrived and was refused" stay distinguishable."""
+        arrived" and "the chord arrived and was refused" stay distinguishable.
+
+        ``mint`` is the coordinator's physical-chord capability. A listener
+        built without one still submits every intent it recognizes, and none of
+        them can start Live: that is deliberate, and it is what makes
+        ``--hotkey-test`` safe to leave running while a person watches it."""
         ...
 
 

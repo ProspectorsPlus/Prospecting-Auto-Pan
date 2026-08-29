@@ -23,11 +23,17 @@ Nothing in this module emits input or grants a permission. It reports.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from prospector_engine.contracts import CommandStage
+from prospector_engine.bindings import chord_label
+from prospector_engine.contracts import CommandStage, IntentType
+
+#: The start chord, spelled for this OS, read from the one binding registry so
+#: a rebinding cannot leave a stale key name in a preflight sentence.
+_START_CHORD = chord_label(IntentType.START_LIVE, sys.platform)
 
 __all__ = [
     "Capability",
@@ -72,7 +78,10 @@ class CapabilityId(Enum):
     SCREEN_CAPTURE = "screen_capture"
     HOTKEY_LISTENER = "hotkey_listener"
     ROBLOX_FOCUS = "roblox_focus"
-    ARM_TOKEN = "arm_token"
+    #: Retained id: the *gesture* did not go away, it merged into the chord.
+    #: The check is now "will a chord be heard", not "was a button clicked"
+    #: (D-062), because there is no separate arming state to report.
+    ARM_TOKEN = "start_chord"
     CADENCE = "cadence"
     RELEASE_HEALTH = "release_health"
 
@@ -130,7 +139,6 @@ class PreflightInputs:
     screen_capture: bool | None
     hotkey_listener_running: bool
     roblox_focused: bool | None
-    arm_token_present: bool
     processed_fps: float
     min_processed_fps: float
     release_uncertain: bool
@@ -263,12 +271,16 @@ def run_preflight(inputs: PreflightInputs) -> InputPreflight:
     checks.append(
         Capability(
             CapabilityId.ARM_TOKEN,
-            "Armed",
-            CapabilityState.OK if inputs.arm_token_present else CapabilityState.DENIED,
-            detail="a single-use arm token is held"
-            if inputs.arm_token_present
-            else "not armed",
-            remedy="" if inputs.arm_token_present else "Click Enable Live Control first.",
+            "Start chord will be heard",
+            CapabilityState.OK if inputs.hotkey_listener_running else CapabilityState.DENIED,
+            detail=(
+                f"{_START_CHORD} both authorizes and starts Live"
+                if inputs.hotkey_listener_running
+                else "the chord listener is not running, so no chord can authorize Live"
+            ),
+            remedy=""
+            if inputs.hotkey_listener_running
+            else "Grant Input Monitoring and restart the application.",
             kind=CapabilityKind.PRECONDITION,
         )
     )
@@ -354,7 +366,7 @@ class InputPreflight:
         # because nothing downstream can work until it is fixed.
         ranked = self.faults or self.blocking
         if not ranked:
-            return "Ready to arm."
+            return f"Ready. Press {_START_CHORD} with Roblox focused."
         first = ranked[0]
         extra = f" (+{len(ranked) - 1} more)" if len(ranked) > 1 else ""
         return f"{first.label}: {first.detail}. {first.remedy}{extra}".strip()
@@ -372,7 +384,6 @@ def gather(
     capture_probe: Callable[[], bool] | None,
     hotkey_running: bool,
     roblox_focused: bool | None,
-    arm_token_present: bool,
     processed_fps: float,
     min_processed_fps: float,
     release_uncertain: bool,
@@ -402,7 +413,6 @@ def gather(
             screen_capture=read(capture_probe),
             hotkey_listener_running=hotkey_running,
             roblox_focused=roblox_focused,
-            arm_token_present=arm_token_present,
             processed_fps=processed_fps,
             min_processed_fps=min_processed_fps,
             release_uncertain=release_uncertain,

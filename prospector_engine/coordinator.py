@@ -21,11 +21,12 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from prospector_engine.bindings import ChordEvent, chord_label
 from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
 from prospector_engine.contracts import (
+    ActuatorState,
     BlockerScope,
     Cancellation,
     CapturedFrame,
@@ -41,6 +42,7 @@ from prospector_engine.contracts import (
     ModeResultKind,
     NavigationPhase,
     PacketKind,
+    PhysicalChordProof,
     Provenance,
     RunMode,
     RuntimeIntent,
@@ -71,6 +73,7 @@ from prospector_engine.telemetry import (
 )
 
 __all__ = [
+    "ChordAuthority",
     "CoordinatorConfig",
     "LiveArmToken",
     "Readiness",
@@ -122,11 +125,22 @@ def _describe_stop(reason: str) -> str:
 
 @dataclass(frozen=True)
 class LiveArmToken:
-    """One-use, process-run-bound proof that a human physically clicked Arm Live.
+    """One-use, run-bound authorization for Live, minted by the physical chord.
 
-    It is never persisted, never renewed silently, and is consumed *before* the
-    normal transition invalidation so a failed readiness check spends it and
-    forces a fresh physical arm (plan 3.4).
+    It used to be created by a **separate** click on an *Arm Live* button and
+    then spent by a later hotkey. That protocol is gone (D-062). It cost the
+    user a gesture the dashboard never mentioned, and the whole of the observed
+    "nothing moves" failure was its absence: the GUI said *"Ready. Focus Roblox
+    and press Ctrl+N"*, the chord was heard, and the coordinator answered
+    ``live.refused: no arm token`` because a button nobody had been told about
+    was never clicked.
+
+    So it is now created **and** consumed inside one coordinator transaction,
+    on one genuine :class:`~prospector_engine.contracts.PhysicalChordProof`. It
+    is never persisted, never renewed, never held between intents, and never
+    reachable from the GUI, the CLI or a worker. The physical gesture it stands
+    for did not become weaker - it became the gesture the user was already told
+    to make.
     """
 
     token_id: str
@@ -146,6 +160,37 @@ class LiveArmToken:
 class _ConsumedArmProof:
     token_id: str
     intent_sequence: int
+
+
+class ChordAuthority:
+    """The capability that turns a physical key edge into a startable intent.
+
+    Created by the coordinator, handed to exactly one hotkey listener, and
+    given to nothing else - not the GUI, not a worker, not the CLI. An intent
+    minted anywhere else carries no proof, and :meth:`RuntimeCoordinator._on_start_live`
+    refuses it however its ``source`` field is spelled.
+
+    This is what makes "a human pressed Ctrl+N" a checkable claim now that it
+    is the only gesture. It is not a defence against a debugger; it is a
+    defence against the ordinary way software grows a second caller.
+    """
+
+    __slots__ = ("_coordinator", "_nonce")
+
+    def __init__(self, coordinator: RuntimeCoordinator, nonce: str) -> None:
+        self._coordinator = coordinator
+        self._nonce = nonce
+
+    def intent(self, intent_type: IntentType, chord: str = "") -> RuntimeIntent:
+        """Mint one proven intent. The listener has already applied its policy."""
+        base = self._coordinator.next_intent(intent_type, "hotkey")
+        return replace(
+            base,
+            proof=PhysicalChordProof(nonce=self._nonce, chord=chord, minted_at_s=monotonic_s()),
+        )
+
+    def submit(self, intent_type: IntentType, chord: str = "") -> bool:
+        return self._coordinator.submit(self.intent(intent_type, chord))
 
 
 @dataclass(frozen=True)
@@ -340,7 +385,20 @@ class RuntimeCoordinator:
         self._mode_session = 0
         self._phase: NavigationPhase | None = None
         self._control_state: ControlState | None = None
-        self._arm_token: LiveArmToken | None = None
+        #: The outcome of the last Live authorization attempt, for the
+        #: dashboard. There is no *held* authorization to report any more: the
+        #: chord mints and spends one inside a single transaction (D-062).
+        self._live_authorization = "none"
+        self._live_refusal_detail = ""
+        #: Why the last ``_begin_mode`` did not start a worker, in plain words.
+        self._last_transition_refusal = ""
+        self._hotkey_probe: Callable[[], tuple[bool, str]] | None = None
+        self._turn_backend = ""
+        self._last_displacement_norm: float | None = None
+        self._worker_block_reason = ""
+        #: This run's private chord nonce. Handed to one listener through
+        #: :class:`ChordAuthority` and never published.
+        self._chord_nonce = os.urandom(16).hex()
         self._fit_thread: threading.Thread | None = None
         self._fit_generation = 0
         self._stale_fits = 0
@@ -499,17 +557,37 @@ class RuntimeCoordinator:
         return self._stale_completions
 
     @property
-    def armed(self) -> bool:
-        """Whether a live arm token is currently held and unexpired."""
-        return self.arm_token() is not None
+    def live_authorization(self) -> str:
+        """How the last Live authorization went, in one phrase."""
+        return self._live_authorization
 
-    def arm_token(self) -> LiveArmToken | None:
-        token = self._arm_token
-        if token is not None and token.expired(monotonic_s()):
-            self._arm_token = None
-            self._events.add("arm.expired", token.token_id)
-            return None
-        return token
+    @property
+    def live_refusal_detail(self) -> str:
+        """The last refusal in language a person can act on. Empty if none."""
+        return self._live_refusal_detail
+
+    @property
+    def last_stop_reason(self) -> str:
+        """Why the last session ended. Empty before the first stop."""
+        return self._last_stop_reason
+
+    @property
+    def stopped_by_user(self) -> bool:
+        """Whether the last stop was a deliberate Stop rather than a fault."""
+        return self._last_stop_reason.startswith(("stop:", "shutdown"))
+
+    def chord_authority(self) -> ChordAuthority:
+        """The capability one hotkey listener needs to start Live.
+
+        Deliberately a method that hands out a *wrapper*, not the nonce: the
+        only thing a caller can do with the result is mint an intent.
+        """
+        return ChordAuthority(self, self._chord_nonce)
+
+    def is_physical_chord(self, intent: RuntimeIntent) -> bool:
+        """Whether this intent was minted by this run's chord capability."""
+        proof = intent.proof
+        return proof is not None and proof.nonce == self._chord_nonce
 
     # -- submission -------------------------------------------------------
     def next_intent(self, intent_type: IntentType, source: str) -> RuntimeIntent:
@@ -694,7 +772,6 @@ class RuntimeCoordinator:
             IntentType.FIT_VIEWPORT: self._on_fit,
             IntentType.SELECT_PROFILE: self._on_select_profile,
             IntentType.RETURN_TO_SHADOW: self._on_return_to_shadow,
-            IntentType.ARM_LIVE_FROM_UI: self._on_arm,
             IntentType.START_SHADOW: self._on_start_shadow,
             IntentType.START_LIVE: self._on_start_live,
             IntentType.RESET_CHARACTER: self._on_service,
@@ -733,6 +810,13 @@ class RuntimeCoordinator:
         if written is None:
             return
         rows = [{"kind": "lifecycle", **row} for row in self._authority.lifecycle.rows()]
+        # Milestones first and separately: they are the rows a failed session is
+        # read out of, and they are exported from a ring that per-frame status
+        # text cannot evict. The raw stream follows for context.
+        rows += [
+            {"kind": "milestone", "at_s": round(at_s, 6), "name": name, "detail": detail}
+            for at_s, name, detail in self._events.milestones(limit=2000)
+        ]
         rows += [
             {"kind": "event", "at_s": round(at_s, 6), "name": name, "detail": detail}
             for at_s, name, detail in self._events.verbatim(limit=2000)
@@ -876,7 +960,6 @@ class RuntimeCoordinator:
         if self._mode is RunMode.LIVE:
             self._events.add("viewport.live-released", reason)
             self._safe_stop(f"geometry-changed:{reason}")
-        self._arm_token = None
         self._capture.slot.clear()
         self._capture.reset_epoch(reason)
         self.publish_transition(f"Viewport changed - {reason}")
@@ -884,10 +967,11 @@ class RuntimeCoordinator:
     def _on_select_profile(self, intent: RuntimeIntent) -> None:
         """Stage a profile swap; the pipeline applies it at a frame boundary.
 
-        Changing profile while armed spends the arm, and changing it during
-        Live releases input and safe-stops: the arm token is bound to a
-        specific profile revision, so continuing under a new one would be
-        acting on a permission nobody gave (mission section 7).
+        Changing profile during Live releases input and safe-stops: an
+        authorization is bound to a specific profile revision, so continuing
+        under a new one would be acting on a permission nobody gave (mission
+        section 7). Nothing has to be *invalidated* between intents any more,
+        because no authorization outlives the transaction that minted it.
         """
         authority = self._profiles
         if authority is None:
@@ -898,9 +982,6 @@ class RuntimeCoordinator:
         if self._mode is RunMode.LIVE:
             self._events.add("profile.live-released", pending)
             self._safe_stop(f"profile-changed:{pending}")
-        if self._arm_token is not None:
-            self._events.add("arm.invalidated", "profile changed")
-            self._arm_token = None
         self._events.add("profile.requested", pending)
         self.publish_transition(f"Profile changing to {pending}")
 
@@ -911,22 +992,6 @@ class RuntimeCoordinator:
         self._events.add("live.return-to-shadow", intent.source)
         self._safe_stop("return-to-shadow")
         self.submit(self.next_intent(IntentType.START_SHADOW, "system"))
-
-    def _on_arm(self, intent: RuntimeIntent) -> None:
-        """Create the one-use arm token. Only a physical UI click reaches here."""
-        if intent.source != "gui":
-            self._events.add("arm.refused", f"source={intent.source}")
-            return
-        now = monotonic_s()
-        token = LiveArmToken(
-            token_id=os.urandom(8).hex(),
-            run_id=self._authority.run_id,
-            generation=self._generation,
-            created_at_s=now,
-            expires_at_s=now + self._config.arm_ttl_s,
-        )
-        self._arm_token = token
-        self._events.add("arm.created", f"ttl={self._config.arm_ttl_s:g}s")
 
     def _on_start_shadow(self, intent: RuntimeIntent) -> None:
         if not self._guard.geometry.valid:
@@ -944,69 +1009,156 @@ class RuntimeCoordinator:
         self._begin_mode(RunMode.SHADOW, intent, IntentType.START_SHADOW)
 
     #: Readiness reasons that a second attempt could plausibly satisfy. The
-    #: user clicks into Roblox, or one late frame arrives, and the same arm is
-    #: good again. Everything else - a lost window, a held lease, an
-    #: unconfirmed release - burns the token, because retrying into it would be
-    #: retrying into a fault.
+    #: user clicks into Roblox, or one late frame arrives, and the same press
+    #: would work. They are named separately so the refusal can say "press it
+    #: again" rather than "something is wrong".
     TRANSIENT_READINESS_PREFIXES = ("focus:", "capture:")
 
-    def _on_start_live(self, intent: RuntimeIntent) -> None:
-        """Check readiness and consume the arm token in one atomic step.
+    #: The readiness reasons, spelled the way a person can act on them. A
+    #: refusal that says ``capture:412ms`` is a log line, not an instruction.
+    _READINESS_WORDS: ClassVar[dict[str, str]] = {
+        "viewport": "the Roblox window is not usable",
+        "focus": "Roblox is not the frontmost window",
+        "capture": "no fresh frame has arrived from the capture pipeline",
+        "watchdog": "the safety watchdog is not running",
+        "deadman": "the release-only helper is not answering",
+        "ledger": "an input is still held from an earlier session",
+        "release": "the last release could not be confirmed safe",
+    }
 
-        Ordering matters twice over, in opposite directions:
+    @classmethod
+    def _explain_readiness(cls, reasons: tuple[str, ...]) -> str:
+        """Turn readiness reason codes into one sentence for a human."""
+        words = [
+            cls._READINESS_WORDS.get(reason.split(":", 1)[0], reason) for reason in reasons
+        ]
+        return "; ".join(dict.fromkeys(words)) or "readiness could not be established"
 
-        * A token must never survive a *real* failure, or a stale arm could be
-          replayed into a broken world (plan 3.4).
-        * A token must not be burned by a *transient* one. Pressing the chord a
-          fraction of a second before Roblox comes frontmost is the single most
-          likely way to use this, and spending the arm on it - forcing another
-          trip to the button - made the feature feel broken.
+    def _refuse_live(self, reason: str, detail: str, intent: RuntimeIntent) -> None:
+        """Record one refusal in every place a person might look for it.
 
-        So one readiness snapshot is taken, bound to this token, and the token
-        is consumed unless the only thing wrong is transient. The arm stays
-        single-use and still expires on its own TTL either way.
+        Never a silent return. The failure this replaces printed
+        ``live.refused: no arm token`` into a ring the dashboard did not show,
+        while the dashboard itself still read *Ready*.
         """
-        token = self.arm_token()
-        if token is None:
-            self._events.add("live.refused", "no arm token")
+        self._live_authorization = f"refused: {reason}"
+        self._live_refusal_detail = detail
+        self._events.add("live.refused", reason)
+        self._authority.lifecycle.note(
+            LifecycleStage.LIVE_REFUSED,
+            reason,
+            remedy=detail,
+            source=intent.source,
+            sequence=intent.sequence,
+        )
+        self.publish_transition(f"{_START_CHORD} refused - {detail}")
+
+    def _on_start_live(self, intent: RuntimeIntent) -> None:
+        """Authorize *and* begin Live, in one transaction, on one real chord.
+
+        The protocol this replaces needed two gestures: a physical click on an
+        **Arm Live** button to mint a token, then a physical hotkey to spend it
+        within thirty seconds. Only one of the two was ever mentioned to the
+        user, and four traces from a real session show exactly what that cost -
+        ``chord_recognized Ctrl+N``, ``intent_queued START_LIVE from hotkey``,
+        then ``live.refused: no arm token`` and nothing else, four times over,
+        with the dashboard reading *Ready* throughout.
+
+        So the chord is now the whole gesture. What it is *not* is weaker:
+
+        * The intent must carry this run's :class:`ChordAuthority` proof, which
+          only the registered listener holds. A GUI click, a CLI flag, a test
+          fake or a worker cannot mint one, whatever they put in ``source``.
+        * The listener only produces a chord from a real, non-injected key edge
+          with Roblox positively frontmost (``requires_focus`` on the binding).
+        * Every readiness check that guarded the old conversion still runs
+          here, on one snapshot, before anything is minted.
+        * The authorization is still one-use and run-bound. It is created and
+          spent between two statements and is never stored, so there is no
+          window in which one exists to be replayed.
+        """
+        lifecycle = self._authority.lifecycle
+        chord = intent.proof.chord if intent.proof is not None else ""
+        lifecycle.note(
+            LifecycleStage.HOTKEY_CHORD_RECEIVED,
+            chord or _START_CHORD,
+            source=intent.source,
+            sequence=intent.sequence,
+            proven=self.is_physical_chord(intent),
+        )
+
+        if not self.is_physical_chord(intent):
+            self._refuse_live(
+                f"source={intent.source}; not the physical chord",
+                f"Live only starts from a physical {_START_CHORD} with Roblox focused.",
+                intent,
+            )
             return
-        if intent.source != "hotkey":
-            # Not a physical chord. Burn it: something is submitting on the
-            # arm's behalf, which is exactly what the token exists to stop.
-            self._arm_token = None
-            self._events.add("live.refused", f"source={intent.source}")
-            return
-        if token.run_id != self._authority.run_id:
-            self._arm_token = None
-            self._events.add("live.refused", "token run mismatch")
+        if self._mode is RunMode.LIVE:
+            self._refuse_live(
+                "already live",
+                "Live is already running.",
+                intent,
+            )
             return
 
         # One snapshot, read once, for every decision below.
         readiness = self.readiness()
         if not readiness.input_ok:
-            transient = all(
+            transient = bool(readiness.reasons) and all(
                 reason.startswith(self.TRANSIENT_READINESS_PREFIXES)
                 for reason in readiness.reasons
             )
-            if transient and readiness.reasons:
-                self._events.add(
-                    "live.not-yet",
-                    f"{','.join(readiness.reasons)} (arm kept; press the chord again)",
-                )
-                return
-            self._arm_token = None
-            self._events.add("live.refused", ",".join(readiness.reasons))
+            detail = self._explain_readiness(readiness.reasons)
+            self._refuse_live(
+                ",".join(readiness.reasons),
+                f"{detail}. Press {_START_CHORD} again once it clears."
+                if transient
+                else detail,
+                intent,
+            )
             return
 
-        self._arm_token = None
+        now = monotonic_s()
+        token = LiveArmToken(
+            token_id=os.urandom(8).hex(),
+            run_id=self._authority.run_id,
+            generation=self._generation,
+            created_at_s=now,
+            expires_at_s=now + self._config.arm_ttl_s,
+        )
+        lifecycle.note(
+            LifecycleStage.LIVE_AUTHORIZATION_CREATED,
+            token.token_id,
+            chord=chord or _START_CHORD,
+            intent_sequence=intent.sequence,
+        )
         proof = _ConsumedArmProof(token_id=token.token_id, intent_sequence=intent.sequence)
-        self._events.add("live.armed", proof.token_id)
-        self._authority.lifecycle.note(
-            LifecycleStage.ARM_TOKEN_CONSUMED,
+        lifecycle.note(
+            LifecycleStage.LIVE_AUTHORIZATION_CONSUMED,
             proof.token_id,
             intent_sequence=intent.sequence,
         )
-        self._begin_mode(RunMode.LIVE, intent, IntentType.START_LIVE)
+        self._events.add("live.authorized", proof.token_id)
+
+        if not self._begin_mode(RunMode.LIVE, intent, IntentType.START_LIVE):
+            # ``_begin_mode`` has already recorded *why* and left the runtime
+            # safe. The authorization dies with the statement that made it.
+            self._refuse_live(
+                "the transition into Live was refused",
+                self._last_transition_refusal or "the mode transition did not complete",
+                intent,
+            )
+            return
+        self._live_authorization = f"granted {proof.token_id}"
+        self._live_refusal_detail = ""
+        lifecycle.note(
+            LifecycleStage.LIVE_ENTERED,
+            f"generation {self._generation}",
+            generation=self._generation,
+            token_id=proof.token_id,
+        )
+        self.publish_transition("Starting Live - navigating")
 
     def _on_service(self, intent: RuntimeIntent) -> None:
         if intent.intent_type is IntentType.PIXEL_INFO:
@@ -1039,11 +1191,20 @@ class RuntimeCoordinator:
         threading.Thread(target=_run, name="treasure-diagnostic", daemon=True).start()
 
     # -- transitions ------------------------------------------------------
-    def _begin_mode(self, mode: RunMode, intent: RuntimeIntent, key: IntentType) -> None:
+    def _begin_mode(self, mode: RunMode, intent: RuntimeIntent, key: IntentType) -> bool:
+        """Start ``mode``. Returns whether the worker is actually running.
+
+        It returns a value because the caller has to be able to tell "Live is
+        running" from "Live was asked for". ``LIVE_ENTERED`` is only recorded
+        on a ``True``, so a trace can never show a transition that did not
+        happen.
+        """
+        self._last_transition_refusal = ""
         factory = self._workers.get(key)
         if factory is None:
+            self._last_transition_refusal = f"no worker is registered for {key.name}"
             self._events.add("mode.refused", f"no worker for {key.name}")
-            return
+            return False
 
         # 1-4: invalidate, cancel, release, join the previous worker.
         self._authority.invalidate(f"transition:{mode.name}")
@@ -1055,9 +1216,12 @@ class RuntimeCoordinator:
 
         # 5: an input mode needs an empty ledger and a known-safe release.
         if mode.emits_input and not (release.ledger_empty and release.release_known_safe):
+            self._last_transition_refusal = (
+                f"the pre-transition release was not confirmed safe ({release.reason})"
+            )
             self._events.add("mode.refused", f"unsafe release: {release.reason}")
             self._enter(RunMode.SAFE_STOP)
-            return
+            return False
 
         self._generation += 1
         cancellation = Cancellation()
@@ -1120,6 +1284,7 @@ class RuntimeCoordinator:
         thread = threading.Thread(target=_run, name=f"treasure-{worker_id}", daemon=True)
         self._worker = thread
         thread.start()
+        return True
 
     #: Fraction of the client the pointer must stay inside while mouse yaw is
     #: the actuator. Matches ``SteeringLimits.safe_region_fraction``; kept here
@@ -1222,6 +1387,12 @@ class RuntimeCoordinator:
 
     def _safe_stop(self, reason: str) -> None:
         self._last_stop_reason = reason
+        # A stop supersedes whatever the last chord did. Leaving a refusal on
+        # screen after the user has stopped and is ready to try again is how a
+        # transient message becomes a permanent one.
+        self._live_authorization = "none"
+        self._live_refusal_detail = ""
+        self._worker_block_reason = ""
         self._authority.invalidate(reason)
         if self._worker_cancel is not None:
             self._worker_cancel.cancel()
@@ -1231,7 +1402,6 @@ class RuntimeCoordinator:
         joined = self._join_worker(self._config.worker_join_deadline_s)
         self._set_phase(None)
         self.set_control_state(None)
-        self._arm_token = None
         if not joined:
             self._events.add("stop.worker-survivor", reason)
         self._enter(RunMode.SAFE_STOP)
@@ -1482,11 +1652,8 @@ class RuntimeCoordinator:
             warnings.append(f"RELEASE UNCERTAIN: {self._authority.release_uncertain_reason}")
         if self._capture.stalled():
             warnings.append("capture stalled")
-        token = self.arm_token()
         readiness_map = readiness.as_map()
-        readiness_map["arm"] = (
-            "none" if token is None else f"{token.remaining_s(monotonic_s()):.0f}s"
-        )
+        readiness_map["live"] = self._live_authorization
         readiness_map["pixels"] = (
             "PENDING reverification"
             if readiness.calibrated_pixels_apply
@@ -1501,6 +1668,7 @@ class RuntimeCoordinator:
         if metrics.degraded_reason:
             warnings.append(f"DEGRADED: {metrics.degraded_reason}")
         blockers = self.blockers(metrics)
+        hotkey_ready, hotkey_detail = self._hotkey_health()
         observation = self._observations.peek()
         actionable = observation is not None and self._mode.emits_input
         self._hub.publish(
@@ -1530,10 +1698,81 @@ class RuntimeCoordinator:
                 last_session_note=self._last_session_note,
                 control_state=self._control_state,
                 setup=self._setup_progress,
-                arm_state=readiness_map.get("arm", "none"),
+                live_authorization=self._live_authorization,
+                hotkey_ready=hotkey_ready,
+                hotkey_detail=hotkey_detail,
+                actuator=self.actuator_state(),
                 recording=self._recording,
             )
         )
+
+    def set_hotkey_health(self, probe: Callable[[], tuple[bool, str]]) -> None:
+        """Install the listener's own account of itself, for the dashboard.
+
+        A callable rather than a value: the listener is started after the
+        coordinator is built, and a snapshot that reported a boolean captured
+        at wiring time would say "ready" for a listener that had since died.
+        """
+        self._hotkey_probe = probe
+
+    def _hotkey_health(self) -> tuple[bool, str]:
+        probe = self._hotkey_probe
+        if probe is None:
+            return (False, "no listener is installed")
+        try:
+            return probe()
+        except Exception as exc:  # a diagnostic must never stop telemetry
+            return (False, f"unreadable: {exc!r}")
+
+    def actuator_state(self) -> ActuatorState:
+        """What is physically held, read from the authority's own ledger."""
+        authority = self._authority
+        now = monotonic_s()
+        edges = authority.edge_counts()
+        yaw_px, yaw_at_s = authority.last_yaw()
+        return ActuatorState(
+            held=authority.held_targets(),
+            forward_held_ms=authority.forward_held_s(now) * 1000.0,
+            down_edges=edges[0],
+            up_edges=edges[1],
+            hold_lapses=sum(authority.hold_lapses.values()),
+            last_yaw_delta_px=yaw_px,
+            last_yaw_at_s=yaw_at_s,
+            turn_backend=self._turn_backend,
+            last_displacement_norm=self._last_displacement_norm,
+            blocked_reason=self._movement_block_reason(),
+        )
+
+    def note_movement(
+        self,
+        *,
+        turn_backend: str | None = None,
+        displacement_norm: float | None = None,
+        blocked_reason: str | None = None,
+    ) -> None:
+        """Facts the live worker knows and the ledger cannot.
+
+        The backend it chose, the displacement it last confirmed, and the
+        sentence it would use for why nothing is moving. Everything else on
+        :class:`~prospector_engine.contracts.ActuatorState` is read from the
+        ledger, so a worker cannot make the dashboard claim a key is down.
+        """
+        if turn_backend is not None:
+            self._turn_backend = turn_backend
+        if displacement_norm is not None:
+            self._last_displacement_norm = displacement_norm
+        if blocked_reason is not None:
+            self._worker_block_reason = blocked_reason
+
+    def _movement_block_reason(self) -> str:
+        """The most specific reason no input is being sent right now."""
+        if self._authority.release_uncertain:
+            return f"release uncertain: {self._authority.release_uncertain_reason}"
+        if not self._mode.emits_input:
+            if self._live_authorization.startswith("refused"):
+                return self._live_authorization
+            return f"{self._mode.name} does not send input"
+        return self._worker_block_reason
 
     def snapshot(self) -> TelemetrySnapshot | None:
         return self._hub.latest()
