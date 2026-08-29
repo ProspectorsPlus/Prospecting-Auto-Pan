@@ -27,8 +27,10 @@ repository state and is not architecture truth.
    no button to click first.
    The first seconds after it are stationary: the navigator confirms the camera
    control mode and measures how far your camera turns per unit of input, with
-   the dashboard reading **STARTING LIVE** and naming the stage. Then it
-   aligns, holds `W`, and follows the arrow.
+   the dashboard reading **STARTING LIVE** and naming the stage. Then it starts
+   walking, and keeps walking: it corrects its heading *while* moving rather
+   than stopping to turn, rides out the moments the arrow disappears behind
+   foliage, and goes round what it bumps into.
 5. **Stop & Release All Input** (or **Ctrl+X** / **Ctrl+X**) is
    available at every moment, focused or not.
 
@@ -94,6 +96,40 @@ The preview draws, over the live frame the navigator actually decided from:
 Everything in that picture comes from one `DiagnosticObservation`, which holds
 the frame itself — so the overlay can never be drawn from one frame over the
 image of another.
+
+## Why it walks and turns at the same time
+
+Turning the camera on this machine was measured to take **322-364 ms** to
+answer. A follower that stops, turns, waits for that, and then presses forward
+again spends a third of a second standing still on every curve in a route -
+and an ordinary route is nothing but curves. The earlier one did exactly that,
+and it looked like stuttering because it *was* stuttering.
+
+Forward and steering are separate outputs now. How far off the heading is
+decides how hard to correct, not whether to walk:
+
+| heading error | what happens |
+|---|---|
+| inside the deadband | `W` alone |
+| up to about 35 degrees | `W` plus a small correction |
+| up to about 70 degrees | `W` plus a stronger one |
+| beyond, held long enough to confirm | turn on the spot, briefly |
+
+Losing sight of the arrow is not the same as hitting something. Recordings from
+this repository hold healthy losses of 0.7 to 2.65 seconds behind foliage, so
+the navigator keeps walking on the heading it last trusted, then sweeps gently
+while still moving, and only then gives up - inside a budget, holding nothing.
+Whether the character is physically stuck is a completely separate question,
+answered by measuring whether the scene is still moving while `W` is genuinely
+held.
+
+When it *is* stuck, it does what a player would: a running jump first, then a
+forward arc round one side, then the other side, then backing out and going
+round, then a wider arc - each one bounded, the side held for the episode
+rather than wiggled, and the whole thing capped in time, in held input, in
+jumps and in how far it may reverse. If movement comes back it goes straight
+back to following the arrow, without stopping to re-acquire a target it never
+lost.
 
 ## Why the arrow is found by shape rather than colour
 

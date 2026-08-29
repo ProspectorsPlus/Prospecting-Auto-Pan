@@ -4,13 +4,79 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-29 (tenth pass, movement lifecycle and native probe).
+Last updated: 2026-08-29 (eleventh pass, continuous pursuit and recovery).
 Development machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
 Live was never started and no Roblox session was operated during
 implementation. The tenth pass **did** send bounded input to the Roblox client
 under `--native-control-probe`, with explicit owner authorization: one key edge
 per trial with a `finally` release, and scroll-wheel events. Nothing was
 clicked, joined, bought or changed; measurements are in D-074.
+
+---
+
+## NAVIGATION: THE ELEVENTH PASS (2026-08-29)
+
+**No OS input was emitted during this pass.** Live was never started, no chord
+was simulated, and neither input-emitting CLI mode was run. Everything below is
+either a deterministic simulation or a read-only native measurement.
+
+### The defect that made everything downstream unreachable
+
+`Navigator.note_applied` fills the applied-forward ledger, and **the live
+worker never called it**. `make_live_worker` applied a command and told the
+navigator nothing, so on every Live session ever run: held duration was `0.0`
+on every frame, the runtime locomotion baseline was never sampled (its gate is
+`held_ms >= 250`), the progress guard abstained forever, and obstacle recovery
+could not activate. Every test passed because every test primed the ledger by
+hand. See D-076; the regression is `tests/test_live_feedback.py`, which drives
+the real worker, authority and actuator and primes nothing.
+
+### What was measured, and how
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Feedback wiring reaches production | **local pass** | `tests/test_live_feedback.py` — real `make_live_worker`, real `InputAuthority`, real `MovementActuator`; ledger fills, baseline matures, stall reaches recovery, all unprimed |
+| Continuous pursuit, no rattle | **local pass** | 30 s straight route: 1 W-down, 0 W-up, at 30/60/90/120 Hz |
+| Forward duty cycle | **local pass** | ≥ 90 % on ordinary routes at every cadence (target 85–90 %) |
+| Alignment | **local pass** | p50 < 10°, p95 < 25° after the opening turn, both actuators |
+| Occlusion 100 ms / 500 ms / 1 s / 2 s | **local pass** | 0 forward releases at every cadence |
+| Search terminates | **local pass** | every loss past the grace abandons inside `search_budget_s` holding nothing |
+| Obstacle recovery | **local pass** | curb cleared by running hop, bush cleared by forward arc both sides, wall abandons in budget |
+| Open-ground false stuck | **local pass** | < 1 % of ticks enter CONTACT or RECOVERY |
+| Safety unchanged | **local pass** | `tests/test_stop_safety.py`, `test_runtime_concurrency.py`, `test_live_start_to_stop.py` unchanged and green |
+| Bounded memory under load | **local pass** | `--soak 3`: 8712 frames, 1 thread before and after, buffer pool 0 of 8 live, RSS slope −7.0 MB/min |
+| Native capture with the new path | **macOS pass** | `--shadow-bench`: 57.5–57.9 fps consumed of unique, p95 12.9–13.5 ms, 0 superseded, 0 pool-exhausted |
+| Native pipeline headroom | **macOS pass** | `--capture-probe`: 58.0 / 85.2 / 111.2 unique fps at 60 / 90 / 120 Hz, all within 40 ms |
+| Detector on the real-frame corpus | **unchanged** | eval recall 80.2 %, absent precision 90.0 %, median error 10.4° — the detector was not touched |
+| **Arrow-loss distribution against the live client** | **PENDING** | instrument added and run; **no map was equipped**, so the arrow was unreadable for all 460 and all 1447 frames. Nothing was measured. |
+| **An armed native route** | **PENDING** | needs one physical Ctrl+N, which an agent may not press |
+
+### What the owner still owes, and it is one session
+
+Every number above about *steering* comes from simulation. The simulated world
+models the measured 322–364 ms turn latency and three shapes of obstacle, and
+that is a claim about the decision path, not about Roblox.
+
+1. **Leave Roblox in a world, character standing still, treasure map equipped.**
+2. Run the read-only occlusion measurement first — it needs no arming:
+
+   ```sh
+   .venv/bin/python treasure.py --shadow-bench 30 --json bench.json
+   ```
+
+   The `[perception] arrow readable on …` line reports the gap distribution and
+   how many gaps fall inside the 2000 ms coast grace. If most real gaps are
+   longer than that, `coast_grace_s` is wrong and this says so.
+3. Then Start Navigator, and press **Ctrl+N** with Roblox focused for a real
+   route. A trace is now written automatically on every ending — stop, safety
+   release, worker failure, arrival — into
+   `~/Library/Application Support/Prospector Treasure/logs/`.
+4. From that trace: W duty cycle, W edge count, alignment percentiles, arrow-loss
+   intervals, recovery episodes and their outcomes, and any false-stuck events.
+
+Until step 3 happens, the navigation gates read **guarded beta** at best. The
+simulations are real evidence about the decision path and no evidence at all
+about the game.
 
 ---
 

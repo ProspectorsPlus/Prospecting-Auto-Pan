@@ -717,6 +717,78 @@ def _percentile_of(ordered: list[float]) -> Callable[[float], float]:
     return at
 
 
+def _arrow_readability(samples: list[tuple[float, bool]]) -> dict[str, object]:
+    """How often the arrow was readable, and how long each gap lasted.
+
+    A *gap* is a run of consecutive frames with no usable heading, measured in
+    milliseconds from the first unreadable frame's capture instant to the next
+    readable one. Only closed gaps are measured; a run still open when the
+    bench ends is reported separately rather than counted as though it had
+    ended, because its length is unknown.
+    """
+    from prospector_engine.steering import SteeringLimits
+
+    limits = SteeringLimits()
+    total = len(samples)
+    readable = sum(1 for _, ok in samples if ok)
+    gaps_ms: list[float] = []
+    gap_started: float | None = None
+    for at_s, ok in samples:
+        if not ok and gap_started is None:
+            gap_started = at_s
+        elif ok and gap_started is not None:
+            gaps_ms.append((at_s - gap_started) * 1000.0)
+            gap_started = None
+    open_gap_ms = None if gap_started is None else (samples[-1][0] - gap_started) * 1000.0
+    ordered = sorted(gaps_ms)
+    at = _percentile_of(ordered)
+    grace_ms = limits.coast_grace_s * 1000.0
+    budget_ms = limits.search_budget_s * 1000.0
+    return {
+        "frames": total,
+        "readable_fraction": readable / max(1, total),
+        "gaps": len(gaps_ms),
+        "gap_ms": {"p50": at(0.5), "p95": at(0.95), "max": at(1.0)},
+        "coast_grace_ms": grace_ms,
+        "search_budget_ms": budget_ms,
+        "gaps_inside_coast_grace": sum(1 for ms in gaps_ms if ms <= grace_ms),
+        "gaps_reaching_search": sum(1 for ms in gaps_ms if ms > grace_ms),
+        "gaps_past_search_budget": sum(1 for ms in gaps_ms if ms > budget_ms),
+        "open_gap_ms": open_gap_ms,
+    }
+
+
+def _describe_readability(found: dict[str, object]) -> str:
+    """One line, and it must never read as evidence when there was none.
+
+    A run in which the arrow was never readable at all - no map equipped, the
+    client on its home page - produces zero *closed* gaps, and printing "0
+    gaps" for that would look like a clean result. It is the opposite of one,
+    so it is said plainly instead.
+    """
+    frames = found["frames"]
+    fraction = float(found["readable_fraction"])
+    total = int(found["gaps"])  # type: ignore[call-overload]
+    open_ms = found["open_gap_ms"]
+    if fraction == 0.0:
+        held = "" if open_ms is None else f" ({float(open_ms) / 1000.0:.0f} s continuously)"
+        return (
+            f"the arrow was never readable in {frames} frames{held} - nothing was "
+            "measured. Equip a treasure map and run this again."
+        )
+    gap = found["gap_ms"]
+    inside = found["gaps_inside_coast_grace"]
+    covered = f"{inside}/{total}" if total else "no closed gaps"
+    trailing = "" if open_ms is None else f"; one gap still open at {float(open_ms):.0f} ms"
+    return (
+        f"arrow readable on {fraction:.0%} of {frames} frames; {total} gaps "
+        f"p50 {float(gap['p50']):.0f} p95 {float(gap['p95']):.0f} "
+        f"max {float(gap['max']):.0f} ms; {covered} inside the "
+        f"{float(found['coast_grace_ms']):.0f} ms coast grace, "
+        f"{found['gaps_past_search_budget']} past the search budget{trailing}"
+    )
+
+
 def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> int:
     """Native capture and headless perception against the real Roblox window.
 
@@ -726,6 +798,17 @@ def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> in
     moved and no input is sent. The numbers are the same ones the dashboard
     shows, taken without the dashboard, which is what makes a regression in
     the perception path separable from a regression in the preview.
+
+    The perception pass additionally measures **how long the arrow is
+    unreadable for, on this machine, against this client**. That distribution
+    is the evidence behind two provisional numbers in
+    :class:`~prospector_engine.steering.SteeringLimits` - ``coast_grace_s``,
+    which decides how long the character keeps walking on a remembered
+    heading, and ``search_budget_s``, which bounds the moving search after it.
+    Both were chosen from arrow-loss intervals in older traces; this reports
+    the same quantity from live frames so the choice can be checked rather
+    than believed. It needs no calibration and cannot steer: there is no turn
+    response here and no authority to use one.
     """
     import json
 
@@ -773,6 +856,8 @@ def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> in
             continue
         usage.sample()
         latencies: list[float] = []
+        #: (captured_at_s, whether this frame carried a usable heading)
+        readable: list[tuple[float, bool]] = []
         started = monotonic_s()
         deadline = started + seconds
         last, consumed, unique_seen = 0, 0, 0
@@ -792,6 +877,17 @@ def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> in
                     result = pipeline.analyze(frame, map_id="bench", approach_valid=False)
                     service.note_perception_ms(result.perception_ms)
                     timing = result.timing
+                    direction = result.inputs.direction
+                    readable.append(
+                        (
+                            frame.captured_at_s,
+                            bool(
+                                result.inputs.arrow.valid
+                                and direction.valid
+                                and direction.error_deg is not None
+                            ),
+                        )
+                    )
                 else:
                     service.note_perception_ms(0.0)
                 latency = (monotonic_s() - frame.captured_at_s) * 1000.0
@@ -844,6 +940,8 @@ def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> in
             "trace": service.trace.summary().describe(),
             "governor_transitions": [t.as_row() for t in service.trace.transitions()],
         }
+        if readable:
+            summary["readability"] = _arrow_readability(readable)
         report["configurations"][name] = summary  # type: ignore[index]
         print(
             f"  {name:<10} {summary['consumed_fps']:6.1f} fps consumed of "
@@ -856,6 +954,9 @@ def _run_shadow_bench(seconds: float = 20.0, json_path: str | None = None) -> in
     for name, summary in report["configurations"].items():  # type: ignore[union-attr]
         for row in summary["governor_transitions"]:  # type: ignore[index]
             print(f"    [{name}] governor {row['from_hz']}->{row['to_hz']} Hz: {row['reason']}")
+        found = summary.get("readability")  # type: ignore[union-attr]
+        if found:
+            print(f"    [{name}] {_describe_readability(found)}")
     print("\nBackend:", port.create_capture_source().name)
     print(
         "This is a native measurement of capture and headless perception. E-PERF stays PENDING."

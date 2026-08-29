@@ -240,3 +240,61 @@ def test_only_the_forward_probe_cli_mode_enables_it() -> None:
     # Defined on Application, and called by nothing inside the engine.
     engine_calls = inspect.getsource(application).count(".enable_forward_probe(")
     assert engine_calls == 0
+
+
+# ---------------------------------------------------------------------------
+# The shadow bench's arrow-readability measurement
+# ---------------------------------------------------------------------------
+
+
+def _readability(samples: list[tuple[float, bool]]) -> dict:
+    from treasure import _arrow_readability
+
+    return _arrow_readability(samples)
+
+
+def test_an_unreadable_arrow_gap_is_measured_between_readable_frames() -> None:
+    """The quantity the coast grace is chosen against, taken from real frames."""
+    samples = [(0.0, True), (0.1, False), (0.2, False), (0.3, True), (0.4, True)]
+
+    found = _readability(samples)
+
+    assert found["gaps"] == 1
+    assert found["gap_ms"]["max"] == pytest.approx(200.0, abs=1.0)
+    assert found["gaps_inside_coast_grace"] == 1
+    assert found["open_gap_ms"] is None
+
+
+def test_a_gap_still_open_at_the_end_is_not_counted_as_a_closed_one() -> None:
+    """Its length is unknown. Counting it would understate every percentile."""
+    samples = [(0.0, True), (0.1, False), (5.0, False)]
+
+    found = _readability(samples)
+
+    assert found["gaps"] == 0
+    assert found["open_gap_ms"] == pytest.approx(4900.0, abs=1.0)
+
+
+def test_a_run_with_no_readable_frame_at_all_says_so_rather_than_reading_clean() -> None:
+    """Zero closed gaps looks like a perfect result and is the opposite of one."""
+    from treasure import _describe_readability
+
+    found = _readability([(index * 0.1, False) for index in range(50)])
+
+    assert found["readable_fraction"] == 0.0
+    line = _describe_readability(found)
+    assert "never readable" in line
+    assert "Equip a treasure map" in line
+
+
+def test_gaps_past_the_search_budget_are_counted_separately() -> None:
+    from prospector_engine.steering import SteeringLimits
+
+    limits = SteeringLimits()
+    long_gap = limits.search_budget_s + 2.0
+    samples = [(0.0, True), (0.1, False), (0.1 + long_gap, True)]
+
+    found = _readability(samples)
+
+    assert found["gaps_past_search_budget"] == 1
+    assert found["gaps_inside_coast_grace"] == 0

@@ -85,7 +85,11 @@ unattended:
 three need a source checkout. None touches a window or emits input.
 `--shadow-bench` captures the real Roblox window through the production
 source and runs perception on it; it moves nothing and sends nothing, and
-needs Screen Recording. `--setup-probe` runs the production setup machine
+needs Screen Recording. It also reports how often the arrow was readable and
+the distribution of unreadable gaps, which is the evidence
+`SteeringLimits.coast_grace_s` and `search_budget_s` are chosen against — run
+it with a treasure map equipped, or it will honestly report that nothing was
+measured. `--setup-probe` runs the production setup machine
 through the real `build_application`, so it *does* resize the Roblox client —
 that is the stage under test — and restores the original client size on the
 way out. It stops at the observation half and prints the held-lease ledger;
@@ -182,6 +186,12 @@ looks exactly like a broken backend and is not one (D-074).
    chosen on; `eval` sequences are read to report, never to pick. A new
    real recording extends the corpus as new sequences with provenance; the
    private recording itself is never committed.
+11. **A simulation is never a navigation gate.** `tests/test_routes.py` drives
+   the real navigator through a world that models the measured turn latency and
+   three shapes of obstacle, and it is a claim about the *decision path*. Duty
+   cycle, alignment, occlusion behaviour and recovery success **on the real
+   game** stay `pending` until an armed route produces a trace. The simulations
+   are how a change is chosen; they are never how it is passed.
 
 ## 5. Architecture boundaries
 
@@ -227,9 +237,29 @@ looks exactly like a broken backend and is not one (D-074).
 - **Colour proposes, geometry disposes.** `prospector_engine/arrow.py` may use
   colour to generate candidates and never to accept one. On the green map the
   arrow and the grass share a chromaticity to three decimals (D-024).
-- **`W` is an evidence-bound lease.** Renewal requires a strictly newer
-  accepted frame. `CommandKind.ALIGN` cannot command forward motion — the
-  contract raises. A navigation command is APPLIED only if every edge landed.
+- **Forward and steering are independent outputs.** `ArrowFollowerController`
+  is a continuous-pursuit controller: a heading error selects how hard to
+  correct *while walking*, and only a severe error sustained past
+  `pivot_confirm_s` stops the character. Five of nine `ControlState` values
+  walk, and a turn pulse completing never releases `W` (D-077).
+- **Occlusion is not obstruction.** A lost arrow while moving is COAST, then a
+  bounded moving SEARCH, then a safe stop. Whether the character is *stuck* is
+  a separate question, answered from measured motion and never from arrow
+  visibility (D-078).
+- **The keyboard the navigator reasons about is the actuator's, not its own.**
+  `Navigator.note_held` is fed from `MovementOutcome.held` on every path.
+  Everything downstream — the applied-forward ledger, the locomotion baseline,
+  the stuck detector, recovery — is dead without that call, and for a whole
+  pass it was missing (D-076).
+- **One heading, one filter.** `prospector_engine/heading.py` owns the only
+  remembered direction; `prospector_engine/traversability.py` owns the only
+  memory of which way already failed. Neither is duplicated anywhere.
+- **`release` means let go *and forget*.** It is for safety, terminal states
+  and world changes. Ordinary transitions between FOLLOW, CORRECT, COAST,
+  SEARCH and RECOVERY set a new level and keep every piece of memory (D-080).
+- **`W` is an evidence-bound lease.** `CommandKind.ALIGN` cannot command any
+  movement axis — the contract raises. A navigation command is APPLIED only if
+  every edge landed.
 - **Release is unconditional.** `release_all()` is idempotent, never
   focus-gated, and always attempts the full input vocabulary even after an
   individual edge fails.

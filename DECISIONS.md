@@ -2297,3 +2297,193 @@ difference of 40.9 out of 255. It was caught by a synthetic test asserting that
 a still scene reads as still, and it had already contaminated the first night's
 probe output: the Roblox home page appeared to have an idle noise floor of
 28-37, and measures 0.00 once the copies are in.
+
+## D-076 — 2026-08-29 — The actuator's answer never reached the navigator
+
+**Decision:** `Navigator.note_held(held, *, now_s, yaw_posted_px, held_ms)`
+replaces `note_applied`, and the live worker calls it on **every** path —
+applied, blocked, released — with what the `MovementActuator` reports it is
+physically holding.
+
+**Why:** the line did not exist. `make_live_worker` called
+`session.apply_command(...)` and told the navigator nothing, so for the whole
+of every Live session ever run on this machine:
+
+* `ForwardCommandLedger` stayed empty, so `held_continuously_for` was `0.0` on
+  every frame;
+* `RuntimeBaselineEstimator.observe` refused every sample, because its gate is
+  `held_ms >= 250`, so no session ever measured a walking speed;
+* `ProgressGuard` saw `holding() == False` forever and returned `UNKNOWN`;
+* and obstacle recovery, all of which is downstream of that, could not
+  activate — while looking, from the outside, like working code.
+
+Every test passed because every test called `note_applied` by hand.
+`tests/test_live_feedback.py` exists so that cannot recur: it drives the real
+`make_live_worker`, the real `InputAuthority`, the real `MovementActuator` and
+a real `CaptureService`, primes nothing, and asserts the ledger fills, the
+baseline matures from ordinary walking, and a simulated stall reaches recovery
+on its own.
+
+**A second bug the same test found.** The rig kept every published
+`DiagnosticObservation`. Each holds its own `CapturedFrame`, and a frame holds
+a buffer out of the capture pool, so the pipeline stopped dead after eight
+frames with `pool exhausted`. Production consumers keep the latest packet only,
+for exactly this reason.
+
+## D-077 — 2026-08-29 — Correcting a heading is not a reason to stand still
+
+**Decision:** `ArrowFollowerController` is a continuous-pursuit controller.
+Nine `ControlState` values, five of which walk. Forward and steering are
+independent outputs; a heading error selects how hard to correct *while
+walking*, and only an error past `strong_band_deg`, sustained for
+`pivot_confirm_s`, stops the character at all.
+
+**Why:** the previous policy required three consecutive frames inside an
+eight-degree cone before `W` could go down, dropped `W` the moment the error
+left that cone, and then turned on the spot and waited out the actuator's own
+latency. That latency was measured on this machine at **322–364 ms**, so an
+ordinary curve cost a stop, a turn, a wait and a fresh start, several times a
+second. The controller was doing exactly what it was written to do; the mistake
+was treating *currently correcting a heading* as *must stand still*.
+
+**What the rewrite is measured against.** `tests/test_routes.py` drives the
+real navigator through a world that delays every commanded rotation by the
+measured 340 ms, at 30/60/90/120 Hz:
+
+| property | result |
+|---|---|
+| 30 s straight route | 1 W-down edge, 0 W-up edges, every cadence |
+| ordinary route duty cycle | ≥ 90 % |
+| occlusion 100 ms / 500 ms / 1 s / 2 s | 0 forward releases, every cadence |
+| alignment after the opening turn | p50 < 10°, p95 < 25° |
+| open-ground false-stuck rate | < 1 % of ticks |
+
+**Two things that fell out of measuring it.**
+
+*Lead compensation may shrink a correction and may never reverse one.* The
+angular rate cannot tell the target's own motion apart from the rotation this
+controller just commanded, so right after a large correction it reads as though
+the error is about to shoot past zero. Allowed to change the sign it turned
+24° right and then immediately asked for 4° left, having moved nothing in
+between.
+
+*The derivative gain is gone.* The lead term **is** derivative action, and
+running both was double compensation: a settled 24° error with a large negative
+rate produced `0.6 × 2 − 0.12 × 90`, a command pointing the wrong way. The sign
+of a correction now comes from the error and from nothing else.
+
+`TurnLimits.max_correction_deg` rises 14 → 30. The old ceiling was set for a
+controller that stood still to turn, where a small step costs only time; one
+that walks through its own correction has to out-turn the curve it is walking.
+
+## D-078 — 2026-08-29 — Occlusion is not obstruction
+
+**Decision:** losing the arrow while moving enters `COAST` (keep walking on the
+remembered heading, bleed the correction to neutral over `coast_decay_s`), then
+`SEARCH` (keep walking, shallow alternating legs biased toward the last known
+side, one correction per leg), then abandons inside `search_budget_s`. Physical
+contact is a separate question answered from motion, never from arrow
+visibility.
+
+**Why:** traces in this repository hold healthy arrow losses of **0.7 to 2.65
+seconds** behind foliage, and the previous grace only applied when the state
+enum was exactly `FOLLOW` — every other path released. A rejected *heading* is
+the commoner case than a missing arrow and had no grace at all.
+
+**A bug found while measuring it.** The first search planned a fresh turn on
+every frame of its 400 ms window, spending the whole episode's 200° rotation
+budget in a quarter of a second and abandoning before it had looked anywhere.
+One correction per leg, honoured through the existing one-in-flight machinery.
+
+**Memory horizons are now synchronized.** `HeadingConfig.max_age_s` is derived
+from `SteeringLimits`, `ArrowTracker` holds identity on the monotonic clock
+rather than for five frames (83 ms at 60 Hz, against a two-second coast), and
+`DetectorConfig.lost_after_s` at 3.0 s already exceeded the coast grace.
+
+## D-079 — 2026-08-29 — Confirm contact while the character is still being told to walk
+
+**Decision:** `ProgressGuard` gathers its confirming samples with forward still
+held, and `ProgressVerdict.recover` replaces `release_forward`. Recovery
+permission moved from `NavigationCapabilities` to the guard: the capability says
+whether maneuvering is allowed, the guard says whether there is evidence now.
+
+**Why:** the guard released `W` on a *suspicion* and confirmed from four
+stationary frames. Both halves were wrong — every ambiguous stretch of
+low-texture ground cost a stop, and the confirming frames were taken from a
+character that had already been told to stand still, which does not answer
+"can this character move".
+
+**The relative fallback.** The runtime baseline only arrives after twelve clean
+frames of unobstructed walking, so a route that met a bush in its first seconds
+had obstacle detection switched off entirely and simply stopped. There is now a
+strictly weaker, strictly local test: has this character's own speed collapsed
+against what it was doing a moment ago. It needs ≥ 10 samples spanning ≥ 1.2 s
+before it will answer, uses a harsher fraction (0.25 against 0.35) because its
+reference is unproven, and marks every verdict `provisional`.
+
+## D-080 — 2026-08-29 — Composite recovery maneuvers, and six caps on them
+
+**Decision:** the ladder is R0 running hop (W+SPACE, then W), R1 sticky forward
+arc (W+side+camera), R2 opposite running hop, R3 back out and redirect, R4 wider
+detour arc. Side selection reads `TraversabilityMemory` first, the heading
+second, observed lateral slip third, the failed side last.
+
+**Why:** the old ladder opened with two rungs that released the controls and
+waited — 700 ms of standing still — and then offered `A` alone, `W` alone and
+`SPACE` alone. Nobody gets past a bush that way: a running jump needs `W` and
+`SPACE` together, and a hedge needs a forward *arc*.
+
+Six caps rather than one, because there are six ways an episode goes wrong:
+total time, total input, jumps, reverse duration, side flips, and a jump
+cooldown so `SPACE` is a jump rather than a held space bar. Success is
+`restore_frames` consecutive frames of restored motion, not one — a single
+frame of movement during a maneuver is what a maneuver *produces*, the
+character sliding along the obstacle, and calling that success is how a ladder
+resolves straight back into the same wall.
+
+**Transitions no longer use the release floor.** Moving between pursuit and
+recovery preserves the heading filter, the target identity and the sector
+memory; only a fault, a terminal state or a changed world resets anything.
+
+**A bug the route simulations found.** The frame absorbed during recovery was
+also being *consumed*, so the tick that resolved an episode produced a hold
+with nothing to hold and the character stopped for one frame every time it got
+past something. Absorbing is not deciding; it no longer consumes.
+
+## D-081 — 2026-08-29 — A trace for every run, not only for the one somebody stopped
+
+**Decision:** `_export_trace` fires on a safe stop, a worker completion and a
+fault as well as on Stop, and a run writes exactly one; Stop still forces one
+regardless. Navigation state reaches the readable log as a typed
+`PursuitTelemetry`, written only when the state, the held keys, the recovery
+rung or an escalation changed.
+
+**Why:** traces were written from exactly one place, the Stop intent handler.
+The single most informative session this project has had — the first in which
+the character actually moved — ended some other way, and there is no file for
+it. And the navigator's state reached the dashboard as free-form status strings
+in the engineering ring, where nothing could filter, rank or render them.
+
+`held_keys` comes from the actuator's ledger and `wanted_keys` from the
+controller, so when the two differ something refused a press. No earlier
+version of this could show that.
+
+## D-082 — 2026-08-29 — Measure the occlusion the grace is chosen against
+
+**Decision:** `--shadow-bench` reports arrow readability and the distribution of
+*closed* unreadable gaps against the live client, with the counts that fall
+inside `coast_grace_s` and past `search_budget_s`. It needs no calibration,
+holds no authority and sends nothing.
+
+**Why:** `coast_grace_s = 2.0` and `search_budget_s = 9.0` are provisional
+configuration chosen from arrow-loss intervals in older traces. This measures
+the same quantity from live frames so the choice can be checked rather than
+believed — and it is the one piece of native evidence that does *not* require
+the owner to arm Live.
+
+**Measured 2026-08-29, 460 and 1447 frames, capture healthy at 57.5–57.9 fps:**
+the arrow was never readable, for the whole of both runs. No treasure map was
+equipped; the client sat idle. The instrument works and the conditions did not
+exist, which is a different statement from a passing measurement and is
+recorded as such. A gap still open when the bench ends is reported separately
+and never counted as a closed one, because its length is unknown.
