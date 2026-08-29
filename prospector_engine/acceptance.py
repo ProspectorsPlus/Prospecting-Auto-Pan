@@ -179,16 +179,24 @@ class AcceptancePort(Protocol):
 class AcceptanceConfig:
     """Bounds and thresholds. Every retry has a cap *and* a monotonic deadline."""
 
-    #: The pulse itself. Long enough for Roblox to start the walk animation and
-    #: for two or three frames to land, short enough that a character which
-    #: does start walking has gone nowhere.
-    pulse_ms: int = 160
+    #: The pulse itself, held by renewal rather than tapped. Long enough for
+    #: Roblox to start the walk animation and for several frames to land on
+    #: real motion, short enough that a character which does start walking has
+    #: gone a few studs.
+    #:
+    #: The mission specified 120-200 ms. This is longer, on the owner's own
+    #: report of what a short press does: *"it taps it so fast and for so short
+    #: it either doesn't register or moves like 10 atoms forwards"*. That is
+    #: the observation the old ceiling made inevitable - no command could hold
+    #: a key past its evidence budget - and the renewal chain is what makes a
+    #: press this long expressible at all.
+    pulse_ms: int = 320
     #: Idle noise floor: how many usable readings, and how long to wait.
     idle_samples: int = 8
     idle_deadline_s: float = 3.0
     min_idle_samples: int = 4
     #: Post-edge evidence: how many usable readings, and how long to wait.
-    post_edge_deadline_s: float = 1.5
+    post_edge_deadline_s: float = 2.0
     min_post_edge_samples: int = 3
     #: Movement must exceed this multiple of the measured idle noise...
     noise_multiple: float = 4.0
@@ -328,10 +336,15 @@ class InputAcceptanceProbe:
                 loopback=loopback,
             )
             if request.holds_forward:
+                # Watch for the *whole* pulse, not until the sample count is
+                # satisfied. Releasing the moment three frames have arrived
+                # makes the press as short as the pipeline is fast, which is
+                # exactly the tap this was written to stop being.
                 post = self._collect(
                     config.min_post_edge_samples,
                     config.post_edge_deadline_s,
                     after_s=request.edge_at_s,
+                    min_duration_s=config.pulse_ms / 1000.0,
                 )
         except Exception as exc:  # a probe must never take the worker down
             return AcceptanceResult(
@@ -360,18 +373,30 @@ class InputAcceptanceProbe:
 
     # -- collection --------------------------------------------------------
     def _collect(
-        self, wanted: int, deadline_s: float, *, after_s: float | None = None
+        self,
+        wanted: int,
+        deadline_s: float,
+        *,
+        after_s: float | None = None,
+        min_duration_s: float = 0.0,
     ) -> list[MotionSample]:
         """Usable motion readings, bounded by a count *and* a monotonic deadline.
 
         ``after_s`` is the causality gate: a frame captured before the edge
         describes the world before the edge, and is discarded however good it
         looks.
+
+        ``min_duration_s`` keeps collecting after the count is satisfied. It is
+        what holds the key down for the pulse it was asked for instead of for
+        however long three frames happen to take.
         """
-        deadline = monotonic_s() + deadline_s
+        started = monotonic_s()
+        deadline = started + deadline_s
         collected: list[MotionSample] = []
         first_post_noted = False
-        while len(collected) < wanted and monotonic_s() < deadline:
+        while monotonic_s() < deadline:
+            if len(collected) >= wanted and monotonic_s() - started >= min_duration_s:
+                break
             if self._cancelled():
                 break
             sample = self._port.next_motion(self._config.frame_timeout_s)

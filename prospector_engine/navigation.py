@@ -1724,14 +1724,16 @@ class _LiveControlPort:
     it exactly once for a bounded pulse, and it releases in a ``finally``.
     """
 
-    #: A probe key may be held no longer than one evidence-bound lease,
-    #: whatever is asked for. See ``TurnLimits.key_probe_ms``.
-    MAX_PROBE_HOLD_MS = 100
+    #: A probe key may be held no longer than this, whatever the ladder asks
+    #: for. It is no longer one evidence-bound lease: the hold is a renewal
+    #: chain, so the ceiling is a deliberate bound rather than an artefact of
+    #: how long a single command may live. See ``TurnLimits.key_probe_ms``.
+    MAX_PROBE_HOLD_MS = 400
     #: A probe mouse delta may never exceed this many units.
     MAX_PROBE_UNITS = 200
     #: The forward pulse may never be asked to hold longer than this, whatever
     #: the acceptance config says. A cap in the object that owns the edge.
-    MAX_FORWARD_PULSE_MS = 250
+    MAX_FORWARD_PULSE_MS = 600
 
     def __init__(
         self,
@@ -1752,6 +1754,7 @@ class _LiveControlPort:
         self._held: str | None = None
         self._hold_until_s = 0.0
         self._forward_held = False
+        self._forward_until_s = 0.0
 
     # -- shared frame plumbing -------------------------------------------
     def _refresh(self) -> PerceptionResult | None:
@@ -1767,7 +1770,13 @@ class _LiveControlPort:
 
     # -- ControlSetupPort: input acceptance -------------------------------
     def next_motion(self, timeout_s: float) -> MotionSample | None:
-        """The next frame's motion reading, stamped with when it was captured."""
+        """The next frame's motion reading, and the renewal that keeps W down.
+
+        The renewal lives here because this is the only place a *newer* frame
+        exists, and a newer frame is exactly what a renewal requires. Without
+        it the lease expires inside its evidence budget and the watchdog lifts
+        the key while the probe is still watching for the movement it caused.
+        """
         envelope = self._context.frames.wait_for_new(self._sequence, timeout_s)
         if envelope is None:
             return None
@@ -1775,35 +1784,84 @@ class _LiveControlPort:
         self._sequence = frame.sequence
         self._latest_frame = frame
         self._envelope = envelope
+        if self._forward_held and monotonic_s() < self._forward_until_s:
+            renewal = self._issue(
+                forward_axis=1,
+                turn_axis=0,
+                yaw_delta_px=0,
+                reason="input acceptance: holding forward",
+            )
+            # A refused renewal means the key is coming up; stop claiming it is
+            # down rather than letting the probe measure a hold that ended.
+            self._forward_held = renewal is not None and renewal.applied
         result = self._pipeline.analyze(frame, map_id="acceptance", approach_valid=False)
         self._latest = result
         return MotionSample(frame.sequence, frame.captured_at_s, result.inputs.motion)
 
-    def request_forward(self, hold_ms: int) -> ForwardRequest:
-        """One bounded forward lease. The only place this object presses ``W``."""
+    def _issue(
+        self, *, forward_axis: int, turn_axis: int, yaw_delta_px: int, reason: str
+    ) -> NavigationApplyResult | None:
+        """One command against the newest frame, inside its own evidence budget.
+
+        ``None`` when there is nothing to build a command from yet.
+
+        The lease is clamped to the frame's own budget rather than to what the
+        caller asked for. A command that outlives its evidence is refused
+        outright - ``REJECTED_EVIDENCE, "command lease exceeds evidence age"``
+        - so asking for a 160 ms hold from a single command does not produce a
+        short press, it produces no press at all.
+        """
         session = self._context.navigation
         envelope = self._envelope
         frame = self._latest_frame
-        now = monotonic_s()
         if session is None or envelope is None or frame is None:
-            return ForwardRequest(False, (), "no live session or no frame yet", now)
-        hold_s = min(self.MAX_FORWARD_PULSE_MS, max(1, hold_ms)) / 1000.0
+            return None
+        now = monotonic_s()
+        budget_s = session.evidence_budget_s
+        valid_until = min(now + budget_s, frame.captured_at_s + budget_s)
+        if valid_until <= now:
+            return None  # the frame is already older than its own budget
         command = NavigationCommand(
             generation=self._context.generation,
             source_frame_sequence=frame.sequence,
             source_captured_at_s=frame.captured_at_s,
-            forward_axis=1,
+            forward_axis=forward_axis,  # type: ignore[arg-type]
             lateral_axis=0,
             jump=False,
-            yaw_delta_px=0,
-            turn_axis=0,
+            yaw_delta_px=yaw_delta_px,
+            turn_axis=turn_axis,  # type: ignore[arg-type]
             issued_at_s=now,
-            valid_until_s=now + hold_s,
-            reason="input acceptance: bounded forward pulse",
-            kind=CommandKind.FOLLOW,
+            valid_until_s=valid_until,
+            reason=reason,
+            kind=CommandKind.FOLLOW if forward_axis else CommandKind.ALIGN,
         )
-        outcome = session.apply_navigation_command(command, envelope.evidence_token)
+        return session.apply_navigation_command(command, envelope.evidence_token)
+
+    def request_forward(self, hold_ms: int) -> ForwardRequest:
+        """Press ``W`` and keep it down. The only place this object presses it.
+
+        The hold is a renewal chain, not one long lease: the down edge goes out
+        here and :meth:`next_motion` renews it against every newer frame until
+        ``hold_ms`` has elapsed. That is the same mechanism ordinary navigation
+        uses, and it is the only one that can hold a key longer than a frame's
+        evidence budget - about 80 ms, which is a tap the game may not act on
+        at all.
+        """
+        now = monotonic_s()
+        outcome = self._issue(
+            forward_axis=1,
+            turn_axis=0,
+            yaw_delta_px=0,
+            reason="input acceptance: bounded forward hold",
+        )
+        if outcome is None:
+            return ForwardRequest(False, (), "no live session or no frame yet", now)
         self._forward_held = outcome.applied and "w" in outcome.leases_held
+        self._forward_until_s = (
+            now + min(self.MAX_FORWARD_PULSE_MS, max(1, hold_ms)) / 1000.0
+            if self._forward_held
+            else 0.0
+        )
         return ForwardRequest(
             applied=outcome.applied,
             leases_held=outcome.leases_held,
@@ -1819,6 +1877,8 @@ class _LiveControlPort:
         if session is not None:
             session.release_navigation(reason)
         self._forward_held = False
+        self._forward_until_s = 0.0
+        self._forward_until_s = 0.0
 
     def input_acceptance(self) -> AcceptanceResult:
         """Run the bounded pulse. Released before this returns, on every path."""
@@ -1863,51 +1923,74 @@ class _LiveControlPort:
         )
 
     def emit_turn(self, backend_value: str, units: int) -> bool:
-        session = self._context.navigation
-        envelope = self._envelope
-        frame = self._latest_frame
-        if session is None or envelope is None or frame is None:
-            return False
+        """Run one camera probe to completion, then release.
+
+        For the arrow keys this **holds the key down for the requested number
+        of milliseconds by renewing it against each newer frame**, and only
+        then releases. It used to issue one command whose lease was clamped to
+        ``frame.captured_at_s + 0.1`` - so whatever the ladder asked for, the
+        key was down for at most the evidence budget minus the frame's age, and
+        the probe magnitudes above 80 ms were unreachable. A camera that needs
+        a real press to move was being asked with a tap, could not answer, and
+        the whole backend was then written off as unproven.
+
+        Mouse yaw is a single relative delta and has no hold to renew.
+        """
         backend = TurnBackend(backend_value)
-        magnitude = abs(units)
-        now = monotonic_s()
-        if backend is TurnBackend.ARROW_KEYS:
-            hold_ms = min(self.MAX_PROBE_HOLD_MS, magnitude)
-            plan = TurnPlan(
-                backend=backend,
-                turn_axis=1 if units > 0 else -1,
-                yaw_delta_px=0,
-                hold_ms=hold_ms,
-                requested_deg=0.0,
-                expected_deg=0.0,
-            )
-            self._hold_until_s = now + hold_ms / 1000.0
-        else:
+        if backend is not TurnBackend.ARROW_KEYS:
             delta = max(-self.MAX_PROBE_UNITS, min(self.MAX_PROBE_UNITS, units))
-            plan = TurnPlan(backend, 0, delta, 0, 0.0, 0.0)
-            self._hold_until_s = now
-        command = NavigationCommand(
-            generation=self._context.generation,
-            source_frame_sequence=frame.sequence,
-            source_captured_at_s=frame.captured_at_s,
-            forward_axis=0,
-            lateral_axis=0,
-            jump=False,
-            yaw_delta_px=plan.yaw_delta_px,
-            turn_axis=plan.turn_axis,  # type: ignore[arg-type]
-            issued_at_s=now,
-            valid_until_s=min(
-                now + max(0.05, plan.hold_ms / 1000.0), frame.captured_at_s + 0.1
-            ),
-            reason=f"setup probe: {backend.label} {units:+d}",
-            kind=CommandKind.ALIGN,
-        )
-        outcome = session.apply_navigation_command(command, envelope.evidence_token)
-        if not outcome.applied:
-            self._context.on_status(f"probe refused: {outcome.detail}")
+            outcome = self._issue(
+                forward_axis=0,
+                turn_axis=0,
+                yaw_delta_px=delta,
+                reason=f"setup probe: {backend.label} {units:+d}",
+            )
+            if outcome is None or not outcome.applied:
+                detail = "no frame yet" if outcome is None else outcome.detail
+                self._context.on_status(f"probe refused: {detail}")
+                return False
+            self._held = backend_value
+            self._hold_until_s = monotonic_s()
+            return True
+
+        axis = 1 if units > 0 else -1
+        hold_ms = min(self.MAX_PROBE_HOLD_MS, max(1, abs(units)))
+        reason = f"setup probe: {backend.label} {units:+d}"
+        outcome = self._issue(forward_axis=0, turn_axis=axis, yaw_delta_px=0, reason=reason)
+        if outcome is None or not outcome.applied:
+            detail = "no frame yet" if outcome is None else outcome.detail
+            self._context.on_status(f"probe refused: {detail}")
             return False
         self._held = backend_value
+        deadline = monotonic_s() + hold_ms / 1000.0
+        self._hold_until_s = deadline
+        # Renew against every newer frame until the requested hold has elapsed.
+        # Bounded twice over: by this deadline, and by the authority's rolling
+        # horizon, which lifts the key if a renewal ever stops arriving.
+        while monotonic_s() < deadline and not self._context.cancellation.is_cancelled():
+            if self._refresh_frame(timeout_s=0.05) is None:
+                continue
+            renewal = self._issue(forward_axis=0, turn_axis=axis, yaw_delta_px=0, reason=reason)
+            if renewal is None or not renewal.applied:
+                break
+        self.release_turn()
         return True
+
+    def _refresh_frame(self, *, timeout_s: float) -> CapturedFrame | None:
+        """Adopt the next frame without running perception on it.
+
+        A renewal needs a strictly newer frame and nothing else; running the
+        detector on every frame of a 300 ms hold would spend the hold's whole
+        budget on work the probe does not use.
+        """
+        envelope = self._context.frames.wait_for_new(self._sequence, timeout_s)
+        if envelope is None:
+            return None
+        frame = envelope.frame
+        self._sequence = frame.sequence
+        self._latest_frame = frame
+        self._envelope = envelope
+        return frame
 
     def release_turn(self) -> None:
         session = self._context.navigation

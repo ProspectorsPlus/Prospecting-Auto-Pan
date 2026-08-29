@@ -25,7 +25,7 @@ import os
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -408,6 +408,15 @@ class NavigationInputSession:
     ``apply_navigation_command`` atomically validates an authority-issued
     ``EvidenceToken`` before translating the accepted axes/jump/yaw into
     bounded leases. There is no generic hold/tap/pointer method here.
+
+    **A key is held by renewing, never by asking for a long lease.** No single
+    command may outlive its own evidence, so the longest hold one command can
+    express is ``evidence_budget_s`` minus the age the frame already had when
+    the decision was taken - about 80 ms in practice. That is a tap. A hold is
+    the same command re-issued against each newer frame: the authority renews
+    the existing lease and emits no second down-edge, so the key stays
+    physically down for as long as fresh frames keep arriving, and the deadman
+    still lifts it within one rolling horizon of the last renewal.
     """
 
     def __init__(self, authority: InputAuthority, generation: int) -> None:
@@ -417,6 +426,15 @@ class NavigationInputSession:
     @property
     def generation(self) -> int:
         return self._generation
+
+    @property
+    def evidence_budget_s(self) -> float:
+        """The longest a command's lease may outlive the frame that justified it.
+
+        Exposed so a caller can build a command the authority will actually
+        accept instead of discovering the bound as a rejection.
+        """
+        return self._authority.config.max_evidence_age_ms / 1000.0
 
     def apply_navigation_command(
         self, command: NavigationCommand, evidence: EvidenceToken
@@ -468,6 +486,11 @@ class InputAuthority:
 
         self._leases: dict[int, _ActiveLease] = {}
         self._lease_ids = itertools.count(1)
+        #: target -> when its lease last ended. A hold that is meant to be
+        #: continuous and is re-pressed instead is the difference between
+        #: walking and shuffling, and it is invisible unless counted.
+        self._released_at_s: dict[str, float] = {}
+        self._hold_lapses: dict[str, int] = {}
 
         self._release_uncertain = False
         self._release_uncertain_reason: str | None = None
@@ -848,7 +871,51 @@ class InputAuthority:
         self._lifecycle.note(
             LifecycleStage.LEASE_HELD, target, target=target, lease_id=lease_id
         )
+        self._note_press(target, now)
         return handle
+
+    #: A re-press this soon after a release is a hold that lapsed, not a new
+    #: intention. Comfortably longer than one frame at the slowest cadence the
+    #: navigator will steer at, so an ordinary stop-and-start is not counted.
+    HOLD_LAPSE_WINDOW_S = 0.5
+
+    def _note_press(self, target: str, now_s: float) -> None:
+        """Count a down edge that re-presses a key which had just been held.
+
+        The lease window a single command may ask for is the evidence budget
+        minus the age the frame already had. If frames arrive further apart
+        than that, the lease expires before its renewal arrives, the watchdog
+        lifts the key, and the next command presses it again - so a hold that
+        is meant to be continuous comes out as a rattle. That is not something
+        to fix by lengthening the lease, which is a safety bound; it is
+        something to *see*, so it is counted and named here.
+        """
+        released = self._released_at_s.pop(target, None)
+        if released is None or now_s - released > self.HOLD_LAPSE_WINDOW_S:
+            return
+        with self._lock:
+            self._hold_lapses[target] = self._hold_lapses.get(target, 0) + 1
+            count = self._hold_lapses[target]
+        self._lifecycle.note(
+            LifecycleStage.HOLD_LAPSED,
+            f"{target} was re-pressed {(now_s - released) * 1000.0:.0f} ms after it came up",
+            target=target,
+            gap_ms=round((now_s - released) * 1000.0, 1),
+            lapses=count,
+        )
+
+    @property
+    def hold_lapses(self) -> Mapping[str, int]:
+        """Per target, how often a continuous hold came up and was re-pressed."""
+        with self._lock:
+            return dict(self._hold_lapses)
+
+    def describe_holds(self) -> str:
+        lapses = self.hold_lapses
+        if not lapses:
+            return "no held key has lapsed"
+        worst = ", ".join(f"{target} x{count}" for target, count in sorted(lapses.items()))
+        return f"re-pressed after lapsing: {worst}"
 
     def _emit_down(self, key: InputKey | None, button: MouseButton | None) -> None:
         if key is not None:
@@ -901,6 +968,7 @@ class InputAuthority:
             if entry is not None:
                 try:
                     self._emit_up(entry.handle.key, entry.handle.button)
+                    self._released_at_s[entry.target] = monotonic_s()
                     self._lifecycle.note(
                         LifecycleStage.W_RELEASE_POSTED, entry.target, target=entry.target
                     )
@@ -925,6 +993,7 @@ class InputAuthority:
                 attempted.append(entry.target)
                 try:
                     self._emit_up(entry.handle.key, entry.handle.button)
+                    self._released_at_s[entry.target] = monotonic_s()
                 except Exception as exc:
                     failures.append(f"{entry.target}:{exc!r}")
 

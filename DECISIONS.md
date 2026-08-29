@@ -1699,3 +1699,72 @@ session, so the edge and chord counts are there too. A count that never moves
 is a listener hearing nothing, whatever its state says.
 
 **Deviation:** none.
+
+---
+
+## D-060 — 2026-08-28 — Every probe was a tap, because a lease may not outlive its evidence
+
+**Plan text:** §4.3, §4.5, §9.1.
+
+**Reported by the owner, from watching it:** *"I think it taps the keys too
+fast, like W and > and all those should be held, not rapidly tapped, because it
+taps it so fast and for so short it either doesn't register or moves like 10
+atoms forwards."*
+
+**Decision:** a probe holds a key by **renewing it against each newer frame**,
+exactly as ordinary navigation does. `key_probe_ms` becomes
+`(60, 100, 160, 240, 320)` and the acceptance pulse becomes 320 ms.
+
+**Why:** the observation is correct, and the mechanism is a rule that was doing
+its job in a place nobody had checked. `apply_navigation_command` refuses a
+command whose lease outlives its evidence:
+
+```
+if command.valid_until_s > token.captured_at_s + max_evidence_age_s:
+    return REJECTED_EVIDENCE, "command lease exceeds evidence age"
+```
+
+`max_evidence_age_ms` is 100, and the frame a decision is taken on is already
+20-45 ms old — the measured `capture_to_observation_ms` in
+`stop-epoch7-1886181997.jsonl` is **44.86 ms**. So the longest hold a *single*
+command can express is 55-80 ms. Every camera probe was one command. The
+ladder's top rungs were therefore unreachable: 85 ms and 100 ms sent the same
+short press as 60 ms, and `TurnLimits.key_probe_ms` even carried a comment
+explaining that 100 was the ceiling *because* of this. A camera that needs a
+real press to move could not answer any rung, the backend was written off as
+unproven, and the stage timed out — which is the 33-second failure in D-052,
+arriving by a second route.
+
+Worse, and found by chasing the same observation: **the acceptance pulse I had
+just written asked for 160 ms from one command, so it was rejected outright.**
+It would have reported `NO_LEASE` on every real run without ever pressing W.
+The prologue test passed because the fake session did not enforce the evidence
+rule — a fake laxer than the thing it stands in for, which is worse than no
+fake at all. It enforces it now.
+
+Steady-state navigation was never affected: `_translate_navigation` renews an
+existing lease rather than releasing and re-acquiring, and the steering
+follower explicitly keeps a turn key down across frames rather than re-pressing
+it. The defect was entirely in the *probes*, which had no renewal because each
+was a single command.
+
+**No safety bound was loosened.** A renewal still requires a strictly newer
+accepted frame, still revalidates focus, viewport, cancellation and capture
+freshness, and is still capped by `max_rolling_lease_horizon_ms`; the deadman
+lifts the key within one horizon of the last renewal. The hold is bounded twice
+over — by the probe's own deadline and by that horizon — and released in a
+`finally` on every path.
+
+**A tightness this exposes and does not fix.** The per-command window is
+`max_evidence_age_ms` minus the frame's age. With 45 ms of pipeline latency
+that is ~55 ms, so a renewal chain only stays continuous while frames arrive
+faster than that — about 18 fps, against a `qualify_min_fps` of 20. There is no
+margin. Lengthening the lease would be weakening a safety bound and is
+explicitly out of scope, so instead the *consequence* is counted:
+`InputAuthority` records a `HOLD_LAPSED` event whenever a key is re-pressed
+within 500 ms of coming up, and the drawer shows the tally. A hold that is
+rattling now says so.
+
+**Deviation:** the mission specified a 120-200 ms acceptance pulse. It is 320
+ms, on the owner's report above and because the renewal chain is what makes a
+press that long expressible at all.

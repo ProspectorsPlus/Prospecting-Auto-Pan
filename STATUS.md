@@ -5,10 +5,11 @@ Per-phase and per-gate status. Three columns, because they fail independently
 and what needs Windows hardware.
 
 Last updated: 2026-08-28 (seventh pass, native movement recovery). Development
-machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0. **No Roblox session was
-operated and navigation was never armed during implementation; no input was
-sent.** The fifth pass did resize the Roblox window, which is the fit stage
-doing its job, and restored it every time — measured below.
+machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
+**No Roblox session was operated and navigation was never armed during
+implementation; no input was sent.** The fifth pass did resize the Roblox
+window, which is the fit stage doing its job, and restored it every time —
+measured below.
 
 ---
 
@@ -27,6 +28,7 @@ of them not what it was reported to be.
 | Motion is evaluated on the same pre-command frame, and `abs(speed) > 0` counts noise | Confirmed, both, in one line | `ForwardMotionWitness`: post-edge frames only, threshold measured from this session's idle noise (D-053) |
 | The GUI says movement is being sent for every LIVE state | Confirmed: `Navigating. Press Stop at any time.` for the whole input-free prologue | each armed stage has its own sentence, with a test that every one has one (D-055) |
 | Stop JSONL omits the hotkey, arm, worker, prologue, OS-edge, lease and motion lifecycle | Confirmed: every stop trace in `logs/` contains exactly `frame`, `preview`, `governor` | sixteen named stages, appended with the raw event stream (D-054) |
+| The keys are tapped, not held — *"it taps it so fast and for so short it either doesn't register or moves like 10 atoms forwards"* (owner) | **Confirmed, and it explains the camera stage too.** A command may not outlive its evidence, and the frame a decision is taken on is already 20–45 ms old (measured `capture_to_observation_ms` 44.86), so the longest hold a *single* command can express is 55–80 ms. Every camera probe was one command, so `key_probe_ms`'s top rungs were unreachable and all sent the same short press. The acceptance pulse written earlier in this pass asked 160 ms of one command and was **rejected outright** — it would never have pressed W at all | probes hold by renewing against each newer frame, as navigation already does; ladder raised to 60–320 ms, pulse to 320 ms (D-060) |
 | The tracker blacks out after fast movement | Confirmed and reproduced to the millisecond at 60 fps: 100 px → 67 ms, 180 px → 233 ms, 250 px → 367 ms, 400 px → 567 ms + a new identity; scale 70→160 → 567 ms + a new identity | `_resume_outside_gate` (D-058) |
 
 ### What was measured, before and after
@@ -64,6 +66,14 @@ Corpus totals, unchanged: recall 80.2%, absent-precision 90.0%, false-lock
   sessions at 60 fps; `green_arrow_v1` has seven owner crops and the committed
   real corpus is yellow-only at 1–5 fps. This is a missing-recording blocker,
   not a missing-code one.
+* **A tightness this pass exposed and deliberately did not fix.** The lease
+  window one command may ask for is `max_evidence_age_ms` minus the frame's
+  age — about 55 ms with the measured pipeline latency — so a renewal chain
+  stays continuous only while frames arrive faster than that, roughly 18 fps
+  against a `qualify_min_fps` of 20. There is no margin. Lengthening the lease
+  would be weakening a safety bound, so instead the consequence is counted: a
+  key re-pressed within 500 ms of coming up raises `HOLD_LAPSED`, and the
+  drawer shows the tally. A hold that is rattling now says so.
 * **A detector weakness this pass did not fix:** a same-coloured blob landing
   near the arrow's last position is accepted by the ordinary positional gate.
   Two of nine rendered clutter layouts show it, with resuming off as well as

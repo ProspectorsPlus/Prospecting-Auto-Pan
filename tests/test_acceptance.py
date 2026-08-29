@@ -102,14 +102,18 @@ def _probe(
     port: FakePort, journal: LifecycleJournal, **overrides: object
 ) -> InputAcceptanceProbe:
     port.journal = journal
-    config = AcceptanceConfig(
-        idle_samples=6,
-        min_idle_samples=4,
-        min_post_edge_samples=3,
-        idle_deadline_s=2.0,
-        post_edge_deadline_s=2.0,
-        **overrides,  # type: ignore[arg-type]
-    )
+    defaults: dict[str, object] = {
+        "idle_samples": 6,
+        "min_idle_samples": 4,
+        "min_post_edge_samples": 3,
+        "idle_deadline_s": 2.0,
+        "post_edge_deadline_s": 2.0,
+        # Short by default: the tests about *classification* should not each
+        # wait out a real pulse. The one test about the pulse's length asks
+        # for a real one.
+        "pulse_ms": 1,
+    }
+    config = AcceptanceConfig(**{**defaults, **overrides})  # type: ignore[arg-type]
     return InputAcceptanceProbe(port, journal, config=config)
 
 
@@ -269,3 +273,24 @@ def test_cancellation_stops_collecting_and_still_releases() -> None:
     result = probe.run()
     assert result.outcome is AcceptanceOutcome.INSUFFICIENT_EVIDENCE
     assert port.holding is False
+
+
+def test_the_key_is_held_for_the_whole_pulse_not_until_the_frames_arrive() -> None:
+    """A press as short as the pipeline is fast is the tap this exists to stop.
+
+    Collecting until the sample count is satisfied made the hold's length a
+    property of how quickly frames happened to arrive - a few milliseconds on
+    a fast machine. The pulse duration is the bound that matters, because it
+    is the one the game has to act on.
+    """
+    journal = LifecycleJournal()
+    port = FakePort(idle_speeds=list(STILL) * 4, moving_speeds=list(WALKING) * 20)
+    probe = _probe(port, journal, pulse_ms=250, post_edge_deadline_s=3.0)
+    started = monotonic_s()
+    result = probe.run()
+    elapsed_s = monotonic_s() - started
+    assert result.outcome is AcceptanceOutcome.MOVED
+    assert elapsed_s >= 0.25, f"the pulse lasted {elapsed_s * 1000:.0f} ms"
+    # ...and it did not simply run to the deadline either.
+    assert elapsed_s < 3.0
+    assert port.released, "forward was still held"

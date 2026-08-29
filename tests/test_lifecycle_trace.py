@@ -192,3 +192,63 @@ def test_a_near_miss_is_recorded_because_it_is_the_useful_one(harness: Any) -> N
         if event.stage is LifecycleStage.PHYSICAL_EDGE_RECEIVED
     ]
     assert events and events[-1].fields["key"] == "n"
+
+
+# ---------------------------------------------------------------------------
+# A hold that comes up and is pressed again is a rattle, and it is counted
+# ---------------------------------------------------------------------------
+
+
+def test_a_hold_that_lapses_and_is_re_pressed_is_counted_and_named(harness: Any) -> None:
+    """The difference between walking and shuffling, made visible.
+
+    A single command's lease may not outlive its evidence, so the window it can
+    ask for is the budget minus the age the frame already had. If frames arrive
+    further apart than that, the lease expires before its renewal, the watchdog
+    lifts the key, and the next command presses it again - a hold that is meant
+    to be continuous comes out as a rattle.
+
+    Lengthening the lease would be weakening a safety bound. Counting it is
+    not, and a count that climbs during a run is the symptom named.
+    """
+    harness.start()
+    harness.authority.activate_generation(1, emits_input=True, requires_capture=False)
+    session = harness.authority.service_session(1)
+
+    lease = session.hold_key(InputKey.W, 200)
+    assert lease is not None
+    assert harness.authority.hold_lapses == {}
+    session.release(lease)
+
+    # Pressed again immediately: this is the same hold, interrupted.
+    again = session.hold_key(InputKey.W, 200)
+    assert again is not None
+    assert harness.authority.hold_lapses.get("w") == 1
+    assert "re-pressed after lapsing" in harness.authority.describe_holds()
+
+    lapsed = [
+        event
+        for event in harness.authority.lifecycle.events()
+        if event.stage is LifecycleStage.HOLD_LAPSED
+    ]
+    assert lapsed and lapsed[-1].fields["target"] == "w"
+    assert lapsed[-1].fields["gap_ms"] >= 0.0
+    session.release_all("test")
+
+
+def test_a_deliberate_stop_and_start_is_not_counted_as_a_lapse(harness: Any) -> None:
+    """Only a re-press *soon* after a release is a hold that broke."""
+    harness.start()
+    harness.authority.activate_generation(1, emits_input=True, requires_capture=False)
+    session = harness.authority.service_session(1)
+    authority = harness.authority
+
+    lease = session.hold_key(InputKey.W, 200)
+    assert lease is not None
+    session.release(lease)
+    # Pretend the release happened well outside the window.
+    authority._released_at_s["w"] = monotonic_s() - authority.HOLD_LAPSE_WINDOW_S - 1.0
+    again = session.hold_key(InputKey.W, 200)
+    assert again is not None
+    assert authority.hold_lapses == {}
+    session.release_all("test")

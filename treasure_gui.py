@@ -1093,6 +1093,7 @@ class Dashboard:
                 "capabilities": self.app.capabilities.describe(),
                 "build": self.build.describe(),
                 "hotkeys": self._hotkey_health(),
+                "holds": self.app.authority.describe_holds(),
             },
         )
 

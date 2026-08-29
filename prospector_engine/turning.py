@@ -162,16 +162,19 @@ class TurnLimits:
 
     #: Probe magnitudes, smallest first, in the backend's own units.
     mouse_probe_units: tuple[int, ...] = (6, 12, 24, 48, 96)
-    #: Key-hold probes are capped at what **one** evidence-bound lease can
-    #: hold. During characterization a probe is a single command with no
-    #: renewal - there is no accepted newer frame to renew it with, because the
-    #: whole point is to observe the frames that follow it - so a request
-    #: longer than ``AuthorityConfig.max_evidence_age_ms`` would silently be
-    #: cut short and the measured gain would be wrong by whatever fraction was
-    #: lost. A camera that needs more than 100 ms of held key to move at all
-    #: fails this backend and falls through to mouse yaw, which is the honest
-    #: outcome (D-038).
-    key_probe_ms: tuple[int, ...] = (25, 40, 60, 85, 100)
+    #: Key-hold probes, smallest first. These used to stop at 100 ms because
+    #: a probe was one command and no command may outlive its evidence, so
+    #: anything past ``AuthorityConfig.max_evidence_age_ms`` was silently cut
+    #: short - and from a frame already 20 ms old the real ceiling was nearer
+    #: 80 ms. Every probe in the ladder was therefore a tap, and a camera that
+    #: needs a real press to move could not answer any of them; the backend was
+    #: then written off as unproven and the whole stage timed out (D-060).
+    #:
+    #: A probe now *holds* the key by renewing it against each newer frame, so
+    #: these are reachable durations again. The ladder still starts small and
+    #: escalates only while the camera has not moved, so a sensitive camera
+    #: never sees the long ones.
+    key_probe_ms: tuple[int, ...] = (60, 100, 160, 240, 320)
     #: Rotation below which a probe counts as "the camera did not move".
     min_observable_deg: float = 1.2
     #: Rotation above which a probe is discarded as contaminated - the player

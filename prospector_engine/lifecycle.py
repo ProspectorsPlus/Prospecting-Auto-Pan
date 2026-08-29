@@ -20,6 +20,7 @@ then read out of one file rather than guessed at:
 ``OS_EDGE_POSTED``               the post call returned without raising
 ``OS_EDGE_LOOPBACK_OBSERVED``    the OS agrees the key is down
 ``LEASE_HELD``                   the authority holds the lease it reports
+``HOLD_LAPSED``                  a held key came up and had to be pressed again
 ``POST_EDGE_FRAME_OBSERVED``     a frame captured *after* the down edge exists
 ``GAME_MOTION_CONFIRMED``        that frame shows the world moved
 ``W_RELEASE_POSTED``             the up edge went out
@@ -70,6 +71,7 @@ class LifecycleStage(Enum):
     OS_EDGE_LOOPBACK_OBSERVED = "os_edge_loopback_observed"
     OS_EDGE_LOOPBACK_MISSING = "os_edge_loopback_missing"
     LEASE_HELD = "lease_held"
+    HOLD_LAPSED = "hold_lapsed"
     POST_EDGE_FRAME_OBSERVED = "post_edge_frame_observed"
     GAME_MOTION_CONFIRMED = "game_motion_confirmed"
     GAME_MOTION_NOT_CONFIRMED = "game_motion_not_confirmed"
