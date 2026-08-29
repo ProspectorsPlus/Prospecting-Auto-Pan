@@ -13,6 +13,62 @@ measured below.
 
 ---
 
+## MOVEMENT IS STILL BROKEN — read this first (2026-08-29)
+
+**The character still does not move.** The owner confirmed this after the ninth
+pass rebuilt the whole movement path. Do not treat anything below as a fix that
+worked; treat it as ground that has been cleared.
+
+### Ruled out, by measurement, not by argument
+
+| Claim | How it was ruled out |
+|---|---|
+| macOS blocks us / the laptop is at fault | Posting keycode 105 (F13) through Treasure's own `platform_mac._post`, with Roblox frontmost, and reading it back with `CGEventSourceKeyState`: `before False -> down True -> up False`. `CGPreflightPostEventAccess()` is `True`. |
+| The Quartz call or the keycodes are wrong | Byte-identical to Prospector Lite's: `CGEventCreateKeyboardEvent(None, code, bool)` posted to `kCGHIDEventTap`, and W is 13 in both. Asserted in `tests/test_platform_contract.py`. |
+| The actuator cannot press | `tests/test_movement.py::test_the_real_platform_port_actually_presses_a_key` (marked `native`) drives the real `MacPlatformPort` through the real actuator and reads the edge back off the window server. It passes. |
+
+So the process **can** put a key down on this machine. What has never been
+observed is that key reaching **Roblox**: `GAME_MOTION_CONFIRMED` has still
+never appeared in any trace.
+
+### Already removed — do not go looking for these again
+
+Nine separate conditions that each stopped a healthy machine were found and
+removed in passes eight and nine. The ones that mattered most (all in D-062,
+D-065, D-067):
+
+* the hidden two-gesture arm (`live.refused: no arm token`);
+* `release_all` closing admission, so the first ordinary "stop walking" muted
+  the session permanently — *and* `release_navigation` was wired to it;
+* `DeadmanHelper.release_all` bumping its own generation, so every later
+  registration returned `stale-generation`;
+* `release_navigation("prologue-complete")` tripping both of the above on the
+  success path of every healthy start, before the first navigation frame;
+* the processed-fps gate reading 0.0 on the first two frames and releasing;
+* `cursor_safe` and the focus probe both treating **unknown** as a refusal,
+  when the macOS probes return `None` on any error or ambiguity.
+
+### Where to start
+
+1. Run the app and read the **WHAT IT IS DOING** panel. It is a plain-English
+   running commentary and it is the point of the ninth pass: whatever stops
+   movement now should have a sentence in it. If it does not, that gap is
+   itself the bug — the sentence belongs where the reasoning is.
+2. `treasure.py --forward-probe 600` with Roblox frontmost. It presses W once,
+   holds it, and prints the causal chain naming the first missing transition.
+   **This is the only command that sends input.**
+3. The next unproven link is the one between `OS_EDGE_POSTED` and the game.
+   Worth checking before anything else: whether Roblox accepts synthetic HID
+   events at all in the current client/build, and whether Lite's *sequence*
+   around a press (window activation, a click into the client first, timing)
+   differs from ours. Lite works on this machine, so a difference exists and it
+   is no longer in the primitive.
+
+Nothing in `prospector_engine/movement.py` has been validated against a real
+character. Its unit and native tests prove it presses keys, not that it walks.
+
+---
+
 ## What changed on 2026-08-28 (eighth pass) — the gesture nobody was told about
 
 ### The root cause, read out of four traces
