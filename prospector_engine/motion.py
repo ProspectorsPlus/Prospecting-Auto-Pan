@@ -271,6 +271,11 @@ class LocomotionBaseline:
     min_forward_speed_norm: float | None
     status: EvidenceStatus
     provenance: Provenance
+    #: The unobstructed speed the threshold was derived from. Carried so a
+    #: dashboard can say "38% of walking speed" rather than quoting a
+    #: normalized number nobody can interpret. ``None`` for a baseline that
+    #: never measured one.
+    reference_speed_norm: float | None = None
 
     #: Samples required before a runtime baseline may be minted at all.
     MIN_RUNTIME_SAMPLES = 12
@@ -316,6 +321,7 @@ class LocomotionBaseline:
         return cls(
             condition_id=f"runtime:{condition}",
             min_forward_speed_norm=median * cls.RUNTIME_STALL_FRACTION,
+            reference_speed_norm=median,
             status=EvidenceStatus.VALIDATED,
             provenance=Provenance(
                 status=EvidenceStatus.VALIDATED,
@@ -390,6 +396,11 @@ class ContactMonitor:
 
     def note_yaw(self, at_s: float) -> None:
         self._last_yaw_s = at_s
+
+    def recently_yawed(self, now_s: float, holdoff_ms: float) -> bool:
+        """Whether a camera movement is still contaminating motion evidence."""
+        last = self._last_yaw_s
+        return last is not None and (now_s - last) * 1000.0 < holdoff_ms
 
     def reset(self) -> None:
         self._since_s = None
@@ -576,14 +587,30 @@ class ProgressState(Enum):
 
 @dataclass(frozen=True)
 class ProgressVerdict:
-    """One guard decision, with the evidence and what to do about it."""
+    """One guard decision, with the evidence and what to do about it.
+
+    ``recover`` is deliberately not called ``release_forward`` any more, and
+    the rename records a behaviour change. The guard used to drop ``W`` on the
+    *suspicion* and then confirm from four stationary frames - so every
+    ambiguous patch of low-texture ground cost a stop, and the confirmation was
+    measured on a character that had already been told to stand still. It now
+    confirms from fresh evidence collected while forward is *still held*, and
+    what it recommends at the end of that is a recovery maneuver, not a stop.
+    The first thing that maneuver does is keep walking and jump.
+    """
 
     state: ProgressState
-    release_forward: bool
+    #: Begin obstacle recovery. Never merely "let go of W".
+    recover: bool
     confidence: float
     reason: str
     sustained_ms: float = 0.0
     observation: MotionObservation | None = None
+    #: Measured speed as a fraction of the baseline, when both are known.
+    ratio: float | None = None
+    #: Whether the judgement came from the relative fallback rather than from a
+    #: matured baseline. Carried so a trace can tell the two apart.
+    provisional: bool = False
 
     @property
     def blocked(self) -> bool:
@@ -627,16 +654,33 @@ class ProgressConfig:
     confirmation is never contaminated by the motion it is judging.
     """
 
-    #: Sustained low progress before forward is released. Short on purpose.
+    #: Sustained low progress before the guard suspects contact. Short on
+    #: purpose - but a suspicion no longer stops the character, so it is cheap.
     suspect_after_ms: int = 350
-    #: Fresh stationary evidence required after release before the guard will
-    #: call it confirmed.
-    confirm_frames: int = 4
+    #: Fresh **in-motion** samples required to turn a suspicion into a
+    #: recommendation. Collected while forward is still held, because the
+    #: question is whether the character is moving and the only way to observe
+    #: that is to still be telling it to.
+    confirm_frames: int = 3
     #: Forward must have been genuinely held at least this long before low
     #: progress means anything at all.
     min_applied_forward_ms: int = 250
     #: How long after a yaw pulse motion evidence stays untrustworthy.
     post_yaw_holdoff_ms: int = 250
+    #: Consecutive healthy samples that clear a standing suspicion.
+    clear_frames: int = 2
+
+    # -- the relative fallback ---------------------------------------------
+    #: Samples of held-forward speed the fallback needs before it will judge
+    #: anything. Below this it abstains, exactly as the baseline does.
+    fallback_min_samples: int = 10
+    #: Wall-clock span those samples must cover, so a burst inside one tenth of
+    #: a second cannot stand in for a walk.
+    fallback_min_span_s: float = 1.2
+    #: Fraction of the character's own recent median below which the fallback
+    #: calls it a collapse. Deliberately lower than the matured baseline's
+    #: stall fraction: an unproven reference earns a stricter test.
+    fallback_stall_fraction: float = 0.25
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
@@ -646,10 +690,60 @@ class ProgressConfig:
     )
 
 
+class RelativeProgressFallback:
+    """A conservative stall test for a run whose baseline has not matured.
+
+    The alternative was to disable obstacle recovery entirely until the runtime
+    estimator had collected its twelve clean samples - and since those samples
+    only arrive while the character is walking unobstructed, a route that met a
+    bush in its first few seconds had no recovery at all and simply stopped.
+
+    This is not a substitute for the baseline and never claims to be. It asks a
+    strictly weaker, strictly local question: *has this character's own speed
+    collapsed relative to what it was doing a moment ago?* It needs a real span
+    of samples before it will answer, it uses a harsher fraction than the
+    matured baseline because its reference is unproven, and every verdict it
+    produces is marked ``provisional`` so a trace can tell the two apart.
+    """
+
+    def __init__(self, config: ProgressConfig) -> None:
+        self._config = config
+        self._samples: deque[tuple[float, float]] = deque(maxlen=180)
+
+    @property
+    def samples(self) -> int:
+        return len(self._samples)
+
+    def reset(self) -> None:
+        self._samples.clear()
+
+    def observe(self, speed_norm: float, now_s: float) -> None:
+        """Record one trustworthy held-forward speed sample."""
+        self._samples.append((now_s, float(speed_norm)))
+
+    def reference(self) -> float | None:
+        """The character's own recent median speed, or ``None`` when unproven."""
+        config = self._config
+        if len(self._samples) < config.fallback_min_samples:
+            return None
+        span = self._samples[-1][0] - self._samples[0][0]
+        if span < config.fallback_min_span_s:
+            return None
+        ordered = sorted(speed for _, speed in self._samples)
+        median = ordered[len(ordered) // 2]
+        return median if median > 0.0 else None
+
+    def threshold(self) -> float | None:
+        reference = self.reference()
+        if reference is None:
+            return None
+        return reference * self._config.fallback_stall_fraction
+
+
 class ProgressGuard:
     """Conservative "is the character actually moving" evidence.
 
-    Three rules, and they are the whole design:
+    Four rules, and they are the whole design:
 
     * **Elapsed time can never declare an obstacle.** Holding ``W`` for two
       seconds is not evidence of a wall; measured low displacement with high
@@ -657,13 +751,20 @@ class ProgressGuard:
     * **Ambiguity abstains.** Low-texture scenes, poor spatial coverage and
       yaw-contaminated frames produce ``UNKNOWN``, which is not a reason to do
       anything.
-    * **Release first, confirm second.** A suspicion releases forward
-      immediately and only then gathers the stationary evidence that would
-      confirm it - so the confirmation is not measuring the motion it is
-      trying to judge.
+    * **Confirmation happens in motion.** A suspicion no longer drops ``W`` to
+      go and look. It used to, and the result was that every ambiguous stretch
+      of ground cost a stop *and* the confirming frames were collected from a
+      character that had already been told to stand still - which is not
+      evidence about whether it can move. The guard now gathers
+      ``confirm_frames`` further low-progress samples with forward still held,
+      and only then recommends anything.
+    * **An unproven baseline is not the same as no evidence.** Until the
+      runtime baseline matures the guard falls back to a strictly weaker,
+      strictly relative test against the character's own recent speed. That
+      keeps recovery available on the first bush of a run instead of switching
+      it off for the first twelve clean samples.
 
-    It recommends releasing. It never recommends a maneuver: there is no
-    recovery ladder, no detour and no jump in this pass.
+    It recommends *recovery*, which is a maneuver, and never merely a stop.
     """
 
     def __init__(
@@ -678,8 +779,12 @@ class ProgressGuard:
             baseline, ContactConfig(sustained_ms=self._config.suspect_after_ms)
         )
         self._ledger = ForwardCommandLedger()
+        self._fallback = RelativeProgressFallback(self._config)
         self._state = ProgressState.UNKNOWN
         self._confirm_frames = 0
+        self._clear_frames = 0
+        self._suspect_since_s: float | None = None
+        self._last_ratio: float | None = None
         self._history: deque[TraversabilityObservation] = deque(maxlen=240)
 
     @property
@@ -694,6 +799,21 @@ class ProgressGuard:
     def baseline(self) -> LocomotionBaseline:
         return self._baseline
 
+    @property
+    def fallback(self) -> RelativeProgressFallback:
+        return self._fallback
+
+    @property
+    def ratio(self) -> float | None:
+        """The last measured speed as a fraction of whichever reference held."""
+        return self._last_ratio
+
+    def stall_ms(self, now_s: float) -> float:
+        """How long the current suspicion has been accumulating."""
+        if self._suspect_since_s is None:
+            return 0.0
+        return max(0.0, (now_s - self._suspect_since_s) * 1000.0)
+
     def adopt_baseline(self, baseline: LocomotionBaseline) -> None:
         """Install a baseline measured after the guard was constructed.
 
@@ -703,12 +823,9 @@ class ProgressGuard:
         the applied-forward ledger intact across the transition.
         """
         self._baseline = baseline
-        self._contact = ContactMonitor(
-            baseline, ContactConfig(sustained_ms=self._config.suspect_after_ms)
-        )
 
     def history(self) -> tuple[TraversabilityObservation, ...]:
-        """The bounded record a future traversability grid will consume."""
+        """The bounded record the traversability memory consumes."""
         return tuple(self._history)
 
     def reset(self) -> None:
@@ -716,6 +833,9 @@ class ProgressGuard:
         self._ledger.clear()
         self._state = ProgressState.UNKNOWN
         self._confirm_frames = 0
+        self._clear_frames = 0
+        self._suspect_since_s = None
+        self._last_ratio = None
 
     def note_applied(self, now_s: float, *, forward: bool) -> None:
         self._ledger.note_applied(now_s, forward=forward)
@@ -732,11 +852,11 @@ class ProgressGuard:
         anchor_px: tuple[float, float] | None = None,
     ) -> ProgressVerdict:
         """One guard tick. Every uncertain path returns ``UNKNOWN``."""
-        config = self._config
         holding = self._ledger.holding()
         held_ms = self._ledger.held_continuously_for(now_s) * 1000.0
 
         verdict = self._decide(observation, now_s, holding, held_ms)
+        self._last_ratio = verdict.ratio
         self._history.append(
             TraversabilityObservation(
                 at_s=now_s,
@@ -749,8 +869,29 @@ class ProgressGuard:
                 note=verdict.reason,
             )
         )
-        del config
         return verdict
+
+    # -- internals ---------------------------------------------------------
+    def _trustworthy(self, observation: MotionObservation, now_s: float) -> str | None:
+        """Why this sample cannot be judged, or ``None`` when it can be."""
+        config = ContactConfig()
+        if not observation.valid or observation.forward_speed_norm is None:
+            return f"motion-invalid:{observation.abstain_reason}"
+        if observation.confidence < config.min_confidence:
+            return "low-confidence"
+        if observation.spatial_coverage < config.min_coverage:
+            return "poor-coverage"
+        if observation.yaw_contamination > config.max_yaw_contamination:
+            return "yaw-contaminated"
+        if self._contact.recently_yawed(now_s, self._config.post_yaw_holdoff_ms):
+            return "post-yaw-holdoff"
+        return None
+
+    def _threshold(self) -> tuple[float | None, bool]:
+        """The stall threshold in force, and whether it is the fallback's."""
+        if self._baseline.usable and self._baseline.min_forward_speed_norm is not None:
+            return (self._baseline.min_forward_speed_norm, False)
+        return (self._fallback.threshold(), True)
 
     def _decide(
         self,
@@ -763,101 +904,134 @@ class ProgressGuard:
         if observation is None:
             self._state = ProgressState.UNKNOWN
             return ProgressVerdict(self._state, False, 0.0, "no motion estimate on this frame")
-        if not self._baseline.usable:
-            self._state = ProgressState.UNKNOWN
-            return ProgressVerdict(
-                self._state,
-                False,
-                0.0,
-                "no locomotion baseline: E-MOTION has not been run",
-                observation=observation,
-            )
-
-        if self._state is ProgressState.NO_PROGRESS_SUSPECTED:
-            # Forward is already released. Confirmation is measured from fresh
-            # frames collected after that release, never from the ones that
-            # raised the suspicion.
-            return self._confirm(observation, now_s)
-
         if not holding:
+            # Nothing is being commanded, so nothing about progress can be
+            # concluded. The suspicion is dropped rather than carried into a
+            # period the character was not being asked to walk through.
             self._contact.reset()
+            self._suspect_since_s = None
+            self._confirm_frames = 0
             self._state = ProgressState.UNKNOWN
             return ProgressVerdict(
                 self._state, False, 0.0, "forward is not being held", observation=observation
             )
+
+        untrustworthy = self._trustworthy(observation, now_s)
+        if untrustworthy is not None:
+            # An absence of evidence, not evidence of progress. Neither the
+            # suspicion nor its confirmation may advance on it.
+            self._state = ProgressState.UNKNOWN
+            return ProgressVerdict(
+                self._state,
+                False,
+                observation.confidence,
+                f"motion evidence is not conclusive: {untrustworthy}",
+                sustained_ms=self.stall_ms(now_s),
+                observation=observation,
+            )
+
+        speed = float(observation.forward_speed_norm or 0.0)
+        threshold, provisional = self._threshold()
+        if held_ms >= config.min_applied_forward_ms:
+            # Every trustworthy held-forward sample feeds the fallback, whether
+            # or not a matured baseline is in force: a baseline can be adopted
+            # mid-run, and the fallback has to be ready before that happens.
+            self._fallback.observe(speed, now_s)
+
+        if threshold is None:
+            self._state = ProgressState.UNKNOWN
+            return ProgressVerdict(
+                self._state,
+                False,
+                observation.confidence,
+                (
+                    "no locomotion reference yet: "
+                    f"{self._fallback.samples} of {config.fallback_min_samples} samples"
+                ),
+                observation=observation,
+            )
+        reference = (
+            self._fallback.reference() if provisional else self._baseline.reference_speed_norm
+        )
+        ratio = speed / reference if reference else None
+
         if held_ms < config.min_applied_forward_ms:
             return ProgressVerdict(
                 ProgressState.UNKNOWN,
                 False,
-                0.0,
+                observation.confidence,
                 f"forward has only been held {held_ms:.0f} ms",
                 observation=observation,
+                ratio=ratio,
+                provisional=provisional,
             )
 
-        evidence = self._contact.update(observation, forward_commanded=True, now_s=now_s)
-        if evidence.contact:
-            # Release now; decide afterwards. Walking into something while
-            # deliberating is the outcome this ordering exists to prevent.
-            self._state = ProgressState.NO_PROGRESS_SUSPECTED
-            self._confirm_frames = 0
-            return ProgressVerdict(
-                self._state,
-                True,
-                observation.confidence,
-                "low progress while walking; releasing forward to confirm",
-                sustained_ms=evidence.sustained_ms,
-                observation=observation,
-            )
-        if evidence.reason == "progressing":
-            self._state = ProgressState.PROGRESSING
+        if speed >= threshold:
+            self._clear_frames += 1
+            if (
+                self._state is not ProgressState.NO_PROGRESS_SUSPECTED
+                or self._clear_frames >= config.clear_frames
+            ):
+                self._suspect_since_s = None
+                self._confirm_frames = 0
+                self._state = ProgressState.PROGRESSING
             return ProgressVerdict(
                 self._state,
                 False,
                 observation.confidence,
-                evidence.reason,
-                sustained_ms=evidence.sustained_ms,
+                "progressing",
                 observation=observation,
+                ratio=ratio,
+                provisional=provisional,
             )
-        # Anything else - accumulating, low confidence, poor coverage, yaw
-        # contamination, a post-yaw hold-off - is an absence of evidence, not
-        # evidence of progress. Reporting PROGRESSING here would let a
-        # camera-turn frame vouch for forward motion it cannot see.
-        self._state = ProgressState.UNKNOWN
-        return ProgressVerdict(
-            self._state,
-            False,
-            observation.confidence,
-            f"motion evidence is not conclusive: {evidence.reason}",
-            sustained_ms=evidence.sustained_ms,
-            observation=observation,
-        )
 
-    def _confirm(self, observation: MotionObservation, now_s: float) -> ProgressVerdict:
-        del now_s
-        if not observation.valid or observation.confidence < 0.5:
-            # Ambiguous evidence cannot confirm. The suspicion stands, forward
-            # stays released, and nothing escalates.
+        self._clear_frames = 0
+        if self._suspect_since_s is None:
+            self._suspect_since_s = now_s
+        sustained_ms = self.stall_ms(now_s)
+        if sustained_ms < config.suspect_after_ms:
+            self._state = ProgressState.UNKNOWN
             return ProgressVerdict(
                 self._state,
-                True,
+                False,
                 observation.confidence,
-                "waiting for usable evidence to confirm",
+                f"low progress accumulating ({sustained_ms:.0f} ms)",
+                sustained_ms=sustained_ms,
                 observation=observation,
+                ratio=ratio,
+                provisional=provisional,
             )
+
+        # Confirmation, in motion. Forward is still held, so these frames are
+        # evidence about a character that is being told to walk.
         self._confirm_frames += 1
-        if self._confirm_frames >= self._config.confirm_frames:
-            self._state = ProgressState.NO_PROGRESS_CONFIRMED
+        if self._confirm_frames < config.confirm_frames:
+            self._state = ProgressState.NO_PROGRESS_SUSPECTED
             return ProgressVerdict(
                 self._state,
-                True,
+                False,
                 observation.confidence,
-                "no forward progress confirmed from stationary evidence",
+                (
+                    f"contact suspected; confirming in motion "
+                    f"({self._confirm_frames}/{config.confirm_frames})"
+                ),
+                sustained_ms=sustained_ms,
                 observation=observation,
+                ratio=ratio,
+                provisional=provisional,
             )
+        self._state = ProgressState.NO_PROGRESS_CONFIRMED
+        source = "the character's own recent speed" if provisional else "the measured baseline"
         return ProgressVerdict(
             self._state,
             True,
             observation.confidence,
-            f"confirming ({self._confirm_frames}/{self._config.confirm_frames})",
+            (
+                f"no forward progress confirmed in motion against {source} "
+                f"({speed:.3f} vs {threshold:.3f})"
+            ),
+            sustained_ms=sustained_ms,
             observation=observation,
+            ratio=ratio,
+            provisional=provisional,
         )
