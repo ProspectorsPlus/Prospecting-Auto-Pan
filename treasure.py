@@ -8,6 +8,11 @@
     python treasure.py --calibrate    read client-relative pixels under the cursor
     python treasure.py --capture-probe  measure capture cost, read-only
     python treasure.py --setup-probe    run automatic setup, no input sent
+    python treasure.py --forward-probe  THE ONE MODE THAT SENDS INPUT: holds W
+                                      for a bounded pulse against the real
+                                      Roblox client and reports whether the
+                                      character moved. Roblox must be
+                                      frontmost. See the note below.
     python treasure.py --replay DIR   replay a recorded session, emits no input
     python treasure.py --detector-report [PROFILE] [--corpus DIR] [--json PATH]
                                       detector metrics on rendered stress frames,
@@ -17,7 +22,19 @@
                                       native capture and headless perception
                                       against the real Roblox window; no input
 
-Every offline mode is **mutually exclusive and bounded**: it never builds the
+``--forward-probe`` is the single exception to "no mode sends input", and it
+is deliberately loud about it. It exists because every earlier report of *"it
+does not move"* was unfalsifiable: one sentence covered a chord that never
+reached the coordinator, an edge that never reached the OS, a key the OS never
+registered, and a character walking into a wall. It presses ``W`` once, holds
+it by renewal for the configured pulse, watches the frames captured after the
+down edge, releases in a ``finally`` on every path, and prints the causal chain
+with the first stage that did not happen. It runs as a bounded SERVICE, so it
+needs the same positive focus, fresh capture, live watchdog, healthy deadman
+and empty ledger that Live needs, and it can neither start navigation nor
+outlive its own deadline.
+
+Every other mode is **mutually exclusive and bounded**: it never builds the
 dashboard, never starts the input authority or the deadman helper, writes
 its report, and exits with a meaningful status. ``--deadman`` is dispatched
 **before** Tk, OpenCV, capture, or engine code is imported (plan 4.5), so the
@@ -1068,6 +1085,152 @@ def _run_setup_probe(json_path: str | None = None, restore: bool = True) -> int:
                 print(f"  restored: {_settled_geometry(port).describe()}")
 
 
+def _run_forward_probe(pulse_ms: int = 600, json_path: str | None = None) -> int:
+    """Hold ``W`` once against the real client and say whether the world moved.
+
+    The one mode that emits input, and the reason it exists is that no earlier
+    evidence could distinguish these four failures from one another:
+
+    * the chord never reached the coordinator;
+    * the coordinator never authorized Live;
+    * the edge was posted and the OS never registered the key;
+    * the key was genuinely down and the character was against a wall.
+
+    They are four different repairs and they produced one sentence. This walks
+    the whole chain and prints the first stage that did not happen.
+
+    Bounds, all of them enforced elsewhere and merely *chosen* here:
+
+    * Roblox must be frontmost, capture must be fresh, the watchdog must be
+      running, the deadman must be healthy and the ledger must be empty -
+      because this runs as a SERVICE and that is the readiness a SERVICE needs.
+    * The pulse is clamped to ``_LiveControlPort.MAX_FORWARD_PULSE_MS``.
+    * ``W`` is released in the worker's ``finally``, again by the coordinator's
+      transition release, and again by the shutdown path. The held-lease ledger
+      is printed at the end so a person can see it is empty.
+    """
+    import json as _json
+    import time
+
+    from prospector_engine.application import build_application
+    from prospector_engine.contracts import IntentType, ModeResultKind, RunMode, monotonic_s
+    from prospector_engine.lifecycle import NATIVE_MOTION_PATH, LifecycleStage
+    from prospector_engine.navigation import _LiveControlPort
+
+    pulse_ms = max(1, min(int(pulse_ms), _LiveControlPort.MAX_FORWARD_PULSE_MS))
+    print("Forward probe - THIS SENDS ONE KEY PRESS TO ROBLOX")
+    print(f"  pulse: {pulse_ms} ms, released unconditionally on every exit path")
+
+    application = build_application()
+    started = monotonic_s()
+    result = None
+    try:
+        try:
+            application.deadman.start()
+        except Exception as exc:
+            print(f"  deadman unavailable: {exc!r} - the probe will refuse to press.")
+
+        if application.port.focus_state() is not True:
+            print("  Roblox is not the frontmost window. Focus it and run this again.")
+            return 2
+
+        application.enable_forward_probe(pulse_ms=pulse_ms)
+        application.capture.start()
+        coordinator = application.coordinator
+        coordinator.start()
+
+        # Automatic setup first: without a bound viewport and fresh frames
+        # there is nothing to measure motion against, and the readiness the
+        # probe needs would refuse it anyway.
+        coordinator.submit(coordinator.next_intent(IntentType.START_NAVIGATOR, "forward-probe"))
+        deadline = started + 120.0
+        while monotonic_s() < deadline:
+            progress = coordinator.setup_progress
+            if progress.stage.terminal and not coordinator.setup_active:
+                break
+            time.sleep(0.05)
+        progress = coordinator.setup_progress
+        print(f"  setup:  {progress.stage.value} - {progress.detail}")
+        if not progress.ok:
+            failure = progress.failure
+            if failure is not None:
+                print(f"  blocked: {failure.summary}. {failure.remedy}")
+            return 1
+
+        blocking = [b for b in coordinator.blockers() if b.status == "blocking"]
+        if blocking:
+            print(f"  blocked: {blocking[0].summary}. {blocking[0].remedy}")
+            return 1
+
+        coordinator.submit(coordinator.next_intent(IntentType.FORWARD_PROBE, "forward-probe"))
+        probe_deadline = monotonic_s() + 30.0
+        while monotonic_s() < probe_deadline:
+            if coordinator.mode is RunMode.SERVICE:
+                break
+            time.sleep(0.02)
+        while monotonic_s() < probe_deadline:
+            if coordinator.mode is not RunMode.SERVICE:
+                break
+            time.sleep(0.02)
+        result = coordinator.last_result
+
+        journal = application.authority.lifecycle
+        print()
+        print("  causal chain:")
+        for stage in NATIVE_MOTION_PATH:
+            reached = journal.reached(stage, since_s=started)
+            print(f"    {'reached ' if reached else 'MISSING '} {stage.value}")
+        missing = journal.first_missing(NATIVE_MOTION_PATH, since_s=started)
+        held_rows = [
+            row
+            for row in journal.rows()
+            if row["stage"] == LifecycleStage.W_HOLD_CONFIRMED.value
+        ]
+        held_ms = held_rows[-1].get("held_ms") if held_rows else None
+        print()
+        if held_ms is not None:
+            print(f"  measured hold: {held_ms} ms down-to-up")
+        if result is not None:
+            print(f"  outcome: {result.detail}")
+            for line in result.evidence:
+                print(f"    {line}")
+        edges = application.authority.edge_counts()
+        print(f"  OS edges: {edges[0]} down, {edges[1]} up")
+        print(f"  input edges held: {application.authority.held_targets()}")
+        if missing is not None:
+            print()
+            print(f"  FIRST MISSING TRANSITION: {missing.value}")
+            print("  Everything before it happened; nothing after it did.")
+
+        if json_path:
+            Path(json_path).write_text(
+                _json.dumps(
+                    {
+                        "pulse_ms": pulse_ms,
+                        "first_missing": None if missing is None else missing.value,
+                        "held_ms": held_ms,
+                        "down_edges": edges[0],
+                        "up_edges": edges[1],
+                        "held_after": list(application.authority.held_targets()),
+                        "outcome": None if result is None else result.detail,
+                        "evidence": [] if result is None else list(result.evidence),
+                        "lifecycle": list(journal.rows()),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            print(f"  wrote {json_path}")
+
+        moved = journal.reached(LifecycleStage.GAME_MOTION_CONFIRMED, since_s=started)
+        completed = result is not None and result.kind is ModeResultKind.COMPLETED
+        return 0 if (moved and completed) else 1
+    finally:
+        application.authority.release_all("forward-probe-exit")
+        application.capture.stop(2.0)
+        application.shutdown()
+
+
 def _run_calibrate() -> int:
     """Read the client-relative pixel under the cursor.
 
@@ -1301,6 +1464,7 @@ _MODES = (
     "--replay",
     "--capture-probe",
     "--setup-probe",
+    "--forward-probe",
     "--detector-report",
     "--soak",
     "--shadow-bench",
@@ -1376,6 +1540,12 @@ def main(argv: list[str] | None = None) -> int:
         if mode == "--setup-probe":
             return _run_setup_probe(
                 _option(arguments, "--json"), restore="--keep" not in arguments
+            )
+        if mode == "--forward-probe":
+            pulse = _positional_after(arguments, "--forward-probe")
+            return _run_forward_probe(
+                int(pulse) if pulse is not None else 600,
+                _option(arguments, "--json"),
             )
         if mode == "--detector-report":
             corpus = _option(arguments, "--corpus")

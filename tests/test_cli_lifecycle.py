@@ -146,3 +146,49 @@ def test_the_tracking_report_is_an_exclusive_bounded_mode() -> None:
     code, output, _elapsed = _run(["--tracking-report", "--soak"], timeout_s=60.0)
     assert code == 2
     assert "Choose one mode" in output
+
+
+def test_the_forward_probe_is_an_exclusive_mode() -> None:
+    """The one mode that sends input must never fall through into a window."""
+    import treasure
+
+    assert "--forward-probe" in treasure._MODES
+    code, output, _elapsed = _run(["--forward-probe", "--soak"], timeout_s=60.0)
+    assert code == 2
+    assert "Choose one mode" in output
+
+
+def test_the_forward_probe_worker_is_not_wired_into_the_application() -> None:
+    """It exists only in a process launched to run it.
+
+    ``build_application`` is the one composition root, and it deliberately
+    registers no worker for ``FORWARD_PROBE``. In the dashboard the intent
+    therefore resolves to "no worker" and cannot emit an edge, whatever
+    submits it (D-064).
+    """
+    import inspect
+
+    from prospector_engine.application import build_application
+    from prospector_engine.contracts import IntentType
+
+    source = inspect.getsource(build_application)
+    workers = source.split("workers: dict[IntentType, WorkerFactory] = {", 1)[1]
+    body = workers.split("}", 1)[0]
+
+    assert "FORWARD_PROBE" not in body
+    assert IntentType.FORWARD_PROBE.name == "FORWARD_PROBE"
+
+
+def test_only_the_forward_probe_cli_mode_enables_it() -> None:
+    """One caller, and it is the named flag."""
+    import inspect
+
+    import treasure
+    import treasure_gui
+    from prospector_engine import application
+
+    assert "enable_forward_probe" in inspect.getsource(treasure._run_forward_probe)
+    assert "enable_forward_probe" not in inspect.getsource(treasure_gui)
+    # Defined on Application, and called by nothing inside the engine.
+    engine_calls = inspect.getsource(application).count(".enable_forward_probe(")
+    assert engine_calls == 0

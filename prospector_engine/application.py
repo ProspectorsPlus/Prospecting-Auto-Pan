@@ -29,6 +29,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
+from prospector_engine.acceptance import AcceptanceConfig
 from prospector_engine.autosetup import (
     AutomaticSetup,
     CaptureSample,
@@ -72,6 +73,7 @@ from prospector_engine.input_authority import (
 from prospector_engine.navigation import (
     NavigationCapabilities,
     PerceptionPipeline,
+    make_forward_probe_worker,
     make_live_prologue,
     make_live_worker,
     make_shadow_worker,
@@ -394,11 +396,36 @@ class Application:
     #: prologue write into the same cell, so the dashboard and the workers
     #: cannot disagree about what has been measured.
     capabilities_provider: Callable[[], NavigationCapabilities]
+    #: The two factories the live prologue needs, exposed so a CLI mode can
+    #: build the bounded native movement check without a second copy of this
+    #: wiring. There is one composition root and this is it.
+    control_fingerprint: Callable[[], ControlFingerprint]
+    control_mode_probe: Callable[[CapturedFrame], ControlModeSample]
     #: The global chord listener, installed by ``main()``. Held here rather
     #: than as a local in ``main`` so the dashboard can *show* whether it is
     #: running: a listener that silently is not is indistinguishable from a
     #: hotkey that does nothing, and that was exactly the confusion.
     hotkeys: Any = None
+
+    def enable_forward_probe(self, *, pulse_ms: int) -> AcceptanceConfig:
+        """Register the bounded native movement check on *this* process only.
+
+        Called by ``treasure.py --forward-probe`` and by nothing else. The
+        dashboard never calls it, so in the dashboard ``FORWARD_PROBE``
+        resolves to "no worker" and cannot emit an edge. That is the gate: the
+        code path exists only in a process launched to run it (D-064).
+        """
+        config = replace(AcceptanceConfig(), pulse_ms=pulse_ms)
+        self.coordinator.register_worker(
+            IntentType.FORWARD_PROBE,
+            make_forward_probe_worker(
+                lambda: self.pipeline,
+                fingerprint_factory=self.control_fingerprint,
+                control_mode_probe=self.control_mode_probe,
+                config=config,
+            ),
+        )
+        return config
 
     @property
     def capabilities(self) -> NavigationCapabilities:
@@ -651,5 +678,7 @@ def build_application(profile_id: str = "green_arrow_v1") -> Application:
         profiles=profiles,
         turn_cache=turn_cache,
         capabilities_provider=capabilities_factory,
+        control_fingerprint=control_fingerprint,
+        control_mode_probe=probe,
     )
     return application

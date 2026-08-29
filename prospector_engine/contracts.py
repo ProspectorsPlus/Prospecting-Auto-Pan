@@ -1431,6 +1431,14 @@ class IntentType(Enum):
     #: release-only recovery handshake plan 4.4 requires before an unsafe-release
     #: latch can be cleared. It emits only up-edges.
     RECOVER_RELEASE = auto()
+    #: The bounded native movement check (mission section C, D-064). It is
+    #: *not* wired by :func:`~prospector_engine.application.build_application`:
+    #: only a process launched with ``treasure.py --forward-probe`` registers a
+    #: worker for it, so in the dashboard - and in every other process - it
+    #: resolves to "no worker" and does nothing. It runs as a bounded SERVICE,
+    #: so it needs the same positive focus, fresh capture, live watchdog,
+    #: healthy deadman and empty ledger that Live does.
+    FORWARD_PROBE = auto()
     #: Deviation from plan 3.2, recorded in DECISIONS.md (D-002). The legacy F3
     #: calibration read-out is preserved as a first-class intent so it flows
     #: through the coordinator like everything else. It samples pixels and shows

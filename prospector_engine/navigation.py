@@ -30,6 +30,7 @@ from enum import Enum
 from typing import Any
 
 from prospector_engine.acceptance import (
+    AcceptanceConfig,
     AcceptanceResult,
     ForwardMotionWitness,
     ForwardRequest,
@@ -101,6 +102,7 @@ __all__ = [
     "RecoveryLadder",
     "RecoveryLevel",
     "describe_decision",
+    "make_forward_probe_worker",
     "make_live_worker",
     "make_shadow_worker",
 ]
@@ -1726,6 +1728,74 @@ def make_live_worker(
     return worker
 
 
+def make_forward_probe_worker(
+    pipeline_factory: Callable[[], PerceptionPipeline],
+    *,
+    fingerprint_factory: Callable[[], Any],
+    control_mode_probe: Callable[[CapturedFrame], Any],
+    config: AcceptanceConfig | None = None,
+) -> Callable[[WorkerContext], ModeResult]:
+    """One bounded forward hold against the real client, and a causal answer.
+
+    This is the native acceptance check, and it exists because every earlier
+    report of "it does not move" was unfalsifiable: the same sentence covered a
+    chord that never reached the coordinator, an edge that never reached the
+    OS, a key the OS never registered, and a character that was walking into a
+    wall. It walks the whole chain and names the first stage that did not
+    happen.
+
+    It presses ``W`` exactly once, holds it by renewal for the configured
+    pulse, watches the frames captured *after* the down edge, and releases in a
+    ``finally`` on every path including the failures. It is registered only by
+    ``treasure.py --forward-probe``; nothing else in the application can reach
+    it.
+    """
+
+    def worker(context: WorkerContext) -> ModeResult:
+        if context.navigation is None:
+            return ModeResult(
+                ModeResultKind.FAILED, "the forward probe started without a live session"
+            )
+        pipeline = context.pipeline or pipeline_factory()
+        was_enabled = pipeline.motion_enabled
+        pipeline.motion_enabled = True
+        port = _LiveControlPort(
+            context,
+            pipeline,
+            fingerprint_factory=fingerprint_factory,
+            control_mode_probe=control_mode_probe,
+        )
+        probe = InputAcceptanceProbe(
+            port,
+            context.lifecycle,
+            config=config or AcceptanceConfig(),
+            cancelled=context.cancellation.is_cancelled,
+            on_progress=context.on_status,
+        )
+        try:
+            result = probe.run()
+        finally:
+            # Unconditional, on every path. A probe that returned a verdict
+            # while still holding W would be the worst possible outcome here.
+            port.release_forward("forward-probe-complete")
+            context.navigation.release_navigation("forward-probe-exit")
+            pipeline.motion_enabled = was_enabled
+        return ModeResult(
+            ModeResultKind.COMPLETED if result.ok else ModeResultKind.FAILED,
+            result.summary_line(),
+            evidence=(
+                f"outcome={result.outcome.value}",
+                f"idle_noise_norm={result.idle_noise_norm}",
+                f"threshold_norm={result.threshold_norm}",
+                f"moved_speed_norm={result.moved_speed_norm}",
+                f"post_edge_frames={result.post_edge_samples}",
+                f"leases_held={','.join(result.leases_held) or 'none'}",
+            ),
+        )
+
+    return worker
+
+
 @dataclass(frozen=True)
 class LivePrologueResult:
     """What the input-emitting setup stages concluded, before navigation began."""
@@ -1761,7 +1831,7 @@ class _LiveControlPort:
     MAX_PROBE_UNITS = 200
     #: The forward pulse may never be asked to hold longer than this, whatever
     #: the acceptance config says. A cap in the object that owns the edge.
-    MAX_FORWARD_PULSE_MS = 600
+    MAX_FORWARD_PULSE_MS = 700
 
     def __init__(
         self,

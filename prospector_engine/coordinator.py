@@ -777,6 +777,7 @@ class RuntimeCoordinator:
             IntentType.RESET_CHARACTER: self._on_service,
             IntentType.PAN_SWAP_TEST: self._on_service,
             IntentType.DIG_LOOP: self._on_service,
+            IntentType.FORWARD_PROBE: self._on_service,
             IntentType.PIXEL_INFO: self._on_service,
             IntentType.RECOVER_RELEASE: self._on_recover_release,
             IntentType.START_NAVIGATOR: self._on_start_navigator,
@@ -1243,8 +1244,14 @@ class RuntimeCoordinator:
             frames=self._capture,
             observer=NoInputSession() if mode is RunMode.SHADOW else None,
             navigation=(
+                # LIVE, and one explicitly named exception: the bounded native
+                # movement check needs the navigation path because measuring
+                # the navigation path is the whole of what it does. It is a
+                # SERVICE, so it passes exactly the readiness Live passes, and
+                # no process registers a worker for it unless it was launched
+                # with ``--forward-probe`` (D-064).
                 self._authority.navigation_session(self._generation)
-                if mode is RunMode.LIVE
+                if mode is RunMode.LIVE or key is IntentType.FORWARD_PROBE
                 else None
             ),
             service=(
