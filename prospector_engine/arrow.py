@@ -335,9 +335,17 @@ class DetectorConfig:
     min_sign_margin: float = 0.30
     #: Minimum total vote weight before agreement counts at all.
     min_sign_evidence: float = 0.5
-    #: Below this margin a reversal against the track's remembered polarity
-    #: is refused; the previous polarity is kept and the reversal counted.
+    #: Margin at which a reversal against the track's remembered polarity is
+    #: adopted on the spot. Below it the reversal has to be *sustained* for
+    #: ``reversal_latch_frames`` before it is believed - and until then the
+    #: reading abstains rather than being inverted.
     reversal_margin: float = 0.55
+    #: Consecutive frames a weakly-evidenced reversal must persist before it
+    #: is adopted. Walking past the target genuinely reverses the arrow, and
+    #: a guard with no way to accept that locks the navigator out of the
+    #: whole rear half of the compass - permanently, because the refused
+    #: heading is what the next frame is then compared against.
+    reversal_latch_frames: int = 3
 
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
@@ -2284,6 +2292,13 @@ class DirectionEstimator:
 
     def __init__(self, config: DetectorConfig | None = None) -> None:
         self._config = config or DetectorConfig()
+        #: Consecutive frames whose evidence wanted to reverse the remembered
+        #: polarity without being strong enough to do it on its own.
+        self._reversal_frames = 0
+
+    def reset(self) -> None:
+        """Forget the reversal latch. Called when the target identity changes."""
+        self._reversal_frames = 0
 
     def estimate(
         self,
@@ -2445,10 +2460,40 @@ class DirectionEstimator:
             previous_heading_deg is not None
             and abs(wrap_deg(heading - previous_heading_deg)) > 135.0
         )
-        if reversing and margin < config.reversal_margin:
-            heading = wrap_deg(heading + 180.0)
-            reversal_refused = True
-            details["polarity"] = f"reversal refused at margin {margin:.2f}"
+        if not reversing:
+            self._reversal_frames = 0
+        elif margin >= config.reversal_margin:
+            # Strong evidence needs no waiting.
+            self._reversal_frames = 0
+        else:
+            self._reversal_frames += 1
+            if self._reversal_frames < config.reversal_latch_frames:
+                # Weak evidence for a reversal, not yet sustained. Say so, and
+                # say nothing else.
+                #
+                # This used to *invert* the heading and return it as valid -
+                # the opposite of what every cue had just said, at the moment
+                # the cues were least trustworthy. Walking past the target
+                # reverses the arrow for real, so the guard fired exactly when
+                # it was wrong, and because the caller remembers the heading it
+                # was handed, the next frame compared against the inverted one
+                # and refused again. The navigator was locked out of the rear
+                # half of the compass for the rest of the run.
+                reversal_refused = True
+                details["polarity"] = (
+                    f"reversal seen {self._reversal_frames} of "
+                    f"{config.reversal_latch_frames} times at margin {margin:.2f}"
+                )
+                readings = _cue_readings(folded, weights, details)
+                return _direction_abstain(
+                    "reversal-pending",
+                    readings=readings,
+                    spread=spread,
+                    margin=90.0 * margin,
+                    reversal_refused=True,
+                )
+            details["polarity"] = f"reversal sustained over {self._reversal_frames} frames"
+            self._reversal_frames = 0
         readings = _cue_readings(folded, weights, details)
         readings += tuple(
             CueReading(
@@ -2461,7 +2506,10 @@ class DirectionEstimator:
             )
             for cue, sign, weight in votes
         )
-        if margin < config.min_sign_margin and not reversal_refused:
+        if margin < config.min_sign_margin:
+            # No ``and not reversal_refused`` here any more. That clause let the
+            # weakest evidence in the system through *because* it had just
+            # failed a stricter test, which is exactly backwards.
             return _direction_abstain(
                 "polarity", readings=readings, spread=spread, margin=90.0 * margin
             )
@@ -2564,6 +2612,7 @@ def _direction_abstain(
     readings: tuple[CueReading, ...] = (),
     spread: float = 0.0,
     margin: float = 0.0,
+    reversal_refused: bool = False,
 ) -> DirectionResult:
     return DirectionResult(
         observation=DirectionObservation(
@@ -2579,4 +2628,5 @@ def _direction_abstain(
         tip_px=None,
         tail_px=None,
         readings=readings,
+        reversal_refused=reversal_refused,
     )

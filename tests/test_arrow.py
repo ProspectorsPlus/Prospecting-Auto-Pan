@@ -707,3 +707,175 @@ def test_the_fixture_arrow_matches_the_measured_real_one() -> None:
 
     assert 0.80 <= solidity <= 0.98
     assert 0.40 <= area / (width * height) <= 0.72
+
+
+# ---------------------------------------------------------------------------
+# Walking past the target: the rear half of the compass
+# ---------------------------------------------------------------------------
+
+
+def _rear_arrow() -> tuple[object, float]:
+    """A well-formed arrow pointing behind the player, and its true heading."""
+    detector, estimator = _pair()
+    scene = render_scene(heading_deg=175.0, terrain="grass", scale_px=95.0, seed=3)
+    arrow, hypotheses = _acquire(detector, scene)
+    selected = _selected(hypotheses)
+    assert selected is not None
+    truth = estimator.estimate(
+        selected.features,  # type: ignore[attr-defined]
+        anchor_px=(640.0, 430.0),
+        forward_deg=0.0,
+        arrow_confidence=arrow.confidence,  # type: ignore[attr-defined]
+    ).observation
+    assert truth.valid and truth.error_deg is not None
+    return (selected, truth.error_deg)
+
+
+@pytest.mark.parametrize("heading", [0.0, 45.0, 90.0, 135.0, 180.0, -135.0, -90.0, -45.0])
+def test_an_arrow_is_read_correctly_all_the_way_round(heading: float) -> None:
+    """The whole compass, not the front half.
+
+    The owner reported the navigator never coping with an arrow roughly
+    140-220 degrees off forward - the half it faces after walking past the
+    target. Nothing in the *geometry* has a blind spot, and this says so, so
+    that a future regression there is not mistaken for the temporal one below.
+    """
+    detector, estimator = _pair()
+    scene = render_scene(heading_deg=heading, terrain="grass", scale_px=95.0, seed=3)
+    arrow, hypotheses = _acquire(detector, scene)
+    selected = _selected(hypotheses)
+    assert selected is not None, f"the arrow was lost at {heading:+.0f}"
+
+    observation = estimator.estimate(
+        selected.features,  # type: ignore[attr-defined]
+        anchor_px=(640.0, 430.0),
+        forward_deg=0.0,
+        arrow_confidence=arrow.confidence,  # type: ignore[attr-defined]
+    ).observation
+
+    assert observation.valid, f"abstained at {heading:+.0f}: {observation.abstain_reason}"
+    assert observation.error_deg is not None
+    assert abs(wrap_deg(observation.error_deg - heading)) < 25.0
+
+
+def test_a_weakly_evidenced_reversal_abstains_rather_than_inverting() -> None:
+    """ "I cannot tell" and "it is the other way" are different answers.
+
+    The guard used to return the *opposite* of what every cue had just said,
+    marked valid, at the moment the cues were least trustworthy. A confidently
+    wrong bearing is the one output that actively drives the character away
+    from the target; abstaining lets the controller coast on what it knows.
+    """
+    config = DetectorConfig(reversal_margin=1.01, reversal_latch_frames=3)
+    estimator = DirectionEstimator(config)
+    selected, _truth = _rear_arrow()
+
+    result = estimator.estimate(
+        selected.features,  # type: ignore[attr-defined]
+        anchor_px=(640.0, 430.0),
+        forward_deg=0.0,
+        arrow_confidence=0.9,
+        previous_heading_deg=0.0,
+    )
+
+    assert not result.observation.valid
+    assert result.observation.abstain_reason == "reversal-pending"
+    assert result.reversal_refused
+    assert result.observation.error_deg is None
+
+
+def test_a_sustained_reversal_is_adopted() -> None:
+    """Walking past the target reverses the arrow for real, and the guard has
+    to have a way to believe that or the rear half is unreachable."""
+    config = DetectorConfig(reversal_margin=1.01, reversal_latch_frames=3)
+    estimator = DirectionEstimator(config)
+    selected, truth = _rear_arrow()
+
+    readings = [
+        estimator.estimate(
+            selected.features,  # type: ignore[attr-defined]
+            anchor_px=(640.0, 430.0),
+            forward_deg=0.0,
+            arrow_confidence=0.9,
+            previous_heading_deg=0.0,
+        ).observation
+        for _ in range(config.reversal_latch_frames)
+    ]
+
+    assert not readings[0].valid and not readings[1].valid
+    final = readings[-1]
+    assert final.valid, f"the reversal was never adopted: {final.abstain_reason}"
+    assert final.error_deg is not None
+    assert abs(wrap_deg(final.error_deg - truth)) < 5.0
+
+
+def test_a_refused_reversal_cannot_lock_the_navigator_out_of_the_rear() -> None:
+    """The failure this is really about.
+
+    The caller remembers the heading it was handed. Inverting a reversal meant
+    the next frame compared against the inverted value, found a 180-degree
+    disagreement, and refused again - for the rest of the run. The character
+    walked away from the treasure and never turned round.
+    """
+    config = DetectorConfig(reversal_margin=1.01, reversal_latch_frames=3)
+    estimator = DirectionEstimator(config)
+    selected, truth = _rear_arrow()
+
+    previous = 0.0
+    for _ in range(8):
+        observation = estimator.estimate(
+            selected.features,  # type: ignore[attr-defined]
+            anchor_px=(640.0, 430.0),
+            forward_deg=0.0,
+            arrow_confidence=0.9,
+            previous_heading_deg=previous,
+        ).observation
+        if observation.valid and observation.error_deg is not None:
+            previous = observation.error_deg
+
+    assert abs(wrap_deg(previous - truth)) < 5.0, (
+        f"the navigator settled on {previous:+.0f} while the arrow pointed {truth:+.0f}"
+    )
+
+
+def test_strong_evidence_reverses_without_waiting() -> None:
+    config = DetectorConfig(reversal_margin=0.1, reversal_latch_frames=99)
+    estimator = DirectionEstimator(config)
+    selected, truth = _rear_arrow()
+
+    observation = estimator.estimate(
+        selected.features,  # type: ignore[attr-defined]
+        anchor_px=(640.0, 430.0),
+        forward_deg=0.0,
+        arrow_confidence=0.9,
+        previous_heading_deg=0.0,
+    ).observation
+
+    assert observation.valid
+    assert observation.error_deg is not None
+    assert abs(wrap_deg(observation.error_deg - truth)) < 5.0
+
+
+def test_a_new_target_forgets_the_reversal_latch() -> None:
+    config = DetectorConfig(reversal_margin=1.01, reversal_latch_frames=3)
+    estimator = DirectionEstimator(config)
+    selected, _truth = _rear_arrow()
+    estimator.estimate(
+        selected.features,  # type: ignore[attr-defined]
+        anchor_px=(640.0, 430.0),
+        forward_deg=0.0,
+        arrow_confidence=0.9,
+        previous_heading_deg=0.0,
+    )
+
+    estimator.reset()
+    result = estimator.estimate(
+        selected.features,  # type: ignore[attr-defined]
+        anchor_px=(640.0, 430.0),
+        forward_deg=0.0,
+        arrow_confidence=0.9,
+        previous_heading_deg=0.0,
+    )
+
+    assert result.observation.abstain_reason == "reversal-pending"
+    assert result.reversal_refused
