@@ -631,6 +631,18 @@ class WindowsPlatformPort:
             return None
         return (x, y)
 
+    def cursor_screen_pt(self) -> tuple[float, float] | None:
+        """Cursor position in absolute screen points, or ``None``.
+
+        Windows has no ScreenCaptureKit consumer, so nothing calls this yet;
+        it mirrors ``GetCursorPos`` for parity with the macOS port.
+        """
+        point = wintypes.POINT(0, 0)
+        with contextlib.suppress(Exception):
+            if ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+                return (float(point.x), float(point.y))
+        return None
+
     # -- PlatformPort: hotkeys -------------------------------------------
     def key_state(self, key: InputKey) -> bool | None:
         """Whether Windows believes ``key`` is down. Emits nothing.

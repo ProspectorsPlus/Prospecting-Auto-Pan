@@ -471,6 +471,13 @@ class FakePlatformPort:
     def cursor_client_px(self) -> tuple[int, int] | None:
         return self.cursor_px
 
+    def cursor_screen_pt(self) -> tuple[float, float] | None:
+        return (
+            None
+            if self.cursor_px is None
+            else (float(self.cursor_px[0]), float(self.cursor_px[1]))
+        )
+
     def key_state(self, key: InputKey) -> bool | None:
         """What the OS would say, derived from the edges actually recorded.
 

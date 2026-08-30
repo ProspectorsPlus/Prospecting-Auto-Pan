@@ -1547,12 +1547,25 @@ def _run_forward_probe(pulse_ms: int = 600, json_path: str | None = None) -> int
 
 
 def _run_calibrate() -> int:
-    """Read the client-relative pixel under the cursor.
+    """Read the pixel under the cursor, relative to the Roblox window.
 
     Reports in the **canonical client basis** so the value pastes straight into
     a ``TreasurePixels`` field. It refuses when the Roblox client rect cannot be
     verified, because there is nothing to measure against.
+
+    On macOS the pixel itself is read through the ScreenCaptureKit extension
+    in ``pixel-detector/`` rather than the production capture pipeline;
+    everywhere else it falls back to the pipeline-based reader that used to be
+    the only implementation (saved in ``oldCalibrate.md``), since
+    ``pixel-detector`` is macOS-only.
     """
+    if sys.platform == "darwin":
+        return _run_calibrate_mac()
+    return _run_calibrate_capture_pipeline()
+
+
+def _run_calibrate_capture_pipeline() -> int:
+    """Pipeline-based calibrate reader (non-macOS fallback)."""
     import time
 
     from prospector_engine.capture import CaptureService, EvidenceRegistry, ViewportGuard
@@ -1595,6 +1608,80 @@ def _run_calibrate() -> int:
         print("\nDone.")
     finally:
         capture.stop()
+    return 0
+
+
+def _run_calibrate_mac() -> int:
+    """ScreenCaptureKit-based calibrate reader.
+
+    Reads the pixel directly off the display through ``pixel-detector``
+    instead of the production capture pipeline; the reported PIXEL coordinate
+    is still client-relative (canonical basis), computed from
+    ``cursor_client_px()`` exactly as before. Only the RGB source changed.
+
+    This is a true single-pixel read (``box_px=1.0``), not an average over
+    ``DEFAULT_PIXELS.sample_box_px`` - the tool exists to place a target pixel
+    with 1x1 precision, and a box average would smear that at any color edge.
+    """
+    import time
+
+    pixel_detector_dir = os.path.join(_HERE, "pixel-detector")
+    if pixel_detector_dir not in sys.path:
+        sys.path.insert(0, pixel_detector_dir)
+    try:
+        import pixel_detector
+    except ImportError as exc:
+        print(f"pixel_detector extension not built ({exc}).")
+        print(f"  cd {pixel_detector_dir} && ../.venv/bin/python setup.py build_ext --inplace")
+        return 1
+
+    from prospector_engine.ports import create_platform_port
+
+    port = create_platform_port()
+    print("CALIBRATE - hover a target inside the Roblox client, Ctrl+C to quit.")
+    print("  PIXEL is reported in CANONICAL CLIENT coordinates (physical px from the")
+    print("  client area's top-left), which is the basis TreasurePixels uses.")
+    print("  Reading pixels via ScreenCaptureKit (pixel-detector).")
+
+    streaming = False
+    try:
+        while True:
+            cursor_client = port.cursor_client_px()
+            cursor_screen = port.cursor_screen_pt()
+            geometry = port.window_geometry()
+            if cursor_client is None or cursor_screen is None or not geometry.valid:
+                print(
+                    "\rRoblox client not found or cursor outside it...            ",
+                    end="",
+                    flush=True,
+                )
+                time.sleep(0.1)
+                continue
+
+            note = "" if geometry.is_canonical else "  [NON-CANONICAL]"
+
+            if not streaming:
+                print(
+                    "\nStarting ScreenCaptureKit stream "
+                    "(first run may pause for the Screen Recording prompt)..."
+                )
+                pixel_detector.start_stream(*cursor_screen, 1.0)
+                while not pixel_detector.is_ready():
+                    time.sleep(0.01)
+                streaming = True
+            else:
+                pixel_detector.update_target(*cursor_screen, 1.0)
+
+            r, g, b = pixel_detector.get_pixel_color()
+            print(
+                f"\rPIXEL=({cursor_client[0]:>5},{cursor_client[1]:>5})  "
+                f"RGB=({r:>3},{g:>3},{b:>3}){note}   ",
+                end="",
+                flush=True,
+            )
+            time.sleep(0.016)
+    except KeyboardInterrupt:
+        print("\nDone.")
     return 0
 
 

@@ -470,6 +470,11 @@ class MacScreenCaptureKitSource:
         configuration.setWidth_(width)
         configuration.setHeight_(height)
         configuration.setPixelFormat_(0x42475241)  # 'BGRA'
+        # Without this, ScreenCaptureKit picks its own color space per
+        # display, which does not have to be sRGB - the same colour read
+        # here and through pixel-detector's --calibrate path could then
+        # legitimately disagree. Pin both to kCGColorSpaceSRGB (D-093).
+        configuration.setColorSpaceName_(Quartz.kCGColorSpaceSRGB)
         configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, self._target_fps))
         configuration.setQueueDepth_(3)
         configuration.setShowsCursor_(False)
@@ -1375,6 +1380,14 @@ class MacPlatformPort:
         if not (0 <= x < width and 0 <= y < height):
             return None
         return (x, y)
+
+    def cursor_screen_pt(self) -> tuple[float, float] | None:
+        """Cursor position in absolute display-logical points, or ``None``."""
+        point = _cursor_point_pt()
+        try:
+            return (float(point.x), float(point.y))
+        except Exception:
+            return None
 
     # -- PlatformPort: hotkeys -------------------------------------------
     def create_hotkey_source(

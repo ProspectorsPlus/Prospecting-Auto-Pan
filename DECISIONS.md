@@ -2860,3 +2860,92 @@ pass, the same reasoning `dig_loop` already gets its own longer deadline for.
 `WiggleResult`/`WiggleOutcome` needed no new variants: `SUCCESS` is "chest
 found", `TIMEOUT` covers both the deadline and the pass cap, `CANCELLED` and
 `FAILED` (space lease refused) are unchanged from `run_wiggle`.
+
+## D-093 — 2026-08-29 — `pixel-detector`, and the missing sRGB pin in `MacScreenCaptureKitSource`
+
+**Decision:** added `pixel-detector/` — a standalone macOS extension
+(`detector.mm`, `setup.py`, `main.py`) that streams the main display through
+ScreenCaptureKit and pybind11-exposes `start_stream(x, y)`,
+`update_target(x, y)`, `get_pixel_color()` and `is_ready()`. `--calibrate`
+now uses it on macOS (`_run_calibrate_mac` in `treasure.py`); every other
+platform keeps the old capture-pipeline reader (`_run_calibrate_capture_
+pipeline`, previously the only body, saved verbatim in `oldCalibrate.md`).
+`PlatformPort` gained `cursor_screen_pt()` (absolute display-logical point)
+because the new stream needs an absolute screen coordinate, not the
+client-relative one `cursor_client_px()` already gave; both macOS and Windows
+implement it, Windows because nothing about the protocol should require an
+OS check to satisfy.
+
+**Correctness fix this surfaced:** building `detector.mm` against the plan's
+own correctness checklist required `config.colorSpaceName =
+kCGColorSpaceSRGB`, and writing it made obvious that
+`MacScreenCaptureKitSource._configuration()` — the production frame-capture
+source every navigation detector reads from — never set a color space at
+all, leaving ScreenCaptureKit free to pick one per display. That is a
+plausible root cause for the pixel-detection accuracy the owner had already
+flagged as bad (commit `de1404a`): a target RGB calibrated one way and read
+back another way will drift for reasons that have nothing to do with the
+detector logic. Fixed by setting the same `kCGColorSpaceSRGB` on that
+source's `SCStreamConfiguration`, so `--calibrate` and the running navigator
+now sample color through an identical color pipeline. The `CGWindowListCreate
+Image` fallback source was left untouched — it is the same family of API
+`screencapture(1)` uses, which is what `pixel-detector` was cross-validated
+against, and nothing suggested it needed the same fix.
+
+**What this means for calibrated data.** Every color-gated field in
+`TreasurePixels` and `ChestPixel` was already marked `PENDING` /
+"not yet re-derived with `--calibrate`" before this change — none of them
+were a passed gate this could regress. They do need re-measuring now, with
+the corrected pipeline, before being trusted:
+
+| Field(s) | Current value | Why it needs re-measuring |
+|---|---|---|
+| `TreasurePixels.dig_spot_a_px` / `dig_spot_a_rgb` | `(559, 614)` / `(51, 51, 51)` | color-gated (`on_dig_spot`) |
+| `TreasurePixels.dig_spot_b_px` / `dig_spot_b_rgb` | `(556, 607)` / `(201, 201, 201)` | color-gated (`on_dig_spot`) |
+| `TreasurePixels.capacity_px` (+ `yellow_min`/`yellow_blue_gap`) | `(799, 542)`, `140.0`/`45.0` | color-gated (`capacity_full`) |
+| `TreasurePixels.pan_check_px` / `pan_check_rgb` | `(500, 547)` / `(140, 140, 140)` | color-gated (pan-menu confirm) |
+| `TreasurePixels.pan_start_check_px` / `pan_start_check_rgb` | `(540, 523)` / `(194, 55, 27)` | color-gated (pan-menu confirm) |
+| `ChestPixel.point_px` / `target_rgb` | `(542, 563)` / `(81, 124, 65)` | color-gated (`on_chest_spot`, D-092) |
+| `ChestPixel.point_b_px` / `target_b_rgb` | `(553, 564)` / `(78, 116, 56)` | color-gated (`on_chest_spot`, D-092) |
+
+The remaining `TreasurePixels` points — `pan_menu_button_px`,
+`pan_first_slot_px`, `pan_bottom_slot_px`, `pan_equip_px`, `reset_menu_px`,
+`reset_confirm_px` — are click targets with no associated color check, so
+today's fix does not touch their correctness; they stay `PENDING` for the
+unrelated, already-documented reason that they were carried over from the
+legacy outer-window-frame basis rather than the current client-only
+canonical one (plan 4.1).
+
+**Left alone on purpose.** No detector call site (`on_dig_spot`,
+`capacity_full`, `on_chest_spot`, the F3 pixel probe in `application.py`)
+changed. They all read `pixels.*` off the one `CapturedFrame` the
+coordinator already publishes per tick; routing them through
+`pixel-detector` instead would mean each one polling the display
+independently, on its own schedule, which is exactly what plan §5's "one
+coherent frame per decision" rule exists to forbid. `pixel-detector` stays a
+diagnostic-only, macOS-only path used by `--calibrate` and nothing in the
+navigation loop.
+
+**Same-day follow-up: box averaging, not just color space.** The first cut
+of `detector.mm` read exactly one physical pixel. That is not what
+production reads: `CapturedFrame.sample_mean_rgb` averages a
+`sample_box_px` (6, for every color-gated field above) square around the
+point. For a flat, untextured swatch the two agree; for anything textured
+or anti-aliased — which is exactly the terrain/UI-text regions these points
+sit on — they do not, and a value baked from a single-pixel calibrate read
+could still be systematically wrong against the box-averaged production
+read. Fixed by giving `start_stream`/`update_target` a third argument,
+`box_px`, in the same logical-point units as `x`/`y`; the capture callback
+now sums an NxN window (clamped at the buffer edges, mirroring
+`sample_mean_rgb`'s own clamping) instead of indexing one pixel, scaling the
+box side by `backingScaleFactor` exactly like it already scaled the target
+point. `_run_calibrate_mac` passes `DEFAULT_PIXELS.sample_box_px` when the
+viewport is `is_canonical` (where a canonical px is exactly one client-logical
+point, so the box translates 1:1) and falls back to `box_px=1` with an
+explicit `[NON-CANONICAL: single px only, do not bake this]` note otherwise,
+since the canonical-px-to-client-point ratio isn't 1:1 there and a translated
+box size would not correspond to anything production actually reads.
+Verified by averaging the same box by hand from a `screencapture -x` PNG at
+several textured points and comparing to `get_pixel_color()` — matched
+within rounding wherever the on-screen content was actually static between
+the two reads.

@@ -277,6 +277,16 @@ class PlatformPort(Protocol):
         """
         ...
 
+    def cursor_screen_pt(self) -> tuple[float, float] | None:
+        """Cursor position in absolute **display-logical** points, or ``None``.
+
+        Read-only, added for the ScreenCaptureKit calibration path
+        (``pixel-detector``), which streams the whole display and needs an
+        absolute point rather than a client-relative one. ``None`` when the
+        OS cannot report a cursor location.
+        """
+        ...
+
     # -- hotkeys ----------------------------------------------------------
     def create_hotkey_source(
         self,

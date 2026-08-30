@@ -105,6 +105,28 @@ input; opt in with `-m native` only while physically at the machine.
 `--capture-probe` and `--calibrate` read pixels. They move no window and send
 no input, but they do need Screen Recording permission.
 
+On macOS, `--calibrate` reads through `pixel-detector/` — a standalone
+ScreenCaptureKit + pybind11 extension (`detector.mm`) — rather than the
+production capture pipeline; every other platform still uses the pipeline
+reader (`_run_calibrate_capture_pipeline` in `treasure.py`), since
+`pixel-detector` is macOS-only. It is built once, out of band:
+
+```sh
+cd pixel-detector
+../.venv/bin/pip install pybind11   # xcode-select --install first, once
+../.venv/bin/python setup.py build_ext --inplace
+```
+
+It averages the same `DEFAULT_PIXELS.sample_box_px` square the production
+frame pipeline does (falling back to a single pixel, with a NON-CANONICAL
+note, when the client isn't pinned to the canonical size), and
+`MacScreenCaptureKitSource` was fixed to request the same `kCGColorSpaceSRGB`
+color space `pixel-detector` uses — so a value read with `--calibrate` is
+what the running navigator reads at that point, not just close to it
+(D-093). Every color-gated field in `TreasurePixels`/`ChestPixel` predates
+that fix and is still `PENDING`; D-093 in `DECISIONS.md` has the exact list
+still owed a re-measurement with the fixed tool.
+
 `--hotkey-test` starts the real global listener and prints every key edge it
 normalizes, so a person can see whether a chord is heard. It submits to a list
 rather than to the coordinator, and it is built without the physical-chord

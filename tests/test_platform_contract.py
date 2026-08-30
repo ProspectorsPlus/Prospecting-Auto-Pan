@@ -150,6 +150,7 @@ def test_the_local_port_satisfies_the_platform_protocol() -> None:
         "raw_pointer_delta",
         "raw_scroll_lines",
         "cursor_client_px",
+        "cursor_screen_pt",
         "create_hotkey_source",
     ):
         assert callable(getattr(port, name)), name
