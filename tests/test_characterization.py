@@ -79,7 +79,6 @@ def test_dig_tap_matches_legacy_edges(rig: Any, service_context: engine.ServiceC
         [
             {
                 pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-                pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
                 pixels.capacity_px: (10, 10, 10),
             }
         ],
@@ -221,7 +220,6 @@ def test_b12_one_dig_decision_reads_exactly_one_frame(
         [
             {
                 pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-                pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
                 pixels.capacity_px: (10, 10, 10),
             }
         ],
@@ -246,10 +244,11 @@ def test_dig_gating_preserves_legacy_colour_semantics(
     expected: DigOutcome,
 ) -> None:
     pixels = engine.DEFAULT_PIXELS
+    not_diggable = tuple(255 - int(c) for c in pixels.dig_spot_a_rgb)
     _frames(
         service_context,
         rig.clock,
-        [{pixels.dig_spot_a_px: (255, 255, 255), pixels.capacity_px: capacity_rgb}],
+        [{pixels.dig_spot_a_px: not_diggable, pixels.capacity_px: capacity_rgb}],
     )
     result = engine.run_dig_at_current_spot(service_context)
     assert result.outcome is expected
@@ -268,7 +267,10 @@ def test_migrated_pixels_are_marked_pending_not_validated() -> None:
     assert engine.DEFAULT_PIXELS.status is EvidenceStatus.PENDING
     assert engine.DEFAULT_PIXELS.provenance.status is EvidenceStatus.PENDING
     shifted = engine.DEFAULT_PIXELS.from_legacy_window_frame(56)
-    assert shifted.dig_spot_a_px == (554, 603 - 56)
+    assert shifted.dig_spot_a_px == (
+        engine.DEFAULT_PIXELS.dig_spot_a_px[0],
+        engine.DEFAULT_PIXELS.dig_spot_a_px[1] - 56,
+    )
     assert shifted.provenance.status is EvidenceStatus.PENDING
 
 
@@ -283,7 +285,6 @@ def test_the_dig_loop_taps_while_the_spot_matches(
     pixels = engine.DEFAULT_PIXELS
     diggable = {
         pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     lost = {pixels.dig_spot_a_px: (0, 0, 0), pixels.capacity_px: (10, 10, 10)}
@@ -304,7 +305,6 @@ def test_the_dig_loop_runs_a_pan_swap_when_capacity_reads_full(
     pixels = engine.DEFAULT_PIXELS
     full = {
         pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: pixels.capacity_rgb,
     }
     _frames(
@@ -332,7 +332,6 @@ def test_the_dig_loop_is_bounded_by_its_tap_cap(
     pixels = engine.DEFAULT_PIXELS
     diggable = {
         pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     _frames(service_context, rig.clock, [diggable] * 50)
@@ -350,7 +349,6 @@ def test_the_dig_loop_stops_at_its_deadline(
     pixels = engine.DEFAULT_PIXELS
     diggable = {
         pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     _frames(service_context, rig.clock, [diggable] * 5000)
@@ -369,7 +367,6 @@ def test_the_dig_loop_cancels_within_one_wait_slice(
     pixels = engine.DEFAULT_PIXELS
     diggable = {
         pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     _frames(service_context, rig.clock, [diggable] * 500)
@@ -396,7 +393,6 @@ def test_the_dig_loop_never_taps_into_a_full_pan(
     pixels = engine.DEFAULT_PIXELS
     full = {
         pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
-        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: pixels.capacity_rgb,
     }
     _frames(service_context, rig.clock, [full] * 30)

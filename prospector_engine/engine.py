@@ -47,12 +47,19 @@ from prospector_engine.contracts import (
 )
 from prospector_engine.input_authority import ServiceInputSession
 
+#: Print every pixel check to stdout as it happens - "checking for <target> at
+#: <point> | result: <actual> at <point> -> <True/False>". Every color-gated
+#: check funnels through ``_checked`` (below), so this one flag covers all of
+#: them: dig_spot, capacity, pan_check, pan_start_check, and both chest points.
+PIXEL_CHECK_LOGGING = True
+
 __all__ = [
     "DEFAULT_CHEST_PIXEL",
     "DEFAULT_PIXELS",
     "DEFAULT_TIMINGS",
     "DEFAULT_WIGGLE_CONFIG",
     "DEFAULT_WIGGLE_TO_CHEST_LIMITS",
+    "PIXEL_CHECK_LOGGING",
     "ChestPixel",
     "FrameSource",
     "ServiceContext",
@@ -104,6 +111,26 @@ def color_close(rgb: Rgb, target: Rgb, tolerance: Tolerance) -> bool:
     return all(abs(a - t) <= limit for a, t, limit in zip(rgb, target, limits, strict=True))
 
 
+def _fmt_rgb(rgb: Rgb) -> str:
+    return f"({int(rgb[0])}, {int(rgb[1])}, {int(rgb[2])})"
+
+
+def _checked(name: str, point: Point, actual: Rgb, target: Rgb, tolerance: Tolerance) -> bool:
+    """``color_close``, plus the debug print ``PIXEL_CHECK_LOGGING`` gates.
+
+    Every color-gated check in this module goes through here instead of
+    calling ``color_close`` directly, so the one module-level flag turns
+    per-check logging on or off everywhere at once (D-101).
+    """
+    result = color_close(actual, target, tolerance)
+    if PIXEL_CHECK_LOGGING:
+        print(
+            f"[pixel] {name}: checking for {_fmt_rgb(target)} at {point} | "
+            f"result: {_fmt_rgb(actual)} at {point} -> {result}"
+        )
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Calibrated pixels
 # ---------------------------------------------------------------------------
@@ -120,15 +147,15 @@ class TreasurePixels:
     spot, held up where one threshold did not.
     """
 
-    dig_spot_a_px: Point = (554, 603)
-    dig_spot_a_rgb: Rgb = (251.0, 251.0, 251.0)
-    dig_spot_b_px: Point = (697, 617)
-    dig_spot_b_rgb: Rgb = (255.0, 255.0, 255.0)
+    dig_spot_a_px: Point = (553, 605)
+    dig_spot_a_rgb: Rgb = (255.0, 255.0, 255.0)
+    # dig_spot_b_px: Point = (697, 617)
+    # dig_spot_b_rgb: Rgb = (255.0, 255.0, 255.0)
     dig_spot_tolerance_pct: float = 5.0
 
     capacity_px: Point = (799, 537)
     capacity_rgb: Rgb = (229.0, 208.0, 102.0)
-    capacity_tolerance_pct: float = 4.0
+    capacity_tolerance_pct: float = 5.0
 
     # 1x1: matches the single-pixel read `--calibrate` reports (D-099).
     sample_box_px: int = 1
@@ -139,7 +166,7 @@ class TreasurePixels:
     pan_equip_px: Point = (769, 515)
     pan_check_px: Point = (479, 541)
     pan_check_rgb: Rgb = (65.0, 41.0, 5.0)
-    pan_check_tolerance_pct: float = 3.0
+    pan_check_tolerance_pct: float = 10.0
     pan_start_check_px: Point = (540, 518)
     pan_start_check_rgb: Rgb = (200.0, 0.0, 0.0)
     pan_start_check_tolerance: Tolerance = (20.0, 10.0, 10.0)
@@ -179,7 +206,7 @@ class TreasurePixels:
         return replace(
             self,
             dig_spot_a_px=moved(self.dig_spot_a_px),
-            dig_spot_b_px=moved(self.dig_spot_b_px),
+            # dig_spot_b_px=moved(self.dig_spot_b_px),
             capacity_px=moved(self.capacity_px),
             pan_menu_button_px=moved(self.pan_menu_button_px),
             pan_first_slot_px=moved(self.pan_first_slot_px),
@@ -326,26 +353,31 @@ def sample_client_pixel(frame: CapturedFrame, point_px: Point, box_px: int) -> R
 
 
 def on_dig_spot(frame: CapturedFrame, pixels: TreasurePixels = DEFAULT_PIXELS) -> bool:
-    """True when *both* terrain check points match, read from one frame."""
+    """True when the terrain check point matches, read from one frame."""
     a = sample_client_pixel(frame, pixels.dig_spot_a_px, pixels.sample_box_px)
-    b = sample_client_pixel(frame, pixels.dig_spot_b_px, pixels.sample_box_px)
-    return color_close(a, pixels.dig_spot_a_rgb, pixels.dig_spot_tolerance_pct) and color_close(
-        b, pixels.dig_spot_b_rgb, pixels.dig_spot_tolerance_pct
+    return _checked(
+        "dig_spot_a",
+        pixels.dig_spot_a_px,
+        a,
+        pixels.dig_spot_a_rgb,
+        pixels.dig_spot_tolerance_pct,
     )
 
 
 def capacity_full(frame: CapturedFrame, pixels: TreasurePixels = DEFAULT_PIXELS) -> bool:
     rgb = sample_client_pixel(frame, pixels.capacity_px, pixels.sample_box_px)
-    return color_close(rgb, pixels.capacity_rgb, pixels.capacity_tolerance_pct)
+    return _checked(
+        "capacity", pixels.capacity_px, rgb, pixels.capacity_rgb, pixels.capacity_tolerance_pct
+    )
 
 
 def on_chest_spot(frame: CapturedFrame, chest: ChestPixel = DEFAULT_CHEST_PIXEL) -> bool:
     """True when ``X_MARKS_THE_SPOT`` reads at *both* chest pixels, from one frame."""
     a = sample_client_pixel(frame, chest.point_px, chest.sample_box_px)
     b = sample_client_pixel(frame, chest.point_b_px, chest.sample_box_px)
-    return color_close(a, chest.target_rgb, chest.tolerance) and color_close(
-        b, chest.target_b_rgb, chest.tolerance_b_pct
-    )
+    return _checked(
+        "chest_a", chest.point_px, a, chest.target_rgb, chest.tolerance
+    ) and _checked("chest_b", chest.point_b_px, b, chest.target_b_rgb, chest.tolerance_b_pct)
 
 
 # ---------------------------------------------------------------------------
@@ -451,8 +483,12 @@ def run_dequip_pan(ctx: ServiceContext) -> tuple[bool, str, int]:
             rgb = ctx.sample(pixels.pan_start_check_px)
             rounded = tuple(round(c) for c in rgb)
             ctx.status(f"dequip attempt {attempt}: start-gate rgb={rounded}")
-            cleared = not color_close(
-                rgb, pixels.pan_start_check_rgb, pixels.pan_start_check_tolerance
+            cleared = not _checked(
+                "pan_start_check",
+                pixels.pan_start_check_px,
+                rgb,
+                pixels.pan_start_check_rgb,
+                pixels.pan_start_check_tolerance,
             )
             if cleared:
                 return True, f"cleared after {attempt} attempts", attempt
@@ -521,7 +557,13 @@ def run_pan_swap(ctx: ServiceContext) -> PanSwapResult:
             ctx.sleep_ms(timings.pan_after_one_ms)
 
             rgb = ctx.sample(pixels.pan_check_px)
-            confirmed = color_close(rgb, pixels.pan_check_rgb, pixels.pan_check_tolerance_pct)
+            confirmed = _checked(
+                "pan_check",
+                pixels.pan_check_px,
+                rgb,
+                pixels.pan_check_rgb,
+                pixels.pan_check_tolerance_pct,
+            )
             rounded = tuple(round(c) for c in rgb)
             evidence.append(f"attempt{attempt}:check_rgb={rounded}:confirmed={confirmed}")
             if confirmed:
@@ -649,16 +691,25 @@ def run_dig_at_current_spot(ctx: ServiceContext, max_attempts: int = 1) -> DigHa
             frame = ctx.frame()
             pixels = ctx.pixels
             a = sample_client_pixel(frame, pixels.dig_spot_a_px, pixels.sample_box_px)
-            b = sample_client_pixel(frame, pixels.dig_spot_b_px, pixels.sample_box_px)
             capacity_rgb = sample_client_pixel(frame, pixels.capacity_px, pixels.sample_box_px)
-            full = color_close(capacity_rgb, pixels.capacity_rgb, pixels.capacity_tolerance_pct)
-            diggable = color_close(
-                a, pixels.dig_spot_a_rgb, pixels.dig_spot_tolerance_pct
-            ) and color_close(b, pixels.dig_spot_b_rgb, pixels.dig_spot_tolerance_pct)
+            full = _checked(
+                "capacity",
+                pixels.capacity_px,
+                capacity_rgb,
+                pixels.capacity_rgb,
+                pixels.capacity_tolerance_pct,
+            )
+            diggable = _checked(
+                "dig_spot_a",
+                pixels.dig_spot_a_px,
+                a,
+                pixels.dig_spot_a_rgb,
+                pixels.dig_spot_tolerance_pct,
+            )
             evidence = DigEvidence(
                 frame_sequence=frame.sequence,
                 dig_spot_a_rgb=a,
-                dig_spot_b_rgb=b,
+                dig_spot_b_rgb=None,
                 capacity_rgb=capacity_rgb,
                 on_dig_spot=diggable,
                 capacity_full=full,
