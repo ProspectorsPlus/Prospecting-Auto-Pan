@@ -31,7 +31,7 @@ from prospector_engine.contracts import (
 from prospector_engine.coordinator import WorkerContext
 from prospector_engine.movement import DesiredMovement
 from prospector_engine.plainlog import Topic, Verdict
-from tests.fakes import settle_cadence_for_live
+from tests.fakes import mark_setup_ready, settle_cadence_for_live
 from tests.test_runtime_concurrency import Harness
 
 
@@ -79,6 +79,7 @@ def test_a_cooling_down_governor_does_not_refuse_the_chord(harness: Any) -> None
     )
     harness.start()
     settle_cadence_for_live(harness.capture)
+    mark_setup_ready(harness.coordinator)
     governor = harness.capture.governor
     governor._state = GovernorState.COOLDOWN
     governor._cooldown_until_s = monotonic_s() + 60.0
@@ -318,6 +319,7 @@ def test_an_advisory_cadence_is_narrated_as_a_warning_not_a_refusal(harness: Any
         IntentType.START_LIVE, "live", lambda ctx: ModeResult(ModeResultKind.COMPLETED, "ok")
     )
     harness.start()
+    mark_setup_ready(harness.coordinator)
     assert not harness.capture.metrics().live_eligible
 
     intent = harness.coordinator.chord_authority().intent(IntentType.START_LIVE, "Ctrl+N")
