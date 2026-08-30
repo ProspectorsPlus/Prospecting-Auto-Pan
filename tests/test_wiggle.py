@@ -187,8 +187,23 @@ def test_wiggle_side_phases_is_empty_for_zero_or_negative_duration() -> None:
 # ---------------------------------------------------------------------------
 
 CHEST = engine.DEFAULT_CHEST_PIXEL
-CHEST_FOUND = {CHEST.point_px: (81, 124, 65), CHEST.point_b_px: (78, 116, 56)}
-CHEST_NOT_FOUND = {CHEST.point_px: (0, 0, 0), CHEST.point_b_px: (0, 0, 0)}
+
+
+def _inverted(rgb: engine.Rgb) -> tuple[int, int, int]:
+    """A colour guaranteed far outside tolerance of ``rgb``, whatever it is."""
+    return tuple(255 - int(c) for c in rgb)  # type: ignore[return-value]
+
+
+def _channel_limits(tolerance: engine.Tolerance) -> tuple[float, float, float]:
+    """Mirrors ``color_close``'s own tolerance resolution (D-095)."""
+    return tolerance if isinstance(tolerance, tuple) else (tolerance / 100.0 * 255.0,) * 3
+
+
+CHEST_FOUND = {CHEST.point_px: CHEST.target_rgb, CHEST.point_b_px: CHEST.target_b_rgb}
+CHEST_NOT_FOUND = {
+    CHEST.point_px: _inverted(CHEST.target_rgb),
+    CHEST.point_b_px: _inverted(CHEST.target_b_rgb),
+}
 
 
 def test_on_chest_spot_true_when_both_points_match() -> None:
@@ -197,25 +212,37 @@ def test_on_chest_spot_true_when_both_points_match() -> None:
 
 
 def test_on_chest_spot_false_when_only_the_first_point_matches() -> None:
-    frame = make_frame(1, pixels={CHEST.point_px: (81, 124, 65), CHEST.point_b_px: (0, 0, 0)})
+    frame = make_frame(
+        1,
+        pixels={
+            CHEST.point_px: CHEST.target_rgb,
+            CHEST.point_b_px: _inverted(CHEST.target_b_rgb),
+        },
+    )
     assert engine.on_chest_spot(frame) is False
 
 
 def test_on_chest_spot_false_when_only_the_second_point_matches() -> None:
-    frame = make_frame(1, pixels={CHEST.point_px: (0, 0, 0), CHEST.point_b_px: (78, 116, 56)})
+    frame = make_frame(
+        1,
+        pixels={
+            CHEST.point_px: _inverted(CHEST.target_rgb),
+            CHEST.point_b_px: CHEST.target_b_rgb,
+        },
+    )
     assert engine.on_chest_spot(frame) is False
 
 
 def test_on_chest_spot_true_within_tolerance() -> None:
     r, g, b = CHEST.target_rgb
     rb, gb, bb = CHEST.target_b_rgb
-    half_tolerance = round(CHEST.tolerance_pct / 100.0 * 255.0 / 2.0)
-    half_tolerance_b = round(CHEST.tolerance_b_pct / 100.0 * 255.0 / 2.0)
+    half_r, _, half_b = (limit / 2.0 for limit in _channel_limits(CHEST.tolerance))
+    half_rb, _, half_bb = (limit / 2.0 for limit in _channel_limits(CHEST.tolerance_b_pct))
     frame = make_frame(
         1,
         pixels={
-            CHEST.point_px: (int(r) + half_tolerance, int(g), int(b) - half_tolerance),
-            CHEST.point_b_px: (int(rb) + half_tolerance_b, int(gb), int(bb) - half_tolerance_b),
+            CHEST.point_px: (int(r + half_r), int(g), int(max(0.0, b - half_b))),
+            CHEST.point_b_px: (int(rb + half_rb), int(gb), int(max(0.0, bb - half_bb))),
         },
     )
     assert engine.on_chest_spot(frame) is True
@@ -223,12 +250,12 @@ def test_on_chest_spot_true_within_tolerance() -> None:
 
 def test_on_chest_spot_false_outside_tolerance() -> None:
     r, g, b = CHEST.target_rgb
-    tolerance = round(CHEST.tolerance_pct / 100.0 * 255.0)
+    limit_r = _channel_limits(CHEST.tolerance)[0]
     frame = make_frame(
         1,
         pixels={
-            CHEST.point_px: (int(r) + tolerance + 5, int(g), int(b)),
-            CHEST.point_b_px: (78, 116, 56),
+            CHEST.point_px: (int(r + limit_r + 5), int(g), int(b)),
+            CHEST.point_b_px: _inverted(CHEST.target_b_rgb),
         },
     )
     assert engine.on_chest_spot(frame) is False

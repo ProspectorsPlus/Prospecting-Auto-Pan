@@ -62,8 +62,6 @@ __all__ = [
     "WiggleToChestLimits",
     "capacity_full",
     "color_close",
-    "is_white",
-    "is_yellow",
     "on_chest_spot",
     "on_dig_spot",
     "run_dequip_pan",
@@ -78,6 +76,9 @@ __all__ = [
 
 Point = tuple[int, int]
 Rgb = tuple[float, float, float]
+#: Either a flat percent of the 0-255 range (applied to every channel) or an
+#: explicit per-channel absolute +/- range - whichever was calibrated (D-095).
+Tolerance = Rgb | float
 
 
 @runtime_checkable
@@ -92,21 +93,15 @@ class FrameSource(Protocol):
 # ---------------------------------------------------------------------------
 
 
-def is_white(rgb: Rgb, white_min: float) -> bool:
-    """Diagnostic only. Dig gating uses two calibrated terrain points instead."""
-    return all(channel >= white_min for channel in rgb)
+def color_close(rgb: Rgb, target: Rgb, tolerance: Tolerance) -> bool:
+    """Every channel of ``rgb`` within ``tolerance`` of ``target``.
 
-
-def is_yellow(rgb: Rgb, yellow_min: float, blue_gap: float) -> bool:
-    """The capacity-bar full test: strong red and green, suppressed blue."""
-    r, g, b = rgb
-    return r >= yellow_min and g >= yellow_min and b <= min(r, g) - blue_gap
-
-
-def color_close(rgb: Rgb, target: Rgb, tolerance_pct: float) -> bool:
-    """Every channel within ``tolerance_pct`` % of the 0-255 range of target."""
-    tolerance = tolerance_pct / 100.0 * 255.0
-    return all(abs(a - t) <= tolerance for a, t in zip(rgb, target, strict=True))
+    ``tolerance`` is a flat percent of the 0-255 range, applied identically to
+    every channel, unless the calibrated value is itself an (r, g, b) tuple -
+    then it is an explicit absolute +/- range per channel (D-095).
+    """
+    limits = tolerance if isinstance(tolerance, tuple) else (tolerance / 100.0 * 255.0,) * 3
+    return all(abs(a - t) <= limit for a, t, limit in zip(rgb, target, limits, strict=True))
 
 
 # ---------------------------------------------------------------------------
@@ -125,29 +120,29 @@ class TreasurePixels:
     spot, held up where one threshold did not.
     """
 
-    dig_spot_a_px: Point = (559, 614)
-    dig_spot_a_rgb: Rgb = (51.0, 51.0, 51.0)
-    dig_spot_b_px: Point = (556, 607)
-    dig_spot_b_rgb: Rgb = (201.0, 201.0, 201.0)
-    dig_spot_tolerance_pct: float = 10.0
+    dig_spot_a_px: Point = (554, 603)
+    dig_spot_a_rgb: Rgb = (251.0, 251.0, 251.0)
+    dig_spot_b_px: Point = (697, 617)
+    dig_spot_b_rgb: Rgb = (255.0, 255.0, 255.0)
+    dig_spot_tolerance_pct: float = 5.0
 
-    capacity_px: Point = (799, 542)
-    yellow_min: float = 140.0
-    yellow_blue_gap: float = 45.0
-    white_min: float = 175.0
+    capacity_px: Point = (799, 537)
+    capacity_rgb: Rgb = (229.0, 208.0, 102.0)
+    capacity_tolerance_pct: float = 4.0
 
-    sample_box_px: int = 6
+    # 1x1: matches the single-pixel read `--calibrate` reports (D-094).
+    sample_box_px: int = 1
 
     pan_menu_button_px: Point = (442, 195)
     pan_first_slot_px: Point = (508, 255)
     pan_bottom_slot_px: Point = (514, 531)
     pan_equip_px: Point = (769, 515)
-    pan_check_px: Point = (500, 547)
-    pan_check_rgb: Rgb = (140.0, 140.0, 140.0)
-    pan_check_tolerance_pct: float = 5.0
-    pan_start_check_px: Point = (540, 523)
-    pan_start_check_rgb: Rgb = (194.0, 55.0, 27.0)
-    pan_start_check_tolerance_pct: float = 10.0
+    pan_check_px: Point = (479, 541)
+    pan_check_rgb: Rgb = (65.0, 41.0, 5.0)
+    pan_check_tolerance_pct: float = 3.0
+    pan_start_check_px: Point = (540, 518)
+    pan_start_check_rgb: Rgb = (200.0, 0.0, 0.0)
+    pan_start_check_tolerance: Tolerance = (20.0, 10.0, 10.0)
 
     reset_menu_px: Point = (641, 630)
     reset_confirm_px: Point = (530, 380)
@@ -156,11 +151,15 @@ class TreasurePixels:
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PENDING,
-            source="legacy macOS window-frame basis, 1280x720 outer frame",
+            source="owner-measured via `treasure.py --calibrate`, 1x1 pixel read (D-095)",
             note=(
-                "carried over unchanged; the canonical viewport pins the CLIENT to "
-                "1280x720, so these must be re-derived with --calibrate and manually "
-                "reverified before unattended use (plan 4.1)"
+                "dig_spot_a/b, capacity_px, pan_check_px and pan_start_check_px are "
+                "freshly re-derived on the canonical 1280x720 client now that "
+                "sample_box_px is 1 (D-094); the click-only targets "
+                "(pan_menu_button_px, pan_first_slot_px, pan_bottom_slot_px, "
+                "pan_equip_px, reset_menu_px, reset_confirm_px) are unchanged, still "
+                "on the legacy window-frame basis, and still owed re-derivation "
+                "(plan 4.1)"
             ),
         )
     )
@@ -205,26 +204,29 @@ DEFAULT_PIXELS = TreasurePixels()
 class ChestPixel:
     """The two X_MARKS_THE_SPOT sample points that stop ``run_wiggle_to_chest``.
 
-    *Both* points must match for the stop condition to fire. Owner-supplied
-    client-relative physical pixels and target colours, not yet re-derived
-    with ``treasure.py --calibrate``.
+    *Both* points must match for the stop condition to fire. Re-derived with
+    ``treasure.py --calibrate`` (D-095).
     """
 
-    point_px: Point = (542, 563)
-    target_rgb: Rgb = (81.0, 124.0, 65.0)
-    tolerance_pct: float = 5.0
-    point_b_px: Point = (553, 564)
-    target_b_rgb: Rgb = (78.0, 116.0, 56.0)
-    tolerance_b_pct: float = 5.0
-    sample_box_px: int = 6
+    point_px: Point = (740, 567)
+    target_rgb: Rgb = (0.0, 0.0, 0.0)
+    tolerance: Tolerance = (10.0, 10.0, 10.0)
+    point_b_px: Point = (542, 562)
+    target_b_rgb: Rgb = (131.0, 255.0, 107.0)
+    tolerance_b_pct: float = 10.0
+    # 1x1: matches the single-pixel read `--calibrate` reports (D-094).
+    sample_box_px: int = 1
     poll_s: float = 0.1
 
     status: EvidenceStatus = EvidenceStatus.PENDING
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PENDING,
-            source="owner-supplied X_MARKS_THE_SPOT sample",
-            note="not yet re-derived with --calibrate",
+            source="owner-measured via `treasure.py --calibrate`, 1x1 pixel read (D-095)",
+            note=(
+                "re-derived now that sample_box_px is 1 (D-094); still PENDING "
+                "a passed gate on real chest approaches"
+            ),
         )
     )
 
@@ -334,14 +336,14 @@ def on_dig_spot(frame: CapturedFrame, pixels: TreasurePixels = DEFAULT_PIXELS) -
 
 def capacity_full(frame: CapturedFrame, pixels: TreasurePixels = DEFAULT_PIXELS) -> bool:
     rgb = sample_client_pixel(frame, pixels.capacity_px, pixels.sample_box_px)
-    return is_yellow(rgb, pixels.yellow_min, pixels.yellow_blue_gap)
+    return color_close(rgb, pixels.capacity_rgb, pixels.capacity_tolerance_pct)
 
 
 def on_chest_spot(frame: CapturedFrame, chest: ChestPixel = DEFAULT_CHEST_PIXEL) -> bool:
     """True when ``X_MARKS_THE_SPOT`` reads at *both* chest pixels, from one frame."""
     a = sample_client_pixel(frame, chest.point_px, chest.sample_box_px)
     b = sample_client_pixel(frame, chest.point_b_px, chest.sample_box_px)
-    return color_close(a, chest.target_rgb, chest.tolerance_pct) and color_close(
+    return color_close(a, chest.target_rgb, chest.tolerance) and color_close(
         b, chest.target_b_rgb, chest.tolerance_b_pct
     )
 
@@ -450,7 +452,7 @@ def run_dequip_pan(ctx: ServiceContext) -> tuple[bool, str, int]:
             rounded = tuple(round(c) for c in rgb)
             ctx.status(f"dequip attempt {attempt}: start-gate rgb={rounded}")
             cleared = not color_close(
-                rgb, pixels.pan_start_check_rgb, pixels.pan_start_check_tolerance_pct
+                rgb, pixels.pan_start_check_rgb, pixels.pan_start_check_tolerance
             )
             if cleared:
                 return True, f"cleared after {attempt} attempts", attempt
@@ -649,7 +651,7 @@ def run_dig_at_current_spot(ctx: ServiceContext, max_attempts: int = 1) -> DigHa
             a = sample_client_pixel(frame, pixels.dig_spot_a_px, pixels.sample_box_px)
             b = sample_client_pixel(frame, pixels.dig_spot_b_px, pixels.sample_box_px)
             capacity_rgb = sample_client_pixel(frame, pixels.capacity_px, pixels.sample_box_px)
-            full = is_yellow(capacity_rgb, pixels.yellow_min, pixels.yellow_blue_gap)
+            full = color_close(capacity_rgb, pixels.capacity_rgb, pixels.capacity_tolerance_pct)
             diggable = color_close(
                 a, pixels.dig_spot_a_rgb, pixels.dig_spot_tolerance_pct
             ) and color_close(b, pixels.dig_spot_b_rgb, pixels.dig_spot_tolerance_pct)

@@ -117,15 +117,23 @@ cd pixel-detector
 ../.venv/bin/python setup.py build_ext --inplace
 ```
 
-It averages the same `DEFAULT_PIXELS.sample_box_px` square the production
-frame pipeline does (falling back to a single pixel, with a NON-CANONICAL
-note, when the client isn't pinned to the canonical size), and
+It reads a true single pixel (`box_px=1.0`, hardcoded, unconditionally — a
+`[NON-CANONICAL]` note is printed when the viewport isn't pinned to the
+canonical size, but the read itself never changes), and
 `MacScreenCaptureKitSource` was fixed to request the same `kCGColorSpaceSRGB`
-color space `pixel-detector` uses — so a value read with `--calibrate` is
-what the running navigator reads at that point, not just close to it
-(D-093). Every color-gated field in `TreasurePixels`/`ChestPixel` predates
-that fix and is still `PENDING`; D-093 in `DECISIONS.md` has the exact list
-still owed a re-measurement with the fixed tool.
+color space `pixel-detector` uses (D-093). Since D-094,
+`TreasurePixels.sample_box_px` and `ChestPixel.sample_box_px` are `1` on
+every platform, so a value read with `--calibrate` — on macOS through
+`pixel-detector`, everywhere else through the pipeline reader, since both
+now sample the identical 1x1 box — is what the running navigator reads at
+that point, not just close to it. Every color-gated field in
+`TreasurePixels`/`ChestPixel` has since been re-derived with the fixed tool
+(D-095); the dataclass-level `status` still reads `PENDING` because the
+click-only targets (`pan_menu_button_px` and the rest) are unchanged and
+still owed re-derivation on the legacy window-frame basis (plan 4.1).
+`capacity_full` was also moved off its old `is_yellow` heuristic onto the
+same `color_close` every other check uses (D-095). D-093, D-094, and D-095
+in `DECISIONS.md` have the full history.
 
 `--hotkey-test` starts the real global listener and prints every key edge it
 normalizes, so a person can see whether a chord is heard. It submits to a list

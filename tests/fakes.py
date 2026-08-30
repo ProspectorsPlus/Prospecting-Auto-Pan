@@ -179,9 +179,9 @@ def make_frame(
 
     ``bgr`` supplies a whole raster instead - a rendered scene, for a test that
     needs the detector to actually find something. Each requested point is
-    painted as a 7x7 block - exactly covering the
-    detectors' 6x6 sample box - so mean-of-box sampling returns the exact value
-    and two points 7 px apart (as the dig-spot pair is) stay independent.
+    painted as a 7x7 block - comfortably covering the detectors' sample box
+    (D-094) regardless of its size - so mean-of-box sampling returns the exact
+    value and two points 7 px apart (as the dig-spot pair is) stay independent.
     """
     geometry = geometry or make_geometry()
     width, height = geometry.canonical_px

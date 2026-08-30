@@ -2949,3 +2949,118 @@ Verified by averaging the same box by hand from a `screencapture -x` PNG at
 several textured points and comparing to `get_pixel_color()` — matched
 within rounding wherever the on-screen content was actually static between
 the two reads.
+
+---
+
+## D-094 — 2026-08-30 — `sample_box_px` set to 1: production now checks exactly what `--calibrate` shows
+
+**Finding this surfaced:** the box-averaging follow-up D-093 describes above
+— `_run_calibrate_mac` passing `DEFAULT_PIXELS.sample_box_px` when the
+viewport is canonical — is not present in `treasure.py` as it stands.
+`_run_calibrate_mac` calls `pixel_detector.start_stream`/`update_target` with
+a hardcoded `box_px=1.0` unconditionally, with no `is_canonical` branch. The
+code and this log drifted apart at some point after that entry was written;
+this entry does not attempt to explain when or why, only records that the
+running tool is a true single-pixel read, full stop, on every viewport.
+
+**Decision:** rather than re-adding the lost box-averaging branch to
+`_run_calibrate_mac` (owner declined that direction explicitly — the ask was
+to make production match calibrate as it runs today, not the other way
+round), `TreasurePixels.sample_box_px` and `ChestPixel.sample_box_px` are
+changed from `6` to `1`. Every color-gated read in `engine.py`
+(`on_dig_spot`, `capacity_full`, `on_chest_spot`, and the `ctx.sample` used by
+the pan-menu confirms) already funnels through these two fields via
+`sample_client_pixel` — engine.py:322 — so this is the single point of
+control; no call site changed. `application.py`'s F3 live pixel probe reads
+`DEFAULT_PIXELS.sample_box_px` too (application.py:211) and now shows the
+same 1x1 value the checks act on.
+
+**Why this closes the gap without moving the architecture boundary:**
+production still reads the one `CapturedFrame` the coordinator publishes per
+tick — `sample_client_pixel` → `CapturedFrame.sample_mean_rgb`, same as
+before, box size changed and nothing else. Nothing in `engine.py` calls into
+`pixel-detector`, so D-093's "left alone on purpose" reasoning (one coherent
+frame per decision; `pixel-detector` is macOS-only and engine.py's checks are
+not) still holds, and Windows — which never used `pixel-detector` and whose
+`--calibrate` already reads through this same pipeline function
+(`_run_calibrate_capture_pipeline`) — needed no change at all to stay
+consistent with engine.py; it already was.
+
+**What this means for calibrated data:** every color-gated field D-093 listed
+as `PENDING` (`dig_spot_a/b`, `capacity_px`+thresholds, `pan_check_*`,
+`pan_start_check_*`, `ChestPixel.point_px`/`point_b_px`) is still `PENDING`
+and still needs re-deriving with `--calibrate` — this decision changes what a
+freshly calibrated value means (a literal pixel, not a box mean), it does not
+supply new values. Anything calibrated before this change, at a box average,
+is stale against the new 1x1 semantics and must be re-measured, not reused.
+
+**Left alone on purpose (still):** `_run_calibrate_mac`'s hardcoded
+`box_px=1.0` is untouched per owner instruction; this decision does not
+reconcile the CLAUDE.md §3 prose describing box-averaging behavior for
+`--calibrate` against the actual code — that inaccuracy in CLAUDE.md is
+flagged to the owner separately, not corrected here. (Corrected in a
+follow-up pass the same day — CLAUDE.md §3 now describes the true
+single-pixel read verbatim, and cites this entry alongside D-093.)
+
+---
+
+## D-095 — 2026-08-30 — Fresh `--calibrate` values for every color-gated pixel, and `capacity_full` moved onto `color_close`
+
+**Decision:** every color-gated field D-093/D-094 listed as owed a
+re-measurement was re-derived with `--calibrate` under the new 1x1 semantics
+and baked into `TreasurePixels`/`ChestPixel`:
+
+| Field | Old (box-mean, stale) | New (1x1, D-095) |
+|---|---|---|
+| `dig_spot_a_px` / `_rgb` | `(559,614)` / `(51,51,51)`, 10% | `(554,603)` / `(251,251,251)`, 5% |
+| `dig_spot_b_px` / `_rgb` | `(556,607)` / `(201,201,201)`, 10% | `(697,617)` / `(255,255,255)`, 5% |
+| `capacity_px` | `(799,542)`, `is_yellow` heuristic | `(799,537)`, `(229,208,102)`, 4% |
+| `pan_check_px` / `_rgb` | `(500,547)` / `(140,140,140)`, 5% | `(479,541)` / `(65,41,5)`, 3% |
+| `pan_start_check_px` / `_rgb` | `(540,523)` / `(194,55,27)`, 10% flat | `(540,518)` / `(200,0,0)`, `(20,10,10)` absolute |
+| `ChestPixel.point_px` / `target_rgb` | `(542,563)` / `(81,124,65)`, 5% | `(740,567)` / `(0,0,0)`, `(10,10,10)` absolute |
+| `ChestPixel.point_b_px` / `target_b_rgb` | `(553,564)` / `(78,116,56)`, 5% | `(542,562)` / `(131,255,107)`, 10% |
+
+**`capacity_full` retired its own heuristic.** The owner's ask was explicit:
+capacity should gate "the same system as all other pixel detects... same as
+`--calibrate`" — not the bespoke `is_yellow(rgb, yellow_min, blue_gap)` test
+the legacy engine used. `capacity_full` now calls `color_close(rgb,
+pixels.capacity_rgb, pixels.capacity_tolerance_pct)`, identical in shape to
+`on_dig_spot`/`on_chest_spot`. `is_yellow`, `is_white`, and
+`TreasurePixels.yellow_min`/`yellow_blue_gap`/`white_min` had no other
+caller once that switch was made, so they were deleted rather than left as
+dead code, per the no-half-finished-implementations rule.
+
+**`color_close` gained a second tolerance shape.** Two of the seven
+freshly-measured checks (`pan_start_check`, `ChestPixel.point_px`) were
+specified by the owner as an explicit per-channel absolute +/- range
+(`(20,10,10)` and `(10,10,10)`) rather than a flat percent of the 0-255
+range — because the target's own channel values are small enough (`0`,
+`200`) that a flat percent either overshoots or doesn't scale sensibly.
+Rather than force everything onto one formula, `color_close(rgb, target,
+tolerance: Tolerance)` now accepts `Tolerance = Rgb | float`: a bare number
+is the existing flat-percent behavior, an `(r, g, b)` tuple is an absolute
+per-channel range, decided per call site by what was actually calibrated.
+The five checks given only a flat percentage (`dig_spot_a/b`, `capacity`,
+`pan_check`, `ChestPixel.point_b_px`) are untouched in shape. This is why
+`TreasurePixels.pan_start_check_tolerance_pct` is renamed
+`pan_start_check_tolerance` and `ChestPixel.tolerance_pct` is renamed
+`tolerance` (point B's `tolerance_b_pct` is unchanged) — the old names
+promised a percent that one of the two no longer is.
+
+**Provenance:** both dataclasses' `provenance.source` now reads
+"owner-measured via `treasure.py --calibrate`, 1x1 pixel read" in place of
+the legacy-window-frame-basis note; `status` stays `PENDING` on both — a
+measured number is an observed fact, not a passed gate, and the click-only
+targets in `TreasurePixels` (`pan_menu_button_px` and the rest) are still on
+the old legacy-frame basis and still genuinely owed re-derivation (plan
+4.1), so the dataclass-level status can't honestly move past `PENDING` yet.
+
+**Tests:** `tests/test_wiggle.py`'s and `tests/test_characterization.py`'s
+fixtures hardcoded the old target RGB values as literals (and, in three
+places, a `capacity_px` "full" reading that only matched the old
+`is_yellow` heuristic). Updated to reference `DEFAULT_PIXELS`/
+`DEFAULT_CHEST_PIXEL` fields directly instead of repeating literals, so a
+future recalibration doesn't silently desync the tests from the config
+again; `test_legacy_colour_helpers_keep_their_thresholds` lost its
+`is_yellow`/`is_white` assertions (functions no longer exist) and was
+renamed `test_color_close_keeps_its_threshold_semantics`.

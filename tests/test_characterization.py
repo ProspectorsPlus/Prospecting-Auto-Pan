@@ -59,9 +59,11 @@ def _frames(context: engine.ServiceContext, clock: Any, script: list[dict[Any, A
     context.frames = source
 
 
-PROMPT_SHOWING = {engine.DEFAULT_PIXELS.pan_start_check_px: (194, 55, 27)}
+PROMPT_SHOWING = {
+    engine.DEFAULT_PIXELS.pan_start_check_px: engine.DEFAULT_PIXELS.pan_start_check_rgb
+}
 PROMPT_CLEARED = {engine.DEFAULT_PIXELS.pan_start_check_px: (0, 0, 0)}
-PAN_CONFIRMED = {engine.DEFAULT_PIXELS.pan_check_px: (140, 140, 140)}
+PAN_CONFIRMED = {engine.DEFAULT_PIXELS.pan_check_px: engine.DEFAULT_PIXELS.pan_check_rgb}
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +78,8 @@ def test_dig_tap_matches_legacy_edges(rig: Any, service_context: engine.ServiceC
         rig.clock,
         [
             {
-                pixels.dig_spot_a_px: (51, 51, 51),
-                pixels.dig_spot_b_px: (201, 201, 201),
+                pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+                pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
                 pixels.capacity_px: (10, 10, 10),
             }
         ],
@@ -218,8 +220,8 @@ def test_b12_one_dig_decision_reads_exactly_one_frame(
         rig.clock,
         [
             {
-                pixels.dig_spot_a_px: (51, 51, 51),
-                pixels.dig_spot_b_px: (201, 201, 201),
+                pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+                pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
                 pixels.capacity_px: (10, 10, 10),
             }
         ],
@@ -232,7 +234,10 @@ def test_b12_one_dig_decision_reads_exactly_one_frame(
 
 @pytest.mark.parametrize(
     ("capacity_rgb", "expected"),
-    [((200, 190, 40), DigOutcome.PAN_FULL), ((100, 100, 100), DigOutcome.CUE_LOST)],
+    [
+        (engine.DEFAULT_PIXELS.capacity_rgb, DigOutcome.PAN_FULL),
+        ((100, 100, 100), DigOutcome.CUE_LOST),
+    ],
 )
 def test_dig_gating_preserves_legacy_colour_semantics(
     rig: Any,
@@ -250,14 +255,7 @@ def test_dig_gating_preserves_legacy_colour_semantics(
     assert result.outcome is expected
 
 
-def test_legacy_colour_helpers_keep_their_thresholds() -> None:
-    pixels = engine.DEFAULT_PIXELS
-    assert engine.is_yellow((200.0, 190.0, 40.0), pixels.yellow_min, pixels.yellow_blue_gap)
-    assert not engine.is_yellow(
-        (200.0, 190.0, 160.0), pixels.yellow_min, pixels.yellow_blue_gap
-    )
-    assert engine.is_white((180.0, 200.0, 250.0), pixels.white_min)
-    assert not engine.is_white((180.0, 200.0, 100.0), pixels.white_min)
+def test_color_close_keeps_its_threshold_semantics() -> None:
     assert engine.color_close((51.0, 51.0, 51.0), (51.0, 51.0, 51.0), 10.0)
     assert engine.color_close((51.0, 51.0, 51.0), (70.0, 40.0, 60.0), 10.0)
     assert not engine.color_close((51.0, 51.0, 51.0), (110.0, 51.0, 51.0), 10.0)
@@ -270,7 +268,7 @@ def test_migrated_pixels_are_marked_pending_not_validated() -> None:
     assert engine.DEFAULT_PIXELS.status is EvidenceStatus.PENDING
     assert engine.DEFAULT_PIXELS.provenance.status is EvidenceStatus.PENDING
     shifted = engine.DEFAULT_PIXELS.from_legacy_window_frame(56)
-    assert shifted.dig_spot_a_px == (559, 614 - 56)
+    assert shifted.dig_spot_a_px == (554, 603 - 56)
     assert shifted.provenance.status is EvidenceStatus.PENDING
 
 
@@ -284,8 +282,8 @@ def test_the_dig_loop_taps_while_the_spot_matches(
 ) -> None:
     pixels = engine.DEFAULT_PIXELS
     diggable = {
-        pixels.dig_spot_a_px: (51, 51, 51),
-        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     lost = {pixels.dig_spot_a_px: (0, 0, 0), pixels.capacity_px: (10, 10, 10)}
@@ -305,9 +303,9 @@ def test_the_dig_loop_runs_a_pan_swap_when_capacity_reads_full(
     """This is the legacy tick()'s behaviour, rebuilt on the bounded services."""
     pixels = engine.DEFAULT_PIXELS
     full = {
-        pixels.dig_spot_a_px: (51, 51, 51),
-        pixels.dig_spot_b_px: (201, 201, 201),
-        pixels.capacity_px: (200, 190, 40),
+        pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
+        pixels.capacity_px: pixels.capacity_rgb,
     }
     _frames(
         service_context,
@@ -333,8 +331,8 @@ def test_the_dig_loop_is_bounded_by_its_tap_cap(
     """B2 again: the legacy loop had no cap of any kind."""
     pixels = engine.DEFAULT_PIXELS
     diggable = {
-        pixels.dig_spot_a_px: (51, 51, 51),
-        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     _frames(service_context, rig.clock, [diggable] * 50)
@@ -351,8 +349,8 @@ def test_the_dig_loop_stops_at_its_deadline(
 ) -> None:
     pixels = engine.DEFAULT_PIXELS
     diggable = {
-        pixels.dig_spot_a_px: (51, 51, 51),
-        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     _frames(service_context, rig.clock, [diggable] * 5000)
@@ -370,8 +368,8 @@ def test_the_dig_loop_cancels_within_one_wait_slice(
 ) -> None:
     pixels = engine.DEFAULT_PIXELS
     diggable = {
-        pixels.dig_spot_a_px: (51, 51, 51),
-        pixels.dig_spot_b_px: (201, 201, 201),
+        pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
         pixels.capacity_px: (10, 10, 10),
     }
     _frames(service_context, rig.clock, [diggable] * 500)
@@ -397,9 +395,9 @@ def test_the_dig_loop_never_taps_into_a_full_pan(
 ) -> None:
     pixels = engine.DEFAULT_PIXELS
     full = {
-        pixels.dig_spot_a_px: (51, 51, 51),
-        pixels.dig_spot_b_px: (201, 201, 201),
-        pixels.capacity_px: (200, 190, 40),
+        pixels.dig_spot_a_px: pixels.dig_spot_a_rgb,
+        pixels.dig_spot_b_px: pixels.dig_spot_b_rgb,
+        pixels.capacity_px: pixels.capacity_rgb,
     }
     _frames(service_context, rig.clock, [full] * 30)
 
