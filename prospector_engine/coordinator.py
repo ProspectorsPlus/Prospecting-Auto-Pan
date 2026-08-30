@@ -211,6 +211,9 @@ class Readiness:
     ledger_empty: bool
     release_known_safe: bool
     reasons: tuple[str, ...] = ()
+    #: Whether automatic setup has actually finished and reached READY. This
+    #: is the field that closes the race described on :attr:`live_ok`.
+    setup_ready: bool = True
 
     @property
     def shadow_ok(self) -> bool:
@@ -219,6 +222,12 @@ class Readiness:
 
     @property
     def input_ok(self) -> bool:
+        """Whether input may be emitted at all: safety and the pipeline.
+
+        Deliberately *not* a statement about setup. A bounded SERVICE - the
+        release handshake, the pixel read-out - has its own preconditions and
+        does not need a locked profile or a qualified detector.
+        """
         return all(
             (
                 self.viewport_ok,
@@ -230,6 +239,26 @@ class Readiness:
                 self.release_known_safe,
             )
         )
+
+    @property
+    def live_ok(self) -> bool:
+        """The single predicate Live starts on. One place, read by everyone.
+
+        The dashboard's SETUP row and the chord handler used to answer this
+        question from different places: ``_setup_blockers`` rendered setup
+        state as a blocker, and ``_on_start_live`` consulted ``input_ok``,
+        which knew nothing about setup. So a Ctrl+N during setup passed every
+        check the chord handler actually made.
+
+        That is not hypothetical. In ``safe-stop-4a04b270.log`` the chord
+        arrives at 12:43:22.406, Live is entered at 12:43:22.487 with "Every
+        check passed. Movement is allowed now.", and automatic setup then fails
+        at 12:43:25.966 - three and a half seconds *after* the navigator was
+        already driving on evidence that stage was still gathering.
+
+        Both readers now come through here.
+        """
+        return self.input_ok and self.setup_ready
 
     @property
     def calibrated_pixels_apply(self) -> bool:
@@ -244,6 +273,7 @@ class Readiness:
             "deadman": "ok" if self.deadman_ok else "unhealthy",
             "ledger": "empty" if self.ledger_empty else "held",
             "release": "known-safe" if self.release_known_safe else "uncertain",
+            "setup": "ready" if self.setup_ready else "not-ready",
         }
 
 
@@ -1191,9 +1221,12 @@ class RuntimeCoordinator:
             )
             self._events.add("cadence.advisory", metrics.governor.reason)
 
-        # One snapshot, read once, for every decision below.
+        # One snapshot, read once, for every decision below - and the
+        # predicate is ``live_ok``, which includes automatic setup's own state.
+        # ``input_ok`` alone is what let a chord start Live against a setup
+        # that was still running or had already failed (see ``Readiness``).
         readiness = self.readiness()
-        if not readiness.input_ok:
+        if not readiness.live_ok:
             transient = bool(readiness.reasons) and all(
                 reason.startswith(self.TRANSIENT_READINESS_PREFIXES)
                 for reason in readiness.reasons
@@ -1640,6 +1673,19 @@ class RuntimeCoordinator:
         release_safe = not self._authority.release_uncertain
         if not release_safe:
             reasons.append("release:uncertain")
+        setup = self._setup_progress
+        setup_ready = setup.ok
+        if not setup_ready:
+            # One vocabulary for the three states a person can be in the middle
+            # of: never run, running now, and about to be retried.
+            if self.setup_active or setup.running:
+                reasons.append(f"setup:running:{setup.stage.value}")
+            elif setup.repairing:
+                reasons.append("setup:repairing")
+            elif setup.failure is not None:
+                reasons.append(f"setup:{setup.failure.kind.value}")
+            else:
+                reasons.append("setup:not-run")
         return Readiness(
             viewport_ok=geometry.state.can_capture,
             viewport_state=geometry.state,
@@ -1650,6 +1696,7 @@ class RuntimeCoordinator:
             ledger_empty=ledger_empty,
             release_known_safe=release_safe,
             reasons=tuple(reasons),
+            setup_ready=setup_ready,
         )
 
     def blockers(self, metrics: CaptureMetrics | None = None) -> tuple[LiveBlocker, ...]:
@@ -1784,9 +1831,21 @@ class RuntimeCoordinator:
         - it is a wall - and that is what this is not.
         """
         progress = self._setup_progress
-        if progress.ok:
+        if self.readiness().setup_ready:
             return ()
-        if progress.running:
+        if progress.repairing:
+            failure = progress.failure
+            return (
+                LiveBlocker(
+                    "SETUP",
+                    BlockerScope.RUNTIME,
+                    "expected",
+                    "Automatic setup hit something and is trying again",
+                    (failure.describe() if failure is not None else progress.detail),
+                    "Nothing to do; it repairs itself. Stop & Release cancels it.",
+                ),
+            )
+        if progress.running or self.setup_active:
             return (
                 LiveBlocker(
                     "SETUP",

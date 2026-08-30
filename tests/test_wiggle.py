@@ -195,7 +195,7 @@ def _inverted(rgb: engine.Rgb) -> tuple[int, int, int]:
 
 
 def _channel_limits(tolerance: engine.Tolerance) -> tuple[float, float, float]:
-    """Mirrors ``color_close``'s own tolerance resolution (D-095)."""
+    """Mirrors ``color_close``'s own tolerance resolution (D-100)."""
     return tolerance if isinstance(tolerance, tuple) else (tolerance / 100.0 * 255.0,) * 3
 
 

@@ -206,7 +206,12 @@ def test_a_profile_swap_drops_the_track_and_forces_a_full_frame_pass() -> None:
     pipeline.analyze(make_frame(4), map_id="m", approach_valid=False)
 
     assert pipeline.full_passes > before
-    assert pipeline.tracker.track_id is None
+    # Both halves of perception forget: the detector's own identity and the
+    # temporal bridge's anchored template, which was cut from the old profile's
+    # pixels and means nothing under the new one.
+    assert pipeline.detector is not None
+    assert pipeline.detector.track_id is None
+    assert not pipeline.bridge.anchored
 
 
 def test_a_geometry_change_drops_temporal_state_rather_than_reinterpreting_it() -> None:
@@ -215,12 +220,15 @@ def test_a_geometry_change_drops_temporal_state_rather_than_reinterpreting_it() 
     authority = ProfileAuthority(LIBRARY, "yellow_map_v0")
     pipeline = _pipeline(authority)
     pipeline.analyze(make_frame(1), map_id="m", approach_valid=False)
-    tracker_before = pipeline.tracker
 
     moved = make_geometry(size=(1024.0, 768.0))
     pipeline.analyze(make_frame(2, geometry=moved), map_id="m", approach_valid=False)
 
-    assert pipeline.tracker is not tracker_before
+    # A resize changes the coordinate basis, so every remembered pixel position
+    # and every stored patch belongs to a frame that no longer exists.
+    assert pipeline.detector is not None
+    assert pipeline.detector.track_id is None
+    assert not pipeline.bridge.anchored
 
 
 # ---------------------------------------------------------------------------

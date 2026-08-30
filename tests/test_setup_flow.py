@@ -159,7 +159,21 @@ def test_the_setup_blocker_disappears_once_ready(application: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_window_stops_setup_with_the_action_to_take(application: Any) -> None:
+def test_no_window_keeps_waiting_and_says_what_to_do_while_it_waits(
+    application: Any,
+) -> None:
+    """ "No Roblox window" is environmental: it is waited for, not given up on.
+
+    It is also the clearest possible instruction to a person, so the packet has
+    to carry the failure and its remedy *while* it retries. Reporting a bare
+    "working on it" during a wait for something only the user can fix is how a
+    navigator ends up sitting silently in front of a closed game all night.
+
+    This is deliberately not an assertion that it never fails: the supervisor
+    is bounded by an attempt cap and a monotonic deadline like everything else,
+    and ``test_a_hard_failure_is_never_retried`` covers the other direction.
+    """
+    from prospector_engine.contracts import SetupDisposition, SetupFailureKind
     from prospector_engine.geometry import ViewportGeometry
 
     application.port_under_test.set_geometry(
@@ -167,10 +181,17 @@ def test_no_window_stops_setup_with_the_action_to_take(application: Any) -> None
     )
     _start(application)
 
-    assert _await(lambda: application.coordinator.setup_progress.stage is SetupStage.FAILED)
-    failure = application.coordinator.setup_progress.failure
-    assert failure is not None
-    assert "windowed" in failure.remedy
+    def reported() -> bool:
+        failure = application.coordinator.setup_progress.failure
+        return failure is not None and failure.kind is SetupFailureKind.NO_WINDOW
+
+    assert _await(reported)
+    progress = application.coordinator.setup_progress
+    assert progress.failure is not None
+    assert progress.failure.disposition is SetupDisposition.ENVIRONMENTAL
+    assert "windowed" in progress.failure.remedy
+    # Whatever it is doing, it is not claiming to be ready.
+    assert not progress.ok
 
 
 def test_a_refused_resize_stops_setup_rather_than_carrying_on(application: Any) -> None:
@@ -222,3 +243,84 @@ def test_retry_setup_runs_the_same_machine_again(application: Any) -> None:
     coordinator.submit(coordinator.next_intent(IntentType.RETRY_SETUP, "gui"))
 
     assert _await(lambda: coordinator.setup_progress.stage is SetupStage.READY)
+
+
+# ---------------------------------------------------------------------------
+# Live may not begin against a setup that has not finished
+# ---------------------------------------------------------------------------
+#
+# The race these cover is not hypothetical. In the owner's own trace
+# ``safe-stop-4a04b270.log``:
+#
+#     [12:43:15.618] INFO  Starting up. Looking for the Roblox window...
+#     [12:43:22.406] INFO  You pressed Ctrl+N.
+#     [12:43:22.487] STATE IDLE -> LIVE - worker live-21
+#     [12:43:22.487] PASS  Every check passed. Movement is allowed now.
+#     [12:43:25.966] FAIL  the direction to the arrow never held still long
+#                          enough to trust.
+#
+# Live was entered, and announced that every check had passed, three and a half
+# seconds *before* the stage that establishes the reference it steers by
+# reported that it had failed. The cause was two authorities for one question:
+# ``_setup_blockers`` rendered setup state into the dashboard, and
+# ``_on_start_live`` consulted ``Readiness.input_ok``, which knew nothing about
+# setup at all. Both now read ``Readiness.live_ok``.
+
+
+def _chord(app: Any) -> None:
+    """Submit START_LIVE through the physical-chord capability, as a listener does."""
+    coordinator = app.coordinator
+    coordinator.submit(coordinator.chord_authority().intent(IntentType.START_LIVE, "Ctrl+N"))
+
+
+def test_a_chord_while_setup_is_running_cannot_enter_live(application: Any) -> None:
+    from prospector_engine.contracts import SetupStage as Stage
+
+    _start(application)
+    # Press during setup, before it can possibly have reached READY.
+    assert _await(lambda: application.coordinator.setup_progress.running, timeout_s=4.0)
+    _chord(application)
+
+    # It must not be in Live, and it must not *become* Live off that chord.
+    time.sleep(0.3)
+    assert application.coordinator.mode is not RunMode.LIVE
+    readiness = application.coordinator.readiness()
+    if application.coordinator.setup_progress.stage is not Stage.READY:
+        assert not readiness.live_ok
+        assert any(reason.startswith("setup:") for reason in readiness.reasons), readiness
+
+
+def test_a_chord_after_a_failed_setup_cannot_enter_live(application: Any) -> None:
+    from prospector_engine.geometry import ViewportGeometry
+
+    application.port_under_test.set_geometry(
+        ViewportGeometry.invalid("Roblox window not found")
+    )
+    _start(application)
+    assert _await(lambda: application.coordinator.setup_progress.failure is not None)
+
+    _chord(application)
+
+    time.sleep(0.3)
+    assert application.coordinator.mode is not RunMode.LIVE
+    assert not application.coordinator.readiness().live_ok
+
+
+def test_the_dashboard_and_the_chord_answer_from_the_same_place(
+    application: Any,
+) -> None:
+    """One authoritative predicate, not two that can disagree.
+
+    A SETUP blocker on screen and a chord that starts Live anyway is the exact
+    shape of the trace above, so the invariant is asserted directly: whenever
+    a SETUP blocker is showing, ``live_ok`` is false, and vice versa.
+    """
+    _start(application)
+    for _ in range(60):
+        readiness = application.coordinator.readiness()
+        showing = any(b.code == "SETUP" for b in application.coordinator.blockers())
+        assert showing == (not readiness.setup_ready), (
+            f"blocker={showing} setup_ready={readiness.setup_ready} "
+            f"stage={application.coordinator.setup_progress.stage}"
+        )
+        time.sleep(0.05)

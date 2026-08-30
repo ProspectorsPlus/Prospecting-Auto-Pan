@@ -32,6 +32,7 @@ character stationary and every probe released.
 from __future__ import annotations
 
 import itertools
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Protocol, runtime_checkable
@@ -40,6 +41,8 @@ from prospector_engine.acceptance import AcceptanceResult
 from prospector_engine.contracts import (
     EvidenceStatus,
     Provenance,
+    SetupAttempt,
+    SetupDisposition,
     SetupFailure,
     SetupFailureKind,
     SetupProgress,
@@ -358,6 +361,19 @@ class SetupConfig:
     verify_input_deadline_s: float = 8.0
     reference_deadline_s: float = 8.0
     reference_stable_frames: int = 6
+    #: Rolling window the steady readings must all fall inside. The old rule
+    #: wanted ``reference_stable_frames`` *consecutive* usable frames and threw
+    #: the whole run away on one abstention, which is why real logs show this
+    #: stage failing and then succeeding on a manual retry seconds later with
+    #: nothing about the world having changed. A reference is a claim that the
+    #: heading is steady over a short span of time; whether every frame in that
+    #: span was readable is a different question, asked separately below.
+    reference_window_s: float = 1.6
+    #: Fraction of the frames *in that window* that must have been usable. This
+    #: is what stops the rolling rule from being merely a weaker rule: six
+    #: readings gathered over eight seconds of mostly-unreadable frames is not
+    #: a steady reference, and this is the condition that says so.
+    reference_min_hit_rate: float = 0.5
     #: Degrees of frame-to-frame jitter the heading may show and still count as
     #: a stable reference. Wider than the alignment cone on purpose: this is a
     #: check that the reference *works*, not a precision measurement.
@@ -395,6 +411,26 @@ class SetupConfig:
     control_mode_deadline_s: float = 8.0
     characterize_deadline_s: float = 30.0
 
+    # -- supervision ------------------------------------------------------
+    #: Attempts a RECOVERABLE failure gets before it is reported as terminal.
+    #: A transient fault that has not cleared in four bounded passes is not
+    #: transient.
+    max_recoverable_attempts: int = 4
+    #: Attempts an ENVIRONMENTAL condition gets. Higher, because "no Roblox
+    #: window" and "no map equipped" become false when a person does something
+    #: ordinary, and waiting for that with nothing held costs nothing.
+    max_environmental_attempts: int = 12
+    #: Total attempts, whatever their disposition. The outer bound.
+    max_total_attempts: int = 20
+    #: Wall-clock ceiling on the whole supervised run. Every retry loop in this
+    #: repository has both an attempt cap and a monotonic deadline, and the
+    #: supervisor is a retry loop like any other.
+    supervision_deadline_s: float = 180.0
+    #: Backoff between attempts: ``base * 2 ** (n - 1)``, capped. Nothing is
+    #: held and nothing is emitted while it waits.
+    retry_backoff_base_s: float = 0.4
+    retry_backoff_max_s: float = 6.0
+
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PROVISIONAL,
@@ -411,6 +447,10 @@ class SetupConfig:
                 f"qualify_min_run={self.qualify_min_run} exceeds "
                 f"qualify_frames={self.qualify_frames}: the run could never be observed"
             )
+        if not 0.0 <= self.reference_min_hit_rate <= 1.0:
+            raise ValueError("reference_min_hit_rate must be a fraction")
+        if self.max_recoverable_attempts < 1 or self.max_environmental_attempts < 1:
+            raise ValueError("an attempt cap below one would disable the stage entirely")
         if self.qualify_max_miss_streak >= self.qualify_frames:
             raise ValueError(
                 f"qualify_max_miss_streak={self.qualify_max_miss_streak} is not below "
@@ -597,6 +637,9 @@ class AutomaticSetup:
         self._profile_decision: ProfileDecision | None = None
         self._acceptance: AcceptanceResult | None = None
         self._qualification: Qualification | None = None
+        self._pass_index = 1
+        self._history: tuple[SetupAttempt, ...] = ()
+        self._window_identity: tuple[object, ...] | None = None
 
     @staticmethod
     def _default_sleep(seconds: float) -> None:
@@ -623,29 +666,151 @@ class AutomaticSetup:
         return self._qualification
 
     @property
+    def history(self) -> tuple[SetupAttempt, ...]:
+        """Every finished attempt of this supervised run, oldest first."""
+        return self._history
+
+    @property
     def acceptance(self) -> AcceptanceResult | None:
         """What the forward pulse concluded, or ``None`` if it has not run."""
         return self._acceptance
 
+    # -- the observation stages, in order ---------------------------------
+    #: Every stage of the observation half, ordered by dependency. Earlier
+    #: stages establish the evidence later ones consume, which is what makes
+    #: "resume from the earliest invalidated prerequisite" a lookup rather than
+    #: a judgement call.
+    OBSERVATION_ORDER: tuple[SetupStage, ...] = (
+        SetupStage.FIND_ROBLOX,
+        SetupStage.FIT_VIEWPORT,
+        SetupStage.RESTART_CAPTURE,
+        SetupStage.STABILIZE_CAPTURE,
+        SetupStage.SELECT_PROFILE,
+        SetupStage.ESTABLISH_REFERENCE,
+        SetupStage.SHADOW_QUALIFY,
+    )
+
+    #: Which prerequisite each failure kind invalidates. A recoverable failure
+    #: resumes here rather than from the top, so a jittery reference does not
+    #: throw away a window that was found, a client that was sized and a
+    #: profile that was locked - all of which are still true.
+    #:
+    #: ``None`` means "the stage that failed", which is the right answer for
+    #: the kinds that describe the stage's own measurement rather than a
+    #: prerequisite of it.
+    RESUME_AT: Mapping[SetupFailureKind, SetupStage | None] = {
+        SetupFailureKind.NO_WINDOW: SetupStage.FIND_ROBLOX,
+        SetupFailureKind.FULLSCREEN: SetupStage.FIND_ROBLOX,
+        SetupFailureKind.AMBIGUOUS_WINDOW: SetupStage.FIND_ROBLOX,
+        SetupFailureKind.PERMISSION: SetupStage.FIND_ROBLOX,
+        SetupFailureKind.RESIZE_DENIED: SetupStage.FIT_VIEWPORT,
+        SetupFailureKind.VIEWPORT_UNUSABLE: SetupStage.FIT_VIEWPORT,
+        SetupFailureKind.CAPTURE_STALE: SetupStage.RESTART_CAPTURE,
+        SetupFailureKind.PROFILE_AMBIGUOUS: SetupStage.SELECT_PROFILE,
+        SetupFailureKind.REFERENCE_UNSTABLE: None,
+        SetupFailureKind.TIMEOUT: None,
+        SetupFailureKind.INTERNAL: None,
+    }
+
     # -- the run ----------------------------------------------------------
     def run_observation(self) -> SetupProgress:
-        """Find, fit, capture, classify, verify. Emits no input whatsoever."""
+        """Find, fit, capture, classify, verify - supervised. Emits no input.
+
+        One press of Start Navigator buys a *supervised* run, not one pass.
+        Every attempt is the same bounded sequence of stages it always was;
+        what is new is the loop around it, and three rules that keep the loop
+        from turning a safety property into a spin:
+
+        **A hard failure is still hard.** Permission denied, an unidentifiable
+        second Roblox window, and a cancellation are never retried, however
+        much of the budget is left (:class:`SetupDisposition`). The retry
+        machinery cannot widen that set: it reads a table.
+
+        **A retry resumes, it does not restart.** A jittery reference does not
+        invalidate the window that was found, the client that was sized or the
+        profile that was locked, so the next attempt starts at the earliest
+        prerequisite the failure actually invalidated - unless the window
+        identity itself changed underneath us, which invalidates everything.
+
+        **Waiting holds nothing.** The backoff between attempts emits no input
+        and touches no window; it is a sleep on the caller's thread, bounded by
+        an attempt cap *and* a monotonic deadline like every other loop here.
+        """
         self._started_s = self._now()
-        stages: tuple[tuple[SetupStage, Callable[[], SetupFailure | None]], ...] = (
-            (SetupStage.FIND_ROBLOX, self._find_roblox),
-            (SetupStage.FIT_VIEWPORT, self._fit_viewport),
-            (SetupStage.RESTART_CAPTURE, self._restart_capture),
-            (SetupStage.STABILIZE_CAPTURE, self._stabilize_capture),
-            (SetupStage.SELECT_PROFILE, self._select_profile),
-            (SetupStage.ESTABLISH_REFERENCE, self._establish_reference),
-            (SetupStage.SHADOW_QUALIFY, self._shadow_qualify),
+        config = self._config
+        deadline_s = self._started_s + config.supervision_deadline_s
+        resume_from: SetupStage | None = None
+        recoverable_attempts = 0
+        environmental_attempts = 0
+        last_failure: SetupFailure | None = None
+
+        for index in range(1, config.max_total_attempts + 1):
+            self._pass_index = index
+            attempt_started_s = self._now()
+            try:
+                failure = self._run_stages(resume_from)
+            except SetupCancelled:
+                # A person pressed Stop. Not a failure, and never retried:
+                # ``_run_stages`` has already published the CANCELLED packet.
+                return self._progress
+            self._record_attempt(index, attempt_started_s, failure, resumed_from=resume_from)
+            if failure is None:
+                return self._succeed()
+            last_failure = failure
+
+            disposition = failure.disposition
+            if disposition is SetupDisposition.HARD:
+                return self._fail(failure)
+            if disposition is SetupDisposition.RECOVERABLE:
+                recoverable_attempts += 1
+                exhausted = recoverable_attempts >= config.max_recoverable_attempts
+            else:
+                environmental_attempts += 1
+                exhausted = environmental_attempts >= config.max_environmental_attempts
+            # ``max_total_attempts`` is the backstop that does not depend on
+            # the clock advancing at all; the deadline is the ordinary bound.
+            if exhausted or self._now() >= deadline_s:
+                return self._fail(self._exhausted(failure, index))
+
+            resume_from = self._resume_stage(failure)
+            if not self._backoff(index, failure, resume_from, deadline_s):
+                return self._progress
+        return self._fail(
+            self._exhausted(last_failure, config.max_total_attempts)
+            if last_failure is not None
+            else SetupFailure(
+                SetupFailureKind.TIMEOUT,
+                SetupStage.FAILED,
+                "automatic setup ran out of attempts",
+                "Press Start Navigator to try again.",
+            )
         )
-        for stage, run in stages:
+
+    def _run_stages(self, resume_from: SetupStage | None) -> SetupFailure | None:
+        """One bounded pass over the observation stages from ``resume_from``.
+
+        Returns ``None`` on success and a :class:`SetupFailure` on failure.
+        Cancellation is neither: it re-raises :class:`SetupCancelled` after
+        publishing the CANCELLED packet, because a stop must never be folded
+        into a failure kind and then retried like one.
+        """
+        runners: Mapping[SetupStage, Callable[[], SetupFailure | None]] = {
+            SetupStage.FIND_ROBLOX: self._find_roblox,
+            SetupStage.FIT_VIEWPORT: self._fit_viewport,
+            SetupStage.RESTART_CAPTURE: self._restart_capture,
+            SetupStage.STABILIZE_CAPTURE: self._stabilize_capture,
+            SetupStage.SELECT_PROFILE: self._select_profile,
+            SetupStage.ESTABLISH_REFERENCE: self._establish_reference,
+            SetupStage.SHADOW_QUALIFY: self._shadow_qualify,
+        }
+        start = 0 if resume_from is None else self.OBSERVATION_ORDER.index(resume_from)
+        for stage in self.OBSERVATION_ORDER[start:]:
             self._enter(stage, "starting")
             try:
-                failure = run()
+                failure = runners[stage]()
             except SetupCancelled:
-                return self._cancel(stage)
+                self._cancel(stage)
+                raise
             except Exception as exc:  # a stage must never take the process down
                 failure = SetupFailure(
                     SetupFailureKind.INTERNAL,
@@ -655,8 +820,125 @@ class AutomaticSetup:
                     repr(exc),
                 )
             if failure is not None:
-                return self._fail(failure)
-        return self._succeed()
+                return failure
+        return None
+
+    def _resume_stage(self, failure: SetupFailure) -> SetupStage:
+        """The earliest prerequisite this failure actually invalidated.
+
+        A changed window identity invalidates everything downstream of it - the
+        fit, the capture binding, the profile and the reference were all
+        measured against a window that is no longer the one in front of us - so
+        that case restarts from the top regardless of what failed.
+        """
+        if self._window_identity_changed():
+            return SetupStage.FIND_ROBLOX
+        mapped = self.RESUME_AT.get(failure.kind, SetupStage.FIND_ROBLOX)
+        stage = mapped if mapped is not None else failure.stage
+        if stage not in self.OBSERVATION_ORDER:
+            return SetupStage.FIND_ROBLOX
+        return stage
+
+    def _window_identity_changed(self) -> bool:
+        """Whether the client we adopted is still the client that is there.
+
+        Read from the port rather than assumed, and read *between* attempts
+        rather than during one, so it costs one cheap probe per retry. A port
+        that cannot answer says nothing changed, which is the conservative
+        direction: it resumes from the failing stage instead of pointlessly
+        re-running a fit that was fine.
+        """
+        try:
+            probe = self._port.locate_window()
+        except Exception:
+            return False
+        identity = probe.identity if probe.found else None
+        if identity is None:
+            return False
+        changed = self._window_identity is not None and identity != self._window_identity
+        self._window_identity = identity
+        return changed
+
+    def _backoff(
+        self,
+        index: int,
+        failure: SetupFailure,
+        resume_from: SetupStage,
+        deadline_s: float,
+    ) -> bool:
+        """Wait before the next attempt, holding nothing. False if cancelled.
+
+        The wait is published, so the dashboard can say "trying again" rather
+        than going quiet, and it is chopped into poll-interval slices so a Stop
+        pressed during it is honoured within one interval instead of one
+        backoff.
+        """
+        config = self._config
+        wait_s = min(
+            config.retry_backoff_max_s,
+            config.retry_backoff_base_s * (2 ** (index - 1)),
+        )
+        wait_s = min(wait_s, max(0.0, deadline_s - self._now()))
+        resume_at_s = self._now() + wait_s
+        self._progress = replace(
+            self._progress,
+            stage=SetupStage.IDLE,
+            detail=(
+                f"{failure.summary} - trying again from "
+                f"{resume_from.value.replace('_', ' ')} in {wait_s:.1f} s"
+            ),
+            updated_at_s=self._now(),
+            failure=failure,
+            pass_index=self._pass_index,
+            history=self._history,
+            retry_at_s=resume_at_s,
+            resume_from=resume_from,
+        )
+        self._publish(self._progress)
+        # An attempt cap *and* a monotonic deadline, like every other loop in
+        # this file. Without the cap a clock that never advances - a test
+        # harness, a suspended machine - spins here forever, which is exactly
+        # the hang the stage loops already had ``POLL_ATTEMPT_SLACK`` for.
+        interval = max(config.poll_interval_s, 1e-4)
+        max_slices = int(wait_s / interval) * self.POLL_ATTEMPT_SLACK + 16
+        for _slice in range(max_slices):
+            if self._now() >= resume_at_s:
+                break
+            if self._cancelled():
+                self._cancel(resume_from)
+                return False
+            self._sleep(min(interval, max(1e-4, resume_at_s - self._now())))
+        self._progress = replace(self._progress, retry_at_s=None, resume_from=None)
+        return True
+
+    def _exhausted(self, failure: SetupFailure, attempts: int) -> SetupFailure:
+        """The same failure, told as the end of a supervised run rather than a pass."""
+        return replace(
+            failure,
+            detail=(
+                f"{failure.detail} (gave up after {attempts} "
+                f"attempt{'s' if attempts != 1 else ''})"
+            ).strip(),
+        )
+
+    def _record_attempt(
+        self,
+        index: int,
+        started_at_s: float,
+        failure: SetupFailure | None,
+        *,
+        resumed_from: SetupStage | None,
+    ) -> None:
+        """Append to the bounded history. Oldest entries fall off the front."""
+        entry = SetupAttempt(
+            index=index,
+            stage=self._progress.stage,
+            started_at_s=started_at_s,
+            ended_at_s=self._now(),
+            failure=failure,
+            resumed_from=resumed_from,
+        )
+        self._history = (*self._history, entry)[-self.MAX_HISTORY :]
 
     def run_control(
         self,
@@ -713,6 +995,12 @@ class AutomaticSetup:
             probe = self._port.locate_window()
             self._note(stage, attempt, probe.detail)
             if probe.found:
+                # Remember which window this run's evidence belongs to. Without
+                # this the between-attempt identity check has nothing to
+                # compare against and can never fire, so a retry would resume
+                # against a *different* client using a fit, a capture binding
+                # and a profile measured on the old one.
+                self._window_identity = probe.identity
                 return None
             if probe.permission_denied or probe.ambiguous or probe.fullscreen:
                 break
@@ -885,80 +1173,143 @@ class AutomaticSetup:
 
     # -- stage: reference -------------------------------------------------
     def _establish_reference(self) -> SetupFailure | None:
+        """Rolling evidence, not a consecutive run. One abstention costs one frame.
+
+        The old rule kept a list of *consecutive* usable readings and cleared it
+        on any frame the detector abstained on. That made the stage a race
+        against the detector's worst moment rather than a measurement of
+        whether the heading is steady: real traces show it failing and then
+        passing on a manual retry seconds later with nothing about the room,
+        the window or the character having changed.
+
+        What replaces it asks the question the reference actually poses - is
+        the heading steady over a short span of time - as three conditions that
+        fail independently: enough readings, all inside one rolling window,
+        with the peak-to-peak jitter under the bound; *and* enough of the
+        frames in that window readable at all, which is what keeps this from
+        being merely a laxer version of the old rule.
+        """
         stage = SetupStage.ESTABLISH_REFERENCE
-        needed = self._config.reference_stable_frames
-        headings: list[float] = []
+        config = self._config
+        needed = config.reference_stable_frames
+        window: deque[tuple[float, float]] = deque()
+        seen: deque[float] = deque()
+        best_jitter: float | None = None
         last_sequence = -1
-        for attempt, _elapsed in self._poll(self._config.reference_deadline_s):
+        for attempt, _elapsed in self._poll(config.reference_deadline_s):
             sample = self._port.perception_sample()
             if sample is None or sample.frame_sequence == last_sequence:
                 continue
             last_sequence = sample.frame_sequence
-            if not (sample.arrow_valid and sample.direction_valid) or sample.error_deg is None:
-                headings.clear()
-                self._note(stage, attempt, "waiting for a steady arrow reading")
+            now = self._now()
+            seen.append(now)
+            usable = (
+                sample.arrow_valid and sample.direction_valid and sample.error_deg is not None
+            )
+            if usable:
+                assert sample.error_deg is not None
+                window.append((now, sample.error_deg))
+            horizon = now - config.reference_window_s
+            while window and window[0][0] < horizon:
+                window.popleft()
+            while seen and seen[0] < horizon:
+                seen.popleft()
+
+            headings = [heading for _at_s, heading in window]
+            hit_rate = len(window) / len(seen) if seen else 0.0
+            if len(headings) < needed:
+                self._note(stage, attempt, f"steady arrow readings {len(headings)}/{needed}")
                 continue
-            headings.append(sample.error_deg)
-            if len(headings) > needed:
-                headings.pop(0)
-            self._note(stage, attempt, f"steady arrow readings {len(headings)}/{needed}")
-            if len(headings) >= needed:
-                jitter = _jitter_deg(headings)
-                if jitter <= self._config.reference_max_jitter_deg:
-                    self._reference = ReferenceCheck(
-                        True,
-                        len(headings),
-                        jitter,
-                        f"heading stable to {jitter:.1f} degrees over {len(headings)} frames",
-                    )
-                    return None
-                headings.clear()
+            jitter = _jitter_deg(headings)
+            best_jitter = jitter if best_jitter is None else min(best_jitter, jitter)
+            if jitter > config.reference_max_jitter_deg:
                 self._note(
                     stage, attempt, f"heading jitter {jitter:.1f} degrees; still watching"
                 )
-        self._reference = ReferenceCheck(False, len(headings), 0.0, "no stable heading")
+                continue
+            if hit_rate < config.reference_min_hit_rate:
+                self._note(
+                    stage,
+                    attempt,
+                    f"heading steady but only {hit_rate * 100:.0f}% of frames readable",
+                )
+                continue
+            self._reference = ReferenceCheck(
+                True,
+                len(headings),
+                jitter,
+                f"heading stable to {jitter:.1f} degrees over {len(headings)} readings "
+                f"in {config.reference_window_s:g} s ({hit_rate * 100:.0f}% readable)",
+            )
+            return None
+        detail = (
+            f"{len(window)} steady readings of the {needed} required"
+            if best_jitter is None
+            else f"best jitter {best_jitter:.1f} degrees, allowed "
+            f"{config.reference_max_jitter_deg:.0f}"
+        )
+        self._reference = ReferenceCheck(False, len(window), best_jitter or 0.0, detail)
         return SetupFailure(
             SetupFailureKind.REFERENCE_UNSTABLE,
             stage,
             "the direction to the arrow never held still long enough to trust",
-            "Stand still with the map arrow clearly visible, then press Retry Setup.",
-            f"{len(headings)} steady frames of the {needed} required",
+            "Stand still with the map arrow clearly visible; setup keeps trying.",
+            detail,
         )
 
     # -- stage: qualify ---------------------------------------------------
     def _shadow_qualify(self) -> SetupFailure | None:
         """Prove the whole read-only pipeline before offering to drive it."""
         stage = SetupStage.SHADOW_QUALIFY
-        needed = self._config.qualify_frames
-        collected: list[PerceptionSample] = []
+        config = self._config
+        needed = config.qualify_frames
+        window: deque[PerceptionSample] = deque(maxlen=needed)
         last_sequence = -1
         fps = 0.0
-        for attempt, _elapsed in self._poll(self._config.qualify_deadline_s):
+        best: Qualification | None = None
+        best_shortfalls: tuple[str, ...] = ()
+        # Keep watching to the deadline and judge a *rolling* window, rather
+        # than judging the first ``needed`` frames and stopping. One unlucky
+        # opening batch - the character still settling, a cloud crossing, the
+        # detector mid-acquisition - used to fail the whole attempt while the
+        # very next second of frames would have passed comfortably.
+        for attempt, _elapsed in self._poll(config.qualify_deadline_s):
             sample = self._port.perception_sample()
             if sample is None or sample.frame_sequence == last_sequence:
                 continue
             last_sequence = sample.frame_sequence
-            collected.append(sample)
+            window.append(sample)
             fps = sample.processed_fps
-            hits = sum(1 for s in collected if s.arrow_valid and s.direction_valid)
+            hits = sum(1 for s in window if s.arrow_valid and s.direction_valid)
             self._note(
                 stage,
                 attempt,
-                f"checked {len(collected)}/{needed} frames, {hits} with an arrow",
+                f"checked {len(window)}/{needed} frames, {hits} with an arrow",
             )
-            if len(collected) >= needed:
+            if len(window) < needed:
+                continue
+            report = measure_qualification(list(window), processed_fps=fps)
+            shortfalls = report.shortfalls(config)
+            if best is None or len(shortfalls) < len(best_shortfalls):
+                best, best_shortfalls = report, shortfalls
+            if not shortfalls:
+                self._qualification = report
+                best_shortfalls = ()
                 break
-        report = measure_qualification(collected, processed_fps=fps)
-        self._qualification = report
-        shortfalls = report.shortfalls(self._config)
-        if shortfalls:
+        else:
+            # The deadline passed with no window clearing every threshold.
+            self._qualification = best or measure_qualification(list(window), processed_fps=fps)
+            best_shortfalls = best_shortfalls or self._qualification.shortfalls(config)
+        report = self._qualification
+        assert report is not None  # both branches above set it
+        if best_shortfalls:
             return SetupFailure(
                 SetupFailureKind.REFERENCE_UNSTABLE,
                 stage,
-                shortfalls[0],
+                best_shortfalls[0],
                 "Stand still with the treasure map arrow clearly on screen and nothing "
-                "green moving behind it, then press Retry Setup.",
-                report.describe(),
+                "green moving behind it; setup keeps trying.",
+                f"best window of {len(window)}: {report.describe()}",
             )
         if fps and fps < self._config.qualify_min_fps:
             return SetupFailure(
@@ -1142,6 +1493,10 @@ class AutomaticSetup:
     #: laptop - still terminates the loop.
     POLL_ATTEMPT_SLACK = 4
 
+    #: Attempts kept in the readable history. Bounded, because a supervised
+    #: run that waits all night must not accumulate one entry per minute.
+    MAX_HISTORY = 12
+
     def _poll(self, deadline_s: float) -> Iterator[tuple[int, float]]:
         """Yield ``(attempt, elapsed)`` until the deadline, honouring cancel.
 
@@ -1176,6 +1531,10 @@ class AutomaticSetup:
             started_at_s=self._started_s or now,
             updated_at_s=now,
             failure=None,
+            pass_index=self._pass_index,
+            history=self._history,
+            retry_at_s=None,
+            resume_from=None,
         )
         self._publish(self._progress)
 
@@ -1200,6 +1559,10 @@ class AutomaticSetup:
             detail=failure.describe(),
             updated_at_s=self._now(),
             failure=failure,
+            pass_index=self._pass_index,
+            history=self._history,
+            retry_at_s=None,
+            resume_from=None,
         )
         self._publish(self._progress)
         return self._progress
@@ -1216,6 +1579,10 @@ class AutomaticSetup:
                 "automatic setup was stopped",
                 "Press Start Navigator when you are ready.",
             ),
+            pass_index=self._pass_index,
+            history=self._history,
+            retry_at_s=None,
+            resume_from=None,
         )
         self._publish(self._progress)
         return self._progress
@@ -1227,6 +1594,10 @@ class AutomaticSetup:
             detail="ready",
             updated_at_s=self._now(),
             failure=None,
+            pass_index=self._pass_index,
+            history=self._history,
+            retry_at_s=None,
+            resume_from=None,
         )
         self._publish(self._progress)
         return self._progress

@@ -46,6 +46,7 @@ from tests.fakes import (
     FakePlatformPort,
     VirtualClock,
     make_geometry,
+    mark_setup_ready,
     settle_cadence_for_live,
 )
 
@@ -128,8 +129,13 @@ class Harness:
         return intent
 
     def settle_cadence(self) -> None:
-        """Satisfy the Live cadence gate through the production governor."""
+        """Satisfy the Live cadence and setup gates through production paths."""
         settle_cadence_for_live(self.capture)
+        # Live's predicate is ``Readiness.live_ok``, which includes automatic
+        # setup. A rig that wires the coordinator by hand never runs setup, so
+        # the evidence is published through the coordinator's own sink rather
+        # than the gate being skipped.
+        mark_setup_ready(self.coordinator)
 
     def chord(self, intent_type: IntentType) -> RuntimeIntent:
         """Submit through the physical-chord capability, as a listener does.
@@ -889,6 +895,8 @@ def test_an_unsettled_cadence_does_not_refuse_the_chord(harness: Harness) -> Non
     """
     harness.register(IntentType.START_LIVE, "live", _cancellable_worker())
     harness.start()
+    # Setup is ready; the *cadence* is what this test leaves unsettled.
+    mark_setup_ready(harness.coordinator)
 
     # Deliberately *not* settled, and deliberately with a fresh frame: the two
     # facts the old gate could not tell apart.

@@ -70,6 +70,27 @@ class PerceptionTiming:
     rejection_reasons: tuple[str, ...] = ()
     #: The temporal state the detector was in after this frame.
     track_state: str = ""
+    #: Where this frame's arrow evidence came from - the structural detector,
+    #: the local correlator bridging a frame it missed, or nothing at all.
+    #: ``EvidenceProvenance.value``; see D-094. A trace where recall looks
+    #: healthy but every frame says ``bridged`` is a detector that has stopped
+    #: working and a bridge covering for it, and that has to be *visible*.
+    provenance: str = ""
+    #: Seconds since the structural detector last validated the identity. Zero
+    #: on a globally observed frame.
+    evidence_age_s: float = 0.0
+    #: Cumulative bridged displacement since the last global validation.
+    bridge_drift_px: float = 0.0
+    #: How far the bridge and the global commit disagreed on the frame the
+    #: global path corrected it, if they ever did.
+    bridge_disagreement_px: float | None = None
+    #: Why the local correlator declined to carry this frame, if it tried:
+    #: ``ambiguous``, ``correlation``, ``speed``, ``contrast``, ``drift``,
+    #: ``step``, ``horizon``.
+    bridge_refusal: str | None = None
+    #: The bridge's decayed confidence, separate from ``confidence`` so a
+    #: bridged frame's decay is legible next to the detector's own score.
+    bridge_confidence: float = 0.0
 
     @property
     def detector_ms(self) -> float:

@@ -121,19 +121,21 @@ It reads a true single pixel (`box_px=1.0`, hardcoded, unconditionally — a
 `[NON-CANONICAL]` note is printed when the viewport isn't pinned to the
 canonical size, but the read itself never changes), and
 `MacScreenCaptureKitSource` was fixed to request the same `kCGColorSpaceSRGB`
-color space `pixel-detector` uses (D-093). Since D-094,
+color space `pixel-detector` uses (D-093). Since D-099,
 `TreasurePixels.sample_box_px` and `ChestPixel.sample_box_px` are `1` on
 every platform, so a value read with `--calibrate` — on macOS through
 `pixel-detector`, everywhere else through the pipeline reader, since both
 now sample the identical 1x1 box — is what the running navigator reads at
 that point, not just close to it. Every color-gated field in
 `TreasurePixels`/`ChestPixel` has since been re-derived with the fixed tool
-(D-095); the dataclass-level `status` still reads `PENDING` because the
+(D-100); the dataclass-level `status` still reads `PENDING` because the
 click-only targets (`pan_menu_button_px` and the rest) are unchanged and
 still owed re-derivation on the legacy window-frame basis (plan 4.1).
 `capacity_full` was also moved off its old `is_yellow` heuristic onto the
-same `color_close` every other check uses (D-095). D-093, D-094, and D-095
-in `DECISIONS.md` have the full history.
+same `color_close` every other check uses (D-100). D-093, D-099, and D-100
+in `DECISIONS.md` have the full history — numbered D-099/D-100 rather than
+D-094/D-095 because a concurrent worktree independently claimed those two
+numbers for the temporal-bridge work; see D-099's numbering note.
 
 `--hotkey-test` starts the real global listener and prints every key edge it
 normalizes, so a person can see whether a chord is heard. It submits to a list
@@ -220,7 +222,14 @@ looks exactly like a broken backend and is not one (D-074).
    chosen on; `eval` sequences are read to report, never to pick. A new
    real recording extends the corpus as new sequences with provenance; the
    private recording itself is never committed.
-11. **A simulation is never a navigation gate.** `tests/test_routes.py` drives
+11. **The bridge is inert at corpus cadence, on purpose.**
+   `TemporalConfig.max_step_s` bounds the gap between two frames a patch match
+   may claim continuity across. The real corpus is sampled at about 5 fps, so
+   the bridge cannot fire there and no corpus number measures it — in either
+   direction. An unbounded version bought 2.4 points of eval recall and cost a
+   false lock on the same-coloured sand sequence (D-094). Do not widen this
+   bound to make a corpus number move.
+12. **A simulation is never a navigation gate.** `tests/test_routes.py` drives
    the real navigator through a world that models the measured turn latency and
    three shapes of obstacle, and it is a claim about the *decision path*. Duty
    cycle, alignment, occlusion behaviour and recovery success **on the real
@@ -280,6 +289,34 @@ looks exactly like a broken backend and is not one (D-074).
   bounded moving SEARCH, then a safe stop. Whether the character is *stuck* is
   a separate question, answered from measured motion and never from arrow
   visibility (D-078).
+- **Two halves of perception, and only one of them owns identity.**
+  `prospector_engine/arrow.py` is the global structural authority: it alone
+  acquires, associates, switches, reacquires and loses. `temporal.py` is a
+  bounded local correlator that carries an *already established* identity
+  across frames the detector could not segment; it never acquires and never
+  switches, its template is only ever cut on a global commit, and a global
+  commit always wins outright rather than being averaged with it (D-094).
+  Which half produced a frame's evidence is a type — `EvidenceProvenance` —
+  and it reaches the observation, the timing and the trace. Never add a third
+  tracker; never let a bridged frame be read as an acquisition.
+- **A bounded thing running out ends an episode, not the mission.**
+  `MissionSupervisor` turns `ABANDONED` into a bounded pause with nothing held
+  and a reacquisition inside the *same* mode session, generation and physical
+  authorization (D-096). Repairs are capped by count, total time, per-repair
+  deadline and a thrash detector. `ARRIVED` is never repaired, `CANCELLED` is
+  a person pressing Stop, and no code path here may mint, simulate or persist
+  a chord.
+- **One readiness predicate for Live, read by everyone.** `Readiness.live_ok`
+  (`input_ok and setup_ready`) is what `_on_start_live` and the SETUP blocker
+  both consult. Two authorities for that question is how Ctrl+N came to enter
+  Live three and a half seconds before setup reported it had failed (D-098).
+  `input_ok` keeps its narrower meaning for bounded SERVICE modes.
+- **Setup repairs itself, and the hard set stays hard.** A failure carries a
+  `SetupDisposition`: HARD is never retried, RECOVERABLE resumes from the
+  earliest invalidated prerequisite, ENVIRONMENTAL is waited for with nothing
+  held (D-097). The mapping is a table so it can be read at a glance, an
+  unknown kind defaults to HARD, and a test asserts the hard set has not
+  grown.
 - **The keyboard the navigator reasons about is the actuator's, not its own.**
   `Navigator.note_held` is fed from `MovementOutcome.held` on every path.
   Everything downstream — the applied-forward ledger, the locomotion baseline,

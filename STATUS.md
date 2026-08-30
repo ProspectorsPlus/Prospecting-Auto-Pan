@@ -4,13 +4,145 @@ Per-phase and per-gate status. Three columns, because they fail independently
 (plan §15): what can be finished on this machine, what needs macOS hardware,
 and what needs Windows hardware.
 
-Last updated: 2026-08-29 (twelfth pass, input acceptance and arrival).
+Last updated: 2026-08-30 (thirteenth pass, temporal perception and self-healing).
 Development machine: macOS 25.4, arm64, CPython 3.13.15, Tk 9.0.
 Live was never started and no Roblox session was operated during
 implementation. The tenth pass **did** send bounded input to the Roblox client
 under `--native-control-probe`, with explicit owner authorization: one key edge
 per trial with a `finally` release, and scroll-wheel events. Nothing was
 clicked, joined, bought or changed; measurements are in D-074.
+
+---
+
+## TEMPORAL PERCEPTION AND SELF-HEALING: THE THIRTEENTH PASS (2026-08-30)
+
+**No OS input was emitted during this pass.** Live was never started, no chord
+was simulated, and neither input-emitting CLI mode was run. Everything below is
+a deterministic simulation, a rendered-stress family, or a read-only local
+measurement.
+
+### Four confirmed root causes, three of them from the owner's own traces
+
+| # | Defect | Evidence |
+|---|---|---|
+| 1 | **Ctrl+N could enter Live against a running or failed setup.** Two authorities answered one question: the dashboard's SETUP row read `_setup_blockers`, the chord handler read `Readiness.input_ok`, which knew nothing about setup. | `safe-stop-4a04b270.log`: chord at 12:43:22.406, `LIVE` + "Every check passed" at 12:43:22.487, setup **fails** at 12:43:25.966 |
+| 2 | **Reference establishment threw away all progress on one abstention.** A consecutive-frame window, so the stage raced the detector's worst moment. | `safe-stop-da4088f8.log`: fails 12:45:10, "Setup finished" 12:45:19 on a manual retry, nothing changed. 5 such traces + 7 for profile selection |
+| 3 | **Any setup failure was terminal**, needing a human on Retry. | 12 × `automatic setup was stopped`, 7 × `the equipped map could not be identified`, 5 × `the direction to the arrow never held still` |
+| 4 | **Recovery/search exhaustion killed the mission.** | 3 × `SAFE_STOP … recovery ladder exhausted`, 2 × `Not moving: recovery ladder exhausted` |
+
+### Detector: baseline and final, per sequence
+
+Baseline re-measured on this branch before anything was changed. **Both splits
+are identical after the pass** — that is the designed outcome, not a
+disappointing one, and the reason is in the next section.
+
+| eval sequence | frames | recall before → after | false acq | sw | median err | p95 | sign |
+|---|---|---|---|---|---|---|---|
+| pink-crystal | 23 | 90.9 % → 90.9 % | – | 0 | 7.2° | 28.8° | 100 % |
+| purple-night | 6 | 83.3 % → 83.3 % | – | 0 | n/a | n/a | n/a |
+| purple-pale | 12 | 75.0 % → 75.0 % | – | 0 | 29.3° | **132.8°** | **66.7 %** |
+| no-arrow-ui | 7 | – | 0/7 | 0 | – | – | – |
+| no-arrow-sand | 15 | – | 0/15 | 0 | – | – | – |
+| sand-same-colour | 21 | 72.2 % → 72.2 % | – | 0 | 9.8° | **120.5°** | **75.0 %** |
+| open-water | 12 | 90.0 % → 90.0 % | – | 0 | 17.3° | 31.2° | 100 % |
+| sand-occluded | 18 | 72.2 % → 72.2 % | – | 0 | 30.4° | 35.9° | 100 % |
+| no-arrow-live-ui | 8 | – | **3/8** | 0 | – | – | – |
+| **all** | 122 | **80.2 % → 80.2 %** | 3/30 | **0** | **10.4°** | **120.5°** | **93.1 %** |
+
+tune, unchanged: 55.6 % recall, 4 false locks (all `sand-near-a`), 100 % sign.
+
+### Why recall did not move, said plainly
+
+An unbounded temporal bridge **did** raise eval recall to 82.6 %. It also took
+the tune split from 4 false locks to 5, on `sand-near-a` — the same-coloured
+sand sequence, which is the exact failure D-058 recorded for the first version
+of the resume rule. The corpus is sampled at about 5 fps, and a patch match
+across a 200 ms gap is not evidence of continuity. So `max_step_s` bounds it to
+100 ms, which makes the bridge **inert below about 10 fps and therefore inert
+on the corpus by construction**.
+
+The consequence is that this corpus cannot measure the bridge at all, in either
+direction. It is not claimed to have.
+
+The direction tail is the same shape of problem: it lives **entirely in eval**
+(`purple-pale`, `sand-same-colour`), and the two tune sequences that produce
+heading metrics are clean at p95 8.9° and 1.1°. Tuning a fix against eval would
+be tuning on held-out data (CLAUDE.md rule 10), so the tail is left **measured,
+named and unfixed** rather than fixed by the wrong method.
+
+### What the dense regime shows, on rendered stress
+
+`--tracking-report`. **Rendered frames are training stress, never held-out
+validation** (CLAUDE.md rule 9). Longest run of frames carrying no usable
+observation, through a foliage-shaped occlusion — the number COAST and then
+SEARCH have to cover:
+
+| cadence | 50 ms | 100 ms | 250 ms | 500 ms | 1000 ms | 2000 ms |
+|---|---|---|---|---|---|---|
+| 30 Hz | 67 → 33 | 100 → 33 | 267 → 33 | 400 → 33 | 400 → 33 | 400 → 33 |
+| 60 Hz | 50 → **0** | 100 → **0** | 250 → **0** | 467 → 33 | 467 → 33 | 467 → 33 |
+| 90 Hz | 44 → **0** | 100 → 11 | 244 → 11 | 467 → 11 | 467 → 11 | 467 → 11 |
+
+Identity held in all 36 cases, with and without. Worst bridged recovery heading
+error **1.3°** — it was 71.2° before the rotation bounds were added (D-094).
+
+| Gate | Status | Evidence |
+|---|---|---|
+| Bridge shortens the blind run at 30/60/90 Hz | **local pass** | table above; `tests/test_temporal.py`, 18 parametrised cases |
+| Bridged identity is never traded for continuity | **local pass** | identity held in all 36 cases |
+| A rival peak makes the bridge abstain | **local pass** | swept: 40–55 px distractor refused, farther one carried |
+| Confidence decays monotonically; horizons expire | **local pass** | `tests/test_temporal.py` |
+| Bridge is inert at corpus cadence | **local pass, measured** | 0 bridged frames at 5 fps; both splits byte-identical |
+| Bounded: no growing containers, one anchor | **local pass** | asserted over a 400-frame run |
+| **Bridge against the real game** | **PENDING** | needs a dense recording with a map equipped; the corpus cannot support it |
+| **Direction tail (p95 120.5°, sign 93.1 %)** | **PENDING** | eval-only phenomenon; tune cannot support choosing a fix |
+
+### Setup and mission liveness
+
+| Gate | Status | Evidence |
+|---|---|---|
+| An abstention costs one frame, not the reference | **local pass** | `tests/test_setup_supervision.py` |
+| Rolling evidence is not merely laxer | **local pass** | steady heading from mostly-unreadable frames is refused |
+| An unlucky first qualification batch does not fail the attempt | **local pass** | rolling window through the deadline |
+| Profile ambiguity / jitter / stale frames clear without another click | **local pass** | scripted transients, all reach READY |
+| A recoverable failure resumes from its checkpoint | **local pass** | capture stall retried 3×, `fits == 1` |
+| A changed window identity restarts from the top | **local pass** | dependency-aware invalidation |
+| Hard faults never retried, never a false READY | **local pass** | the hard set is asserted as a set |
+| Nothing is held while the supervisor waits | **local pass** | only the fit's own release appears |
+| **Ctrl+N cannot bypass the readiness contract** | **local pass** | `tests/test_setup_flow.py`, real `build_application` |
+| Blocker and `live_ok` can never disagree | **local pass** | invariant polled across a whole setup run |
+| A recoverable loss pauses and continues the same mission | **local pass** | `tests/test_mission_recovery.py`, real worker/authority/actuator |
+| Nothing held while the mission waits | **local pass** | ledger empty during the pause; W released |
+| ARRIVED never repaired; Stop preempts a waiting mission | **local pass** | same file |
+| Repairs bounded by count, budget, deadline and thrash | **local pass** | same file |
+| **An armed native route that exercises any of it** | **PENDING** | needs one physical Ctrl+N, which an agent may not press |
+
+### Performance and resources
+
+| Measurement | Result |
+|---|---|
+| Temporal `validate` (cut a template) | p50 0.115 ms, p95 0.176 ms |
+| Temporal `bridge` (correlate + rotation bank) | p50 0.652 ms, p95 1.069 ms, max 1.55 ms |
+| Corpus perception, tune / eval | p50 8.0 / 6.8 ms, p95 12.2 / 10.7 ms |
+| 60 Hz budget | 16.67 ms — p95 inside it on both splits |
+| `--soak 3` | 9198 frames, 51 fps, **1 thread before and after**, 0 of 8 buffers live, RSS slope −49.1 MB/min |
+| Full suite | 1576 passed, 1 deselected, 6 min 15 s |
+
+Perception cost is unchanged: the bridge only runs on frames the detector
+already missed, where the detector did less work.
+
+### What the owner still owes
+
+1. **A dense recording with a treasure map equipped.** Everything about the
+   temporal bridge above is rendered stress. `--shadow-bench` with a map
+   equipped would give the first real measurement of how often the arrow is
+   unreadable and for how long, which is what the bridge horizons should
+   eventually be chosen against rather than assumed.
+2. **The armed native route**, still owed from the eleventh pass and now also
+   owed for the mission supervisor: duty cycle, alignment, occlusion intervals,
+   recovery outcomes, and at least one repaired-and-continued episode on the
+   real game.
+3. Everything D-093 lists for the colour-gated `TreasurePixels` fields.
 
 ---
 

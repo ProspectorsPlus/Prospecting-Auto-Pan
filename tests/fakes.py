@@ -180,7 +180,7 @@ def make_frame(
     ``bgr`` supplies a whole raster instead - a rendered scene, for a test that
     needs the detector to actually find something. Each requested point is
     painted as a 7x7 block - comfortably covering the detectors' sample box
-    (D-094) regardless of its size - so mean-of-box sampling returns the exact
+    (D-099) regardless of its size - so mean-of-box sampling returns the exact
     value and two points 7 px apart (as the dig-spot pair is) stay independent.
     """
     geometry = geometry or make_geometry()
@@ -625,3 +625,33 @@ def settle_cadence_for_live(capture: Any, *, polls: int = 24) -> None:
         if governor.report().live_eligible:
             return
     raise AssertionError(f"the governor did not reach Live eligibility: {governor.report()}")
+
+
+def mark_setup_ready(coordinator: Any) -> None:
+    """Publish a genuine READY setup packet through the coordinator's own sink.
+
+    Live's start predicate is ``Readiness.live_ok``, which includes automatic
+    setup's state - that is the whole point of it, and it is what stops a chord
+    from starting Live against a setup that is still running or has already
+    failed. A rig that wires a coordinator by hand never runs setup, so before
+    this existed those rigs were testing Live against a predicate the real
+    application can never satisfy that way.
+
+    This is the same shape as :func:`settle_cadence_for_live`: it does not
+    bypass the gate or reach past it, it supplies the evidence the gate reads,
+    through ``_publish_setup`` - the identical entry point the real setup
+    runner publishes to. A test that wants the gate to *fail* simply does not
+    call this.
+    """
+    from prospector_engine.contracts import SetupProgress, SetupStage, monotonic_s
+
+    now = monotonic_s()
+    coordinator._publish_setup(
+        SetupProgress(
+            stage=SetupStage.READY,
+            attempt=1,
+            detail="ready",
+            started_at_s=now,
+            updated_at_s=now,
+        )
+    )

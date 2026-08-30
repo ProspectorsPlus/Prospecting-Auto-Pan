@@ -46,6 +46,7 @@ __all__ = [
     "DigEvidence",
     "DigHandoffResult",
     "DigOutcome",
+    "EvidenceProvenance",
     "EvidenceStatus",
     "EvidenceToken",
     "FitPhase",
@@ -79,6 +80,8 @@ __all__ = [
     "SafetyFault",
     "SafetyFaultKind",
     "ServiceKind",
+    "SetupAttempt",
+    "SetupDisposition",
     "SetupFailure",
     "SetupFailureKind",
     "SetupProgress",
@@ -88,6 +91,7 @@ __all__ = [
     "WiggleOutcome",
     "WiggleResult",
     "WorkerCompletion",
+    "disposition_of",
     "freeze_array",
     "monotonic_s",
 ]
@@ -1143,6 +1147,56 @@ class CommandVisualization:
 # ---------------------------------------------------------------------------
 
 
+class EvidenceProvenance(Enum):
+    """Where one frame's arrow evidence actually came from.
+
+    Perception has two independent halves - a full-frame structural detector
+    and a bounded local correlator (:mod:`prospector_engine.temporal`) - and
+    "the arrow is at (x, y)" means something different depending on which of
+    them said so. Collapsing that into a single ``valid`` flag is what made a
+    bridged frame indistinguishable from a segmented one in every trace, so
+    the distinction is a type rather than a comment.
+
+    Ordered from strongest to weakest evidence.
+    """
+
+    #: The structural detector segmented, scored and committed this candidate.
+    GLOBAL = "global"
+    #: A global commit that the local correlator had independently been
+    #: carrying to the same place. Two methods, one answer.
+    FUSED = "fused"
+    #: No global candidate. The local correlator matched the anchored template
+    #: unambiguously, so the position is measured even though nothing was
+    #: segmented. Confidence is decayed.
+    BRIDGED = "bridged"
+    #: Nothing was measured at all: constant-velocity extrapolation inside a
+    #: deliberately short horizon. Never a licence to keep moving.
+    PREDICTED = "predicted"
+    #: A measurement existed and could not be told apart from a rival.
+    AMBIGUOUS = "ambiguous"
+    #: Past the bridge horizon or the drift budget. The memory is expiring and
+    #: the global path is on its own.
+    STALE = "stale"
+    #: The identity has been dropped. The next arrow seen is a new one.
+    LOST = "lost"
+    #: Nothing has been observed yet, or the world changed under the anchor.
+    NONE = "none"
+
+    @property
+    def observed(self) -> bool:
+        """Whether pixels were actually compared for this frame."""
+        return self in (
+            EvidenceProvenance.GLOBAL,
+            EvidenceProvenance.FUSED,
+            EvidenceProvenance.BRIDGED,
+        )
+
+    @property
+    def structural(self) -> bool:
+        """Whether the full detector committed this frame's candidate."""
+        return self in (EvidenceProvenance.GLOBAL, EvidenceProvenance.FUSED)
+
+
 @dataclass(frozen=True)
 class ArrowObservation:
     profile_id: str | None
@@ -1174,6 +1228,20 @@ class ArrowObservation:
     scale_norm: float = 0.0
     #: How long this identity has been held, in accepted frames.
     track_age: int = 0
+    #: Which half of perception produced this observation. ``GLOBAL`` for every
+    #: frame the structural detector committed, which is what it was before the
+    #: temporal bridge existed, so an untouched caller reads the same meaning.
+    provenance: EvidenceProvenance = EvidenceProvenance.GLOBAL
+    #: Seconds since the structural detector last validated this identity. Zero
+    #: on a globally observed frame; it only grows while the bridge is carrying.
+    evidence_age_s: float = 0.0
+    #: Cumulative bridged displacement since the last global validation.
+    bridge_drift_px: float = 0.0
+    #: Distance between the bridge's own position and the global commit, on the
+    #: frame the global path corrected it. ``None`` when they never disagreed.
+    bridge_disagreement_px: float | None = None
+    #: Why the local correlator declined to carry this frame, if it tried.
+    bridge_refusal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1212,6 +1280,10 @@ class DirectionObservation:
     #: Ratio of the shape's principal eigenvalues. Below the configured floor
     #: the axis is ill-conditioned and PCA is not usable as a direction cue.
     anisotropy: float = 0.0
+    #: Which half of perception this heading came from. A bridged heading is
+    #: the anchored heading turned by the measured in-plane rotation, not a
+    #: fresh consensus over cues, and the controller is entitled to know.
+    provenance: EvidenceProvenance = EvidenceProvenance.GLOBAL
 
 
 @dataclass(frozen=True)
@@ -1519,6 +1591,70 @@ class SetupFailureKind(Enum):
     INTERNAL = "internal"
 
 
+class SetupDisposition(Enum):
+    """What a setup failure *means for the machine*, as opposed to for a user.
+
+    ``SetupFailureKind`` says what went wrong in the vocabulary a person can
+    act on. This says whether the software should try again, and it is a
+    separate axis because the two genuinely disagree: "no Roblox window" is a
+    perfectly clear message to a human and also a condition that fixes itself
+    the moment they alt-tab, while "internal error" is opaque to a human and
+    is worth exactly one more attempt.
+
+    The distinction exists because an all-night unattended run cannot treat
+    every failure as terminal. It also must not treat any failure as harmless:
+    ``HARD`` is the set that stays hard, and nothing in the retry machinery may
+    widen it.
+    """
+
+    #: Needs a human, a permission grant, or a decision. Never retried
+    #: automatically, however long the mission has left.
+    HARD = "hard"
+    #: A transient runtime or perception fault. Retried from the earliest
+    #: invalidated checkpoint, with backoff and an attempt cap.
+    RECOVERABLE = "recoverable"
+    #: The world is not ready yet but nothing is broken: no window open, the
+    #: map not equipped. Safe to keep waiting on, with no input held and a
+    #: bounded backoff, because it is the kind of thing that becomes true
+    #: without anyone touching this program.
+    ENVIRONMENTAL = "environmental"
+
+
+#: How each failure kind is dispositioned. Written as data rather than as a
+#: chain of ``if`` statements so the hard set can be read at a glance and a
+#: test can assert that it has not quietly grown.
+_DISPOSITIONS: dict[SetupFailureKind, SetupDisposition] = {
+    # -- hard: a person has to do something -----------------------------
+    SetupFailureKind.PERMISSION: SetupDisposition.HARD,
+    SetupFailureKind.AMBIGUOUS_WINDOW: SetupDisposition.HARD,
+    SetupFailureKind.CANCELLED: SetupDisposition.HARD,
+    # -- environmental: safe to wait for --------------------------------
+    SetupFailureKind.NO_WINDOW: SetupDisposition.ENVIRONMENTAL,
+    SetupFailureKind.FULLSCREEN: SetupDisposition.ENVIRONMENTAL,
+    SetupFailureKind.PROFILE_AMBIGUOUS: SetupDisposition.ENVIRONMENTAL,
+    # -- recoverable: try again from where it broke ----------------------
+    SetupFailureKind.RESIZE_DENIED: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.VIEWPORT_UNUSABLE: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.CAPTURE_STALE: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.REFERENCE_UNSTABLE: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.INPUT_NOT_ACCEPTED: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.CONTROL_MODE_UNVERIFIED: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.ACTUATOR_UNPROVEN: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.TIMEOUT: SetupDisposition.RECOVERABLE,
+    SetupFailureKind.INTERNAL: SetupDisposition.RECOVERABLE,
+}
+
+
+def disposition_of(kind: SetupFailureKind) -> SetupDisposition:
+    """The disposition for a kind. Unknown kinds are HARD, never retried.
+
+    Defaulting an unrecognised failure to HARD is the safe direction: a new
+    failure kind added without thinking about retries stops the machine rather
+    than being looped on forever.
+    """
+    return _DISPOSITIONS.get(kind, SetupDisposition.HARD)
+
+
 @dataclass(frozen=True)
 class SetupFailure:
     """One bounded failure: what went wrong, and the single thing to do next.
@@ -1534,8 +1670,40 @@ class SetupFailure:
     remedy: str
     detail: str = ""
 
+    @property
+    def disposition(self) -> SetupDisposition:
+        return disposition_of(self.kind)
+
     def describe(self) -> str:
         return f"{self.summary} - {self.remedy}"
+
+
+@dataclass(frozen=True)
+class SetupAttempt:
+    """One finished pass, for the bounded history a person can read.
+
+    Kept small and frozen: a supervisor that retries all night must be able to
+    say what it has tried without accumulating anything that grows.
+    """
+
+    index: int
+    stage: SetupStage
+    started_at_s: float
+    ended_at_s: float
+    failure: SetupFailure | None
+    resumed_from: SetupStage | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.failure is None
+
+    def describe(self) -> str:
+        if self.failure is None:
+            return f"attempt {self.index}: ready"
+        return (
+            f"attempt {self.index}: {self.failure.kind.value} at "
+            f"{self.failure.stage.value} ({self.failure.disposition.value})"
+        )
 
 
 @dataclass(frozen=True)
@@ -1558,10 +1726,35 @@ class SetupProgress:
     achieved_client_backing_px: tuple[int, int] | None = None
     profile_id: str | None = None
     turn_backend: str | None = None
+    #: Which supervised attempt this snapshot belongs to. 1 for the first.
+    pass_index: int = 1
+    #: Bounded history of finished attempts, oldest first.
+    history: tuple[SetupAttempt, ...] = ()
+    #: Set while the supervisor is waiting out a backoff between attempts,
+    #: holding nothing and emitting nothing.
+    retry_at_s: float | None = None
+    #: The stage the next attempt will resume from, when one is scheduled.
+    resume_from: SetupStage | None = None
 
     @property
     def ok(self) -> bool:
         return self.stage is SetupStage.READY
+
+    @property
+    def disposition(self) -> SetupDisposition | None:
+        """What the current failure means for the machine, if it has failed."""
+        return None if self.failure is None else self.failure.disposition
+
+    @property
+    def repairing(self) -> bool:
+        """Whether a bounded automatic retry is scheduled.
+
+        Deliberately distinct from :attr:`running`. A user watching the
+        dashboard needs "it is working on it" and "it hit something and is
+        about to try again" to look different, and a readiness predicate needs
+        to refuse Live for both.
+        """
+        return self.retry_at_s is not None and not self.ok
 
     @property
     def running(self) -> bool:

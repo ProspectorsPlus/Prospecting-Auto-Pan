@@ -77,7 +77,7 @@ __all__ = [
 Point = tuple[int, int]
 Rgb = tuple[float, float, float]
 #: Either a flat percent of the 0-255 range (applied to every channel) or an
-#: explicit per-channel absolute +/- range - whichever was calibrated (D-095).
+#: explicit per-channel absolute +/- range - whichever was calibrated (D-100).
 Tolerance = Rgb | float
 
 
@@ -98,7 +98,7 @@ def color_close(rgb: Rgb, target: Rgb, tolerance: Tolerance) -> bool:
 
     ``tolerance`` is a flat percent of the 0-255 range, applied identically to
     every channel, unless the calibrated value is itself an (r, g, b) tuple -
-    then it is an explicit absolute +/- range per channel (D-095).
+    then it is an explicit absolute +/- range per channel (D-100).
     """
     limits = tolerance if isinstance(tolerance, tuple) else (tolerance / 100.0 * 255.0,) * 3
     return all(abs(a - t) <= limit for a, t, limit in zip(rgb, target, limits, strict=True))
@@ -130,7 +130,7 @@ class TreasurePixels:
     capacity_rgb: Rgb = (229.0, 208.0, 102.0)
     capacity_tolerance_pct: float = 4.0
 
-    # 1x1: matches the single-pixel read `--calibrate` reports (D-094).
+    # 1x1: matches the single-pixel read `--calibrate` reports (D-099).
     sample_box_px: int = 1
 
     pan_menu_button_px: Point = (442, 195)
@@ -151,11 +151,11 @@ class TreasurePixels:
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PENDING,
-            source="owner-measured via `treasure.py --calibrate`, 1x1 pixel read (D-095)",
+            source="owner-measured via `treasure.py --calibrate`, 1x1 pixel read (D-100)",
             note=(
                 "dig_spot_a/b, capacity_px, pan_check_px and pan_start_check_px are "
                 "freshly re-derived on the canonical 1280x720 client now that "
-                "sample_box_px is 1 (D-094); the click-only targets "
+                "sample_box_px is 1 (D-099); the click-only targets "
                 "(pan_menu_button_px, pan_first_slot_px, pan_bottom_slot_px, "
                 "pan_equip_px, reset_menu_px, reset_confirm_px) are unchanged, still "
                 "on the legacy window-frame basis, and still owed re-derivation "
@@ -205,7 +205,7 @@ class ChestPixel:
     """The two X_MARKS_THE_SPOT sample points that stop ``run_wiggle_to_chest``.
 
     *Both* points must match for the stop condition to fire. Re-derived with
-    ``treasure.py --calibrate`` (D-095).
+    ``treasure.py --calibrate`` (D-100).
     """
 
     point_px: Point = (740, 567)
@@ -214,7 +214,7 @@ class ChestPixel:
     point_b_px: Point = (542, 562)
     target_b_rgb: Rgb = (131.0, 255.0, 107.0)
     tolerance_b_pct: float = 10.0
-    # 1x1: matches the single-pixel read `--calibrate` reports (D-094).
+    # 1x1: matches the single-pixel read `--calibrate` reports (D-099).
     sample_box_px: int = 1
     poll_s: float = 0.1
 
@@ -222,9 +222,9 @@ class ChestPixel:
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
             status=EvidenceStatus.PENDING,
-            source="owner-measured via `treasure.py --calibrate`, 1x1 pixel read (D-095)",
+            source="owner-measured via `treasure.py --calibrate`, 1x1 pixel read (D-100)",
             note=(
-                "re-derived now that sample_box_px is 1 (D-094); still PENDING "
+                "re-derived now that sample_box_px is 1 (D-099); still PENDING "
                 "a passed gate on real chest approaches"
             ),
         )

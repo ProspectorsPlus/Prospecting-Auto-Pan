@@ -346,6 +346,19 @@ class DetectorConfig:
     #: whole rear half of the compass - permanently, because the refused
     #: heading is what the next frame is then compared against.
     reversal_latch_frames: int = 3
+    #: ...and the same latch in **seconds**, because a frame count alone is a
+    #: different promise at every cadence and this was the one temporal bound
+    #: in this class that had not been given one. At the corpus's ~5 fps three
+    #: frames is 600 ms; at 60 Hz it is 50 ms, which is short enough that a
+    #: two-frame PCA flicker satisfied it and a spurious 180-degree flip was
+    #: adopted as a sustained reversal. Both must hold, so this is a floor on
+    #: the *duration* of the evidence and ``reversal_latch_frames`` stays the
+    #: floor on its *quantity*.
+    #:
+    #: Chosen to be inert at corpus cadence by construction - 3 frames at 5 fps
+    #: already exceeds it - so it changes nothing that was measured on the real
+    #: frames and only tightens the dense regime the corpus cannot reach.
+    reversal_latch_s: float = 0.12
 
     provenance: Provenance = field(
         default_factory=lambda: Provenance(
@@ -2295,10 +2308,15 @@ class DirectionEstimator:
         #: Consecutive frames whose evidence wanted to reverse the remembered
         #: polarity without being strong enough to do it on its own.
         self._reversal_frames = 0
+        #: Frame time the current reversal was first seen at, so the latch can
+        #: be a duration as well as a count. ``None`` when nothing is pending,
+        #: and ``None`` for a caller that supplies no clock.
+        self._reversal_started_s: float | None = None
 
     def reset(self) -> None:
         """Forget the reversal latch. Called when the target identity changes."""
         self._reversal_frames = 0
+        self._reversal_started_s = None
 
     def estimate(
         self,
@@ -2308,6 +2326,7 @@ class DirectionEstimator:
         forward_deg: float | None,
         arrow_confidence: float,
         previous_heading_deg: float | None = None,
+        now_s: float | None = None,
     ) -> DirectionResult:
         config = self._config
         if features is None:
@@ -2462,12 +2481,25 @@ class DirectionEstimator:
         )
         if not reversing:
             self._reversal_frames = 0
+            self._reversal_started_s = None
         elif margin >= config.reversal_margin:
             # Strong evidence needs no waiting.
             self._reversal_frames = 0
+            self._reversal_started_s = None
         else:
             self._reversal_frames += 1
-            if self._reversal_frames < config.reversal_latch_frames:
+            if self._reversal_started_s is None:
+                self._reversal_started_s = now_s
+            # Quantity *and* duration. Frames alone made this latch mean 50 ms
+            # at 60 Hz, where a two-frame flicker in the principal axis clears
+            # it and a spurious reversal is adopted. ``now_s`` is optional so a
+            # caller with no clock keeps exactly the old frame-counted rule.
+            held_long_enough = (
+                now_s is None
+                or self._reversal_started_s is None
+                or (now_s - self._reversal_started_s) >= config.reversal_latch_s
+            )
+            if self._reversal_frames < config.reversal_latch_frames or not held_long_enough:
                 # Weak evidence for a reversal, not yet sustained. Say so, and
                 # say nothing else.
                 #
@@ -2483,6 +2515,12 @@ class DirectionEstimator:
                 details["polarity"] = (
                     f"reversal seen {self._reversal_frames} of "
                     f"{config.reversal_latch_frames} times at margin {margin:.2f}"
+                    + (
+                        ""
+                        if held_long_enough
+                        else f", held {(now_s or 0.0) - (self._reversal_started_s or 0.0):.2f}"
+                        f" of {config.reversal_latch_s:.2f} s"
+                    )
                 )
                 readings = _cue_readings(folded, weights, details)
                 return _direction_abstain(
@@ -2494,6 +2532,7 @@ class DirectionEstimator:
                 )
             details["polarity"] = f"reversal sustained over {self._reversal_frames} frames"
             self._reversal_frames = 0
+            self._reversal_started_s = None
         readings = _cue_readings(folded, weights, details)
         readings += tuple(
             CueReading(

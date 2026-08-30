@@ -1790,6 +1790,7 @@ def _run_tracking_report(json_path: str | None = None) -> int:
     from prospector_engine.arrow import DetectorConfig
     from tests.tracking_families import (
         cluttered_jump_report,
+        continuity_report,
         distractor_report,
         report,
     )
@@ -1848,12 +1849,56 @@ def _run_tracking_report(json_path: str | None = None) -> int:
         )
 
     print(
+        "\nTemporal continuity through an occlusion, with and without the "
+        "local bridge (D-094). 'blind' is the longest run of frames carrying "
+        "no usable observation - what COAST and then SEARCH have to cover:"
+    )
+    print(
+        f"{'case':>16}  {'blind before':>12}  {'blind after':>11}  "
+        f"{'bridged':>7}  {'identity':>9}  {'recovery err':>12}"
+    )
+    continuity_rows = []
+    for old_c, new_c in zip(
+        continuity_report(bridge=False), continuity_report(bridge=True), strict=True
+    ):
+        identity = "same" if new_c.identity_held else "NEW TRACK"
+        error = (
+            "n/a" if new_c.recovery_error_deg is None else f"{new_c.recovery_error_deg:.1f} deg"
+        )
+        print(
+            f"{new_c.label:>16}  {old_c.longest_blind_ms:>9.0f} ms  "
+            f"{new_c.longest_blind_ms:>8.0f} ms  {new_c.bridged_frames:>7}  "
+            f"{identity:>9}  {error:>12}"
+        )
+        continuity_rows.append(
+            {
+                "case": new_c.label,
+                "hz": new_c.hz,
+                "occlusion_ms": new_c.occlusion_ms,
+                "blind_ms_before": old_c.longest_blind_ms,
+                "blind_ms_after": new_c.longest_blind_ms,
+                "bridged_frames": new_c.bridged_frames,
+                "predicted_frames": new_c.predicted_frames,
+                "identity_held": new_c.identity_held,
+                "recovery_error_deg": new_c.recovery_error_deg,
+            }
+        )
+
+    print(
         "\nRendered frames are training stress, never held-out validation "
         "(plan 7.2). The real-frame corpus is unchanged by this: it is sampled "
-        "at about 5 fps and resuming is bounded to 60 ms."
+        "at about 5 fps, resuming is bounded to 60 ms, and the temporal bridge "
+        "is inert below about 10 fps by construction (TemporalConfig."
+        "max_step_s), so the corpus cannot measure the continuity rows above "
+        "and D-094 does not claim it does."
     )
     if json_path:
-        payload = {"recovery": rows, "clutter": clutter, "cluttered_jumps": jumps}
+        payload = {
+            "recovery": rows,
+            "clutter": clutter,
+            "cluttered_jumps": jumps,
+            "continuity": continuity_rows,
+        }
         Path(json_path).write_text(_json.dumps(payload, indent=2), encoding="utf-8")
         print(f"JSON written to {json_path}")
     return 0
