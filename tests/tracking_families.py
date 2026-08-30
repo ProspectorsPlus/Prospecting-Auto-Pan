@@ -314,3 +314,191 @@ def cluttered_jump_report(config: DetectorConfig | None = None) -> list[Cluttere
         for px in (100.0, 250.0)
         for seed in (11, 23, 47)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Temporal continuity: what the bridge carries, at a cadence the corpus cannot
+# ---------------------------------------------------------------------------
+#
+# The real corpus is sampled at about 5 fps. Every horizon in
+# ``TemporalConfig`` is in seconds, and ``max_step_s`` deliberately makes the
+# bridge inert below about 10 fps - so the corpus cannot measure this half of
+# perception at all, and D-094 does not claim it does. These families are how
+# the dense regime is exercised instead, and CLAUDE.md rule 9 applies to every
+# frame of them: rendered stress, never a gate.
+#
+# What they measure is the one number a steering controller cares about during
+# an occlusion: the longest run of frames with *no usable observation*. That is
+# what COAST and then SEARCH have to cover, and it is what the bridge exists to
+# shorten.
+
+#: The occlusion model: horizontal bars across the arrow, foliage-shaped.
+#:
+#: Both numbers were swept against the real detector rather than assumed. A
+#: single solid bar is the wrong model - at 70 % coverage it defeats the
+#: detector, but it also destroys the *appearance*, so no correlation-based
+#: method can carry it and the family would only measure that fact. Bars are
+#: the realistic case: leaves in front of the arrow break the outline topology
+#: the structural detector scores on while leaving most of the arrow's own
+#: pixels on screen.
+#:
+#: Swept: at five bars covering 40 % the detector abstains on every occluded
+#: frame after the first, and 60 % of the arrow is still visible. At three bars
+#: covering 40-50 % the detector still commits (nothing to bridge); at any
+#: count covering 60 % the outline and the appearance both go.
+OCCLUSION_BARS = 5
+OCCLUSION_COVER = 0.40
+#: Close to the grass terrain, so it is a plausible occluder rather than a
+#: black rectangle the contrast term would find interesting on its own.
+OCCLUDER_BGR = (48, 92, 58)
+
+CONTINUITY_HZ: tuple[float, ...] = (30.0, 60.0, 90.0)
+CONTINUITY_OCCLUSION_MS: tuple[float, ...] = (50.0, 100.0, 250.0, 500.0, 1000.0, 2000.0)
+
+
+@dataclass(frozen=True)
+class Continuity:
+    """One occlusion, and how much of it perception managed to cover."""
+
+    label: str
+    hz: float
+    occlusion_ms: float
+    frames: int
+    global_frames: int
+    bridged_frames: int
+    predicted_frames: int
+    #: Frames during the occlusion with no usable observation at all.
+    blind_frames: int
+    #: The longest unbroken run of those, in milliseconds. This is the number
+    #: the coast grace and the search budget are spent on.
+    longest_blind_ms: float
+    identity_held: bool
+    #: Heading error on the first globally observed frame after the occlusion.
+    recovery_error_deg: float | None
+
+    @property
+    def covered(self) -> float:
+        """Fraction of the occlusion the bridge carried."""
+        occluded = self.bridged_frames + self.predicted_frames + self.blind_frames
+        return self.bridged_frames / occluded if occluded else 0.0
+
+
+def _pipeline(bridge: bool = True):
+    """A real perception pipeline, optionally with the bridge switched off.
+
+    Switching it off is how the *same* sequence produces a before-and-after
+    rather than a bare number: the comparison is against this repository's own
+    previous behaviour, on identical frames.
+    """
+    from prospector_engine.navigation import PerceptionPipeline
+    from prospector_engine.temporal import TemporalBridge, TemporalConfig
+    from prospector_engine.vision import ArrowSegmenter
+
+    profile = load_profiles().get("green_arrow_v1")
+    assert profile is not None
+    pipeline = PerceptionPipeline(
+        segmenter=ArrowSegmenter(profile), detector=ArrowDetector(profile, DetectorConfig())
+    )
+    if not bridge:
+        # Horizons that nothing can ever be inside, so the bridge abstains on
+        # every frame - which is exactly the behaviour before D-094.
+        pipeline.bridge = TemporalBridge(
+            TemporalConfig(max_bridge_s=1e-9, max_predict_s=1e-9, max_step_s=1e-9)
+        )
+    return pipeline
+
+
+def _occlude(bgr, centre: tuple[float, float], scale_px: float):
+    """Lay foliage-shaped bars across the arrow. Deterministic by design."""
+    import cv2
+    import numpy as np
+
+    out = np.array(bgr, dtype=np.uint8, copy=True)
+    half = scale_px * 1.1
+    top = centre[1] - half
+    band = (2.0 * half) / OCCLUSION_BARS
+    for index in range(OCCLUSION_BARS):
+        y0 = int(top + index * band)
+        cv2.rectangle(
+            out,
+            (int(centre[0] - half * 1.2), y0),
+            (int(centre[0] + half * 1.2), int(y0 + band * OCCLUSION_COVER)),
+            OCCLUDER_BGR,
+            thickness=-1,
+        )
+    return out
+
+
+def continuity(
+    hz: float, occlusion_ms: float, *, bridge: bool = True, walk_px_s: float = 120.0
+) -> Continuity:
+    """Walk, occlude for ``occlusion_ms``, walk again. Measure the blind run."""
+    from prospector_engine.contracts import EvidenceProvenance
+
+    frame_s = 1.0 / hz
+    settle = max(6, int(0.15 * hz))
+    occluded = max(1, round(occlusion_ms / 1000.0 * hz))
+    trailing = max(6, int(0.15 * hz))
+    pipeline = _pipeline(bridge)
+
+    centre_x = 500.0
+    provenances: list[EvidenceProvenance] = []
+    identity_before: int | None = None
+    recovery_error: float | None = None
+    identity_after: int | None = None
+
+    total = settle + occluded + trailing
+    for index in range(total):
+        at_s = 100.0 + index * frame_s
+        centre = (centre_x + walk_px_s * index * frame_s, 360.0)
+        occluding = settle <= index < settle + occluded
+        scene = render_scene(
+            heading_deg=30.0,
+            centre_px=centre,
+            scale_px=90.0,
+            terrain="grass",
+            seed=11,
+        )
+        bgr = _occlude(scene.bgr, centre, 90.0) if occluding else scene.bgr
+        frame = make_frame(index + 1, captured_at_s=at_s, bgr=bgr)
+        result = pipeline.analyze(frame, map_id="continuity", approach_valid=False)
+        arrow = result.inputs.arrow
+        if index == settle - 1:
+            identity_before = arrow.track_id
+        if occluding:
+            provenances.append(arrow.provenance if arrow.valid else EvidenceProvenance.LOST)
+        elif index >= settle + occluded and recovery_error is None and arrow.valid:
+            identity_after = arrow.track_id
+            direction = result.inputs.direction
+            if direction.valid and direction.error_deg is not None:
+                recovery_error = abs(direction.error_deg - 30.0)
+            else:
+                recovery_error = None
+
+    blind = sum(1 for p in provenances if not p.observed)
+    run = longest = 0
+    for provenance in provenances:
+        run = run + 1 if not provenance.observed else 0
+        longest = max(longest, run)
+    return Continuity(
+        label=f"{hz:.0f}Hz/{occlusion_ms:.0f}ms{'' if bridge else '/no-bridge'}",
+        hz=hz,
+        occlusion_ms=occlusion_ms,
+        frames=total,
+        global_frames=sum(1 for p in provenances if p.structural),
+        bridged_frames=sum(1 for p in provenances if p is EvidenceProvenance.BRIDGED),
+        predicted_frames=sum(1 for p in provenances if p is EvidenceProvenance.PREDICTED),
+        blind_frames=blind,
+        longest_blind_ms=longest * (1000.0 / hz),
+        identity_held=(identity_before is not None and identity_before == identity_after),
+        recovery_error_deg=recovery_error,
+    )
+
+
+def continuity_report(*, bridge: bool = True) -> list[Continuity]:
+    """Every cadence against every occlusion duration."""
+    return [
+        continuity(hz, occlusion_ms, bridge=bridge)
+        for hz in CONTINUITY_HZ
+        for occlusion_ms in CONTINUITY_OCCLUSION_MS
+    ]

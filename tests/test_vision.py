@@ -20,7 +20,6 @@ from prospector_engine.vision import (
     ArrivalConfig,
     ArrivalDetector,
     ArrowSegmenter,
-    ArrowTracker,
     SegmenterConfig,
     WaterConfig,
     WaterGuard,
@@ -212,50 +211,13 @@ def test_exclusion_regions_remove_ui_candidates() -> None:
 # ---------------------------------------------------------------------------
 # Tracking
 # ---------------------------------------------------------------------------
-
-
-def test_the_tracker_assigns_a_track_and_survives_small_motion() -> None:
-    tracker = ArrowTracker()
-    segmenter = ArrowSegmenter(YELLOW)
-    first = tracker.update(
-        segmenter.observe(_frame_with_shapes([(600, 300, 60, 90, YELLOW_RGB)]))
-    )
-    second = tracker.update(
-        tracker.update(segmenter.observe(_frame_with_shapes([(610, 305, 60, 90, YELLOW_RGB)])))
-    )
-
-    assert first.track_id == second.track_id
-    assert tracker.switches == 0
-
-
-def test_a_teleporting_candidate_starts_a_new_track() -> None:
-    tracker = ArrowTracker(max_speed_px=20.0)
-    segmenter = ArrowSegmenter(YELLOW)
-    first = tracker.update(
-        segmenter.observe(_frame_with_shapes([(200, 300, 60, 90, YELLOW_RGB)]))
-    )
-    second = tracker.update(
-        segmenter.observe(_frame_with_shapes([(900, 300, 60, 90, YELLOW_RGB)]))
-    )
-
-    assert second.track_id != first.track_id
-    assert tracker.switches == 1
-
-
-def test_the_tracker_never_fabricates_a_missing_measurement() -> None:
-    tracker = ArrowTracker(max_age_frames=2)
-    segmenter = ArrowSegmenter(YELLOW)
-    tracker.update(segmenter.observe(_frame_with_shapes([(600, 300, 60, 90, YELLOW_RGB)])))
-
-    missing = tracker.update(segmenter.observe(_frame_with_shapes([])))
-
-    assert not missing.valid
-    assert missing.centroid_px is None
-    # Prediction exists only to prioritize the search, and it ages out.
-    assert tracker.predicted() is not None
-    tracker.update(segmenter.observe(_frame_with_shapes([])))
-    tracker.update(segmenter.observe(_frame_with_shapes([])))
-    assert tracker.predicted() is None
+#
+# The three ``ArrowTracker`` tests that lived here went with the class in
+# D-094. What they asserted - a track survives small motion, a teleport starts
+# a new one, a miss is never fabricated - is asserted against the mechanisms
+# that actually run: identity in ``tests/test_arrow.py`` against
+# ``ArrowDetector``, and continuity across missed frames in
+# ``tests/test_temporal.py`` against ``TemporalBridge``.
 
 
 # ---------------------------------------------------------------------------

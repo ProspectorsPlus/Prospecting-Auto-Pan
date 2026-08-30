@@ -59,6 +59,7 @@ from prospector_engine.contracts import (
     CueReading,
     DiagnosticObservation,
     DirectionObservation,
+    EvidenceProvenance,
     EvidenceStatus,
     InputKey,
     ModeResult,
@@ -90,6 +91,11 @@ from prospector_engine.steering import (
     ControlDecision,
     SteeringInputs,
 )
+from prospector_engine.temporal import (
+    BridgeMeasurement,
+    BridgeStats,
+    TemporalBridge,
+)
 from prospector_engine.trace import FrameTrace, PerceptionTiming
 from prospector_engine.traversability import TraversabilityMemory
 from prospector_engine.turning import TurnBackend, TurnResponse
@@ -97,7 +103,6 @@ from prospector_engine.vision import (
     ArrivalDetector,
     ArrowProfile,
     ArrowSegmenter,
-    ArrowTracker,
     ProfileAuthority,
     WaterConfig,
     WaterGuard,
@@ -107,6 +112,9 @@ from prospector_engine.vision import (
 
 __all__ = [
     "DegreeMonitor",
+    "MissionLimits",
+    "MissionRepair",
+    "MissionSupervisor",
     "MotionConfig",
     "NavigationCapabilities",
     "Navigator",
@@ -1063,6 +1071,45 @@ class Navigator:
     def note_released(self, *, now_s: float) -> None:
         self.note_held((), now_s=now_s)
 
+    def begin_episode(self, reason: str) -> None:
+        """Start a fresh pursuit episode inside the same authorized mission.
+
+        Used by the live worker's supervisor after a bounded repair: the arrow
+        was lost past its whole search budget, or the recovery ladder ran out
+        of rungs, the character was stopped, and the world has since been
+        watched until it looked navigable again.
+
+        **What is reset** is everything that describes the failed attempt: the
+        phase, the arrival latch, the recovery ladder, the progress guard's
+        accumulated evidence, and the controller's in-flight correction. None
+        of it is true any more and carrying it forward would make the new
+        episode inherit the old one's conclusion.
+
+        **What is kept** is everything that is still true: the measured
+        capabilities, the locomotion baseline, and - deliberately - the
+        traversability memory. Which way already failed is the single most
+        valuable thing the failed episode learned, and an episode that forgets
+        it walks into the same wall again, which is precisely how a bounded
+        repair turns into an unbounded loop.
+
+        This does not touch input. The caller has already stopped the character
+        and is holding nothing; the navigator emits no input in any case.
+        """
+        self._escalation = reason
+        self._phase = NavigationPhase.ACQUIRE
+        self._arrival_latches = 0
+        self._last_tick_s = None
+        self._last_recovery = None
+        self._last_movement = IDLE
+        self._leaving_water_since_s = None
+        self._recovery = RecoveryLadder()
+        self._progress = ProgressGuard(self._capabilities.motion_baseline)
+        self._waypoint = WaypointPass()
+        # A hard controller reset, not a ``soften``: the heading filter and
+        # the target identity belong to the episode that just failed. The next
+        # one re-acquires from what it can actually see.
+        self._follower.reset()
+
     def adopt_capabilities(self, capabilities: NavigationCapabilities) -> None:
         """Adopt what the live prologue measured, mid-session."""
         self._capabilities = capabilities
@@ -1709,7 +1756,14 @@ class PerceptionPipeline:
     segmenter: ArrowSegmenter
     detector: ArrowDetector | None = None
     estimator: DirectionEstimator | None = None
-    tracker: ArrowTracker = field(default_factory=ArrowTracker)
+    #: The bounded local correlator that carries one identity across frames
+    #: the structural detector could not segment (D-094). It is *not* a second
+    #: identity authority: it never acquires, never switches, and is corrected
+    #: by every global commit. The legacy ``ArrowTracker`` that used to sit
+    #: here was constructed and reset on every world change and its ``update``
+    #: was never once called - dead weight beside the detector's own internal
+    #: track, and retired rather than left to look like a second opinion.
+    bridge: TemporalBridge = field(default_factory=TemporalBridge)
     arrival: ArrivalDetector = field(default_factory=ArrivalDetector)
     water: WaterGuard = field(default_factory=WaterGuard)
     strategy: str = "topology_consensus"
@@ -1738,6 +1792,14 @@ class PerceptionPipeline:
     _previous_frame: CapturedFrame | None = None
     _last_motion_s: float = 0.0
     _motion_abstentions: int = 0
+    #: What the direction estimator concluded on the frame the bridge last
+    #: anchored on. A bridged heading is this turned by the measured in-plane
+    #: rotation - the bridge measures *where* and *how much it turned*, and the
+    #: absolute heading it turned from has to come from the last global answer.
+    _anchor_error_deg: float | None = None
+    _anchor_sign_confidence: float = 0.0
+    _bridged_frames: int = 0
+    _predicted_frames: int = 0
     #: Per-candidate detectors used only while a profile is being chosen.
     _classifiers: dict[str, ArrowDetector] = field(default_factory=dict)
 
@@ -1831,7 +1893,7 @@ class PerceptionPipeline:
         self.segmenter = ArrowSegmenter(profile)
         self.detector = ArrowDetector(profile, config)
         self.estimator = DirectionEstimator(config)
-        self.tracker = ArrowTracker()
+        self.bridge.reset("profile-changed")
         self.arrival = ArrivalDetector()
         self._frames_since_full = self.full_frame_every  # force a full pass
         self._last_heading_deg = None
@@ -1858,7 +1920,7 @@ class PerceptionPipeline:
         """Drop temporal state when the coordinate basis changes."""
         identity = frame.geometry.identity()
         if self._geometry_identity is not None and identity != self._geometry_identity:
-            self.tracker = ArrowTracker()
+            self.bridge.reset("geometry-changed")
             self.arrival = ArrivalDetector()
             if self.detector is not None:
                 self.detector.reset()
@@ -1930,6 +1992,209 @@ class PerceptionPipeline:
     def profile(self) -> ArrowProfile:
         return self.segmenter.profile
 
+    # -- the temporal half -------------------------------------------------
+    def _world_fingerprint(self, frame: CapturedFrame) -> tuple[object, ...]:
+        """Everything that invalidates a stored patch of pixels.
+
+        The run's coordinate basis, the capture backend, and the active
+        profile. A template cut under one of these is meaningless under
+        another, and the bridge resets rather than correlating across the seam.
+        """
+        return (
+            frame.geometry.identity(),
+            frame.backend,
+            self.profile.profile_id,
+            self.profile_revision,
+        )
+
+    def _apply_temporal(
+        self,
+        frame: CapturedFrame,
+        arrow: ArrowObservation,
+        direction: DirectionObservation,
+        *,
+        selected: Any,
+        forward: float,
+    ) -> tuple[ArrowObservation, DirectionObservation]:
+        """Validate the bridge against a global commit, or let it carry a miss.
+
+        Returns the pair the rest of the tick will use. On a globally observed
+        frame both come back stamped ``GLOBAL``/``FUSED`` and otherwise
+        untouched - the structural detector's answer is never modified by the
+        bridge, only recorded alongside it.
+
+        On a frame the detector abstained: if the detector still holds the
+        identity and the bridge can match its anchored template unambiguously,
+        a bridged observation is synthesised with decayed confidence and
+        explicit provenance. Everything else is an abstention, which is what
+        the caller already had.
+        """
+        bridge = self.bridge
+        if bridge.note_world(self._world_fingerprint(frame)):
+            self._anchor_error_deg = None
+            self._anchor_sign_confidence = 0.0
+
+        if arrow.valid and selected is not None:
+            provenance = bridge.validate(frame, arrow)
+            self._anchor_error_deg = (
+                direction.error_deg if direction.valid else self._anchor_error_deg
+            )
+            if direction.valid:
+                self._anchor_sign_confidence = direction.sign_confidence
+            return (
+                replace(
+                    arrow,
+                    provenance=provenance,
+                    evidence_age_s=0.0,
+                    bridge_drift_px=0.0,
+                    bridge_disagreement_px=bridge.last_disagreement_px,
+                ),
+                replace(direction, provenance=provenance),
+            )
+
+        detector = self.detector
+        assert detector is not None
+        holding = detector.state in (
+            TrackState.TRACK,
+            TrackState.AMBIGUOUS,
+            TrackState.REACQUIRE,
+        )
+        if not holding or not bridge.anchored:
+            # Nothing to carry. The detector is acquiring or has genuinely lost
+            # the arrow, and inventing a position for it is exactly the failure
+            # a bridge is supposed to make *visible* rather than commit.
+            return (
+                replace(arrow, provenance=EvidenceProvenance.LOST),
+                replace(direction, provenance=EvidenceProvenance.LOST),
+            )
+
+        measurement = bridge.bridge(frame)
+        if measurement is None:
+            return (
+                replace(
+                    arrow,
+                    provenance=bridge.provenance,
+                    evidence_age_s=bridge.age_s(frame.captured_at_s) or 0.0,
+                    bridge_drift_px=bridge.drift_px(),
+                    bridge_refusal=bridge.last_refusal,
+                ),
+                replace(direction, provenance=bridge.provenance),
+            )
+
+        if measurement.provenance is EvidenceProvenance.BRIDGED:
+            self._bridged_frames += 1
+        else:
+            self._predicted_frames += 1
+        return (
+            self._bridged_arrow(arrow, measurement, track_id=bridge.track_id),
+            self._bridged_direction(direction, measurement, forward=forward),
+        )
+
+    def _bridged_arrow(
+        self,
+        arrow: ArrowObservation,
+        measurement: BridgeMeasurement,
+        *,
+        track_id: int | None,
+    ) -> ArrowObservation:
+        """One bridged frame as an observation, with nothing invented.
+
+        The extent is the anchored extent moved, not a fresh measurement: a
+        correlation says where a patch went, never how big it now is. The score
+        terms are deliberately dropped rather than carried forward, because a
+        structural breakdown from an older frame presented against this one is
+        the kind of stale evidence a diagnostic must not show as current.
+        """
+        return replace(
+            arrow,
+            track_id=track_id if track_id is not None else arrow.track_id,
+            bbox_px=measurement.bbox_px,
+            centroid_px=measurement.centroid_px,
+            axis_unit_xy=measurement.axis_unit_xy,
+            confidence=measurement.confidence,
+            valid=measurement.provenance is EvidenceProvenance.BRIDGED,
+            abstain_reason=(
+                None
+                if measurement.provenance is EvidenceProvenance.BRIDGED
+                else "prediction-only"
+            ),
+            tip_px=None,
+            tail_px=None,
+            score_terms=(),
+            score_margin=0.0,
+            notch_mid_px=None,
+            notch_px=None,
+            provenance=measurement.provenance,
+            evidence_age_s=measurement.age_s,
+            bridge_drift_px=measurement.drift_px,
+        )
+
+    def _bridged_direction(
+        self,
+        direction: DirectionObservation,
+        measurement: BridgeMeasurement,
+        *,
+        forward: float,
+    ) -> DirectionObservation:
+        """The anchored heading turned by the measured rotation, and nothing more.
+
+        A patch tells you where an object went and how far it turned; it does
+        not re-derive which end is the tip. So the *sign* is inherited from the
+        last global answer and its confidence decays with the rest - a bridged
+        heading can be responsive without ever being a fresh claim about
+        polarity. Abstains outright when there was no global heading to turn.
+        """
+        del forward
+        anchored = self._anchor_error_deg
+        if anchored is None or measurement.provenance is not EvidenceProvenance.BRIDGED:
+            return replace(
+                direction,
+                provenance=measurement.provenance,
+                valid=False,
+                abstain_reason=direction.abstain_reason or "bridge-no-heading",
+            )
+        return DirectionObservation(
+            error_deg=wrap_deg(anchored + measurement.rotation_deg),
+            confidence=measurement.confidence,
+            cue_id="temporal-bridge",
+            cue_disagreement_deg=None,
+            valid=True,
+            abstain_reason=None,
+            sign_confidence=self._anchor_sign_confidence * measurement.confidence,
+            sign_margin_deg=0.0,
+            cues=(
+                CueReading(
+                    cue_id="temporal-bridge",
+                    heading_deg=wrap_deg(anchored + measurement.rotation_deg),
+                    confidence=measurement.confidence,
+                    weight=measurement.confidence,
+                    valid=True,
+                    note=(
+                        f"anchored heading turned {measurement.rotation_deg:+.1f} deg; "
+                        f"corr {measurement.correlation:.2f} margin "
+                        f"{measurement.peak_margin:.2f} age "
+                        f"{measurement.age_s * 1000:.0f} ms"
+                    ),
+                ),
+            ),
+            anisotropy=0.0,
+            provenance=EvidenceProvenance.BRIDGED,
+        )
+
+    @property
+    def bridged_frames(self) -> int:
+        """Frames carried by the local correlator alone."""
+        return self._bridged_frames
+
+    @property
+    def predicted_frames(self) -> int:
+        """Frames extrapolated with no measurement at all."""
+        return self._predicted_frames
+
+    @property
+    def bridge_stats(self) -> BridgeStats:
+        return self.bridge.stats
+
     def analyze(
         self, frame: CapturedFrame, *, map_id: str, approach_valid: bool
     ) -> PerceptionResult:
@@ -1989,6 +2254,7 @@ class PerceptionPipeline:
             forward_deg=forward,
             arrow_confidence=arrow.confidence,
             previous_heading_deg=self._last_heading_deg,
+            now_s=frame.captured_at_s,
         )
         direction_ms = (monotonic_s() - direction_started) * 1000.0
         direction = result.observation
@@ -1996,6 +2262,18 @@ class PerceptionPipeline:
             self._reversals_refused += 1
         if selected is not None:
             arrow = replace(arrow, tip_px=result.tip_px, tail_px=result.tail_px)
+
+        # THE TWO HALVES MEET HERE, and the order is the whole contract: the
+        # structural detector has already decided, and the bridge is only ever
+        # consulted about a frame it could not decide. A global commit
+        # re-anchors the template and corrects the bridge; a global miss is the
+        # one case the bridge is allowed to answer at all.
+        bridged_ms_started = monotonic_s()
+        arrow, direction = self._apply_temporal(
+            frame, arrow, direction, selected=selected, forward=forward
+        )
+        direction_ms += (monotonic_s() - bridged_ms_started) * 1000.0
+
         if arrow.valid and direction.valid and direction.error_deg is not None:
             self._last_heading_deg = wrap_deg(forward + direction.error_deg)
             self._last_track_id = arrow.track_id
@@ -2037,6 +2315,12 @@ class PerceptionPipeline:
                 f"{h.label}:{h.reason}" for h in shown if h.state != "selected" and h.reason
             )[:8],
             track_state=outcome.state.value,
+            provenance=arrow.provenance.value,
+            evidence_age_s=arrow.evidence_age_s,
+            bridge_drift_px=arrow.bridge_drift_px,
+            bridge_disagreement_px=arrow.bridge_disagreement_px,
+            bridge_refusal=arrow.bridge_refusal,
+            bridge_confidence=(arrow.confidence if not arrow.provenance.structural else 0.0),
         )
         return PerceptionResult(
             inputs=inputs,
@@ -2452,6 +2736,8 @@ def make_live_worker(
     capabilities_factory: Callable[[], NavigationCapabilities],
     *,
     prologue: Callable[[WorkerContext, PerceptionPipeline], LivePrologueResult] | None = None,
+    mission_limits: MissionLimits | None = None,
+    navigator_factory: Callable[[NavigationCapabilities], Navigator] | None = None,
 ) -> Callable[[WorkerContext], ModeResult]:
     """Live navigation, with the two input-emitting setup stages in front of it.
 
@@ -2475,7 +2761,13 @@ def make_live_worker(
         motion_was_enabled = pipeline.motion_enabled
         pipeline.motion_enabled = True
         capabilities = capabilities_factory()
-        navigator = Navigator(capabilities=capabilities)
+        # The factory is a seam, not a policy: production passes nothing and
+        # gets the ordinary navigator. It exists so a test can drive the *real*
+        # worker, supervisor and authority against a controller whose bounded
+        # budgets are short enough to reach a terminal in a test, rather than
+        # having to mock the loop it is trying to exercise.
+        build_navigator = navigator_factory or (lambda caps: Navigator(capabilities=caps))
+        navigator = build_navigator(capabilities)
         context.lifecycle.note(
             LifecycleStage.LIVE_WORKER_ENTERED,
             context.worker_id,
@@ -2621,22 +2913,230 @@ def make_live_worker(
             actuator = session.movement
             return MovementOutcome(held=actuator.held, backend=actuator.backend)
 
+        supervisor = MissionSupervisor(limits=mission_limits or MissionLimits())
+        processed = applied = 0
+        kind = ModeResultKind.COMPLETED
+        detail = "no frames processed"
         try:
-            processed, applied, kind, detail = _run_observer_loop(
-                context,
-                pipeline,
-                navigator,
-                map_id="live",
-                approach_valid=True,
-                max_ticks=None,
-                apply=apply,
-            )
+            while True:
+                episode_processed, episode_applied, kind, detail = _run_observer_loop(
+                    context,
+                    pipeline,
+                    navigator,
+                    map_id="live",
+                    approach_valid=True,
+                    max_ticks=None,
+                    apply=apply,
+                )
+                processed += episode_processed
+                applied += episode_applied
+                repair = supervisor.judge(kind, detail, now_s=monotonic_s())
+                if repair is None:
+                    break
+                # THE MISSION SURVIVES THE EPISODE. Everything below runs
+                # inside the *same* mode session, the same coordinator
+                # generation and the same physical authorization: no chord is
+                # minted, simulated or replayed, and Stop preempts every line
+                # of it through the same cancellation the loop above obeys.
+                session.stop_moving(repair.reason)
+                _feed_back(monotonic_s())
+                context.on_movement(blocked_reason=repair.reason)
+                context.on_status(repair.describe())
+                if not _wait_for_reacquisition(context, pipeline, repair):
+                    # Cancelled, or the world stayed unnavigable for the whole
+                    # bounded wait. Report the episode's own verdict.
+                    break
+                navigator.begin_episode(repair.reason)
+                supervisor.note_resumed(now_s=monotonic_s())
+                context.on_status(
+                    f"reacquired after {repair.reason}; continuing the same mission "
+                    f"(repair {supervisor.repairs} of {supervisor.limits.max_repairs})"
+                )
         finally:
             pipeline.motion_enabled = motion_was_enabled
             session.release_navigation("worker-exit")
-        return ModeResult(kind, f"live: {applied} commands over {processed} frames ({detail})")
+        return ModeResult(
+            kind,
+            f"live: {applied} commands over {processed} frames ({detail}"
+            + (f"; {supervisor.repairs} repairs" if supervisor.repairs else "")
+            + ")",
+        )
 
     return worker
+
+
+# ---------------------------------------------------------------------------
+# The mission supervisor
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MissionLimits:
+    """Bounds on how much repair one authorized mission may attempt.
+
+    Every one of these is a cap on *automatic continuation*, never on safety.
+    A stop, a focus loss, a viewport fault or an uncertain release does not
+    come through here at all: those cancel the worker from the coordinator,
+    and the loop this bounds obeys the same cancellation on every iteration.
+    """
+
+    #: Repairs one mission may attempt in total.
+    max_repairs: int = 6
+    #: Seconds of *repairing* one mission may spend in total. A mission that
+    #: has spent this much of itself waiting is not making progress.
+    repair_budget_s: float = 90.0
+    #: How long one bounded reacquisition wait may last.
+    reacquire_deadline_s: float = 20.0
+    #: Consecutive frames carrying a usable arrow before a repair is called
+    #: resolved. More than one, so a single flicker does not resume a walk.
+    reacquire_confirm_frames: int = 3
+    #: Repairs allowed within ``thrash_window_s`` before the mission concludes
+    #: it is stuck rather than unlucky. Without this a character wedged against
+    #: geometry would recover, fail, recover, fail for the whole budget.
+    max_repairs_in_window: int = 3
+    thrash_window_s: float = 25.0
+
+    provenance: Provenance = field(
+        default_factory=lambda: Provenance(
+            status=EvidenceStatus.PROVISIONAL,
+            source="D-096; chosen bounds, not measurements",
+            note="no value here has been measured against a real route",
+        )
+    )
+
+
+@dataclass(frozen=True)
+class MissionRepair:
+    """One decision to pause, repair and continue rather than end the mission."""
+
+    reason: str
+    index: int
+    deadline_s: float
+    confirm_frames: int
+
+    def describe(self) -> str:
+        return f"paused: {self.reason}; watching for the arrow, nothing held"
+
+
+class MissionSupervisor:
+    """Decides whether an ended episode ends the *mission*.
+
+    The distinction this draws is the whole of it. ``ARRIVED`` is the mission's
+    typed success and happens once. ``CANCELLED`` is a person pressing Stop.
+    ``FAILED`` is the worker saying it cannot run at all. ``ABANDONED`` is
+    none of those: it is the navigator having exhausted one *bounded* thing -
+    the arrow's search budget, or the recovery ladder - and that is a statement
+    about an episode, not about whether a treasure is still reachable.
+
+    Before this existed every one of those ended the worker and safe-stopped to
+    IDLE, so an arrow lost behind two seconds of foliage cost the user the run
+    and another physical Ctrl+N. Now it costs a bounded pause with nothing
+    held, and the mission the user already authorized continues.
+
+    Bounded four ways, because "keep trying" without bounds is how an
+    unattended macro spends a night walking into a wall: a repair count, a
+    total repair-time budget, a per-repair deadline, and a thrash detector that
+    notices repairs arriving faster than progress.
+    """
+
+    def __init__(self, *, limits: MissionLimits | None = None) -> None:
+        self._limits = limits or MissionLimits()
+        self._repairs = 0
+        self._spent_s = 0.0
+        self._started_s: float | None = None
+        self._recent: list[float] = []
+
+    @property
+    def limits(self) -> MissionLimits:
+        return self._limits
+
+    @property
+    def repairs(self) -> int:
+        return self._repairs
+
+    def judge(self, kind: ModeResultKind, detail: str, *, now_s: float) -> MissionRepair | None:
+        """``None`` ends the mission; a :class:`MissionRepair` continues it."""
+        if kind is not ModeResultKind.ABANDONED:
+            # ARRIVED, CANCELLED, FAILED and COMPLETED all mean what they say.
+            # In particular ARRIVED is never repaired: it is the terminal the
+            # whole mission exists to reach, and it happens exactly once.
+            return None
+        limits = self._limits
+        if self._repairs >= limits.max_repairs:
+            return None
+        if self._spent_s >= limits.repair_budget_s:
+            return None
+        self._recent = [at_s for at_s in self._recent if now_s - at_s <= limits.thrash_window_s]
+        if len(self._recent) >= limits.max_repairs_in_window:
+            # Repairs arriving faster than progress. Whatever is wrong is not
+            # clearing on its own, and continuing to pause and resume against
+            # it is a loop rather than a recovery.
+            return None
+        self._repairs += 1
+        self._recent.append(now_s)
+        self._started_s = now_s
+        return MissionRepair(
+            reason=detail or "the episode ended without arriving",
+            index=self._repairs,
+            deadline_s=min(
+                limits.reacquire_deadline_s,
+                max(0.0, limits.repair_budget_s - self._spent_s),
+            ),
+            confirm_frames=limits.reacquire_confirm_frames,
+        )
+
+    def note_resumed(self, *, now_s: float) -> None:
+        """Charge the elapsed wait against the mission's repair budget."""
+        if self._started_s is not None:
+            self._spent_s += max(0.0, now_s - self._started_s)
+            self._started_s = None
+
+
+def _wait_for_reacquisition(
+    context: WorkerContext, pipeline: PerceptionPipeline, repair: MissionRepair
+) -> bool:
+    """Watch, holding nothing, until the arrow is back. False if it never is.
+
+    Deliberately the *global* path only: a repair resumes on evidence the
+    structural detector committed, never on a bridged frame. The bridge exists
+    to carry an identity the detector already owns across frames it missed, and
+    using it to decide that a lost arrow has been found again would be reading
+    continuity as acquisition.
+
+    Emits nothing. The caller has already stopped the character, and this
+    function has no input session to reach for even if it wanted one.
+    """
+    capture = context.frames
+    deadline_s = monotonic_s() + repair.deadline_s
+    last_sequence = 0
+    confirmed = 0
+    while not context.cancellation.is_cancelled():
+        if monotonic_s() >= deadline_s:
+            return False
+        envelope = capture.wait_for_new(last_sequence, 0.25)
+        if envelope is None:
+            continue
+        frame = envelope.frame
+        last_sequence = frame.sequence
+        try:
+            result = pipeline.analyze(frame, map_id="live", approach_valid=True)
+        except Exception:
+            # A bad frame during a repair is one bad frame, not the end of the
+            # mission. The loop is bounded by its own deadline either way.
+            confirmed = 0
+            continue
+        arrow = result.inputs.arrow
+        direction = result.inputs.direction
+        usable = (
+            arrow.valid
+            and arrow.provenance.structural
+            and direction.valid
+            and direction.error_deg is not None
+        )
+        confirmed = confirmed + 1 if usable else 0
+        if confirmed >= repair.confirm_frames:
+            return True
+    return False
 
 
 def make_forward_probe_worker(
