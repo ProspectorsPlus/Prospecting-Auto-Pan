@@ -2949,3 +2949,280 @@ Verified by averaging the same box by hand from a `screencapture -x` PNG at
 several textured points and comparing to `get_pixel_color()` — matched
 within rounding wherever the on-screen content was actually static between
 the two reads.
+
+---
+
+## D-094 — 2026-08-30 — The temporal bridge, and the horizon that makes it sound
+
+**Plan text:** §7.2, §8.
+
+**Decision:** `prospector_engine/temporal.py`. A bounded local correlator that
+carries one already-established identity across frames the structural detector
+could not segment. Normalised cross-correlation of an anchored template inside
+a predicted window, plus a small rotation bank at the winning translation.
+`ArrowDetector` is unchanged and remains the sole authority for acquisition,
+association, switching and reacquisition; the bridge never acquires and never
+switches.
+
+Three rules, and they are the whole of why this is not a way to be confidently
+wrong:
+
+1. **The template is only ever cut on a global commit.** A bridged frame moves
+   the track; it never rewrites what the track looks like. An appearance that
+   only the structural detector can write cannot walk onto terrain one frame at
+   a time, however many bridged frames run in between.
+2. **A bridged measurement must be unambiguous, not merely good.** The peak
+   clears a floor *and* beats the best rival outside its suppression radius,
+   and the matched patch still has contrast against its surround. Being near
+   the prediction is the search bound, not a tie-break.
+3. **Everything decays and everything is bounded.** Time since the last global
+   validation, cumulative translation, cumulative rotation, per-step speed,
+   frame spacing. Past any of them the answer is STALE and the caller sees an
+   abstention.
+
+**Provenance is a type, not a comment.** `EvidenceProvenance` distinguishes
+GLOBAL, FUSED, BRIDGED, PREDICTED, AMBIGUOUS, STALE, LOST and NONE, and it
+reaches `ArrowObservation`, `DirectionObservation`, `PerceptionTiming` and the
+frame trace. A run whose recall looks healthy while every frame says `bridged`
+is a detector that has stopped working and a bridge covering for it, and that
+has to be visible rather than averaged away.
+
+**`max_step_s = 0.10` is what makes it sound rather than convenient**, and it
+is D-058's argument applied to the right variable. A correlation across two
+frames 200 ms apart is not evidence of continuity — the arrow could have
+crossed a third of the screen in between. Measured, on the tune split:
+
+| `max_step_s` | tune recall | tune false locks |
+|---|---|---|
+| unbounded | 57.8 % | **5** (`sand-near-a`) |
+| 0.30 | 55.6 % | 4 |
+| 0.10 | 55.6 % | 4 |
+
+The unbounded version bought 2.4 points of *eval* recall (80.2 % → 82.6 %) and
+cost a false lock on the same-coloured sand sequence — the exact failure D-058
+recorded for the first version of the resume rule. The bound was chosen on
+`tune`; `eval` was read to report. **The consequence is deliberate and is not
+hidden: the bridge is inert below about 10 fps, so it is inert on the real
+corpus, and every corpus number in this pass is therefore identical to the
+baseline.** The dense regime is covered by rendered stress instead (below), and
+the native claim stays PENDING.
+
+**Two defects found by measurement rather than by review**, both recorded
+because both looked correct in the code:
+
+*The ambiguity guard was dead code.* `cv2.matchTemplate` returns a response of
+`window - template + 1`, which with the original tight search window was a few
+tens of pixels across — and a suppression radius of a whole template side
+masked the *entire* response. The rival peak was always -1 and every peak
+passed the margin unchallenged. Swept against the real detector: at
+`suppression_fraction` 0.30 with `search_radius_base_px` widened to 46, a
+same-scale distractor 40–55 px away is correctly refused as ambiguous and one
+far enough away not to corrupt the peak is correctly carried.
+
+*Rotation drift poisoned the frame after the occlusion.* The bank returned its
+best angle, and on an occluded patch "best" beats "zero" by a rounding error
+whose sign is random. Across twenty bridged frames the carried heading drifted
+by up to **71°** on the rendered families — and because the pipeline seeds the
+direction estimator with the heading it was last handed, that drift then
+biased the first globally observed frame *after* the occlusion too. Fixed with
+`rotation_min_gain` (the unrotated template is the incumbent and must be beaten
+by a margin) and `max_rotation_deg` as an independent cumulative bound. Worst
+bridged recovery error fell from 71.2° to **1.3°**.
+
+**Measured, rendered stress, never a gate** (`--tracking-report`,
+`tests/tracking_families.py`). Longest run of frames with no usable
+observation, through a foliage-shaped occlusion, without and with the bridge:
+
+| cadence | 100 ms | 250 ms | 500 ms | 2000 ms |
+|---|---|---|---|---|
+| 30 Hz | 100 → 33 ms | 267 → 33 ms | 400 → 33 ms | 400 → 33 ms |
+| 60 Hz | 100 → 0 ms | 250 → 0 ms | 467 → 33 ms | 467 → 33 ms |
+| 90 Hz | 100 → 11 ms | 244 → 11 ms | 467 → 11 ms | 467 → 11 ms |
+
+Identity held in every case, with and without. The occlusion model itself was
+swept rather than assumed: a single solid bar at 70 % coverage defeats the
+detector but also destroys the appearance, so no correlation method could carry
+it and the family would only have measured that fact. Five bars covering 40 %
+is the realistic case — it breaks the outline topology the detector scores on
+while leaving 60 % of the arrow's own pixels to correlate.
+
+**Cost:** `validate` (cut a template) p50 0.115 ms, p95 0.176 ms. `bridge`
+(correlate plus rotation bank) p50 0.652 ms, p95 1.069 ms, max 1.55 ms — and
+it only runs on frames the detector already missed. Corpus perception is
+unchanged at p50 6.8–8.0 ms, p95 10.7–12.2 ms.
+
+**`ArrowTracker` is retired.** It had stopped being a second opinion and become
+a third wheel: `PerceptionPipeline` constructed one, reset it on every profile
+and geometry change, and never once called `update` on it, while
+`ArrowDetector` owned identity outright. Dead code shaped like a tracker is
+worse than no tracker, because the next reader has to work out which of the two
+is authoritative. One identity owner, one continuity mechanism, and the
+difference between them is a type.
+
+---
+
+## D-095 — 2026-08-30 — A reversal latch that meant 50 ms at 60 Hz
+
+**Plan text:** §8.
+
+**Decision:** `DetectorConfig.reversal_latch_s = 0.12`, checked *alongside*
+`reversal_latch_frames`, with `now_s` threaded into
+`DirectionEstimator.estimate` as an optional argument.
+
+**Why:** `DetectorConfig`'s own docstring says temporal bounds are "in seconds
+of frame time, with a frame-count floor, so the same contract holds at 60 fps
+live and at a corpus sampled at 2.5 fps". `reversal_latch_frames` was the one
+bound in that class that had never been given one. Three frames is 600 ms at
+the corpus's ~5 fps and **50 ms at 60 Hz** — short enough that a two-frame PCA
+flicker satisfies it and a spurious 180° flip is adopted as a sustained
+reversal.
+
+Both conditions must hold, so this is a floor on the *duration* of the evidence
+and the frame count stays the floor on its *quantity*. Chosen to be inert at
+corpus cadence by construction — three frames at 5 fps already exceeds 120 ms —
+and **verified inert: both splits are byte-identical to the baseline.** It only
+tightens the dense regime, which the corpus cannot reach.
+
+**What this does not do, stated plainly:** it does not move the eval direction
+tail. That tail (p95 120.5°, driven by `purple-pale` at 132.8° / 66.7 % sign
+and `sand-same-colour` at 120.5° / 75 %) lives **entirely in the eval split** —
+the two tune sequences that produce heading metrics at all are clean, at p95
+8.9° and 1.1° with 100 % sign accuracy. So the tune split cannot support
+choosing a fix for it, and choosing one against eval would be tuning on
+held-out data (CLAUDE.md rule 10). The tail is left measured, named and
+unfixed rather than fixed by the wrong method.
+
+---
+
+## D-096 — 2026-08-30 — One authorization is a mission, not an episode
+
+**Plan text:** §3.3, §6.
+
+**Decision:** `MissionSupervisor` inside the live worker. `ModeResultKind
+.ABANDONED` no longer ends the run; it buys a bounded pause with nothing held,
+a no-input reacquisition wait, and a fresh pursuit episode via
+`Navigator.begin_episode`.
+
+**Why:** every bounded thing the navigator could exhaust ended the *worker*.
+An arrow lost past `search_budget_s`, or a recovery ladder out of rungs,
+returned ABANDONED; the coordinator safe-stopped to IDLE; and continuing cost
+the user another physical Ctrl+N. Real traces show it:
+`SAFE_STOP A + < + W; recovery ladder exhausted` three times, and `Not moving:
+recovery ladder exhausted` twice. For an all-night unattended run that is the
+same as failing, because nobody is there to press the chord.
+
+ABANDONED is a statement about one *episode* — one bounded search, one bounded
+ladder — not about whether the treasure is still reachable. Everything else
+still ends the mission: ARRIVED is the terminal the whole thing exists to reach
+and is never repaired, CANCELLED is a person pressing Stop, FAILED is the
+worker saying it cannot run at all.
+
+**Nothing about arming changed, and there is no code path here that could.**
+The repair runs inside the same mode session, the same coordinator generation
+and the same physical authorization. No chord is minted, simulated or replayed.
+Stop preempts every line of it through the same `context.cancellation` the
+pursuit loop obeys, and the pause uses `stop_moving` rather than
+`release_navigation` precisely so it does not close admission for the rest of
+the session (D-067).
+
+**Bounded four ways**, because "keep trying" without bounds is how an
+unattended macro spends a night walking into a wall: a repair count (6), a
+total repair-time budget (90 s), a per-repair deadline (20 s), and a thrash
+detector — three repairs inside 25 s means whatever is wrong is not clearing on
+its own and pausing against it is a loop rather than a recovery.
+
+**A repair resumes on the *global* path only.** `_wait_for_reacquisition`
+requires `provenance.structural` for three consecutive frames. The bridge
+exists to carry an identity the detector already owns; using it to decide that
+a lost arrow has been *found* would be reading continuity as acquisition.
+
+`begin_episode` keeps the traversability memory deliberately. Which way already
+failed is the most valuable thing the failed episode learned, and an episode
+that forgets it walks into the same wall again — which is precisely how a
+bounded repair turns into an unbounded loop.
+
+---
+
+## D-097 — 2026-08-30 — Setup that repairs itself, and resumes rather than restarts
+
+**Plan text:** §4.
+
+**Decision:** `AutomaticSetup.run_observation` is a supervised loop around the
+same bounded stages. Three changes, each with its own evidence.
+
+**Rolling evidence, not consecutive runs.** `_establish_reference` kept a list
+of *consecutive* usable readings and cleared it on any abstention, so the stage
+was a race against the detector's worst moment rather than a measurement of
+whether the heading is steady. The owner's own traces show what that cost: in
+`safe-stop-da4088f8.log` it fails at 12:45:10 and reaches "Setup finished" at
+12:45:19 — nine seconds later, on a manual retry, with nothing about the
+window, the character or the room having changed. Five such traces, plus seven
+for profile selection. It now asks the question the reference actually poses —
+is the heading steady over a short span of time — as three conditions that fail
+independently: enough readings, all inside one rolling window, jitter under the
+bound; *and* `reference_min_hit_rate` of the frames in that window readable at
+all, which is what keeps the new rule from being merely a laxer one.
+
+**`_shadow_qualify` judges a rolling window through its whole deadline** rather
+than the first `qualify_frames` and stopping. The opening frames are the worst
+ones — the character still settling, the detector mid-acquisition — and one
+unlucky batch used to fail the attempt while the next second would have passed.
+
+**A failure has a disposition, and the hard set stays hard.**
+`SetupDisposition` is a second axis beside `SetupFailureKind`: HARD (permission,
+an unidentifiable second window, cancellation) is never retried; RECOVERABLE is
+retried from the earliest invalidated prerequisite; ENVIRONMENTAL (no window,
+fullscreen, no map equipped) is waited for, because those become false when a
+person does something ordinary. The mapping is a table so it can be read at a
+glance, an unknown kind defaults to HARD, and a test asserts the hard set has
+not quietly grown. Every retry has a backoff that holds nothing, an attempt cap
+*and* a monotonic deadline, and a bounded readable history.
+
+**A retry resumes, it does not restart.** A jittery reference does not
+invalidate the window that was found, the client that was sized or the profile
+that was locked — re-running the fit would be both wasted work and a second
+unnecessary resize of somebody's game window. A changed window identity is the
+one case that invalidates everything, and it is read from the port between
+attempts. That check needed `_find_roblox` to record the identity it found; it
+did not at first, so the comparison had nothing to compare against and could
+never fire.
+
+---
+
+## D-098 — 2026-08-30 — One readiness predicate, because two of them disagreed
+
+**Plan text:** §3.2, §4.
+
+**Decision:** `Readiness.setup_ready` and `Readiness.live_ok`.
+`_on_start_live` and `_setup_blockers` both read them.
+
+**Why:** two authorities answered one question. `_setup_blockers` rendered
+setup state into the dashboard as a SETUP row, and `_on_start_live` consulted
+`Readiness.input_ok` — which knew nothing about setup at all. So a Ctrl+N
+during setup passed every check the chord handler actually made.
+
+Not hypothetical. `safe-stop-4a04b270.log`:
+
+```
+[12:43:15.618] INFO  Starting up. Looking for the Roblox window...
+[12:43:22.406] INFO  You pressed Ctrl+N.
+[12:43:22.487] STATE IDLE -> LIVE - worker live-21
+[12:43:22.487] PASS  Every check passed. Movement is allowed now.
+[12:43:25.966] FAIL  the direction to the arrow never held still long enough
+                     to trust.
+```
+
+Live was entered, and announced that every check had passed, **three and a half
+seconds before** the stage that establishes the reference it steers by reported
+that it had failed.
+
+`input_ok` keeps its old meaning — safety and the pipeline, which is what a
+bounded SERVICE needs — and `live_ok` is `input_ok and setup_ready`. The
+regression is `tests/test_setup_flow.py`, driven through the real
+`build_application`, including an invariant that a SETUP blocker on screen and
+`live_ok` can never disagree.
+
+Rigs that wire a coordinator by hand now call `tests.fakes.mark_setup_ready`,
+which publishes a real READY packet through the coordinator's own
+`_publish_setup` — the same shape as `settle_cadence_for_live`: it supplies the
+evidence the gate reads rather than reaching past the gate.
