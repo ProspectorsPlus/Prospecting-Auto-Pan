@@ -235,6 +235,24 @@ looks exactly like a broken backend and is not one (D-074).
    cycle, alignment, occlusion behaviour and recovery success **on the real
    game** stay `pending` until an armed route produces a trace. The simulations
    are how a change is chosen; they are never how it is passed.
+13. **`--calibrate` is the reference; the navigator conforms to it, never the
+   reverse.** When a pixel check reads differently through the production
+   capture pipeline than `--calibrate` shows at the same coordinate, that is a
+   navigator bug, full stop — fix `prospector_engine`'s capture, not
+   `pixel-detector`, `detector.mm`, or `treasure.py --calibrate`'s wiring. An
+   agent must never modify how `--calibrate` samples a pixel to make it agree
+   with the navigator, and must never quietly recalibrate a `TreasurePixels`/
+   `ChestPixel` value against the navigator's own (possibly buggy) reading
+   instead of tracking down why it disagrees with `--calibrate`. This was
+   gotten wrong once: D-101 patched a `capacity_rgb` mismatch by recalibrating
+   the value against what the navigator happened to read; D-102 went further
+   and rewrote `--calibrate` itself to match the navigator's capture method,
+   and was reverted in full on the owner's explicit correction. D-103 is the
+   version that held: it fixed `MacScreenCaptureKitSource`'s capture so the
+   navigator reads what `--calibrate` was already showing, with `--calibrate`
+   never touched. `--calibrate` took real, deliberate work to get right
+   (D-093, D-099, D-100) specifically so it could be trusted as ground truth;
+   treat any future disagreement the same way D-103 did.
 
 ## 5. Architecture boundaries
 
