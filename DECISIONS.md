@@ -3347,3 +3347,110 @@ future recalibration doesn't silently desync the tests from the config
 again; `test_legacy_colour_helpers_keep_their_thresholds` lost its
 `is_yellow`/`is_white` assertions (functions no longer exist) and was
 renamed `test_color_close_keeps_its_threshold_semantics`.
+
+## D-101 — 2026-09-01 — `--calibrate` and the running navigator read `capacity_px` differently on a Retina backing, and `capacity_rgb` now matches the navigator
+
+**Decision:** `TreasurePixels.capacity_rgb` is recalibrated from
+`(229, 208, 102)` to `(200.0, 179.0, 85.0)`, measured through
+`PIXEL_CHECK_LOGGING` in a live Ctrl+3 session against a confirmed-full pan
+(the owner watched the in-game `Pan Fill` bar read full while this value was
+logged, stable and identical, across dozens of consecutive frames).
+
+**Why the two tools disagree.** `--calibrate` on macOS reads through
+`pixel-detector`, a standalone native tool that samples one true screen
+pixel. The running navigator instead reads through
+`MacScreenCaptureKitSource` (`prospector_engine/platform_mac.py`), whose
+`SCStreamConfiguration` requests output `width`/`height` from
+`geometry.canonical_px` — always `1280x720` **pixels** — while `sourceRect`
+is built from `client_rect_in_window_logical`, which is in **points**. On a
+Retina backing (2x), a 1280x720-point client is a ~2560x1440-pixel capture,
+so ScreenCaptureKit is silently downscaling 2x on every delivered frame to
+fit the requested buffer. That is a real blend of neighboring screen
+pixels, not a point sample, so any coordinate sitting near a gradient or
+glow in the UI — `capacity_px` evidently does — reads a different color
+than a genuine single-pixel read of the same spot. `dig_spot_a_px` and the
+other checks apparently sit on flat enough regions that the blend doesn't
+move them measurably; `capacity_px` was not so lucky.
+
+**This is the D-099 invariant** ("a value read with `--calibrate` ... is
+what the running navigator reads at that point, not just close to it")
+failing on a HiDPI/Retina display — D-099 fixed `sample_box_px` to 1 on
+both sides but never accounted for `canonical_px` being asserted as
+physical output pixels rather than derived from the client's actual
+backing resolution. That capture-pipeline gap is not fixed here — a real
+fix means either configuring the stream at the client's true backing
+resolution and letting a separate, explicit step downsample to canonical
+space, or making `pixel-detector` sample through the same downscaled
+canonical raster instead of a native pixel — both are native-capture
+changes that need verification against a live Retina session, which this
+pass did not have reason to risk. `capacity_rgb` is recalibrated against
+the navigator's own reading as a targeted, verified-in-session fix for the
+one check it was observed to break; `--calibrate` should not be trusted to
+validate `capacity_px` specifically until the underlying divergence is
+closed.
+
+**Provenance:** owner-observed via a live Ctrl+3 session's
+`PIXEL_CHECK_LOGGING` output, not via `treasure.py --calibrate` — the first
+time a `TreasurePixels` field's source differs from the rest of D-100's
+table, and deliberately so, per the reasoning above. Superseded by D-103,
+recorded next: `capacity_rgb` here is calibrated against the GPU-blended
+reading D-103 replaces, and is itself now owed re-verification.
+
+## D-103 — 2026-09-01 — The navigator's own Retina downscale, made explicit and correct, instead of an opaque GPU blend
+
+**Decision:** `MacScreenCaptureKitSource` no longer asks ScreenCaptureKit to
+crop *and* resize to `canonical_px` in one opaque GPU step. `_configuration()`
+now requests output pixels equal to the crop's own native backing-pixel size
+(`source.width/height * geometry.backing_scale`) — a pure crop, nothing to
+scale, since source and output are the same pixel count. `_deliver()` then
+does the one explicit downscale itself: `cv2.resize(..., interpolation=
+cv2.INTER_AREA)` from that native buffer into the pool's canonical-sized
+target (a plain `np.copyto` when backing scale is 1x and native already
+equals canonical, so nothing is resized needlessly on a non-Retina
+display). `INTER_AREA` is the standard, correct algorithm for shrinking an
+image without aliasing — a defined, specified transform this codebase
+states and can test, not a black box.
+
+**Why this and not touching `--calibrate` again.** The owner was explicit
+and correct: D-101/D-102's attempt to fix this by changing what
+`--calibrate` samples was the wrong side of the problem and was reverted in
+full. `--calibrate` exists to preview what the navigator decides from, so
+the navigator's own capture is what has to be trustworthy; a diagnostic
+tool has no business being reshaped to chase it. This entry touches only
+`prospector_engine/platform_mac.py` — `pixel-detector`, `detector.mm`, and
+`treasure.py --calibrate` are untouched, exactly as they were before D-101.
+
+**Why not just capture at native resolution everywhere.** Every calibrated
+coordinate in this codebase (`TreasurePixels`, `ChestPixel`, every arrow
+profile template) is defined against the fixed 1280x720 canonical grid,
+independent of the real display's DPI — that is what lets one calibration
+pass work on any monitor, and it is why capture stays one coherent frame
+per tick rather than native-resolution per machine (`prospector_engine/
+capture.py`'s "no feature captures independently" rule, closing bug B12).
+Native capture stays internal to this one method; the canonical raster
+every other consumer reads is unchanged in shape and meaning.
+
+**Not exact for a non-canonical client.** The downscale here is a plain
+resize, not a letterbox: correct for a canonical-aspect client (the only
+state `TreasurePixels` checks are valid on per D-100/D-101's own
+"[NON-CANONICAL: do not bake this]" convention), a stretch on a
+non-canonical one. The previous code's letterbox `destinationRect` attempt
+is not reproduced; nothing that currently relies on non-canonical geometry
+being pixel-accurate existed before this either.
+
+**Verification:** the new numpy/cv2 path (non-contiguous BGRA slice ->
+`ascontiguousarray` -> `cv2.resize(..., dst=target)`) was exercised offline
+against a synthetic native-resolution buffer with a deliberate seam, and
+produced the expected area-blended values at the seam and exact values away
+from it — this is real evidence the resize *math* is correct. `ruff`,
+`mypy`, `treasure.py --self-test`, and the platform-contract/capture-input
+suites all pass.
+
+**Owner-confirmed, live:** a Ctrl+3 session against a genuinely full pan now
+logs `capacity` at `(229, 208, 102)` — matching D-100's original
+`--calibrate` value exactly, where before this entry it read `(200, 179,
+85)` (D-101). `capacity_rgb` is reverted from that D-101 workaround back to
+`(229.0, 208.0, 102.0)`; the divergence D-101 documented is closed, and
+`--calibrate` is trustworthy for `capacity_px` again. D-101's `capacity_rgb`
+value stands in the log as the record of what the GPU-blend bug looked like
+in practice, not as a value in active use.

@@ -462,13 +462,27 @@ class MacScreenCaptureKitSource:
         geometry = self._geometry
         if geometry is None or geometry.client_logical is None:
             return None
-        width, height = geometry.canonical_px
         source = geometry.client_rect_in_window_logical
-        inner_x, inner_y, inner_w, inner_h = geometry.canonical_letterbox_px()
+        # Request output pixels equal to the crop's own native backing-pixel
+        # size, not canonical_px. canonical_px (1280x720) is a POINT count
+        # treated as a pixel count everywhere else in this codebase - correct
+        # on a 1x display, but on a Retina backing the true captured content
+        # is larger (e.g. 2560x1440 physical pixels for a 1280x720-point
+        # client) and letting ScreenCaptureKit scale that down to 1280x720
+        # itself is an opaque GPU blend of real screen pixels. That blend is
+        # why a --calibrate read of a coordinate could legitimately disagree
+        # with what the navigator decided from at that same coordinate
+        # (D-101). Requesting native size instead makes this call a pure
+        # crop - source and output are the same pixel count, nothing to
+        # scale - and _deliver() below does the one explicit, controlled
+        # downscale to canonical_px afterward (D-103).
+        scale = geometry.backing_scale
+        native_w = max(1, round(source.width * scale))
+        native_h = max(1, round(source.height * scale))
 
         configuration = SCK.SCStreamConfiguration.alloc().init()
-        configuration.setWidth_(width)
-        configuration.setHeight_(height)
+        configuration.setWidth_(native_w)
+        configuration.setHeight_(native_h)
         configuration.setPixelFormat_(0x42475241)  # 'BGRA'
         # Without this, ScreenCaptureKit picks its own color space per
         # display, which does not have to be sRGB - the same colour read
@@ -478,17 +492,12 @@ class MacScreenCaptureKitSource:
         configuration.setMinimumFrameInterval_(CoreMedia.CMTimeMake(1, self._target_fps))
         configuration.setQueueDepth_(3)
         configuration.setShowsCursor_(False)
-        # Crop to the client and place it letterboxed inside the canonical
-        # raster, both on the GPU. The same rectangle is what
-        # ViewportGeometry inverts, so overlay coordinates stay exact.
+        # Crop to the client, in points; the requested output pixels above
+        # already match this rect's native size 1:1, so there is nothing
+        # left for ScreenCaptureKit itself to scale.
         configuration.setSourceRect_(
             Quartz.CGRectMake(source.x, source.y, source.width, source.height)
         )
-        with contextlib.suppress(Exception):
-            configuration.setScalesToFit_(False)
-            configuration.setDestinationRect_(
-                Quartz.CGRectMake(inner_x, inner_y, inner_w, inner_h)
-            )
         with contextlib.suppress(Exception):
             configuration.setIgnoreShadowsSingleWindow_(True)
         return configuration
@@ -594,15 +603,40 @@ class MacScreenCaptureKitSource:
                 address = Quartz.CVPixelBufferGetBaseAddress(pixel_buffer)
                 if address is None or width <= 0 or height <= 0:
                     return
-                source = np.frombuffer(
+                native = np.frombuffer(
                     address.as_buffer(stride * height), dtype=np.uint8
                 ).reshape(height, stride // 4, 4)[:, :width, :3]
-                target = self._pool.acquire(height, width) if self._pool is not None else None
+                canonical_w, canonical_h = geometry.canonical_px
+                target = (
+                    self._pool.acquire(canonical_h, canonical_w)
+                    if self._pool is not None
+                    else None
+                )
                 if target is None:
                     with self._lock:
                         self._error = "frame buffer pool exhausted"
                     return
-                np.copyto(target, source)
+                if (width, height) == (canonical_w, canonical_h):
+                    # 1x backing: native size already is canonical size.
+                    np.copyto(target, native)
+                else:
+                    # The one explicit, controlled downscale from native
+                    # backing pixels to the canonical raster (D-103):
+                    # area-averaging is the mathematically correct way to
+                    # shrink an image without aliasing, and unlike
+                    # ScreenCaptureKit's implicit resize it is something this
+                    # codebase specifies and can test, not a GPU black box.
+                    # This is a plain resize, not a letterbox - correct for a
+                    # canonical-aspect client (the only state TreasurePixels
+                    # checks are valid on), a stretch on a non-canonical one.
+                    import cv2
+
+                    cv2.resize(
+                        np.ascontiguousarray(native),
+                        (canonical_w, canonical_h),
+                        dst=target,
+                        interpolation=cv2.INTER_AREA,
+                    )
             finally:
                 Quartz.CVPixelBufferUnlockBaseAddress(pixel_buffer, 1)
         except Exception as exc:

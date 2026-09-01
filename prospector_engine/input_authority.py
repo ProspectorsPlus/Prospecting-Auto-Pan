@@ -1335,7 +1335,13 @@ class InputAuthority:
 
     # -- service-level primitives ----------------------------------------
     def tap_key(self, generation: int, key: InputKey, hold_ms: int) -> bool:
-        lease = self.acquire_key(generation, key, max(1, hold_ms))
+        # The horizon carries a poll-interval margin on top of the intended
+        # hold: ``expires_at_s`` is stamped before the deadman ACK/native-edge
+        # round trip below, so a horizon equal to ``hold_ms`` raced that fixed
+        # overhead on every tap and the watchdog eventually caught a lease
+        # that was already released, just not yet recorded as such.
+        horizon_ms = max(1, hold_ms) + self._config.safety_poll_interval_ms
+        lease = self.acquire_key(generation, key, horizon_ms)
         if lease is None:
             return False
         cancellation = self._cancellation
@@ -1348,7 +1354,11 @@ class InputAuthority:
         return True
 
     def tap_button(self, generation: int, button: MouseButton, hold_ms: int) -> bool:
-        lease = self.acquire_button(generation, button, max(1, hold_ms))
+        # See tap_key: horizon needs margin over the intended hold, not to
+        # equal it, or the watchdog's periodic poll can catch a lease whose
+        # release is merely running slightly behind the acquire+edge overhead.
+        horizon_ms = max(1, hold_ms) + self._config.safety_poll_interval_ms
+        lease = self.acquire_button(generation, button, horizon_ms)
         if lease is None:
             return False
         cancellation = self._cancellation
